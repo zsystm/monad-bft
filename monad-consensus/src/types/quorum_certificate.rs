@@ -1,4 +1,5 @@
-use crate::validation::signing::{Hashable, Signable, Signed};
+use crate::validation::hashing::Hashable;
+use crate::validation::signing::{Signable, Signed, Unverified};
 use crate::*;
 
 use super::{ledger::*, signature::ConsensusSignature, voting::*};
@@ -54,14 +55,14 @@ impl<T> Signable for QuorumCertificate<T>
 where
     T: VotingQuorum,
 {
-    type Output = Signed<QuorumCertificate<T>>;
+    type Output = Unverified<QuorumCertificate<T>>;
 
     fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Self::Output {
+        Unverified(Signed {
             obj: self,
             author,
             author_signature,
-        }
+        })
     }
 }
 

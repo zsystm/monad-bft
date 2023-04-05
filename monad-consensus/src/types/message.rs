@@ -1,4 +1,5 @@
-use crate::validation::signing::{Hashable, Signable, Signed};
+use crate::validation::hashing::Hashable;
+use crate::validation::signing::{Signable, Signed, Unverified};
 use crate::*;
 
 use super::block::BlockIter;
@@ -37,14 +38,14 @@ impl<'a> Iterator for VoteMessageIter<'a> {
 }
 
 impl Signable for VoteMessage {
-    type Output = Signed<VoteMessage>;
+    type Output = Unverified<VoteMessage>;
 
     fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Self::Output {
+        Unverified(Signed {
             obj: self,
             author,
             author_signature,
-        }
+        })
     }
 }
 
@@ -95,14 +96,14 @@ impl<T> Signable for TimeoutMessage<T>
 where
     T: VotingQuorum,
 {
-    type Output = Signed<TimeoutMessage<T>>;
+    type Output = Unverified<TimeoutMessage<T>>;
 
     fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Self::Output {
+        Unverified(Signed {
             obj: self,
             author,
             author_signature,
-        }
+        })
     }
 }
 
@@ -144,13 +145,13 @@ impl<T> Signable for ProposalMessage<T>
 where
     T: VotingQuorum,
 {
-    type Output = Signed<ProposalMessage<T>>;
+    type Output = Unverified<ProposalMessage<T>>;
 
     fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Self::Output {
+        Unverified(Signed {
             obj: self,
             author,
             author_signature,
-        }
+        })
     }
 }
