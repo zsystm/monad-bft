@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package monad_proto.timeout;
+
+import "basic.proto";
+import "quorum_certificate.proto";
+import "signing.proto";
+
+
+message ProtoHighQcRound {
+  monad_proto.basic.ProtoRound qc_round = 1;
+}

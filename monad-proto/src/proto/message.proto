@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package monad_proto.message;
+
+import "basic.proto";
+import "ledger.proto";
+import "signing.proto";
+import "voting.proto";
+
+message ProtoVoteMessage {
+  monad_proto.voting.ProtoVoteInfo vote_info = 1;
+  monad_proto.ledger.ProtoLedgerCommitInfo ledger_commit_info = 2;
+}
+
+message ProtoUnverifiedVoteMessage {
+  ProtoVoteMessage vote_msg = 1;
+  monad_proto.signing.ProtoSecpSignature author_signature = 2;
+}
