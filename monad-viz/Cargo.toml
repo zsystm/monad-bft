@@ -19,3 +19,4 @@ monad-consensus = { path = "../monad-consensus" }
 monad-crypto = { path = "../monad-crypto" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
+monad-wal = { path = "../monad-wal" }

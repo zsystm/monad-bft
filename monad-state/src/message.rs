@@ -1,5 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
+    fmt::Debug,
     marker::PhantomData,
 };
 
@@ -140,6 +141,7 @@ where
         if round >= self.min_round() && round <= max_round {
             let back_idx = self.max_rounds_cached() - 1;
             let key = (peer, id);
+
             assert!(self.messages[(back_idx - (max_round - round).0) as usize].remove(&key));
             Some(MessageActionUnpublish {
                 to: key.0,
