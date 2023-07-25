@@ -10,7 +10,10 @@ mod tests {
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_executor::{
-        executor::{checkpoint::MockCheckpoint, ledger::MockLedger, mock::MockMempool},
+        executor::{
+            checkpoint::MockCheckpoint, evpool::MockEvidencePool, ledger::MockLedger,
+            mock::MockMempool,
+        },
         Executor, State,
     };
     use monad_state::{MonadConfig, MonadState};
@@ -51,6 +54,7 @@ mod tests {
                     mempool: MockMempool::default(),
                     ledger: MockLedger::default(),
                     checkpoint: MockCheckpoint::default(),
+                    evpool: MockEvidencePool::default(),
                     timer: monad_executor::executor::timer::TokioTimer::default(),
                 };
 

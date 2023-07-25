@@ -2,6 +2,7 @@
 pub mod convert;
 
 pub mod block;
+pub mod evidence;
 pub mod ledger;
 pub mod multi_sig;
 pub mod payload;

@@ -4668,6 +4668,7 @@ name = "monad-executor"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "log",
  "monad-consensus-types",
  "monad-crypto",
  "monad-mempool-controller",

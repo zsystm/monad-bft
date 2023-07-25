@@ -1,5 +1,6 @@
 pub mod checkpoint;
 pub mod epoch;
+pub mod evpool;
 pub mod ledger;
 pub mod mock;
 pub mod parent;

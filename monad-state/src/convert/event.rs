@@ -48,6 +48,8 @@ impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
                         .as_ref()
                         .map(|txns| txns.0.clone())
                         .unwrap_or_default(),
+                    signature: fetched_full.signature.clone(),
+                    sender: Some((&fetched_full.sender).into()),
                 })
             }
             TypeConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
@@ -131,6 +133,19 @@ impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
                         ))?
                         .try_into()?,
                     txns: Some(FullTransactionList(fetched_full_txs.full_txs)),
+                    signature: fetched_full_txs
+                        .signature
+                        .first()
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_full_txs.signature".to_owned(),
+                        ))
+                        .map(|_| fetched_full_txs.signature.clone())?,
+                    sender: fetched_full_txs
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_full_txs.sender".to_owned(),
+                        ))?
+                        .try_into()?,
                 })
             }
             Some(proto_consensus_event::Event::LoadEpoch(epoch_event)) => {

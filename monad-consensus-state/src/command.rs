@@ -6,6 +6,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
+    evidence::Evidence,
     payload::{FullTransactionList, TransactionList},
     quorum_certificate::QuorumCertificate,
     signature::SignatureCollection,
@@ -39,6 +40,7 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     /// Checkpoints periodically can upload/backup the ledger and garbage clean
     /// persisted events if necessary
     CheckpointSave(Checkpoint<SCT>),
+    AddEvidence(Evidence),
     // TODO add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
@@ -87,4 +89,6 @@ pub struct FetchedFullTxs<ST, SCT> {
     pub author: NodeId,
     pub p: ProposalMessage<ST, SCT>,
     pub txns: Option<FullTransactionList>,
+    pub signature: Vec<u8>,
+    pub sender: NodeId,
 }

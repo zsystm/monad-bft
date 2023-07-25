@@ -11,7 +11,9 @@ use std::{
 use futures::{Stream, StreamExt};
 use monad_consensus_types::payload::{FullTransactionList, TransactionList};
 
-use super::{checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger};
+use super::{
+    checkpoint::MockCheckpoint, epoch::MockEpoch, evpool::MockEvidencePool, ledger::MockLedger,
+};
 use crate::{
     state::PeerId, Command, Executor, MempoolCommand, Message, RouterCommand, RouterTarget, State,
     TimerCommand,
@@ -107,7 +109,7 @@ where
     ledger: MockLedger<S::Block>,
     checkpoint: MockCheckpoint<S::Checkpoint>,
     epoch: MockEpoch<S::Event>,
-
+    evpool: MockEvidencePool,
     tick: Duration,
 
     timer: Option<TimerEvent<S::Event>>,
@@ -172,7 +174,7 @@ where
             ledger: Default::default(),
             mempool: Default::default(),
             epoch: Default::default(),
-
+            evpool: Default::default(),
             tick: Duration::default(),
 
             timer: None,
@@ -234,7 +236,7 @@ where
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
 
-        let (router_cmds, timer_cmds, mempool_cmds, ledger_cmds, checkpoint_cmds) =
+        let (router_cmds, timer_cmds, mempool_cmds, ledger_cmds, checkpoint_cmds, evpool_cmds) =
             Self::Command::split_commands(commands);
         for command in router_cmds {
             match command {
@@ -265,6 +267,7 @@ where
         self.mempool.exec(mempool_cmds);
         self.ledger.exec(ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
+        self.evpool.exec(evpool_cmds);
 
         for (target, message) in to_publish {
             let id = message.as_ref().id();

@@ -1,4 +1,4 @@
-use std::{fmt::Debug, time::Duration};
+use std::{fmt::Debug, time::Duration, vec};
 
 use message::MessageState;
 use monad_blocktree::blocktree::BlockTree;
@@ -13,6 +13,7 @@ use monad_consensus_state::{
 };
 use monad_consensus_types::{
     block::Block,
+    evidence::Evidence,
     payload::{ExecutionArtifacts, Payload},
     quorum_certificate::QuorumCertificate,
     signature::SignatureCollection,
@@ -24,10 +25,10 @@ use monad_crypto::{
     Signature,
 };
 use monad_executor::{
-    CheckpointCommand, Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand,
-    RouterTarget, State, TimerCommand,
+    CheckpointCommand, Command, EvidenceCommand, LedgerCommand, MempoolCommand, Message, PeerId,
+    RouterCommand, RouterTarget, State, TimerCommand,
 };
-use monad_types::{Epoch, NodeId, Stake};
+use monad_types::{Epoch, NodeId, Serializable, Stake};
 use monad_validator::{
     leader_election::LeaderElection,
     validator_set::{ValidatorData, ValidatorSetType},
@@ -245,6 +246,7 @@ where
     SCT: SignatureCollection<SignatureType = ST>,
     VT: ValidatorSetType,
     LT: LeaderElection,
+    VerifiedMonadMessage<ST, SCT>: monad_types::Serializable,
 {
     type Config = MonadConfig<SCT, CT::TransactionValidatorType>;
     type Event = MonadEvent<ST, SCT>;
@@ -350,18 +352,37 @@ where
                     }
                     ConsensusEvent::FetchedFullTxs(fetched_txs) => {
                         let mut cmds = vec![ConsensusCommand::FetchFullTxsReset];
-
                         if let Some(txns) = fetched_txs.txns {
-                            cmds.extend(
-                                self.consensus
-                                    .handle_proposal_message_full::<HasherType, _, _>(
-                                        fetched_txs.author,
-                                        fetched_txs.p,
-                                        txns,
-                                        &self.validator_set,
-                                        &self.leader_election,
-                                    ),
-                            );
+                            let (handle_proposal_cmds, ev_type) = self
+                                .consensus
+                                .handle_proposal_message_full::<HasherType, _, _>(
+                                    fetched_txs.author,
+                                    fetched_txs.p.clone(),
+                                    txns,
+                                    &self.validator_set,
+                                    &self.leader_election,
+                                );
+                            if let Some(et) = ev_type {
+                                let round = self.consensus.get_current_round();
+                                let signed_invalid_msg = Unverified::new(
+                                    ConsensusMessage::Proposal(fetched_txs.p.clone()),
+                                    ST::deserialize(&fetched_txs.signature).unwrap(),
+                                )
+                                .verify::<HasherType, _>(&self.validator_set, &fetched_txs.sender.0)
+                                .unwrap();
+                                assert_eq!(fetched_txs.author, fetched_txs.p.block.author);
+                                let ev = Evidence {
+                                    evidence_type: et,
+                                    round,
+                                    malicious_node: fetched_txs.author,
+                                    signed_invalid_msg: VerifiedMonadMessage::<ST, SCT>(
+                                        signed_invalid_msg,
+                                    )
+                                    .serialize(),
+                                };
+                                cmds.push(ConsensusCommand::AddEvidence(ev));
+                            }
+                            cmds.extend(handle_proposal_cmds);
                         }
 
                         cmds
@@ -378,9 +399,14 @@ where
                         };
                         let (author, signature, verified_message) = verified_message.destructure();
                         match verified_message {
-                            ConsensusMessage::Proposal(msg) => self
-                                .consensus
-                                .handle_proposal_message::<HasherType>(author, msg),
+                            ConsensusMessage::Proposal(msg) => {
+                                self.consensus.handle_proposal_message::<HasherType>(
+                                    author,
+                                    msg,
+                                    signature.serialize(),
+                                    NodeId(sender),
+                                )
+                            }
                             ConsensusMessage::Vote(msg) => {
                                 self.consensus.handle_vote_message::<HasherType, _, _>(
                                     author,
@@ -469,6 +495,9 @@ where
                         ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
                             Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
                         ),
+                        ConsensusCommand::AddEvidence(ev) => {
+                            cmds.push(Command::EvidenceCommand(EvidenceCommand::AddEvidence(ev)))
+                        }
                     }
                 }
                 cmds

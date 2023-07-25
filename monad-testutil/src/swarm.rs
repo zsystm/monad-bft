@@ -18,7 +18,8 @@ use monad_executor::{
     timed_event::TimedEvent,
     PeerId, State,
 };
-use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
+use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_types::Serializable;
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -170,7 +171,9 @@ pub fn node_ledger_verification<
             PL,
         ),
     >,
-) {
+) where
+    VerifiedMonadMessage<ST, SCT>: Serializable,
+{
     let num_b = states
         .values()
         .map(|v| v.0.ledger().get_blocks().len())
