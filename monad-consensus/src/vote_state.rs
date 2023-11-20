@@ -5,7 +5,7 @@ use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    voting::ValidatorMapping,
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::hasher::{Hash, Hasher};
 use monad_types::{NodeId, Round};
@@ -33,8 +33,9 @@ impl<SCT: SignatureCollection> Default for VoteState<SCT> {
 }
 
 #[derive(Debug)]
-pub enum VoteStateCommand {
-    // TODO: evidence collection command
+pub enum VoteStateCommand<SCT: SignatureCollection> {
+    InvalidVoteInfoHash(NodeId, VoteMessage<SCT>),
+    InvalidVoteSignature(NodeId, VoteMessage<SCT>),
 }
 
 impl<SCT> VoteState<SCT>
@@ -48,7 +49,7 @@ where
         vote_msg: &VoteMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    ) -> (Option<QuorumCertificate<SCT>>, Vec<VoteStateCommand>) {
+    ) -> (Option<QuorumCertificate<SCT>>, Vec<VoteStateCommand<SCT>>) {
         let vote = vote_msg.vote;
         let round = vote_msg.vote.vote_info.round;
 
@@ -59,7 +60,7 @@ where
         }
 
         if H::hash_object(&vote.vote_info) != vote.ledger_commit_info.vote_info_hash {
-            // TODO: collect author for evidence?
+            ret_commands.push(VoteStateCommand::InvalidVoteInfoHash(*author, *vote_msg));
             return (None, ret_commands);
         }
 
@@ -93,7 +94,11 @@ where
                 }
                 Err(err) => match err {
                     SignatureCollectionError::InvalidSignaturesCreate(invalid_sigs) => {
-                        ret_commands.extend(Self::handle_invalid_vote(pending_entry, invalid_sigs));
+                        ret_commands.extend(Self::handle_invalid_vote(
+                            pending_entry,
+                            invalid_sigs,
+                            vote,
+                        ));
                     }
                     _ => {
                         unreachable!("unexpected error {}", err);
@@ -109,7 +114,13 @@ where
     fn handle_invalid_vote(
         pending_entry: &mut (Vec<(NodeId, SCT::SignatureType)>, HashSet<NodeId>),
         invalid_votes: Vec<(NodeId, SCT::SignatureType)>,
-    ) -> Vec<VoteStateCommand> {
+        vote: Vote,
+    ) -> Vec<VoteStateCommand<SCT>> {
+        let vote_cmd = invalid_votes
+            .iter()
+            .copied()
+            .map(|(id, sig)| VoteStateCommand::InvalidVoteSignature(id, VoteMessage { vote, sig }))
+            .collect();
         let invalid_vote_set = invalid_votes
             .into_iter()
             .map(|(a, _)| a)
@@ -120,8 +131,8 @@ where
         pending_entry
             .1
             .retain(|node_id| !invalid_vote_set.contains(node_id));
-        // TODO: evidence
-        vec![]
+
+        vote_cmd
     }
 
     pub fn start_new_round(&mut self, new_round: Round) {
@@ -153,7 +164,9 @@ mod test {
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::VoteState;
-    use crate::{messages::message::VoteMessage, validation::signing::Verified};
+    use crate::{
+        messages::message::VoteMessage, validation::signing::Verified, vote_state::VoteStateCommand,
+    };
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SecpSignature>;
@@ -341,12 +354,21 @@ mod test {
         let invalid_vm = VoteMessage::new::<HasherType>(invalid_vote, &cert_key);
 
         let invalid_svm = Verified::<SignatureType, _>::new::<HasherType>(invalid_vm, &keypair);
-        let _ = vote_state.process_vote::<HasherType, _>(
+        let (qc, commands) = vote_state.process_vote::<HasherType, _>(
             invalid_svm.author(),
             &*invalid_svm,
             &vset,
             &vmap,
         );
+
+        assert!(qc.is_none());
+        assert_eq!(commands.len(), 1);
+        let VoteStateCommand::InvalidVoteInfoHash(node_id, msg) = commands[0] else {
+            panic!("invalid VoteStateCommand returned");
+        };
+
+        assert_eq!(node_id, *invalid_svm.author());
+        assert_eq!(msg, *invalid_svm);
 
         // confirms the invalid vote message was not added to pending votes
         assert_eq!(vote_state.pending_votes.len(), 1);
@@ -381,13 +403,14 @@ mod test {
 
         let vote_idx = HasherType::hash_object(&v0_valid.vote);
 
-        let (qc, _) = votestate.process_vote::<HasherType, _>(
+        let (qc, command) = votestate.process_vote::<HasherType, _>(
             &NodeId(keys[0].pubkey()),
             &v0_valid,
             &valset,
             &vmap,
         );
         assert!(qc.is_none());
+        assert!(command.is_empty());
         assert!(
             votestate
                 .pending_votes
@@ -411,13 +434,14 @@ mod test {
                 == 1
         );
 
-        let (qc, _) = votestate.process_vote::<HasherType, _>(
+        let (qc, command) = votestate.process_vote::<HasherType, _>(
             &NodeId(keys[1].pubkey()),
             &v1_valid,
             &valset,
             &vmap,
         );
         assert!(qc.is_none());
+        assert!(command.is_empty());
         assert!(
             votestate
                 .pending_votes
@@ -443,13 +467,21 @@ mod test {
 
         // VoteState attempts to create a QC, but failed because one of the sigs is invalid
         // doesn't have supermajority after removing the invalid
-        let (qc, _) = votestate.process_vote::<HasherType, _>(
+        let (qc, commands) = votestate.process_vote::<HasherType, _>(
             &NodeId(keys[2].pubkey()),
             &v2_invalid,
             &valset,
             &vmap,
         );
         assert!(qc.is_none());
+        assert_eq!(commands.len(), 1);
+
+        let VoteStateCommand::InvalidVoteSignature(node_id, msg) = commands[0] else {
+            panic!("invalid VoteStateCommand returned");
+        };
+
+        assert_eq!(node_id, NodeId(keys[2].pubkey()));
+        assert_eq!(msg, v2_invalid);
         assert!(
             votestate
                 .pending_votes
@@ -507,13 +539,14 @@ mod test {
 
         let vote_idx = HasherType::hash_object(&v0_valid.vote);
 
-        let (qc, _) = votestate.process_vote::<HasherType, _>(
+        let (qc, commands) = votestate.process_vote::<HasherType, _>(
             &NodeId(keys[0].pubkey()),
             &v0_valid,
             &valset,
             &vmap,
         );
         assert!(qc.is_none());
+        assert!(commands.is_empty());
         assert!(
             votestate
                 .pending_votes
@@ -539,13 +572,14 @@ mod test {
 
         // VoteState accepts the invalid signature because the stake is not enough
         // to trigger verification
-        let (qc, _) = votestate.process_vote::<HasherType, _>(
+        let (qc, commands) = votestate.process_vote::<HasherType, _>(
             &NodeId(keys[1].pubkey()),
             &v1_invalid,
             &valset,
             &vmap,
         );
         assert!(qc.is_none());
+        assert!(commands.is_empty());
         assert!(
             votestate
                 .pending_votes
@@ -572,13 +606,22 @@ mod test {
         // VoteState attempts to create a QC
         // the first attempt fails: v1.sig is invalid
         // the second iteration succeeds: still have enough stake after removing v1
-        let (qc, _) = votestate.process_vote::<HasherType, _>(
+        let (qc, commands) = votestate.process_vote::<HasherType, _>(
             &NodeId(keys[2].pubkey()),
             &v2_valid,
             &valset,
             &vmap,
         );
         assert!(qc.is_some());
+        assert_eq!(commands.len(), 1);
+
+        let VoteStateCommand::InvalidVoteSignature(node_id, msg) = commands[0] else {
+            panic!("invalid VoteStateCommand returned");
+        };
+
+        assert_eq!(node_id, NodeId(keys[1].pubkey()));
+        assert_eq!(msg, v1_invalid);
+
         assert_eq!(
             qc.unwrap()
                 .signatures

@@ -77,10 +77,22 @@ impl<SCT: SignatureCollection> From<&InFlightBlockSync<SCT>> for ConsensusComman
     }
 }
 
-impl<SCT: SignatureCollection> From<VoteStateCommand> for ConsensusCommand<SCT> {
-    fn from(value: VoteStateCommand) -> Self {
-        //TODO-3 VoteStateCommand used for evidence collection
-        todo!()
+impl<SCT: SignatureCollection> From<VoteStateCommand<SCT>> for ConsensusCommand<SCT> {
+    fn from(vote_cmd: VoteStateCommand<SCT>) -> Self {
+        match vote_cmd {
+            VoteStateCommand::InvalidVoteInfoHash(violator, msg) => {
+                ConsensusCommand::StoreEvidence(Evidence {
+                    violator,
+                    violation: ConsensusViolation::InvalidVoteInfoHash(msg),
+                })
+            }
+            VoteStateCommand::InvalidVoteSignature(violator, msg) => {
+                ConsensusCommand::StoreEvidence(Evidence {
+                    violator,
+                    violation: ConsensusViolation::InvalidVoteSignature(msg),
+                })
+            }
+        }
     }
 }
 
