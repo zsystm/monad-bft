@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use monad_block_sync::BlockSyncState;
+use monad_consensus::evidence::ConsensusViolation;
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block::FullBlock,
@@ -22,9 +23,9 @@ use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
 use monad_quic::service::UnsafeNoAuthQuinnConfig;
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    local_router::LocalPeerRouter, mempool::MonadMempool, parent::ParentExecutor,
-    timer::TokioTimer, BoxUpdater, Updater,
+    checkpoint::MockCheckpoint, evidence::NopEvidenceCollector, execution_ledger::MonadFileLedger,
+    ledger::MockLedger, local_router::LocalPeerRouter, mempool::MonadMempool,
+    parent::ParentExecutor, timer::TokioTimer, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 
@@ -91,6 +92,7 @@ pub async fn make_monad_executor<MessageSignatureType, SignatureCollectionType>(
     >,
     BoxExecutor<'static, ExecutionLedgerCommand<SignatureCollectionType>>,
     MockCheckpoint<Checkpoint<SignatureCollectionType>>,
+    NopEvidenceCollector<ConsensusViolation<SignatureCollectionType>>,
 >
 where
     MessageSignatureType: MessageSignature + Unpin,
@@ -124,6 +126,7 @@ where
             ExecutionLedgerConfig::File => Executor::boxed(MonadFileLedger::default()),
         },
         checkpoint: MockCheckpoint::default(),
+        evidence_store: NopEvidenceCollector::default(),
     }
 }
 
@@ -163,6 +166,7 @@ pub fn make_monad_state<MessageSignatureType, SignatureCollectionType>(
             FullBlock<SignatureCollectionType>,
             Checkpoint<SignatureCollectionType>,
             SignatureCollectionType,
+            ConsensusViolation<SignatureCollectionType>,
         >,
     >,
 )

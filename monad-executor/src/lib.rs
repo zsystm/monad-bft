@@ -49,6 +49,7 @@ pub trait State: Sized {
     type Block: BlockType;
     type Checkpoint;
     type SignatureCollection;
+    type Violation;
 
     fn init(
         config: Self::Config,
@@ -61,6 +62,7 @@ pub trait State: Sized {
                 Self::Block,
                 Self::Checkpoint,
                 Self::SignatureCollection,
+                Self::Violation,
             >,
         >,
     );
@@ -74,6 +76,7 @@ pub trait State: Sized {
             Self::Block,
             Self::Checkpoint,
             Self::SignatureCollection,
+            Self::Violation,
         >,
     >;
 }

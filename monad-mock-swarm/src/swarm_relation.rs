@@ -1,4 +1,5 @@
 use monad_block_sync::BlockSyncState;
+use monad_consensus::evidence::ConsensusViolation;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::FullBlock,
@@ -40,6 +41,7 @@ pub trait SwarmRelation {
         Config = MonadConfig<Self::SignatureCollectionType, Self::TransactionValidator>,
         Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
         SignatureCollection = Self::SignatureCollectionType,
+        Violation = ConsensusViolation<Self::SignatureCollectionType>,
         Message = Self::InboundMessage,
         OutboundMessage = Self::OutboundMessage,
     >;

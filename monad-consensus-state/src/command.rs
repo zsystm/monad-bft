@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage, pacemaker::PacemakerCommand,
-    vote_state::VoteStateCommand,
+    evidence::ConsensusViolation, messages::consensus_message::ConsensusMessage,
+    pacemaker::PacemakerCommand, vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
     block::{Block, FullBlock, UnverifiedFullBlock},
@@ -10,7 +10,7 @@ use monad_consensus_types::{
     payload::TransactionHashList,
     signature_collection::SignatureCollection,
 };
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
+use monad_types::{BlockId, Epoch, Evidence, NodeId, RouterTarget, TimeoutVariant};
 
 use crate::blocksync::InFlightBlockSync;
 
@@ -46,6 +46,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     StateRootHash(FullBlock<SCT>),
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
+    StoreEvidence(Evidence<ConsensusViolation<SCT>>),
 }
 
 impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<SCT> {

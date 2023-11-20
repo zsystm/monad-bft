@@ -9,6 +9,7 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
+use monad_consensus::evidence::ConsensusViolation;
 use monad_consensus_types::{
     command::{FetchFullTxParams, FetchTxParams},
     message_signature::MessageSignature,
@@ -24,8 +25,8 @@ use monad_executor_glue::{
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
-    state_root_hash::MockStateRootHash,
+    checkpoint::MockCheckpoint, epoch::MockEpoch, evidence::NopEvidenceCollector,
+    ledger::MockLedger, state_root_hash::MockStateRootHash,
 };
 use priority_queue::PriorityQueue;
 use rand::{Rng, RngCore};
@@ -60,6 +61,7 @@ where
 
     timer: PriorityQueue<TimerEvent<<S::State as State>::Event>, Reverse<Duration>>,
     router: S::RouterScheduler,
+    evidence_store: NopEvidenceCollector<ConsensusViolation<S::SignatureCollectionType>>,
 }
 
 pub struct TimerEvent<E> {
@@ -151,6 +153,7 @@ where
             mempool: <S::MempoolExecutor as MockableExecutor>::new(mempool_config),
             epoch: Default::default(),
             state_root_hash: Default::default(),
+            evidence_store: NopEvidenceCollector::default(),
 
             tick,
 
@@ -224,6 +227,7 @@ where
         <S::State as State>::Block,
         <S::State as State>::Checkpoint,
         <S::State as State>::SignatureCollection,
+        <S::State as State>::Violation,
     >;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let (
@@ -234,6 +238,7 @@ where
             execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
+            evidence_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -259,6 +264,7 @@ where
         self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
+        self.evidence_store.exec(evidence_cmds);
 
         for command in router_cmds {
             match command {

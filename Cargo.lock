@@ -4599,6 +4599,7 @@ dependencies = [
  "env_logger",
  "futures-util",
  "monad-block-sync",
+ "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",

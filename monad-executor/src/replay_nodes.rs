@@ -98,6 +98,7 @@ where
                 <S as State>::Block,
                 <S as State>::Checkpoint,
                 <S as State>::SignatureCollection,
+                <S as State>::Violation,
             >,
         >,
     ) {

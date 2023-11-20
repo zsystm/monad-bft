@@ -3,6 +3,7 @@ use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 use monad_block_sync::BlockSyncProcess;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
+    evidence::ConsensusViolation,
     messages::{
         consensus_message::ConsensusMessage,
         message::{BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage},
@@ -30,9 +31,9 @@ use monad_crypto::{
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
-    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, Identifiable,
-    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
-    TimerCommand,
+    CheckpointCommand, Command, ConsensusEvent, EvidenceCommand, ExecutionLedgerCommand,
+    Identifiable, LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand,
+    StateRootHashCommand, TimerCommand,
 };
 use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant, ValidatorData};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
@@ -246,6 +247,7 @@ where
     type Block = FullBlock<SCT>;
     type Checkpoint = Checkpoint<SCT>;
     type SignatureCollection = SCT;
+    type Violation = ConsensusViolation<SCT>;
 
     fn init(
         config: Self::Config,
@@ -258,6 +260,7 @@ where
                 Self::Block,
                 Self::Checkpoint,
                 Self::SignatureCollection,
+                Self::Violation,
             >,
         >,
     ) {
@@ -323,6 +326,7 @@ where
             Self::Block,
             Self::Checkpoint,
             Self::SignatureCollection,
+            Self::Violation,
         >,
     > {
         match event {
@@ -579,6 +583,9 @@ where
                                 StateRootHashCommand::LedgerCommit(full_block),
                             ))
                         }
+                        ConsensusCommand::StoreEvidence(evidence) => cmds.push(
+                            Command::EvidenceCommand(EvidenceCommand::CollectEvidence(evidence)),
+                        ),
                     }
                 }
 

@@ -81,6 +81,7 @@ mod test {
         type Block = MockBlock;
         type Checkpoint = ();
         type SignatureCollection = ();
+        type Violation = ();
 
         fn init(
             _config: Self::Config,
@@ -93,6 +94,7 @@ mod test {
                     Self::Block,
                     Self::Checkpoint,
                     Self::SignatureCollection,
+                    Self::Violation,
                 >,
             >,
         ) {
@@ -110,6 +112,7 @@ mod test {
                 Self::Block,
                 Self::Checkpoint,
                 Self::SignatureCollection,
+                Self::Violation,
             >,
         > {
             self.events.push(event);

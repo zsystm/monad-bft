@@ -245,3 +245,8 @@ pub enum TimeoutVariant {
     Pacemaker,
     BlockSync(BlockId),
 }
+
+pub struct Evidence<Violation> {
+    pub violator: NodeId,
+    pub violation: Violation,
+}

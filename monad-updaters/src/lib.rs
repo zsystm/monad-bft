@@ -5,6 +5,7 @@ use monad_executor::Executor;
 
 pub mod checkpoint;
 pub mod epoch;
+pub mod evidence;
 pub mod execution_ledger;
 pub mod ledger;
 pub mod parent;

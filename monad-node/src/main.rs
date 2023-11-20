@@ -19,8 +19,8 @@ use monad_mempool_controller::ControllerConfig;
 use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
 use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
+    checkpoint::MockCheckpoint, evidence::NopEvidenceCollector, execution_ledger::MonadFileLedger,
+    ledger::MockLedger, mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use tokio::signal;
@@ -102,6 +102,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         ledger: MockLedger::default(),
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
+        evidence_store: NopEvidenceCollector::default(),
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {

@@ -13,7 +13,9 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant, ValidatorData};
+use monad_types::{
+    BlockId, Epoch, Evidence, NodeId, RouterTarget, SeqNum, TimeoutVariant, ValidatorData,
+};
 
 pub enum RouterCommand<OM> {
     // TODO-2 add a RouterCommand for setting peer set for broadcast
@@ -90,7 +92,11 @@ pub enum StateRootHashCommand<B> {
     LedgerCommit(B),
 }
 
-pub enum Command<E, OM, B, C, SCT> {
+pub enum EvidenceCommand<V> {
+    CollectEvidence(Evidence<V>),
+}
+
+pub enum Command<E, OM, B, C, SCT, V> {
     RouterCommand(RouterCommand<OM>),
     TimerCommand(TimerCommand<E>),
 
@@ -99,9 +105,10 @@ pub enum Command<E, OM, B, C, SCT> {
     ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<C>),
     StateRootHashCommand(StateRootHashCommand<B>),
+    EvidenceCommand(EvidenceCommand<V>),
 }
 
-impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
+impl<E, OM, B, C, SCT, V> Command<E, OM, B, C, SCT, V> {
     pub fn split_commands(
         commands: Vec<Self>,
     ) -> (
@@ -112,6 +119,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
         Vec<ExecutionLedgerCommand<SCT>>,
         Vec<CheckpointCommand<C>>,
         Vec<StateRootHashCommand<B>>,
+        Vec<EvidenceCommand<V>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -120,6 +128,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
         let mut execution_ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
+        let mut evidence_cmds = Vec::new();
 
         for command in commands {
             match command {
@@ -130,6 +139,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
                 Command::ExecutionLedgerCommand(cmd) => execution_ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
+                Command::EvidenceCommand(cmd) => evidence_cmds.push(cmd),
             }
         }
         (
@@ -140,6 +150,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
             execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
+            evidence_cmds,
         )
     }
 }
