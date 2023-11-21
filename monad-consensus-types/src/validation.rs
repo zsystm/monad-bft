@@ -4,8 +4,10 @@ pub enum Error {
     InvalidAuthor,
     /// Message does not contain the proper QC or TC values
     NotWellFormed,
-    /// Bad signature
-    InvalidSignature,
+    /// Bad Message signature
+    InvalidMessageSignature,
+    /// Bad Collection signature
+    InvalidCollectionSignature,
     /// Signature author doesn't match sender
     AuthorNotSender,
     /// There are high qc rounds larger than the TC round

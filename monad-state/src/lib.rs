@@ -35,7 +35,7 @@ use monad_executor_glue::{
     Identifiable, LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand,
     StateRootHashCommand, TimerCommand,
 };
-use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant, ValidatorData};
+use monad_types::{Epoch, Evidence, NodeId, RouterTarget, Stake, TimeoutVariant, ValidatorData};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
 
@@ -426,57 +426,70 @@ where
                         sender,
                         unverified_message,
                     } => {
-                        let verified_message = match unverified_message.verify::<HasherType, _>(
+                        match unverified_message.clone().verify::<HasherType, _>(
                             &self.validator_set,
                             &self.validator_mapping,
                             &sender,
                         ) {
-                            Ok(m) => m,
-                            Err(e) => todo!("{e:?}"),
-                        };
-                        let (author, _, verified_message) = verified_message.destructure();
-                        match verified_message {
-                            ConsensusMessage::Proposal(msg) => self
-                                .consensus
-                                .handle_proposal_message::<HasherType>(author, msg),
-                            ConsensusMessage::Vote(msg) => {
-                                self.consensus.handle_vote_message::<HasherType, _, _>(
-                                    author,
-                                    msg,
-                                    &self.validator_set,
-                                    &self.validator_mapping,
-                                    &self.leader_election,
-                                )
-                            }
-                            ConsensusMessage::Timeout(msg) => {
-                                self.consensus.handle_timeout_message::<HasherType, _, _>(
-                                    author,
-                                    msg,
-                                    &self.validator_set,
-                                    &self.validator_mapping,
-                                    &self.leader_election,
-                                )
-                            }
-                            ConsensusMessage::RequestBlockSync(msg) => {
-                                if let Some(block) =
-                                    self.consensus.fetch_uncommitted_block(&msg.block_id)
-                                {
-                                    // retrieve if currently cached in pending block tree
-                                    vec![ConsensusCommand::Publish {
-                                        target: RouterTarget::PointToPoint(author),
-                                        message: ConsensusMessage::BlockSync(
-                                            BlockSyncMessage::BlockFound(block.clone().into()),
-                                        ),
-                                    }]
-                                } else {
-                                    // else ask ledger
-                                    self.block_sync
-                                        .handle_request_block_sync_message(author, msg)
+                            Ok(verified_message) => {
+                                let (author, _, verified_message) = verified_message.destructure();
+                                match verified_message {
+                                    ConsensusMessage::Proposal(msg) => self
+                                        .consensus
+                                        .handle_proposal_message::<HasherType>(author, msg),
+                                    ConsensusMessage::Vote(msg) => {
+                                        self.consensus.handle_vote_message::<HasherType, _, _>(
+                                            author,
+                                            msg,
+                                            &self.validator_set,
+                                            &self.validator_mapping,
+                                            &self.leader_election,
+                                        )
+                                    }
+                                    ConsensusMessage::Timeout(msg) => {
+                                        self.consensus.handle_timeout_message::<HasherType, _, _>(
+                                            author,
+                                            msg,
+                                            &self.validator_set,
+                                            &self.validator_mapping,
+                                            &self.leader_election,
+                                        )
+                                    }
+                                    ConsensusMessage::RequestBlockSync(msg) => {
+                                        if let Some(block) =
+                                            self.consensus.fetch_uncommitted_block(&msg.block_id)
+                                        {
+                                            // retrieve if currently cached in pending block tree
+                                            vec![ConsensusCommand::Publish {
+                                                target: RouterTarget::PointToPoint(author),
+                                                message: ConsensusMessage::BlockSync(
+                                                    BlockSyncMessage::BlockFound(
+                                                        block.clone().into(),
+                                                    ),
+                                                ),
+                                            }]
+                                        } else {
+                                            // else ask ledger
+                                            self.block_sync
+                                                .handle_request_block_sync_message(author, msg)
+                                        }
+                                    }
+                                    ConsensusMessage::BlockSync(msg) => self
+                                        .consensus
+                                        .handle_block_sync(author, msg, &self.validator_set),
                                 }
                             }
-                            ConsensusMessage::BlockSync(msg) => {
-                                self.consensus
-                                    .handle_block_sync(author, msg, &self.validator_set)
+                            Err(err) => {
+                                let (signature, msg) = unverified_message.destructure();
+                                let signature = signature.serialize();
+
+                                vec![ConsensusCommand::StoreEvidence(Evidence {
+                                    violator: NodeId(sender),
+                                    violation: ConsensusViolation::MessageErrors(
+                                        err,
+                                        (msg, signature),
+                                    ),
+                                })]
                             }
                         }
                     }

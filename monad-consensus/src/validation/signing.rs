@@ -92,6 +92,10 @@ impl<S: MessageSignature, M> Unverified<S, M> {
     pub fn author_signature(&self) -> &S {
         &self.author_signature
     }
+
+    pub fn destructure(self) -> (S, M) {
+        (self.author_signature, self.obj)
+    }
 }
 
 impl<S, M> From<Verified<S, M>> for Unverified<S, M> {
@@ -397,7 +401,7 @@ where
         let signers = t
             .sigs
             .verify(validator_mapping, msg.as_ref())
-            .map_err(|_| Error::InvalidSignature)?;
+            .map_err(|_| Error::InvalidCollectionSignature)?;
 
         node_ids.extend(signers);
     }
@@ -420,15 +424,14 @@ where
     VT: ValidatorSetType,
 {
     if H::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
-        // TODO-3: collect author for evidence?
-        return Err(Error::InvalidSignature);
+        return Err(Error::NotWellFormed);
     }
 
     let qc_msg = H::hash_object(&qc.info.ledger_commit);
     let node_ids = qc
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
-        .map_err(|_| Error::InvalidSignature)?;
+        .map_err(|_| Error::InvalidCollectionSignature)?;
 
     if !validators.has_super_majority_votes(node_ids.iter()) {
         return Err(Error::InsufficientStake);
@@ -445,7 +448,7 @@ fn verify_author(
 ) -> Result<PubKey, Error> {
     let pubkey = get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)?;
     sig.verify(msg.as_ref(), &pubkey)
-        .map_err(|_| Error::InvalidSignature)?;
+        .map_err(|_| Error::InvalidMessageSignature)?;
     if sender != &pubkey {
         Err(Error::AuthorNotSender)
     } else {
@@ -455,7 +458,8 @@ fn verify_author(
 
 // Extract the PubKey from the Signature if possible
 fn get_pubkey(msg: &[u8], sig: &impl MessageSignature) -> Result<PubKey, Error> {
-    sig.recover_pubkey(msg).map_err(|_| Error::InvalidSignature)
+    sig.recover_pubkey(msg)
+        .map_err(|_| Error::InvalidMessageSignature)
 }
 
 impl<MS: MessageSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMessage<MS, SCT>>
