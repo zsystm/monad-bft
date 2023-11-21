@@ -485,7 +485,7 @@ where
 
                                 vec![ConsensusCommand::StoreEvidence(Evidence {
                                     violator: NodeId(sender),
-                                    violation: ConsensusViolation::MessageErrors(
+                                    violation: ConsensusViolation::FailedMessageVerification(
                                         err,
                                         (msg, signature),
                                     ),

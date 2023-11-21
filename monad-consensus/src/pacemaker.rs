@@ -44,7 +44,7 @@ pub enum PacemakerCommand<SCT: SignatureCollection> {
     Broadcast(TimeoutMessage<SCT>),
     Schedule { duration: Duration },
     ScheduleReset,
-    InvalidTimeOutSignature(NodeId, TimeoutMessage<SCT>),
+    InvalidTimeoutSignature(NodeId, TimeoutMessage<SCT>),
 }
 
 impl<SCT: SignatureCollection> Pacemaker<SCT> {
@@ -196,7 +196,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             // TODO: debug assert
             let message = removed.expect("Timeout removed");
             assert_eq!(message.sig, sig);
-            pacemaker_cmds.push(PacemakerCommand::InvalidTimeOutSignature(node_id, message));
+            pacemaker_cmds.push(PacemakerCommand::InvalidTimeoutSignature(node_id, message));
         }
         pacemaker_cmds
     }
@@ -433,7 +433,7 @@ mod test {
         assert!(tc.is_none());
         // verify evidence emitted
         assert_eq!(cmds.len(), 1);
-        let PacemakerCommand::InvalidTimeOutSignature(id, msg) = &cmds[0] else {
+        let PacemakerCommand::InvalidTimeoutSignature(id, msg) = &cmds[0] else {
             panic!("wrong pacemaker command emitted");
         };
         assert_eq!(*id, NodeId(keys[2].pubkey()));
@@ -536,7 +536,7 @@ mod test {
 
         // verify evidence emitted
         assert_eq!(cmds.len(), 1);
-        let PacemakerCommand::InvalidTimeOutSignature(id, msg) = &cmds[0] else {
+        let PacemakerCommand::InvalidTimeoutSignature(id, msg) = &cmds[0] else {
             panic!("wrong pacemaker command emitted");
         };
         assert_eq!(*id, NodeId(keys[0].pubkey()));

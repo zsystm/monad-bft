@@ -11,7 +11,7 @@ use crate::messages::{
 pub type SerializedSignature = Vec<u8>;
 // vote message itself carries a SCT signature, sufficient for evidence
 type ProofOfVote<SCT> = VoteMessage<SCT>;
-type ProofOfTimeOut<SCT> = TimeoutMessage<SCT>;
+type ProofOfTimeout<SCT> = TimeoutMessage<SCT>;
 type ProofOfMessage<SCT> = (ConsensusMessage<SCT>, SerializedSignature);
 /// The design of Evidence Interface is
 /// Evidence(node_id, Violation{proof_a, proof_b, ...})
@@ -22,7 +22,7 @@ where
     // consensus state related violation
     InvalidVoteInfoHash(ProofOfVote<SCT>),
     InvalidVoteSignature(ProofOfVote<SCT>),
-    InvalidTimeOutSignature(ProofOfTimeOut<SCT>),
+    InvalidTimeoutSignature(ProofOfTimeout<SCT>),
     // monad state related violation
-    MessageErrors(Error, ProofOfMessage<SCT>),
+    FailedMessageVerification(Error, ProofOfMessage<SCT>),
 }
