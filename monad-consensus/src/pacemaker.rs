@@ -44,6 +44,7 @@ pub enum PacemakerCommand<SCT: SignatureCollection> {
     Broadcast(TimeoutMessage<SCT>),
     Schedule { duration: Duration },
     ScheduleReset,
+    InvalidTimeOutSignature(NodeId, TimeoutMessage<SCT>),
 }
 
 impl<SCT: SignatureCollection> Pacemaker<SCT> {
@@ -189,13 +190,15 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &mut self,
         invalid_timeouts: Vec<(NodeId, SCT::SignatureType)>,
     ) -> Vec<PacemakerCommand<SCT>> {
+        let mut pacemaker_cmds = vec![];
         for (node_id, sig) in invalid_timeouts {
             let removed = self.pending_timeouts.remove(&node_id);
             // TODO: debug assert
-            assert_eq!(removed.expect("Timeout removed").sig, sig);
+            let message = removed.expect("Timeout removed");
+            assert_eq!(message.sig, sig);
+            pacemaker_cmds.push(PacemakerCommand::InvalidTimeOutSignature(node_id, message));
         }
-        // TODO: evidence collection
-        vec![]
+        pacemaker_cmds
     }
 
     #[must_use]
@@ -425,10 +428,17 @@ mod test {
             &mut safety,
             &high_qc,
             NodeId(keys[2].pubkey()),
-            tm2_invalid,
+            tm2_invalid.clone(),
         );
         assert!(tc.is_none());
-        assert!(cmds.is_empty());
+        // verify evidence emitted
+        assert_eq!(cmds.len(), 1);
+        let PacemakerCommand::InvalidTimeOutSignature(id, msg) = &cmds[0] else {
+            panic!("wrong pacemaker command emitted");
+        };
+        assert_eq!(*id, NodeId(keys[2].pubkey()));
+        assert_eq!(*msg, tm2_invalid);
+
         assert_eq!(pacemaker.phase, PhaseHonest::One);
         assert_eq!(pacemaker.pending_timeouts.len(), 2);
     }
@@ -488,7 +498,7 @@ mod test {
             &mut safety,
             &high_qc,
             NodeId(keys[0].pubkey()),
-            tm0_invalid,
+            tm0_invalid.clone(),
         );
         assert!(tc.is_none());
         assert_eq!(pacemaker.pending_timeouts.len(), 2);
@@ -524,7 +534,14 @@ mod test {
                 .collect::<HashSet<_>>()
         );
 
-        assert!(cmds.is_empty());
+        // verify evidence emitted
+        assert_eq!(cmds.len(), 1);
+        let PacemakerCommand::InvalidTimeOutSignature(id, msg) = &cmds[0] else {
+            panic!("wrong pacemaker command emitted");
+        };
+        assert_eq!(*id, NodeId(keys[0].pubkey()));
+        assert_eq!(*msg, tm0_invalid);
+
         assert_eq!(pacemaker.pending_timeouts.len(), 2);
     }
 }

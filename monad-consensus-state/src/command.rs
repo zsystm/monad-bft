@@ -64,6 +64,12 @@ impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<
             PacemakerCommand::ScheduleReset => {
                 ConsensusCommand::ScheduleReset(TimeoutVariant::Pacemaker)
             }
+            PacemakerCommand::InvalidTimeOutSignature(violator, msg) => {
+                ConsensusCommand::StoreEvidence(Evidence {
+                    violator,
+                    violation: ConsensusViolation::InvalidTimeOutSignature(msg),
+                })
+            }
         }
     }
 }
