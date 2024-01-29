@@ -70,8 +70,7 @@ impl TxPool for MockTxPool {
             (FullTransactionList::empty(), None)
         } else {
             // Random non-empty value with size = num_fetch_txs * hash_size
-            let mut buf = Vec::with_capacity(tx_limit * TXN_SIZE);
-            buf.resize(tx_limit * TXN_SIZE, 0);
+            let mut buf = vec![0; tx_limit * TXN_SIZE];
             self.rng.fill_bytes(buf.as_mut_slice());
             (FullTransactionList::new(buf.into()), None)
         }
