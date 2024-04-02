@@ -12,6 +12,9 @@ bench = false
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-types = { path = "../monad-types" }
+rand = "0.8.5" # The latest version 
+rand_chacha = "0.3.1"
+
 
 as-any = { workspace = true }
 tracing = { workspace = true }

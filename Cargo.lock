@@ -3930,6 +3930,8 @@ dependencies = [
  "monad-crypto",
  "monad-testutil",
  "monad-types",
+ "rand",
+ "rand_chacha",
  "test-case",
  "tracing",
 ]
