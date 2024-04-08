@@ -1,0 +1,31 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml"
+    ]
+}
