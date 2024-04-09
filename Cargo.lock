@@ -3637,6 +3637,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-gossip",
  "monad-router-scheduler",
+ "monad-secp",
  "monad-types",
  "quinn",
  "quinn-proto",

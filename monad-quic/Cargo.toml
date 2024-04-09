@@ -29,6 +29,8 @@ quinn-proto = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
+monad-secp = { path = "../monad-secp" }
+
 clap = { workspace = true, features = ["derive"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 futures-util = { workspace = true }

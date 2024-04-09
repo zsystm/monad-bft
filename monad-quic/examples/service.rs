@@ -19,6 +19,7 @@ use monad_gossip::{
     Gossip,
 };
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
+use monad_secp::SecpSignature;
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -38,25 +39,25 @@ pub fn main() {
 
     let payload_size = 10_000 * 400;
 
-    let num_rt = 2;
-    let threads_per_rt = 2;
+    let num_rt = 10;
+    let threads_per_rt = 3;
 
     const MAX_RTT: Duration = Duration::from_millis(250);
-    const BANDWIDTH_Mbps: u16 = 1_000;
+    const BANDWIDTH_Mbps: u16 = 200;
 
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(Duration::from_secs(2));
     service(
         num_rt,
         threads_per_rt,
         args.addresses,
-        1,
+        10,
         payload_size,
         MAX_RTT,
         BANDWIDTH_Mbps,
     );
 }
 
-type SignatureType = NopSignature;
+type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 
 fn service(
@@ -220,15 +221,19 @@ fn service(
 
     let start = Instant::now();
     let mut expected_message_ids = HashMap::new();
+    let mut to_tx = Vec::new();
     for broadcast_id in id..id + num_broadcast {
         let message = MockMessage::new(broadcast_id, message_len);
+        expected_message_ids.insert(message.id, num_peers);
+        to_tx.push(message);
+    }
+    if let Some(message) = to_tx.pop() {
         tx_router
             .send(RouterCommand::Publish {
                 target: RouterTarget::Broadcast,
                 message,
             })
             .expect("reader should never be dropped");
-        expected_message_ids.insert(message.id, num_peers);
     }
     while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(1)) {
         if &tx == tx_peer {
@@ -236,8 +241,20 @@ fn service(
                 .get_mut(&msg_id)
                 .expect("msg_id must exist");
             *num_left -= 1;
+            if *num_left == num_peers - 2 {
+                if let Some(message) = to_tx.pop() {
+                    tracing::info!("sending new message");
+                    tx_router
+                        .send(RouterCommand::Publish {
+                            target: RouterTarget::Broadcast,
+                            message,
+                        })
+                        .expect("reader should never be dropped");
+                }
+            }
             if num_left == &0 {
                 expected_message_ids.remove(&msg_id);
+                tracing::info!("{} messages left", expected_message_ids.len());
             }
             if expected_message_ids.is_empty() {
                 tracing::info!(
