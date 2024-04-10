@@ -46,6 +46,9 @@ impl<'k, C: Chunker<'k>> SeederConfig<'k, C> {
             events: VecDeque::default(),
             current_tick: Duration::ZERO,
             next_chunker_poll: None,
+
+            num_chunk: 0,
+            num_chunk_redundant: 0,
         }
     }
 }
@@ -62,6 +65,9 @@ pub struct Seeder<'k, C: Chunker<'k>> {
     events: VecDeque<GossipEvent<CertificateSignaturePubKey<C::SignatureType>>>,
     current_tick: Duration,
     next_chunker_poll: Option<Duration>,
+
+    num_chunk: usize,
+    num_chunk_redundant: usize,
 }
 
 struct ChunkerStatus<'k, C: Chunker<'k>> {
@@ -185,6 +191,7 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
             }
 
             ProtocolHeader::Chunk(chunk) => {
+                self.num_chunk += 1;
                 let id = chunk.id();
                 if let Some(status) = self.chunkers.get_mut(&id) {
                     if !status.chunker.is_seeder() {
@@ -202,6 +209,16 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
                             Err(e) => {
                                 tracing::warn!("failed to process chunk: {:?}", e);
                             }
+                        }
+                    } else {
+                        self.num_chunk_redundant += 1;
+                        if self.num_chunk_redundant % 100 == 0 {
+                            tracing::error!(
+                                "num_chunk_redundant={}, num_chunk={}, %={:?}",
+                                self.num_chunk_redundant,
+                                self.num_chunk,
+                                100.0 * self.num_chunk_redundant as f64 / self.num_chunk as f64
+                            );
                         }
                     }
                     // chunker may be complete if event was emitted
