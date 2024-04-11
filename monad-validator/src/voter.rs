@@ -1,17 +1,21 @@
 // src/voter.rs
 
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 use std::cmp::Ordering;
 
 #[derive(Eq, PartialEq, Clone, Debug)]
-pub struct Voter {
-    pub address: NodeId,
+pub struct Voter<PT: PubKey> {
+    pub address: NodeId<PT>,
     pub voting_power: Stake,
 }
 
-impl Voter {
-    pub fn new(address: NodeId, voting_power: Stake) -> Self {
-        Self { address, voting_power }
+impl<PT: PubKey> Voter<PT> {
+    pub fn new(address: NodeId<PT>, voting_power: Stake) -> Self {
+        Self {
+            address,
+            voting_power,
+        }
     }
 
     pub fn verified(&self) -> bool {
@@ -19,13 +23,13 @@ impl Voter {
     }
 }
 
-impl Ord for Voter {
+impl<PT: PubKey> Ord for Voter<PT> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.voting_power.cmp(&other.voting_power).reverse()
     }
 }
 
-impl PartialOrd for Voter {
+impl<PT: PubKey> PartialOrd for Voter<PT> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
