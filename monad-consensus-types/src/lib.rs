@@ -12,3 +12,4 @@ pub mod txpool;
 pub mod validation;
 pub mod validator_data;
 pub mod voting;
+pub mod validator_accountability;

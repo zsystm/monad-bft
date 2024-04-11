@@ -6,6 +6,7 @@ use monad_crypto::{
 };
 use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
+use crate::validator_accountability::ValidatorAccountability;
 
 use crate::{
     block_validator::BlockValidator, payload::Payload, quorum_certificate::QuorumCertificate,
@@ -52,6 +53,8 @@ pub struct Block<SCT: SignatureCollection> {
 
     /// Certificate of votes for this block
     pub qc: QuorumCertificate<SCT>,
+    
+    pub validators_accountability: Vec<ValidatorAccountability<SCT>>, 
 
     /// Unique hash used to identify the block
     id: BlockId,
@@ -74,6 +77,7 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
             .field("id", &self.id)
             .field("txn_payload_len", &self.payload.txns.bytes().len())
             .field("execution_state_root", &self.payload.header.state_root)
+            .field("validators_accountability", &self.validators_accountability)
             .finish_non_exhaustive()
     }
 }
@@ -83,7 +87,7 @@ impl<SCT: SignatureCollection> Hashable for Block<SCT> {
         self.id.hash(state);
     }
 }
-
+/* 
 impl<SCT: SignatureCollection> Block<SCT> {
     // FIXME &QuorumCertificate -> QuorumCertificate
     pub fn new(
@@ -108,6 +112,40 @@ impl<SCT: SignatureCollection> Block<SCT> {
 
                 BlockId(state.hash())
             },
+        }
+    }
+
+*/
+    impl<SCT: SignatureCollection> Block<SCT> {
+        pub fn new(
+            author: NodeId<SCT::NodeIdPubKey>,
+            round: Round,
+            payload: &Payload,
+            qc: &QuorumCertificate<SCT>,
+            validators_accountability: Vec<ValidatorAccountability<SCT>>, // New parameter
+        ) -> Self {
+            let mut state = HasherType::new();
+            author.hash(&mut state);
+            state.update(round.as_bytes());
+            payload.hash(&mut state);
+            state.update(qc.get_block_id().0.as_bytes());
+            state.update(qc.get_hash().as_bytes());
+    
+            // Conditionally hash the validators_accountability if not empty
+            if !validators_accountability.is_empty() {
+                for accountability in &validators_accountability {
+                    accountability.hash(&mut state); // Assuming ValidatorAccountability implements Hashable
+                }
+            }
+    
+            Self {
+                author,
+                round,
+                payload: payload.clone(),
+                qc: qc.clone(),
+                validators_accountability,
+                id: BlockId(state.hash()),
+            }
         }
     }
 

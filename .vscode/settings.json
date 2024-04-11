@@ -26,6 +26,7 @@
         "./monad-validator/Cargo.toml",
         "./monad-validator/Cargo.toml",
         "./monad-validator/Cargo.toml",
+        "./monad-validator/Cargo.toml",
         "./monad-validator/Cargo.toml"
     ]
 }
