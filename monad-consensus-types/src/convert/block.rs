@@ -14,6 +14,7 @@ use crate::{
         TransactionHashList,
     },
     signature_collection::SignatureCollection,
+    validator_accountability::ValidatorAccountability,
 };
 
 impl From<&TransactionHashList> for ProtoTransactionList {
@@ -31,6 +32,41 @@ impl TryFrom<ProtoTransactionList> for TransactionHashList {
     }
 }
 
+impl<SCT: SignatureCollection> From<&ValidatorAccountability<SCT>>
+    for ProtoValidatorAccountability
+{
+    fn from(value: &ValidatorAccountability<SCT>) -> Self {
+        Self {
+            validator_id: Some((&value.validator_id).into()),
+            failure_counter: value.failure_counter,
+            latest_failure_certificate: Some((&value.latest_failure_certificate).into()),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoValidatorAccountability>
+    for ValidatorAccountability<SCT>
+{
+    type Error = ProtoError;
+    fn try_from(value: ProtoValidatorAccountability) -> Result<Self, Self::Error> {
+        Ok(Self {
+            validator_id: value
+                .validator_id
+                .ok_or(Self::Error::MissingRequiredField(
+                    "ValidatorAccountability.validator_id".to_owned(),
+                ))?
+                .try_into()?,
+            failure_counter: value.failure_counter,
+            latest_failure_certificate: value
+                .latest_failure_certificate
+                .ok_or(Self::Error::MissingRequiredField(
+                    "ValidatorAccountability.latest_failure_certificate".to_owned(),
+                ))?
+                .try_into()?,
+        })
+    }
+}
+
 impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
     fn from(value: &Block<SCT>) -> Self {
         Self {
@@ -38,6 +74,11 @@ impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
             round: Some((&value.round).into()),
             payload: Some((&value.payload).into()),
             qc: Some((&value.qc).into()),
+            validators_accountability: value
+                .validators_accountability
+                .iter()
+                .map(|va| va.into())
+                .collect(),
         }
     }
 }
@@ -71,6 +112,11 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                     "Block<AggregateSignatures>.qc".to_owned(),
                 ))?
                 .try_into()?,
+            value
+                .validators_accountability
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<ValidatorAccountability<_>>, ProtoError>>()?,
         ))
     }
 }

@@ -3276,6 +3276,7 @@ name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "hex",
  "monad-crypto",
  "monad-eth-types",
  "monad-proto",
@@ -3283,6 +3284,8 @@ dependencies = [
  "prost",
  "rand",
  "rand_chacha",
+ "serde",
+ "serde_json",
  "test-case",
  "tracing",
  "zerocopy 0.6.5",

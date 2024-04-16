@@ -5,6 +5,7 @@ package monad_proto.block;
 import "basic.proto";
 import "quorum_certificate.proto";
 import "state_root_hash.proto";
+import "timeout.proto";
 
 message ProtoExecutionArtifacts {
   monad_proto.state_root_hash.ProtoStateRootHash parent_hash = 1;
@@ -26,12 +27,18 @@ message ProtoPayload {
   bytes beneficiary = 4;
   bytes randao_reveal = 5;
 }
+message ProtoValidatorAccountability {
+    monad_proto.basic.ProtoNodeId validator_id = 1;
+    uint32 failure_counter = 2;
+    monad_proto.timeout.ProtoTimeoutCertificate latest_failure_certificate = 3;
+}
 
 message ProtoBlock {
   monad_proto.basic.ProtoNodeId author = 1;
   monad_proto.basic.ProtoRound round = 2;
   ProtoPayload payload = 3;
   monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 4;
+  repeated ProtoValidatorAccountability validators_accountability = 5;
 }
 
 message ProtoUnverifiedBlock {

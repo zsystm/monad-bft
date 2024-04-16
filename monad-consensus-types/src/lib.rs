@@ -10,6 +10,6 @@ pub mod state_root_hash;
 pub mod timeout;
 pub mod txpool;
 pub mod validation;
+pub mod validator_accountability;
 pub mod validator_data;
 pub mod voting;
-pub mod validator_accountability;

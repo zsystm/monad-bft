@@ -134,3 +134,17 @@ impl<SCT> TimeoutCertificate<SCT> {
             .expect("verification of received TimeoutCertificates should have rejected any with empty high_qc_rounds")
     }
 }
+
+// Hashable implementation for TimeoutCertificate to be used in the validator accountability.
+impl<SCT: SignatureCollection> Hashable for TimeoutCertificate<SCT> {
+    fn hash(&self, state: &mut impl Hasher) {
+        // Hash the round of the TimeoutCertificate
+        state.update(self.round.as_bytes());
+
+        // Hash each high_qc_round and its associated signatures
+        for high_qc_round_sig in &self.high_qc_rounds {
+            high_qc_round_sig.high_qc_round.hash(state);
+            high_qc_round_sig.sigs.hash(state);
+        }
+    }
+}
