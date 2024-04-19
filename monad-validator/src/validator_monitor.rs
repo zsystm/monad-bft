@@ -1,5 +1,6 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_consensus_types::timeout::TimeoutCertificate;
+use monad_consensus_types::validator_accountability::ValidatorAccountability;
 use monad_types::NodeId;
 use std::collections::HashMap;
 
@@ -52,6 +53,32 @@ impl<SCT: SignatureCollection> ValidatorMonitor<SCT> {
     ) -> bool {
         self.validator_failures.get(validator_id).unwrap_or(&0) >= &threshold
     }
+}
+
+impl<SCT: SignatureCollection> ValidatorMonitor<SCT> {
+    pub fn from_validator_monitor(
+        validator_monitor: &ValidatorMonitor<SCT>,
+        threshold: u32,
+    ) -> Vec<ValidatorAccountability<SCT>> {
+        use monad_consensus_types::validator_accountability::ValidatorAccountability;
+
+        let mut accountability_vec = Vec::new();
+
+        for (validator_id, failure_count) in &validator_monitor.validator_failures {
+            if *failure_count > threshold {
+                if let Some(cert) = validator_monitor.validator_latest_failure.get(validator_id) {
+                    accountability_vec.push(ValidatorAccountability {
+                        validator_id: *validator_id,
+                        failure_counter: *failure_count,
+                        latest_failure_certificate: cert.clone(),
+                    });
+                }
+            }
+        }
+
+        accountability_vec
+    }
+
 }
 
 #[cfg(test)]

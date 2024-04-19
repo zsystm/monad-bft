@@ -1,6 +1,11 @@
 use std::{marker::PhantomData, time::Duration};
 
 use monad_blocktree::blocktree::BlockTree;
+// Add this import statement at the top of your file
+use monad_consensus_types::validator_accountability::ValidatorAccountability;
+
+
+
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -30,10 +35,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
-    epoch_manager::EpochManager,
-    leader_election::LeaderElection,
-    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
-    validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, leader_election::LeaderElection, validator_monitor::{self, ValidatorMonitor}, validator_set::{ValidatorSetType, ValidatorSetTypeFactory}, validators_epoch_mapping::ValidatorsEpochMapping
 };
 use tracing::{debug, warn};
 
@@ -850,6 +852,11 @@ where
              last_round_tc: Option<TimeoutCertificate<SCT>>| {
                 let mut header = ExecutionArtifacts::zero();
                 header.state_root = hash;
+
+            let validator_monitor = ValidatorMonitor::new(); // Initialize validator_monitor before using it
+            let threshold = 0; // Replace 0 with the actual value of threshold
+            let validators_accountability_vec = ValidatorMonitor::from_validator_monitor(&validator_monitor, threshold);
+
                 let b = Block::new(
                     node_id,
                     round,
@@ -864,6 +871,8 @@ where
                         ),
                     },
                     &high_qc,
+                    validators_accountability_vec,
+
                 );
 
                 let p = ProposalMessage {
