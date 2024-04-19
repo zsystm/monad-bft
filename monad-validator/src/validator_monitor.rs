@@ -84,128 +84,125 @@ impl<SCT: SignatureCollection> ValidatorMonitor<SCT> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use monad_consensus_types::{
-        signature_collection::{
-            SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
-        },
-        timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
-        voting::ValidatorMapping,
-    };
-    use monad_crypto::{
-        certificate_signature::{CertificateKeyPair, CertificateSignature, DummySignature},
-        hasher::{Hash, Hashable, Hasher},
-    };
-    use monad_types::{NodeId, Round};
-    use std::collections::HashSet;
 
-    #[derive(Clone, Debug)]
-    struct TestSignatureCollection; // Implementing SignatureCollection for testing
+#[derive(Clone, Debug)]
+struct MockSignatureCollection;
 
-    impl SignatureCollection for TestSignatureCollection {
-        type NodeIdPubKey = u32; // Using a simple integer for NodeIdPubKey for testing
-        type SignatureType = Self; // Using Self for simplicity
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MockNodeId(u32);
 
-        fn new(
-            _sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
-            _validator_mapping: &ValidatorMapping<
-                Self::NodeIdPubKey,
-                SignatureCollectionKeyPairType<Self>,
-            >,
-            _msg: &[u8],
-        ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>>
-        {
-            Ok(TestSignatureCollection) // Always succeed in creating a signature collection for testing
-        }
+#[derive(Clone, Debug)]
+struct MockSignature;
 
-        fn get_hash(&self) -> Hash {
-            Hash([0; 32]) // Dummy hash for simplicity
-        }
+#[derive(Clone, Debug)]
+enum MockSignatureCollectionError {}
 
-        fn verify(
-            &self,
-            _validator_mapping: &ValidatorMapping<
-                Self::NodeIdPubKey,
-                SignatureCollectionKeyPairType<Self>,
-            >,
-            _msg: &[u8],
-        ) -> Result<
-            Vec<NodeId<Self::NodeIdPubKey>>,
-            SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>,
-        > {
-            Ok(vec![]) // Always succeed for testing
-        }
+#[derive(Clone, Debug)]
+struct MockValidatorMapping;
 
-        fn get_participants(
-            &self,
-            _validator_mapping: &ValidatorMapping<
-                Self::NodeIdPubKey,
-                SignatureCollectionKeyPairType<Self>,
-            >,
-            _msg: &[u8],
-        ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
-            HashSet::new() // Empty set for simplicity
-        }
+#[derive(Clone, Debug)]
+struct MockTimeoutCertificate;
 
-        fn num_signatures(&self) -> usize {
-            0 // Return 0 for simplicity
-        }
+impl SignatureCollection for MockSignatureCollection {
+    type NodeIdPubKey = MockNodeId;
+    type SignatureType = MockSignature;
 
-        fn serialize(&self) -> Vec<u8> {
-            vec![] // Empty vector for simplicity
-        }
-
-        fn deserialize(
-            _data: &[u8],
-        ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>>
-        {
-            Ok(TestSignatureCollection) // Always succeed for testing
-        }
+    fn new(
+        _sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
+        _validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
+        _msg: &[u8],
+    ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>>
+    {
+        Ok(MockSignatureCollection)
     }
 
-    // Helper function to create a mock TimeoutCertificate
-    fn mock_timeout_certificate(round: Round) -> TimeoutCertificate<TestSignatureCollection> {
-        TimeoutCertificate {
-            round,
-            high_qc_rounds: vec![HighQcRoundSigColTuple {
-                high_qc_round: HighQcRound { qc_round: Round(0) },
-                sigs: TestSignatureCollection,
-            }],
-        }
+    fn get_hash(&self) -> Hash {
+        Hash([0; 32])
     }
 
-    #[test]
-    fn test_record_and_reset_failures() {
-        let mut monitor = ValidatorMonitor::<TestSignatureCollection>::new();
-        let node_id = NodeId(1); // Simplified NodeId for testing
-
-        // Record a failure for the first time
-        monitor.record_failure(node_id, mock_timeout_certificate(Round(1)));
-        assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1);
-
-        // Record another failure for the same node
-        monitor.record_failure(node_id, mock_timeout_certificate(Round(2)));
-        assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 2);
-
-        // Reset failures for the node
-        monitor.reset_failure(node_id);
-        assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 0);
+    fn verify(
+        &self,
+        _validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
+        _msg: &[u8],
+    ) -> Result<
+        Vec<NodeId<Self::NodeIdPubKey>>,
+        SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>,
+    > {
+        Ok(vec![])
     }
 
-    #[test]
-    fn test_check_threshold() {
-        let mut monitor = ValidatorMonitor::<TestSignatureCollection>::new();
-        let node_id = NodeId(1);
-
-        // No failures recorded yet, should be below any positive threshold
-        assert!(!monitor.check_threshold(&node_id, 1));
-
-        // Record some failures
-        monitor.record_failure(node_id, mock_timeout_certificate(Round(1)));
-        monitor.record_failure(node_id, mock_timeout_certificate(Round(2)));
-
-        // Check against a threshold
-        assert!(monitor.check_threshold(&node_id, 1)); // Should be true, threshold is 1 and we have 2 failures
-        assert!(monitor.check_threshold(&node_id, 2)); // Should be true, threshold is 2 and we have 2 failures
-        assert!(!monitor.check_threshold(&node_id, 3)); // Should be false, threshold is 3 and we have only 2 failures
+    fn get_participants(
+        &self,
+        _validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
+        _msg: &[u8],
+    ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
+        HashSet::new()
     }
+
+    fn num_signatures(&self) -> usize {
+        0
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        vec![]
+    }
+
+    fn deserialize(
+        _data: &[u8],
+    ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>>
+    {
+        Ok(MockSignatureCollection)
+    }
+}
+
+// Helper function to create a mock TimeoutCertificate
+fn mock_timeout_certificate(round: Round) -> MockTimeoutCertificate {
+    MockTimeoutCertificate
+}
+
+#[test]
+fn test_record_and_reset_failures() {
+    let mut monitor = ValidatorMonitor::<MockSignatureCollection>::new();
+    let node_id = MockNodeId(1);
+
+    // Record a failure for the first time
+    monitor.record_failure(node_id.clone(), mock_timeout_certificate(Round(1)));
+    assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1);
+
+    // Record another failure for the same node
+    monitor.record_failure(node_id.clone(), mock_timeout_certificate(Round(2)));
+    assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 2);
+
+    // Reset failures for the node
+    monitor.reset_failure(node_id);
+    assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 0);
+}
+
+#[test]
+fn test_check_threshold() {
+    let mut monitor = ValidatorMonitor::<MockSignatureCollection>::new();
+    let node_id = MockNodeId(1);
+
+    // No failures recorded yet, should be below any positive threshold
+    assert!(!monitor.check_threshold(&node_id, 1));
+
+    // Record some failures
+    monitor.record_failure(node_id.clone(), mock_timeout_certificate(Round(1)));
+    monitor.record_failure(node_id.clone(), mock_timeout_certificate(Round(2)));
+
+    // Check against a threshold
+    assert!(monitor.check_threshold(&node_id, 1)); // Should be true, threshold is 1 and we have 2 failures
+    assert!(monitor.check_threshold(&node_id, 2)); // Should be true, threshold is 2 and we have 2 failures
+    assert!(!monitor.check_threshold(&node_id, 3)); // Should be false, threshold is 3 and we have only 2 failures
+}
+
 }
