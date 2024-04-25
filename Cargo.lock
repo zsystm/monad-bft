@@ -3809,6 +3809,8 @@ dependencies = [
  "monad-updaters",
  "monad-validator",
  "monad-wal",
+ "tracing",
+ "tracing-subscriber",
  "zerocopy 0.6.5",
 ]
 
@@ -3931,11 +3933,11 @@ dependencies = [
  "as-any",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-multi-sig",
  "monad-testutil",
  "monad-types",
  "rand",
  "rand_chacha",
- "test-case",
  "tracing",
 ]
 

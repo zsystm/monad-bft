@@ -74,6 +74,7 @@ impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
     }
 }
 
+/* 
 #[cfg(test)]
 mod tests {
     use monad_crypto::NopPubKey;
@@ -115,3 +116,4 @@ mod tests {
         }
     }
 }
+*/

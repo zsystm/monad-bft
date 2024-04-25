@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use crate::validator_accountability::ValidatorAccountability;
+use crate::{block_validator::BlockValidator, validator_accountability::ValidatorAccountability};
 use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
@@ -147,18 +147,18 @@ impl<SCT: SignatureCollection> Block<SCT> {
             id: BlockId(state.hash()),
         }
     }
-}
 
-/// Try to create a Block from an UnverifiedBlock, verifying
-/// with the TransactionValidator
-//   pub fn try_from_unverified(
-//     unverified: UnverifiedBlock<SCT>,
-//   validator: &impl BlockValidator,
-//) -> Option<Self> {
-//  validator
-//    .validate(&unverified.0.payload.txns)
-//  .then_some(unverified.0)
-//}
+    /// Try to create a Block from an UnverifiedBlock, verifying
+    /// with the TransactionValidator
+    pub fn try_from_unverified(
+        unverified: UnverifiedBlock<SCT>,
+        validator: &impl BlockValidator,
+    ) -> Option<Self> {
+        validator
+            .validate(&unverified.0.payload.txns)
+            .then_some(unverified.0)
+    }
+}
 
 impl<SCT: SignatureCollection> BlockType for Block<SCT> {
     type NodeIdPubKey = SCT::NodeIdPubKey;

@@ -136,5 +136,6 @@ where
             randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
         },
         &qc,
+        Vec::new(),
     )
 }

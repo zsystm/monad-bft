@@ -20,5 +20,7 @@ as-any = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-multi-sig = { path = "../monad-multi-sig" }
 monad-testutil = { path = "../monad-testutil" }
-test-case = { workspace = true }
+
+

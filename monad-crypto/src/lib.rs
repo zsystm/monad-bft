@@ -16,6 +16,13 @@ pub struct NopKeyPair {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NopPubKey([u8; 32]);
+impl NopPubKey {
+    /// Creates a new `NopPubKey` with a default or specified byte array.
+    pub fn new(key: Option<[u8; 32]>) -> Self {
+        NopPubKey(key.unwrap_or([0; 32]))
+    }
+}
+
 
 impl Debug for NopPubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,6 +39,12 @@ impl Display for NopPubKey {
         )
     }
 }
+impl Hashable for NopPubKey {
+    fn hash(&self, state: &mut impl Hasher) {
+        // Assuming `update` can take a slice of bytes directly
+        state.update(&self.0);
+    }
+}
 
 /// NopSignature is an implementation of CertificateSignature that's not cryptographically secure
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -39,6 +52,16 @@ pub struct NopSignature {
     pub pubkey: NopPubKey,
     pub id: u64,
 }
+impl NopSignature {
+    /// Creates a new "no operation" signature with predefined values.
+    pub fn new() -> Self {
+        NopSignature {
+            pubkey: NopPubKey([0; 32]), // 32 zero bytes
+            id: 0,                     
+        }
+    }
+}
+
 
 impl Hashable for NopSignature {
     fn hash(&self, state: &mut impl Hasher) {
