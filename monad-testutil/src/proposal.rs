@@ -113,6 +113,7 @@ where
                 randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
             },
             qc,
+            Vec::new(),
         );
 
         let validator_cert_pubkeys = val_epoch_map

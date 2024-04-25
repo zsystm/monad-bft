@@ -1,6 +1,7 @@
 use std::{collections::HashSet, marker::PhantomData};
 
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
+
 use monad_consensus_types::{
     block::Block,
     signature_collection::{
@@ -24,6 +25,7 @@ pub struct MockSignatures<ST: CertificateSignatureRecoverable> {
 
 #[derive(Debug)]
 struct MockSignatureError;
+
 
 impl std::fmt::Display for MockSignatureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
