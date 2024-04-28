@@ -1,16 +1,16 @@
 use std::{collections::HashSet, marker::PhantomData};
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
-    block::Block, quorum_certificate::QuorumCertificate, signature_collection::{
+    block::Block, ledger::CommitResult, quorum_certificate::{QcInfo, QuorumCertificate}, signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
-    }, timeout::{TimeoutCertificate, TimeoutInfo}, voting::ValidatorMapping
+    }, timeout::{TimeoutCertificate, TimeoutInfo}, voting::{ValidatorMapping, Vote, VoteInfo}
 };
 use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     }, hasher::{ Hashable, Hasher, HasherType}, NopPubKey, NopSignature
 };
-use monad_types::{NodeId, Round};
+use monad_types::{BlockId, NodeId, Round, SeqNum};
 use std::iter::Iterator; // Add the missing import
 /// Mock implementation of a signature collection for testing purposes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,21 +88,22 @@ impl SignatureCollection for MockSignatureCollection<NopSignature> {
         >,
         msg: &[u8],
     ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
-        todo!()
+        HashSet::new()
     }
     
     fn num_signatures(&self) -> usize {
-        todo!()
+        //self.signatures.len()
+        0
     }
     
     fn serialize(&self) -> Vec<u8> {
-        todo!()
+        vec![]
     }
     
     fn deserialize(
         data: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
-        todo!()
+        todo!("Implement deserialization")
     }
     
     // Other trait methods as required
@@ -110,58 +111,6 @@ impl SignatureCollection for MockSignatureCollection<NopSignature> {
 
 
 
-/* 
-impl<ST: CertificateSignatureRecoverable + SignatureCollection> SignatureCollection for MockSignatureCollection<ST>
-where
-    ST::KeyPairType: CertificateKeyPair,
-{
-    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
-    type SignatureType = ST;
-
-    fn new(
-        sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
-        _validator_mapping: &ValidatorMapping<Self::NodeIdPubKey, SignatureCollectionKeyPairType<Self>>,
-        _msg: &[u8],
-    ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
-        let pubkeys = sigs.into_iter().map(|(node_id, _sig)| node_id.pubkey()).collect::<Vec<_>>();
-        Ok(Self::new(MockSignatures::with_pubkeys(&pubkeys)))
-    }
-
-    fn get_hash(&self) -> monad_crypto::hasher::Hash {
-        self.signatures.get_hash()
-    }
-
-    fn verify(
-        &self,
-        _validator_mapping: &ValidatorMapping<Self::NodeIdPubKey, SignatureCollectionKeyPairType<Self>>,
-        _msg: &[u8],
-    ) -> Result<Vec<NodeId<Self::NodeIdPubKey>>, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
-        Ok(vec![]) // Implement verification logic or mock it
-    }
-
-    fn get_participants(
-        &self,
-        _validator_mapping: &ValidatorMapping<Self::NodeIdPubKey, SignatureCollectionKeyPairType<Self>>,
-        _msg: &[u8],
-    ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
-        self.signatures.get_participants()
-    }
-
-    fn num_signatures(&self) -> usize {
-        self.signatures.num_signatures()
-    }
-
-    fn serialize(&self) -> Vec<u8> {
-        vec![] // Implement serialization logic or mock it
-    }
-
-    fn deserialize(
-        _data: &[u8],
-    ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
-        Err(SignatureCollectionError::DeserializeError("Not implemented".to_string()))
-    }
-}
-*/
 /// Mock implementation of a key pair for testing purposes.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockSignatures<ST: CertificateSignatureRecoverable> {
@@ -194,8 +143,10 @@ impl<ST: CertificateSignatureRecoverable> MockSignatures<ST> {
     pub fn serialize(&self) -> Vec<u8> {
         vec![] // Mock serialization for testing
     }
+    
 }
-fn create_timeout_certificate<SCT: SignatureCollection<SignatureType = NopSignature> + CertificateSignatureRecoverable>(
+
+pub fn create_timeout_certificate<SCT: SignatureCollection<SignatureType = NopSignature> + CertificateSignatureRecoverable>(
     round: Round,
     qc: &QuorumCertificate<SCT>,
     validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
@@ -224,11 +175,5 @@ where
 
     TimeoutCertificate::new(round, &timeout_infos, validator_mapping)
 }
-
-
-
-
-
-
 
 

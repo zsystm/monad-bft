@@ -853,9 +853,10 @@ where
                 let mut header = ExecutionArtifacts::zero();
                 header.state_root = hash;
 
-            let validator_monitor = ValidatorMonitor::new(); // Initialize validator_monitor before using it
-            let threshold = 0; // Replace 0 with the actual value of threshold
-            let validators_accountability_vec = ValidatorMonitor::from_validator_monitor(&validator_monitor, threshold);
+
+                let validator_monitor = ValidatorMonitor::new(); // Initialize validator_monitor before using it
+                let threshold = 0; // Replace 0 with the actual value of threshold
+                let validators_accountability_vec = ValidatorMonitor::from_validator_monitor(&validator_monitor, threshold);
 
                 let b = Block::new(
                     node_id,
