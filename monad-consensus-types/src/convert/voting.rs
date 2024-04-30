@@ -19,6 +19,7 @@ impl From<&VoteInfo> for ProtoVoteInfo {
             parent_id: Some((&vi.parent_id).into()),
             parent_round: Some((&vi.parent_round).into()),
             seq_num: Some((&vi.seq_num).into()),
+
         }
     }
 }

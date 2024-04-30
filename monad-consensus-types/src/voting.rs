@@ -68,7 +68,6 @@ pub struct VoteInfo {
     pub parent_round: Round,
     /// seqnum of the proposed block
     pub seq_num: SeqNum,
-    pub(crate) block_id: BlockId,
 }
 
 impl std::fmt::Debug for VoteInfo {
