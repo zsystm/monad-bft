@@ -1,3 +1,4 @@
+use monad_crypto::certificate_signature::PubKey;
 use monad_eth_types::EthAddress;
 use monad_proto::{
     error::ProtoError,
@@ -32,10 +33,8 @@ impl TryFrom<ProtoTransactionList> for TransactionHashList {
     }
 }
 
-impl<SCT: SignatureCollection> From<&ValidatorAccountability<SCT>>
-    for ProtoValidatorAccountability
-{
-    fn from(value: &ValidatorAccountability<SCT>) -> Self {
+impl<P: PubKey> From<&ValidatorAccountability<P>> for ProtoValidatorAccountability {
+    fn from(value: &ValidatorAccountability<P>) -> Self {
         Self {
             validator_id: Some((&value.validator_id).into()),
             failure_counter: value.failure_counter,
@@ -44,9 +43,7 @@ impl<SCT: SignatureCollection> From<&ValidatorAccountability<SCT>>
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoValidatorAccountability>
-    for ValidatorAccountability<SCT>
-{
+impl<P: PubKey> TryFrom<ProtoValidatorAccountability> for ValidatorAccountability<P> {
     type Error = ProtoError;
     fn try_from(value: ProtoValidatorAccountability) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -66,6 +63,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorAccountability>
         })
     }
 }
+
 
 impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
     fn from(value: &Block<SCT>) -> Self {
@@ -116,7 +114,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 .validators_accountability
                 .into_iter()
                 .map(TryInto::try_into)
-                .collect::<Result<Vec<ValidatorAccountability<_>>, ProtoError>>()?,
+                .collect::<Result<Vec<ValidatorAccountability>, ProtoError>>()?,
         ))
     }
 }
