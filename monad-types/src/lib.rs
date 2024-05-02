@@ -169,6 +169,8 @@ impl<P: PubKey> Hashable for NodeId<P> {
     }
 }
 
+
+
 /// BlockId uniquely identifies a block
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]

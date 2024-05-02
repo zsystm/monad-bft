@@ -81,3 +81,11 @@ impl Hasher for Blake3Hash {
         Hash(self.0.finalize().into())
     }
 }
+
+impl Hashable for u32 {
+    fn hash(&self, state: &mut impl Hasher) {
+        // Implement hashing logic for u32 here
+        // For example:
+        state.update(self.to_le_bytes());
+    }
+}

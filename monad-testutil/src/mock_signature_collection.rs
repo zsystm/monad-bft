@@ -155,7 +155,7 @@ where
     SCT::NodeIdPubKey: Eq + std::hash::Hash,
 {
     let participants = qc.get_participants(validator_mapping);
-
+    
     let timeout_infos = participants.iter().map(|node_id| {
         // Create a new NopSignature for each participant, using a new or default public key
         let signature = NopSignature {

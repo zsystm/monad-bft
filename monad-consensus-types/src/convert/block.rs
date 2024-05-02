@@ -33,8 +33,8 @@ impl TryFrom<ProtoTransactionList> for TransactionHashList {
     }
 }
 
-impl<P: PubKey> From<&ValidatorAccountability<P>> for ProtoValidatorAccountability {
-    fn from(value: &ValidatorAccountability<P>) -> Self {
+impl<P: PubKey,S:SignatureCollection> From<&ValidatorAccountability<P,S>> for ProtoValidatorAccountability {
+    fn from(value: &ValidatorAccountability<P,S>) -> Self {
         Self {
             validator_id: Some((&value.validator_id).into()),
             failure_counter: value.failure_counter,
@@ -43,7 +43,7 @@ impl<P: PubKey> From<&ValidatorAccountability<P>> for ProtoValidatorAccountabili
     }
 }
 
-impl<P: PubKey> TryFrom<ProtoValidatorAccountability> for ValidatorAccountability<P> {
+impl<P: PubKey,S:SignatureCollection> TryFrom<ProtoValidatorAccountability> for ValidatorAccountability<P,S> {
     type Error = ProtoError;
     fn try_from(value: ProtoValidatorAccountability) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -114,7 +114,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 .validators_accountability
                 .into_iter()
                 .map(TryInto::try_into)
-                .collect::<Result<Vec<ValidatorAccountability>, ProtoError>>()?,
+                .collect::<Result<Vec<ValidatorAccountability<SCT::NodeIdPubKey,SCT>>, ProtoError>>()?,
         ))
     }
 }

@@ -54,7 +54,7 @@ pub struct Block<SCT: SignatureCollection> {
     /// Certificate of votes for this block
     pub qc: QuorumCertificate<SCT>,
 
-    pub validators_accountability: Vec<ValidatorAccountability>,
+    pub validators_accountability: Vec<ValidatorAccountability<SCT::NodeIdPubKey,SCT>>,
 
     /// Unique hash used to identify the block
     id: BlockId,
@@ -122,7 +122,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
         round: Round,
         payload: &Payload,
         qc: &QuorumCertificate<SCT>,
-        validators_accountability: Vec<ValidatorAccountability>, // Remove type parameter
+        validators_accountability: Vec<ValidatorAccountability<SCT::NodeIdPubKey,SCT>>, // Remove type parameter
     ) -> Self {
         let mut state = HasherType::new();
         author.hash(&mut state);
