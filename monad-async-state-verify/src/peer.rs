@@ -345,11 +345,11 @@ mod test {
     /// root update to consensus if local execution sends the update
     #[test]
     fn local_update() {
-        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
-            SignatureType,
-            SignatureCollectionType,
-            _,
-        >(4, ValidatorSetFactory::default());
+            let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
+                SignatureType,
+                SignatureCollectionType,
+                _,
+            >(4, ValidatorSetFactory::default());
 
         let node0 = NodeId::new(keys[0].pubkey());
         let mut asv = PeerAsyncStateVerify::<

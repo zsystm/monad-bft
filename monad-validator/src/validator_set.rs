@@ -38,6 +38,7 @@ pub trait ValidatorSetTypeFactory {
     ) -> Result<Self::ValidatorSetType, Self::NodeIdPubKey>;
 }
 
+
 /// Helper trait that's only used for dynamic dispatch boxing
 /// This trait is necessary so that the ValidatorSetType associated type can be erased
 trait ValidatorSetTypeFactoryHelper {
@@ -148,6 +149,7 @@ impl<PT: PubKey> Default for ValidatorSetFactory<PT> {
     }
 }
 
+
 impl<PT: PubKey> ValidatorSetTypeFactory for ValidatorSetFactory<PT> {
     type NodeIdPubKey = PT;
     type ValidatorSetType = ValidatorSet<PT>;
@@ -173,6 +175,9 @@ impl<PT: PubKey> ValidatorSetTypeFactory for ValidatorSetFactory<PT> {
         })
     }
 }
+
+
+
 
 #[derive(Debug, Clone)]
 pub struct ValidatorSet<PT: PubKey> {

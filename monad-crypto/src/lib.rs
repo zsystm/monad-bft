@@ -69,3 +69,4 @@ impl Hashable for NopSignature {
         state.update(self.id.to_le_bytes());
     }
 }
+

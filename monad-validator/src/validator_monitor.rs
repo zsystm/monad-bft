@@ -7,7 +7,6 @@
     use monad_consensus_types::quorum_certificate::QuorumCertificate;
 
 
-
     use monad_crypto::certificate_signature::PubKey; 
 
    
@@ -97,41 +96,69 @@
     }
 
 
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use monad_crypto::{certificate_signature::{CertificateKeyPair, CertificateSignature, PubKey}};
-    use monad_testutil::mock_signature_collection::{create_timeout_certificate, MockSignatureCollection, MockSignatures};
-    use monad_types::NodeId;
-    use monad_types::Round;
-    use monad_consensus_types::voting::ValidatorMapping;
-    use monad_crypto::NopSignature;
+    #[cfg(test)]
+    mod tests {
+       // use monad_validator::validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory};
+        use monad_consensus_types::{
+            signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+            voting::ValidatorMapping,
+            quorum_certificate::QuorumCertificate,
+        };
+    use crate::validator_set::ValidatorSetFactory;
+    use monad_consensus_types::timeout::{TimeoutCertificate, TimeoutInfo};
+    use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
     use monad_crypto::NopPubKey;
+    use monad_crypto::NopSignature;
+
+    use monad_testutil::signing::MockSignatures;
+    use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+    use monad_types::{NodeId, Round};
+    use monad_testutil::validators::create_keys_w_validators;
+    use super::*;
 
 
-
-
-    fn mock_validator_mapping<SCT: SignatureCollection>() -> ValidatorMapping<NopPubKey, SCT::SignatureType> {
-        ValidatorMapping::new(vec![(NodeId::new(NopPubKey::new(None)), SCT::SignatureType::default())])
-    }
+        // Mock Validator Monitor Tests
+        type SignatureType = NopSignature;
+        type SignatureCollectionType = MockSignatures<SignatureType>;
     
-
+     
+        
     #[test]
     fn test_record_and_reset_failures() {
-        let mut monitor = ValidatorMonitor::<NopPubKey, MockSignatureCollection<NopSignature>>::new();
-        let node_id = NodeId::new(NopPubKey::new(None));
+    
+        // Instantiate a ValidatorSetFactory compatible with the required trait
+        let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+        
+        // Generate keys and validators using the `create_keys_w_validators` function
+        let (_, _, _, validator_mapping) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            ValidatorSetFactory<NopPubKey>,
+        >(4, validator_factory);
 
+        // Proceeding to use this mapping in your `ValidatorMonitor` tests
+        let mut monitor = ValidatorMonitor::<
+            CertificateSignaturePubKey<SignatureType>,
+            SignatureCollectionType,
+        >::new();
+        
+        // Example usage with a specific `NodeId`
+        let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
+        // Create a placeholder `TimeoutCertificate`
         let round = Round(1);
-        let validator_mapping = mock_validator_mapping::<MockSignatureCollection<NopSignature>>();
-        let qc = QuorumCertificate::<MockSignatureCollection<NopSignature>>::genesis_qc();
-        let tc = create_timeout_certificate(round, &qc, &validator_mapping).unwrap();
+        let tc = TimeoutCertificate::<SignatureCollectionType>::new(
+            round,
+            &[],
+            &validator_mapping,
+        ).expect("TimeoutCertificate creation failed");
 
+        // Record and reset failure logic
         monitor.record_failure(node_id.clone(), tc);
         assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1);
 
         monitor.reset_failure(node_id.clone());
         assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 0);
+    }
     }
 
 /* 
@@ -156,6 +183,6 @@ mod tests {
         assert!(!monitor.check_threshold(&node_id, 3));
     }
     */
-}
+
     
 
