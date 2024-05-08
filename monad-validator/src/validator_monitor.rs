@@ -3,7 +3,6 @@
     use monad_consensus_types::validator_accountability::ValidatorAccountability;
     use monad_types::NodeId;
     use std::collections::HashMap;
-    // Add the missing `monad_testutil` crate to the project's dependencies
     use monad_consensus_types::quorum_certificate::QuorumCertificate;
 
 
@@ -136,15 +135,13 @@
             ValidatorSetFactory<NopPubKey>,
         >(4, validator_factory);
 
-        // Proceeding to use this mapping in your `ValidatorMonitor` tests
+        // Proceeding to use this mapping in `ValidatorMonitor` tests
         let mut monitor = ValidatorMonitor::<
             CertificateSignaturePubKey<SignatureType>,
             SignatureCollectionType,
         >::new();
         
-        // Example usage with a specific `NodeId`
         let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
-        // Create a placeholder `TimeoutCertificate`
         let round = Round(1);
         let tc = TimeoutCertificate::<SignatureCollectionType>::new(
             round,
