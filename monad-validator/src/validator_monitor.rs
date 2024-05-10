@@ -40,21 +40,36 @@
             validator_id: NodeId<NodeIdPubKey>,
             timeout_certificate: TimeoutCertificate<SC>,
         ) {
+            println!("Recording failure for Validator ID: {:?}", validator_id);
+            println!("Timeout Certificate Round: {:?}", timeout_certificate.round);
+        
             let mut update_failure_count = false;
+        
             self.validator_latest_failure
                 .entry(validator_id)
                 .and_modify(|existing_certificate| {
+                    println!("Existing Certificate Round: {:?}", existing_certificate.round);
                     if timeout_certificate.round > existing_certificate.round {
+                        println!("Updating to new round: {:?}", timeout_certificate.round);
                         *existing_certificate = timeout_certificate.clone();
                         update_failure_count = true;
                     }
                 })
-                .or_insert(timeout_certificate.clone());
-    
+                .or_insert_with(|| {
+                    println!("Inserting new certificate for the first time");
+                    timeout_certificate.clone()
+                });
+        
             if update_failure_count {
                 *self.validator_failures.entry(validator_id).or_insert(0) += 1;
+            } else {
+                println!("Setting initial failure count for {:?}", validator_id);
+                self.validator_failures.insert(validator_id, 1);
             }
+        
+            println!("Updated Validator Failures: {:?}", self.validator_failures);
         }
+        
     
         pub fn reset_failure(&mut self, validator_id: NodeId<NodeIdPubKey>) {
             self.validator_failures.insert(validator_id, 0);
@@ -103,16 +118,20 @@
             voting::ValidatorMapping,
             quorum_certificate::QuorumCertificate,
         };
-    use crate::validator_set::ValidatorSetFactory;
+  //  use crate::validator_set::ValidatorSetFactory;
     use monad_consensus_types::timeout::{TimeoutCertificate, TimeoutInfo};
     use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
     use monad_crypto::NopPubKey;
     use monad_crypto::NopSignature;
+    use crate::{
+        validator_set::ValidatorSetFactory,
+        test_utils::create_keys_w_validators, // Use the locally copied function
+    };
 
     use monad_testutil::signing::MockSignatures;
     use monad_crypto::certificate_signature::CertificateSignaturePubKey;
     use monad_types::{NodeId, Round};
-    use monad_testutil::validators::create_keys_w_validators;
+  //  use monad_testutil::validators::create_keys_w_validators;
     use super::*;
 
 
@@ -122,40 +141,49 @@
     
      
         
-    #[test]
-    fn test_record_and_reset_failures() {
-    
-        // Instantiate a ValidatorSetFactory compatible with the required trait
-        let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+        #[test]
+        fn test_record_and_reset_failures() {
+            // Instantiate a ValidatorSetFactory compatible with the required trait
+            let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+            
+            // Generate keys and validators using the `create_keys_w_validators` function
+            let (_, _, _, validator_mapping) = create_keys_w_validators::<
+                SignatureType,
+                SignatureCollectionType,
+                ValidatorSetFactory<NopPubKey>,
+            >(4, validator_factory);
         
-        // Generate keys and validators using the `create_keys_w_validators` function
-        let (_, _, _, validator_mapping) = create_keys_w_validators::<
-            SignatureType,
-            SignatureCollectionType,
-            ValidatorSetFactory<NopPubKey>,
-        >(4, validator_factory);
-
-        // Proceeding to use this mapping in `ValidatorMonitor` tests
-        let mut monitor = ValidatorMonitor::<
-            CertificateSignaturePubKey<SignatureType>,
-            SignatureCollectionType,
-        >::new();
+            // Proceeding to use this mapping in `ValidatorMonitor` tests
+            let mut monitor = ValidatorMonitor::<
+                CertificateSignaturePubKey<SignatureType>,
+                SignatureCollectionType,
+            >::new();
+            
+            // Log each individual entry in the validator mapping
+            for (node_id, key_pair) in validator_mapping.map.iter() {
+                println!("Node ID: {:?}, Key Pair: {:?}", node_id, key_pair);
+            }
         
-        let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
-        let round = Round(1);
-        let tc = TimeoutCertificate::<SignatureCollectionType>::new(
-            round,
-            &[],
-            &validator_mapping,
-        ).expect("TimeoutCertificate creation failed");
-
-        // Record and reset failure logic
-        monitor.record_failure(node_id.clone(), tc);
-        assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1);
-
-        monitor.reset_failure(node_id.clone());
-        assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 0);
-    }
+            let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
+            let round = Round(1);
+            let tc = TimeoutCertificate::<SignatureCollectionType>::new(
+                round,
+                &[],
+                &validator_mapping,
+            ).expect("TimeoutCertificate creation failed");
+        
+            // Record and reset failure logic
+            monitor.record_failure(node_id.clone(), tc.clone());
+            println!("Timeout Certificate round: {:?}", tc.round);
+            println!("Validator Failures: {:?}", monitor.validator_failures);
+        
+            assert!(
+                monitor.validator_failures.contains_key(&node_id),
+                "Node ID not found in failures"
+            );
+            assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1);
+        }
+        
     }
 
 /* 

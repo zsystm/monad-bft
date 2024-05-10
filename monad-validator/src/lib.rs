@@ -5,6 +5,6 @@ pub mod validator_set;
 pub mod validators_epoch_mapping;
 pub mod weighted_random;
 pub mod weighted_round_robin;
-
+mod test_utils;
 pub mod validator_monitor;
 pub mod voter;
