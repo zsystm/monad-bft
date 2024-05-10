@@ -183,31 +183,143 @@
             );
             assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1);
         }
+
+        #[test]
+        fn test_record_and_reset_multiple_failures() {
+            // Instantiate a ValidatorSetFactory compatible with the required trait
+            let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+            
+            // Generate keys and validators using the `create_keys_w_validators` function
+            let (_, _, _, validator_mapping) = create_keys_w_validators::<
+                SignatureType,
+                SignatureCollectionType,
+                ValidatorSetFactory<NopPubKey>,
+            >(4, validator_factory);
         
+            // Proceeding to use this mapping in `ValidatorMonitor` tests
+            let mut monitor = ValidatorMonitor::<
+                CertificateSignaturePubKey<SignatureType>,
+                SignatureCollectionType,
+            >::new();
+            
+            // Log each individual entry in the validator mapping
+            for (node_id, key_pair) in validator_mapping.map.iter() {
+                println!("Node ID: {:?}, Key Pair: {:?}", node_id, key_pair);
+            }
+        
+            let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
+            let round = Round(1);
+            let tc_1 = TimeoutCertificate::<SignatureCollectionType>::new(
+                round,
+                &[],
+                &validator_mapping,
+            ).expect("TimeoutCertificate creation failed");
+            let round = Round(2);
+
+            let tc_2 = TimeoutCertificate::<SignatureCollectionType>::new(
+                round,
+                &[],
+                &validator_mapping,
+            ).expect("TimeoutCertificate creation failed");
+        
+            // Record and reset failure logic
+            monitor.record_failure(node_id.clone(), tc_1.clone());
+            assert!(
+                monitor.validator_failures.contains_key(&node_id),
+                "Node ID not found in failures"
+            );
+            assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1);
+
+            monitor.record_failure(node_id.clone(), tc_2.clone());
+
+            assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 2);   
+            
+        }
+        
+        #[test]
+fn test_check_threshold() {
+    // Instantiate a ValidatorSetFactory compatible with the required trait
+    let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+    
+    // Generate keys and validators using the `create_keys_w_validators` function
+    let (_, _, _, validator_mapping) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        ValidatorSetFactory<NopPubKey>,
+    >(4, validator_factory);
+
+    // Proceeding to use this mapping in `ValidatorMonitor` tests
+    let mut monitor = ValidatorMonitor::<
+        CertificateSignaturePubKey<SignatureType>,
+        SignatureCollectionType,
+    >::new();
+    
+    let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
+    let round_1 = Round(1);
+    let round_2 = Round(2);
+    
+    let tc_1 = TimeoutCertificate::<SignatureCollectionType>::new(
+        round_1,
+        &[],
+        &validator_mapping,
+    ).expect("TimeoutCertificate creation failed");
+    
+    let tc_2 = TimeoutCertificate::<SignatureCollectionType>::new(
+        round_2,
+        &[],
+        &validator_mapping,
+    ).expect("TimeoutCertificate creation failed");
+
+    // Record multiple failures
+    monitor.record_failure(node_id.clone(), tc_1);
+    monitor.record_failure(node_id.clone(), tc_2);
+
+    // Test different thresholds
+    assert!(monitor.check_threshold(&node_id, 1), "Threshold check failed for value 1");
+    assert!(monitor.check_threshold(&node_id, 2), "Threshold check failed for value 2");
+    assert!(!monitor.check_threshold(&node_id, 3), "Threshold check failed for value 3");
+}
+    
+
+#[test]
+fn test_reset_failure_counter() {
+    // Instantiate a ValidatorSetFactory compatible with the required trait
+    let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+    
+    // Generate keys and validators using the `create_keys_w_validators` function
+    let (_, _, _, validator_mapping) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        ValidatorSetFactory<NopPubKey>,
+    >(4, validator_factory);
+
+    // Proceeding to use this mapping in `ValidatorMonitor` tests
+    let mut monitor = ValidatorMonitor::<
+        CertificateSignaturePubKey<SignatureType>,
+        SignatureCollectionType,
+    >::new();
+    
+    let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
+    let round = Round(1);
+    
+    let tc = TimeoutCertificate::<SignatureCollectionType>::new(
+        round,
+        &[],
+        &validator_mapping,
+    ).expect("TimeoutCertificate creation failed");
+
+    // Record failure
+    monitor.record_failure(node_id.clone(), tc);
+    assert!(monitor.validator_failures.contains_key(&node_id), "Node ID not found in failures");
+    assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1, "Failure count mismatch");
+
+    // Reset failure count
+    monitor.reset_failure(node_id.clone());
+    assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 0, "Failure count did not reset to 0");
+    
+    }
     }
 
-/* 
-    #[test]
-    fn test_check_threshold() {
-        let mut monitor = ValidatorMonitor::<NopPubKey,MockSignatureCollection>::new();
-        let node_id = NodeId::new(NopPubKey::new(None));
-
-        assert!(!monitor.check_threshold(&node_id, 1));
-
-        let round = Round(1);
-        let validator_mapping = mock_validator_mapping::<MockSignatureCollection<NopSignature>>();
-
-        let tc1 = create_timeout_certificate(round, &validator_mapping).unwrap();
-        let tc2 = create_timeout_certificate(Round(2), &validator_mapping).unwrap();
-
-        monitor.record_failure(node_id.clone(), tc1);
-        monitor.record_failure(node_id.clone(), tc2);
-
-        assert!(monitor.check_threshold(&node_id, 1));
-        assert!(monitor.check_threshold(&node_id, 2));
-        assert!(!monitor.check_threshold(&node_id, 3));
-    }
-    */
 
     
 
