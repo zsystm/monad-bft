@@ -81,9 +81,9 @@
     
         // This method generates a list of ValidatorAccountability based on a threshold
         pub fn from_validator_monitor(
-            validator_monitor: &ValidatorMonitor<NodeIdPubKey,SC>,
+            validator_monitor: &ValidatorMonitor<NodeIdPubKey, SC>,
             threshold: u32,
-        ) -> Vec<ValidatorAccountability<NodeIdPubKey,  SC>>
+        ) -> Vec<ValidatorAccountability<NodeIdPubKey, SC>>
         where
             NodeIdPubKey: 'static,
         {
@@ -91,21 +91,32 @@
                 .validator_failures
                 .iter()
                 .filter_map(|(validator_id, &failure_count)| {
+                    println!("Validator ID: {:?}, Failure Count: {}", validator_id, failure_count);
                     if failure_count > threshold {
+                        println!("Validator ID {:?} exceeded threshold", validator_id);
                         validator_monitor
                             .validator_latest_failure
                             .get(validator_id)
-                            .map(|latest_failure| ValidatorAccountability {
-                                validator_id: *validator_id,
-                                failure_counter: failure_count,
-                                latest_failure_certificate: latest_failure.clone(),
+                            .map(|latest_failure| {
+                                println!(
+                                    "Latest Failure Certificate for Validator ID {:?}: {:?}",
+                                    validator_id, latest_failure
+                                );
+                                ValidatorAccountability {
+                                    validator_id: *validator_id,
+                                    failure_counter: failure_count,
+                                    latest_failure_certificate: latest_failure.clone(),
+                                }
                             })
                     } else {
+                        println!("Validator ID {:?} did not exceed threshold", validator_id);
                         None
                     }
                 })
                 .collect()
         }
+        
+        
     
     }
 
@@ -174,8 +185,8 @@
         
             // Record and reset failure logic
             monitor.record_failure(node_id.clone(), tc.clone());
-            println!("Timeout Certificate round: {:?}", tc.round);
-            println!("Validator Failures: {:?}", monitor.validator_failures);
+     //       println!("Timeout Certificate round: {:?}", tc.round);
+       //     println!("Validator Failures: {:?}", monitor.validator_failures);
         
             assert!(
                 monitor.validator_failures.contains_key(&node_id),
@@ -318,6 +329,58 @@ fn test_reset_failure_counter() {
     assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 0, "Failure count did not reset to 0");
     
     }
+
+
+    #[test]
+fn test_from_validator_monitor() {
+    // Instantiate a ValidatorSetFactory compatible with the required trait
+    let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+    
+    // Generate keys and validators using the `create_keys_w_validators` function
+    let (_, _, _, validator_mapping) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        ValidatorSetFactory<NopPubKey>,
+    >(4, validator_factory);
+
+    // Create a ValidatorMonitor and add some failures
+    let mut monitor = ValidatorMonitor::<
+        CertificateSignaturePubKey<SignatureType>,
+        SignatureCollectionType,
+    >::new();
+
+    let node_id1 = NodeId::new(NopPubKey::new(Some([1; 32])));
+    let node_id2 = NodeId::new(NopPubKey::new(Some([2; 32])));
+    let round = Round(1);
+    let tc1 = TimeoutCertificate::<SignatureCollectionType>::new(
+        round,
+        &[],
+        &validator_mapping,
+    ).expect("TimeoutCertificate creation failed");
+    let round = Round(2);
+
+    let tc2 = TimeoutCertificate::<SignatureCollectionType>::new(
+        round,
+        &[],
+        &validator_mapping,
+    ).expect("TimeoutCertificate creation failed");
+
+    // Record some failures
+    monitor.record_failure(node_id1.clone(), tc1.clone());
+    monitor.record_failure(node_id1.clone(), tc2.clone());
+    monitor.record_failure(node_id2.clone(), tc1.clone());
+
+    // Set the threshold
+    let threshold = 1;
+
+    // Generate the ValidatorAccountability list
+    let accountability_list = ValidatorMonitor::from_validator_monitor(&monitor, threshold);
+
+    // Check the results
+    assert_eq!(accountability_list.len(), 1);
+    assert!(accountability_list.iter().any(|va| va.validator_id == node_id1 && va.failure_counter == 2));
+}
+
     }
 
 
