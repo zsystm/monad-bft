@@ -9,6 +9,7 @@
     use monad_crypto::certificate_signature::PubKey; 
 
    
+ //Validator Monitor is used to keep track of the number of consecutive failures for each validator and the latest failure certificate for each validator. If a node receives blacklisting request as vector of ValidatorAccountability field in a block, it can use this information to verify if a validator should be blacklisted. If correctly validated, then a validator will vote for such a block and upon commit, the validator will be blacklisted.
  
 
   

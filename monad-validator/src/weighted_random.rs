@@ -266,7 +266,7 @@ mod tests {
 
 
  
-  
+  //Blacklisting has to be integrated with the leader selection algorithm to ensure that blacklisted nodes are not selected as leaders. The blacklisting mechanism should allow adding nodes to the blacklist for a certain number of rounds and decrementing the blacklist rounds for each round. This test verifies the basic functionality of the blacklist.
 
   #[test]
   fn test_blacklist_functionality() {
