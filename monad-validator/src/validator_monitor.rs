@@ -10,7 +10,7 @@
 
    
  //Validator Monitor is used to keep track of the number of consecutive failures for each validator and the latest failure certificate for each validator. If a node receives blacklisting request as vector of ValidatorAccountability field in a block, it can use this information to verify if a validator should be blacklisted. If correctly validated, then a validator will vote for such a block and upon commit, the validator will be blacklisted.
- 
+
 
   
     pub struct ValidatorMonitor<NodeIdPubKey,SC>
@@ -326,8 +326,7 @@ fn test_reset_failure_counter() {
     
     }
 
-
-    #[test]
+// Test the `from_validator_monitor` method. It generates a list of ValidatorAccountability based on a threshold that will be included in the block as a blacklisting request.
 fn test_from_validator_monitor() {
     // Instantiate a ValidatorSetFactory compatible with the required trait
     let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
