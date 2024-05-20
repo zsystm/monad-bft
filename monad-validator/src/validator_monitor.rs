@@ -79,6 +79,18 @@
         pub fn check_threshold(&self, validator_id: &NodeId<NodeIdPubKey>, threshold: u32) -> bool {
             self.validator_failures.get(validator_id).copied().unwrap_or(0) >= threshold
         }
+
+        //This function verifies if the blacklist request  is valid. It checks if the failure count of the validator is greater than or equal to the threshold and if the latest failure certificate and failure counter match the ones in the ValidatorAccountability struct.   
+       
+        pub fn verify_blacklist_request(
+            &self,
+            validator_id: &NodeId<NodeIdPubKey>,
+            threshold: u32,
+            validator_accountability: &ValidatorAccountability<NodeIdPubKey, SC>,
+        ) -> bool {
+            self.check_threshold(validator_id, threshold)
+                && self.validator_latest_failure.get(validator_id) == Some(&validator_accountability.latest_failure_certificate)&& self.validator_failures.get(validator_id) == Some(&validator_accountability.failure_counter)
+        }
     
         // This method generates a list of ValidatorAccountability based on a threshold
         pub fn from_validator_monitor(
@@ -326,6 +338,7 @@ fn test_reset_failure_counter() {
     
     }
 
+    #[test]
 // Test the `from_validator_monitor` method. It generates a list of ValidatorAccountability based on a threshold that will be included in the block as a blacklisting request.
 fn test_from_validator_monitor() {
     // Instantiate a ValidatorSetFactory compatible with the required trait
@@ -376,8 +389,55 @@ fn test_from_validator_monitor() {
     assert!(accountability_list.iter().any(|va| va.validator_id == node_id2 && va.failure_counter == 1));
 
 }
+#[test]
+fn test_verify_blacklist_request() {
+    let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+    
+    // Generate keys and validators using the `create_keys_w_validators` function
+    let (_, _, _, validator_mapping) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        ValidatorSetFactory<NopPubKey>,
+    >(4, validator_factory);
+    
+    let mut monitor = ValidatorMonitor::<
+        CertificateSignaturePubKey<SignatureType>,
+        SignatureCollectionType,
+    >::new();
+    
+    let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
+    let round = Round(1);
+    let tc = TimeoutCertificate::<SignatureCollectionType>::new(
+        round,
+        &[],
+        &validator_mapping,
+    ).expect("TimeoutCertificate creation failed");
 
-    }
+    // Record a failure
+    monitor.record_failure(node_id.clone(), tc.clone());
+
+    // Create a ValidatorAccountability instance
+    let validator_accountability = ValidatorAccountability {
+        validator_id: node_id.clone(),
+        failure_counter: 1,
+        latest_failure_certificate: tc.clone(),
+    };
+
+    // Check if the blacklist request is verified correctly
+    assert!(monitor.verify_blacklist_request(&node_id, 1, &validator_accountability));
+    
+    // Modify the ValidatorAccountability instance to make the verification fail
+    let invalid_validator_accountability = ValidatorAccountability {
+        validator_id: node_id.clone(),
+        failure_counter: 2, // Changed the failure counter
+        latest_failure_certificate: tc.clone(),
+    };
+
+    // Check if the blacklist request verification fails for modified ValidatorAccountability
+    assert!(!monitor.verify_blacklist_request(&node_id, 1, &invalid_validator_accountability));
+}
+}
+
 
 
     
