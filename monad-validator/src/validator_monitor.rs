@@ -70,10 +70,16 @@
         
             println!("Updated Validator Failures: {:?}", self.validator_failures);
         }
-        // reset_failure method is used to remove the validator from the validator_failures hashmap. This method is called when a validator while leader succesfully proposes a block and its consecutive failures haven't reached the threshold value.
-        pub fn reset_failure(&mut self, validator_id: NodeId<NodeIdPubKey>) {
-            self.validator_failures.remove(&validator_id);
-        }
+        // reset_failure method is used to remove the validator from the validator_failures hashmap. This method is called when a validator while being a leader succesfully proposes a block and this function resets the failure count if  the leader's consecutive failures haven't reached the threshold value.
+        pub fn reset_failure(&mut self, validator_id: NodeId<NodeIdPubKey>, threshold: u32) {
+            if self.validator_failures.contains_key(&validator_id){
+                if let Some(failure_count) = self.validator_failures.get_mut(&validator_id) {
+                    if *failure_count < threshold {
+                        self.validator_failures.remove(&validator_id);
+                    } 
+                }
+            }
+               }
         //subtract_threshold value from the failure count of the validator if the validator is blacklisted. If the failure count becomes zero, the validator is removed from the validator_failures hashmap.
         pub fn substract_threshold(&mut self, validator_id: NodeId<NodeIdPubKey>, threshold: u32) {
             if let Some(failure_count) = self.validator_failures.get_mut(&validator_id) {
@@ -478,8 +484,8 @@ fn test_verify_blacklist_request() {
     monitor.record_failure(node_id.clone(), tc);
     assert!(monitor.validator_failures.contains_key(&node_id), "Node ID not found in failures");
     assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1, "Failure count mismatch");
-
-    monitor.reset_failure(node_id.clone());
+    let threshold=2;
+    monitor.reset_failure(node_id.clone(),2);
     assert!(!monitor.validator_failures.contains_key(&node_id), "Node ID not found in failures");
 
     
