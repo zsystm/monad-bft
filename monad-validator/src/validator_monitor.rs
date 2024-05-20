@@ -70,12 +70,21 @@
         
             println!("Updated Validator Failures: {:?}", self.validator_failures);
         }
-        
-        // Reset the failure count for a specific validator, if it successfully completes a round as a leader before failure threshold is reached or after being blacklisted.
+        // reset_failure method is used to remove the validator from the validator_failures hashmap. This method is called when a validator while leader succesfully proposes a block and its consecutive failures haven't reached the threshold value.
         pub fn reset_failure(&mut self, validator_id: NodeId<NodeIdPubKey>) {
-            self.validator_failures.insert(validator_id, 0);
+            self.validator_failures.remove(&validator_id);
         }
-    
+        //subtract_threshold value from the failure count of the validator if the validator is blacklisted. If the failure count becomes zero, the validator is removed from the validator_failures hashmap.
+        pub fn substract_threshold(&mut self, validator_id: NodeId<NodeIdPubKey>, threshold: u32) {
+            if let Some(failure_count) = self.validator_failures.get_mut(&validator_id) {
+                if *failure_count >= threshold {
+                    *failure_count -= threshold;
+                    if *failure_count == 0 {
+                        self.validator_failures.remove(&validator_id);
+                    }
+                }
+            }
+        }
         pub fn check_threshold(&self, validator_id: &NodeId<NodeIdPubKey>, threshold: u32) -> bool {
             self.validator_failures.get(validator_id).copied().unwrap_or(0) >= threshold
         }
@@ -301,7 +310,7 @@ fn test_check_threshold() {
     
 
 #[test]
-fn test_reset_failure_counter() {
+fn test_subtract_threshold_from_failure_counter() {
     // Instantiate a ValidatorSetFactory compatible with the required trait
     let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
     
@@ -332,11 +341,12 @@ fn test_reset_failure_counter() {
     assert!(monitor.validator_failures.contains_key(&node_id), "Node ID not found in failures");
     assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1, "Failure count mismatch");
 
-    // Reset failure count
-    monitor.reset_failure(node_id.clone());
-    assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 0, "Failure count did not reset to 0");
+    monitor.substract_threshold(node_id.clone(),1);
+    assert!(!monitor.validator_failures.contains_key(&node_id), "Node ID not found in failures");
+
     
     }
+
 
     #[test]
 // Test the `from_validator_monitor` method. It generates a list of ValidatorAccountability based on a threshold that will be included in the block as a blacklisting request.
@@ -436,6 +446,44 @@ fn test_verify_blacklist_request() {
     // Check if the blacklist request verification fails for modified ValidatorAccountability
     assert!(!monitor.verify_blacklist_request(&node_id, 1, &invalid_validator_accountability));
 }
+
+#[test]
+ fn test_reset_failure_counter() {
+    // Instantiate a ValidatorSetFactory compatible with the required trait
+    let validator_factory = ValidatorSetFactory::<NopPubKey>::default();
+    
+    // Generate keys and validators using the `create_keys_w_validators` function
+    let (_, _, _, validator_mapping) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        ValidatorSetFactory<NopPubKey>,
+    >(4, validator_factory);
+
+    // Proceeding to use this mapping in `ValidatorMonitor` tests
+    let mut monitor = ValidatorMonitor::<
+        CertificateSignaturePubKey<SignatureType>,
+        SignatureCollectionType,
+    >::new();
+    
+    let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
+    let round = Round(1);
+    
+    let tc = TimeoutCertificate::<SignatureCollectionType>::new(
+        round,
+        &[],
+        &validator_mapping,
+    ).expect("TimeoutCertificate creation failed");
+
+    // Record failure
+    monitor.record_failure(node_id.clone(), tc);
+    assert!(monitor.validator_failures.contains_key(&node_id), "Node ID not found in failures");
+    assert_eq!(*monitor.validator_failures.get(&node_id).unwrap(), 1, "Failure count mismatch");
+
+    monitor.reset_failure(node_id.clone());
+    assert!(!monitor.validator_failures.contains_key(&node_id), "Node ID not found in failures");
+
+    
+    }
 }
 
 
