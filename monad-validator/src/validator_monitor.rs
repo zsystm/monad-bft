@@ -34,7 +34,7 @@
         }
     
         
-    
+        
         pub fn record_failure(
             &mut self,
             validator_id: NodeId<NodeIdPubKey>,
@@ -70,7 +70,7 @@
             println!("Updated Validator Failures: {:?}", self.validator_failures);
         }
         
-    
+        // Reset the failure count for a specific validator, if it successfully completes a round as a leader before failure threshold is reached or after being blacklisted.
         pub fn reset_failure(&mut self, validator_id: NodeId<NodeIdPubKey>) {
             self.validator_failures.insert(validator_id, 0);
         }
@@ -92,7 +92,7 @@
                 .iter()
                 .filter_map(|(validator_id, &failure_count)| {
                     println!("Validator ID: {:?}, Failure Count: {}", validator_id, failure_count);
-                    if failure_count > threshold {
+                    if failure_count >= threshold {
                         println!("Validator ID {:?} exceeded threshold", validator_id);
                         validator_monitor
                             .validator_latest_failure
@@ -185,8 +185,7 @@
         
             // Record and reset failure logic
             monitor.record_failure(node_id.clone(), tc.clone());
-     //       println!("Timeout Certificate round: {:?}", tc.round);
-       //     println!("Validator Failures: {:?}", monitor.validator_failures);
+
         
             assert!(
                 monitor.validator_failures.contains_key(&node_id),
@@ -212,11 +211,7 @@
                 CertificateSignaturePubKey<SignatureType>,
                 SignatureCollectionType,
             >::new();
-            
-            // Log each individual entry in the validator mapping
-            for (node_id, key_pair) in validator_mapping.map.iter() {
-                println!("Node ID: {:?}, Key Pair: {:?}", node_id, key_pair);
-            }
+                      
         
             let node_id = NodeId::new(NopPubKey::new(Some([127; 32])));
             let round = Round(1);
@@ -376,9 +371,10 @@ fn test_from_validator_monitor() {
     // Generate the ValidatorAccountability list
     let accountability_list = ValidatorMonitor::from_validator_monitor(&monitor, threshold);
 
-    // Check the results
-    assert_eq!(accountability_list.len(), 1);
+    assert_eq!(accountability_list.len(), 2);
     assert!(accountability_list.iter().any(|va| va.validator_id == node_id1 && va.failure_counter == 2));
+    assert!(accountability_list.iter().any(|va| va.validator_id == node_id2 && va.failure_counter == 1));
+
 }
 
     }

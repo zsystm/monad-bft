@@ -7,51 +7,93 @@ use monad_types::{Epoch, NodeId, Round, Stake};
 use rand::{distributions::WeightedIndex, prelude::*};
 use rand_chacha::ChaCha20Rng;
 use tracing::warn;
+use std::collections::HashMap;
+
+#[derive(Clone, Debug)]
+pub struct Blacklist<PT: PubKey> {
+    pub blacklisted_nodes: HashMap<NodeId<PT>, u32>,
+}
+
+impl<PT: PubKey> Blacklist<PT> {
+    pub fn new() -> Self {
+        Self {
+            blacklisted_nodes: HashMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, node_id: NodeId<PT>, rounds: u32) {
+        self.blacklisted_nodes.insert(node_id, rounds);
+    }
+
+    pub fn decrement(&mut self, node_id: &NodeId<PT>) {
+        if let Some(rounds) = self.blacklisted_nodes.get_mut(node_id) {
+            if *rounds > 0 {
+                *rounds -= 1;
+            }
+            if *rounds == 0 {
+                self.blacklisted_nodes.remove(node_id);
+            }
+        }
+    }
+
+    pub fn is_blacklisted(&self, node_id: &NodeId<PT>) -> bool {
+        self.blacklisted_nodes.contains_key(node_id)
+    }
+    pub fn remove_expired(&mut self) {
+        self.blacklisted_nodes.retain(|_, &mut rounds| rounds > 0);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct WeightedRandomLeaderSelection<PT: PubKey> {
     voters: Vec<Voter<PT>>,
+    blacklist: Blacklist<PT>,
 }
 
 impl<PT: PubKey> Default for WeightedRandomLeaderSelection<PT> {
     fn default() -> Self {
         Self {
             voters: Default::default(),
+            blacklist: Blacklist::new(),
         }
     }
 }
 
 impl<PT: PubKey> LeaderElection for WeightedRandomLeaderSelection<PT> {
     type NodeIdPubKey = PT;
+
     fn get_leader(
         &self,
         round: Round,
         _epoch: Epoch,
         _validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> NodeId<PT> {
-        // The `_validator_list` parameter is included to maintain compatibility with the `LeaderElection` trait interface.
-        // It's not used in the current implementation of `WeightedRandomLeaderSelection` because voters already provide the validator list. But it allows for other
-        // extensions where the validator list might be needed  for other leader selection algorithms (weighted_round_robin).
+        self.panic_if_empty();
 
-        // Check if the voters list is empty at the very beginning
-        self.panic_if_empty(); //
         let seed = round.0;
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
 
-        let stakes: Vec<u64> = self
+        let filtered_voters: Vec<_> = self
             .voters
+            .iter()
+            .filter(|voter| !self.blacklist.is_blacklisted(&voter.address))
+            .collect();
+        
+        if filtered_voters.is_empty() {
+            panic!("No valid leaders available after applying the blacklist.");
+        }
+
+        let stakes: Vec<u64> = filtered_voters
             .iter()
             .map(|v| v.voting_power.0 as u64)
             .collect();
-        //FIXME: consider overflow:
+        
         if let Ok(dist) = WeightedIndex::new(stakes) {
             let selected_index = dist.sample(&mut rng);
-            self.voters[selected_index].address
+            filtered_voters[selected_index].address
         } else {
-            // If creating a weighted distribution fails, log a warning.
             warn!("Failed to create a weighted distribution. No valid leader can be selected.");
             panic!("No valid leader can be selected due to distribution creation failure.");
-            // FIXME: Not sure if we want panic here or return a result type( Result<NodeId, &'static str> ) and let the caller decide on what to do in this case.
         }
     }
 }
@@ -62,6 +104,7 @@ impl<PT: PubKey> WeightedRandomLeaderSelection<PT> {
             panic!("Voter list is empty, cannot select a leader.");
         }
     }
+
     pub fn start_new_epoch(&mut self, voting_powers: Vec<(NodeId<PT>, Stake)>) {
         self.voters.clear();
         for (addr, vp) in voting_powers.into_iter() {
@@ -76,7 +119,17 @@ impl<PT: PubKey> WeightedRandomLeaderSelection<PT> {
             }
         }
     }
+
+    pub fn add_to_blacklist(&mut self, node_id: NodeId<PT>, rounds: u32) {
+        self.blacklist.add(node_id, rounds);
+    }
+
+    pub fn decrement_blacklist_for_node(&mut self, node_id: &NodeId<PT>) {
+        self.blacklist.decrement(node_id);
+    }
 }
+
+
 
 #[cfg(test)]
 mod tests {
@@ -97,6 +150,7 @@ mod tests {
             .expect("Failed to create a valid key pair from bytes");
         NodeId::new(key_pair.pubkey())
     }
+
 
     #[test]
     fn test_new_weighted_random_leader_selection() {
@@ -121,6 +175,8 @@ mod tests {
         assert_eq!(leader, node_id3);
     }
 
+   
+  
     #[test]
     fn test_leader_selection_with_zero_stakes() {
         let node_id1 = generate_unique_node_id(1);
@@ -205,4 +261,99 @@ mod tests {
             );
         }
     }
+  
+  
+
+
+ 
+  
+
+  #[test]
+  fn test_blacklist_functionality() {
+      let node_id1 = generate_unique_node_id(1);
+      let node_id2 = generate_unique_node_id(2);
+
+      let mut selection = WeightedRandomLeaderSelection::default();
+      selection.start_new_epoch(vec![
+          (node_id1, Stake(20)),
+          (node_id2, Stake(10)),
+      ]);
+
+      // Add node_id1 to the blacklist for 2 rounds
+      selection.add_to_blacklist(node_id1.clone(), 2);
+
+      // Ensure node_id1 is blacklisted
+      assert!(selection.blacklist.is_blacklisted(&node_id1));
+
+      // Decrement the blacklist round for node_id1
+      selection.decrement_blacklist_for_node(&node_id1);
+
+      // Ensure node_id1 is still blacklisted
+      assert!(selection.blacklist.is_blacklisted(&node_id1));
+
+      // Decrement again to remove node_id1 from the blacklist
+      selection.decrement_blacklist_for_node(&node_id1);
+
+      // Ensure node_id1 is no longer blacklisted
+      assert!(!selection.blacklist.is_blacklisted(&node_id1));
+  }
+
+  // This test verifies that a blacklisted node is not selected as the leader and is selected after the blacklist expires. Also, it verifies that the leader selection distribution for remaining leaders is proportional to the remaining stake of the nodes.
+  #[test]
+fn test_blacklisted_node_not_selected_as_leader() {
+    let node_id1 = generate_unique_node_id(1);
+    let node_id2 = generate_unique_node_id(2);
+    let node_id3 = generate_unique_node_id(3);
+
+    let mut selection = WeightedRandomLeaderSelection::default();
+    selection.start_new_epoch(vec![
+        (node_id1, Stake(20)),
+        (node_id2, Stake(10)),
+        (node_id3, Stake(70)),
+    ]);
+
+    // Add node_id3 to the blacklist for 5 rounds
+    selection.add_to_blacklist(node_id3.clone(), 5);
+
+    // Map to count the number of times each leader is selected
+    let mut leader_counts: HashMap<NodeId<_>, u32> = HashMap::new();
+
+    // Simulate leader selection over multiple rounds
+    for round in 1..1000 {
+        let leader = selection.get_leader(Round(round), Epoch(0), &Default::default());
+        assert_ne!(leader, node_id3, "Blacklisted node should not be selected as leader");
+        *leader_counts.entry(leader).or_insert(0) += 1;
+    }
+  
+    // Verify leader selection distribution relative to their stakes
+    let total_stake: u64 = 30; // Sum of the stakes of node_id1 and node_id2
+    let total_rounds = 1000; // Total rounds we ran the test
+    let expected_ratio_node_id1 = 20.0 / total_stake as f64;
+    let expected_ratio_node_id2 = 10.0 / total_stake as f64;
+
+    let actual_ratio_node_id1 = *leader_counts.get(&node_id1).unwrap_or(&0) as f64 / total_rounds as f64;
+    let actual_ratio_node_id2 = *leader_counts.get(&node_id2).unwrap_or(&0) as f64 / total_rounds as f64;
+
+    println!("Expected ratio for node_id1: {}, Actual ratio: {}", expected_ratio_node_id1, actual_ratio_node_id1);
+    println!("Expected ratio for node_id2: {}, Actual ratio: {}", expected_ratio_node_id2, actual_ratio_node_id2);
+
+    assert!(
+        (expected_ratio_node_id1 - actual_ratio_node_id1).abs() < 0.05,
+        "Leader selection for node_id1 is not proportional to its stake"
+    );
+    assert!(
+        (expected_ratio_node_id2 - actual_ratio_node_id2).abs() < 0.05,
+        "Leader selection for node_id2 is not proportional to its stake"
+    );
+
+    // Decrement the blacklist for node_id3 to make sure it is selected as the leader
+    for _ in 0..5 {
+        selection.decrement_blacklist_for_node(&node_id3);
+
+    }
+    let leader = selection.get_leader(Round(10003), Epoch(0), &Default::default());
+    assert_eq!(leader, node_id3, "Blacklisted node should be selected as leader after blacklist expires");
+}
+
+  
 }
