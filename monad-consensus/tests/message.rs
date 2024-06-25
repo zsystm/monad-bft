@@ -1,4 +1,5 @@
-use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
+use bytes::Bytes;
+use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage, RequestBlockSyncMessage, BlockSyncResponseMessage, CascadeTxMessage};
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
@@ -22,6 +23,47 @@ use zerocopy::AsBytes;
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<NopSignature>;
+
+
+fn mock_block() -> Block::<MockSignatures<SignatureType>> {
+
+    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
+
+    let mut privkey: [u8; 32] = [127; 32];
+    let keypair = <NopKeyPair as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
+    let author = NodeId::new(keypair.pubkey());
+    let round = Round(234);
+    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
+        QcInfo {
+            vote: Vote {
+                vote_info: VoteInfo {
+                    id: BlockId(Hash([0x00_u8; 32])),
+                    round: Round(0),
+                    parent_id: BlockId(Hash([0x00_u8; 32])),
+                    parent_round: Round(0),
+                    seq_num: SeqNum(0),
+                },
+                ledger_commit_info: CommitResult::NoCommit,
+            },
+        },
+        MockSignatures::with_pubkeys(&[]),
+    );
+
+    let block = Block::<MockSignatures<SignatureType>>::new(
+        author,
+        round,
+        &Payload {
+            txns,
+            header: ExecutionArtifacts::zero(),
+            seq_num: SeqNum(0),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
+        },
+        &qc,
+    );
+
+    block 
+}
 
 #[test]
 fn timeout_digest() {
@@ -189,40 +231,7 @@ fn timeout_msg_hash() {
 fn proposal_msg_hash() {
     use monad_testutil::signing::hash;
 
-    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
-
-    let mut privkey: [u8; 32] = [127; 32];
-    let keypair = <NopKeyPair as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
-    let author = NodeId::new(keypair.pubkey());
-    let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
-        QcInfo {
-            vote: Vote {
-                vote_info: VoteInfo {
-                    id: BlockId(Hash([0x00_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x00_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
-                },
-                ledger_commit_info: CommitResult::NoCommit,
-            },
-        },
-        MockSignatures::with_pubkeys(&[]),
-    );
-
-    let block = Block::<MockSignatures<SignatureType>>::new(
-        author,
-        round,
-        &Payload {
-            txns,
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        },
-        &qc,
-    );
+    let block = mock_block();
 
     let proposal: ProposalMessage<MockSignatures<SignatureType>> = ProposalMessage {
         block: block.clone(),
@@ -298,3 +307,60 @@ fn vote_msg_hash(cs: CommitResult) {
 
     assert_eq!(h1, h2);
 }
+
+#[test]
+fn block_sync_msg_hash() {
+
+    let block_sync_msg: RequestBlockSyncMessage = RequestBlockSyncMessage {
+        block_id: BlockId(Hash([0x00_u8; 32])),
+    };
+    
+    let mut hasher = HasherType::new();
+    block_sync_msg.hash(&mut hasher);
+    let h1 = hasher.hash();
+    
+    let h2 = HasherType::hash_object(&block_sync_msg);
+    
+    assert_eq!(h1, h2);
+}
+
+#[test]
+fn cascade_tx_message_hash() {
+    let data = Bytes::from("1 2 3 4");
+
+    let cascade_tx_message: CascadeTxMessage = CascadeTxMessage {
+        txns: data.clone(),
+    };
+    
+    let mut hasher = HasherType::new();
+    cascade_tx_message.hash(&mut hasher);
+    let h1 = hasher.hash();
+    
+    let h2 = HasherType::hash_object(&cascade_tx_message);
+    
+    assert_eq!(h1, h2);
+}
+
+#[test]
+fn response_block_sync_msg_hash() {
+    let block_id = BlockId(Hash([0x00_u8; 32]));
+    let block_not_found = BlockSyncResponseMessage::<SignatureCollectionType>::NotAvailable(block_id);
+    let block_found = BlockSyncResponseMessage::<MockSignatures<SignatureType>>::BlockFound(mock_block());
+
+    let mut hasher = HasherType::new();
+    block_found.hash(&mut hasher);
+    let h1 = hasher.hash();
+    let h2 = HasherType::hash_object(&block_found);
+
+    assert_eq!(h1, h2);
+
+    let mut not_hasher = HasherType::new();
+    block_not_found.hash(&mut not_hasher);
+    let h3 = not_hasher.hash();
+    let h4 = HasherType::hash_object(&block_not_found);
+
+    assert_eq!(h3, h4);
+
+}
+
+
