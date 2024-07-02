@@ -75,9 +75,261 @@ fn setup_block(
         &qc,
     )
 }
+// Error during verify if block epoch does not exist in epoch manager
+#[test]
+fn test_verify_incorrect_block_epoch() {
+    // occurs if (epoch,round) has been purged from epoch manager
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(1, ValidatorSetFactory::default());
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(2), Round(300))]);
+    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+    let author = NodeId::new(keypairs[0].pubkey());
+
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
+        block: setup_block(
+            author,
+            Epoch(1),
+            Round(234),
+            Epoch(1),
+            Round(233),
+            keypairs
+                .iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
+        last_round_tc: None,
+    });
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
+
+    assert_eq!(
+        sp.verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey()),
+        Err(Error::InvalidEpoch)
+    );
+}
+// Error during verify if val_set does not exist in val_epoch_map
+#[test]
+fn test_verify_incorrect_validator_epoch() {
+    // occurs if val_epoch_map is not correctly updated
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(1, ValidatorSetFactory::default());
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(2), Round(200))]);
+    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+    let author = NodeId::new(keypairs[0].pubkey());
+
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
+        block: setup_block(
+            author,
+            Epoch(1),
+            Round(234),
+            Epoch(1),
+            Round(233),
+            keypairs
+                .iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
+        last_round_tc: None,
+    });
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
+    
+    assert_eq!(
+        sp.verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey()),
+        Err(Error::ValidatorSetDataUnavailable)
+    );
+}
 
 #[test]
-fn test_proposal_hash() {
+fn test_verify_invalid_author() {
+    let mut vlist = Vec::new();
+    let author_keypair = get_key::<SignatureType>(6);
+    let non_valdiator_keypair = get_key::<SignatureType>(7);
+
+    vlist.push((NodeId::new(author_keypair.pubkey()), Stake(0)));
+
+    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
+    let vmap: ValidatorMapping<PubKeyType, _> = ValidatorMapping::new(vec![(
+        NodeId::new(author_keypair.pubkey()),
+        author_keypair.pubkey(),
+    )]);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+    let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+
+    let author = NodeId::new(author_keypair.pubkey());
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+            Round(234),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+            Round(233),
+            &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
+        ),
+        last_round_tc: None,
+    });
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_object(conmsg, &non_valdiator_keypair);
+
+    assert_eq!(
+        sp.verify(&epoch_manager, &val_epoch_map, &author.pubkey())
+            .unwrap_err(),
+        Error::InvalidAuthor
+    );
+}
+
+#[test]
+fn test_verify_author_not_sender() {
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(2, ValidatorSetFactory::default());
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+    let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+
+    let author_keypair = &keypairs[0];
+    let sender_keypair = &keypairs[1];
+    let author = NodeId::new(author_keypair.pubkey());
+
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+            Round(234),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+            Round(233),
+            keypairs
+                .iter()
+                .map(|keypair| keypair.pubkey())
+                .collect::<Vec<_>>()
+                .as_ref(),
+        ),
+        last_round_tc: None,
+    });
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_object(conmsg, author_keypair);
+    assert_eq!(
+        sp.verify(&epoch_manager, &val_epoch_map, &sender_keypair.pubkey())
+            .unwrap_err(),
+        Error::AuthorNotSender
+    );
+}
+
+#[test]
+fn test_verify_invalid_signature() {
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(2, ValidatorSetFactory::default());
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+    let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+
+    let author_keypair = &keypairs[0];
+    let sender_keypair = &keypairs[1];
+    let author = NodeId::new(author_keypair.pubkey());
+
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+            Round(234),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+            Round(233),
+            keypairs
+                .iter()
+                .map(|keypair| keypair.pubkey())
+                .collect::<Vec<_>>()
+                .as_ref(),
+        ),
+        last_round_tc: None,
+    });
+
+    let other_proposal = ProtocolMessage::Proposal(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(2)).expect("epoch exists"),
+            Round(2),
+            epoch_manager.get_epoch(Round(2)).expect("epoch exists"),
+            Round(2),
+            keypairs
+                .iter()
+                .map(|keypair| keypair.pubkey())
+                .collect::<Vec<_>>()
+                .as_ref(),
+        ),
+        last_round_tc: None,
+    });
+
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let other_msg = ConsensusMessage {
+        version: "TEST".into(),
+        message: other_proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_incorrect_object(other_msg, conmsg, author_keypair);
+    assert_eq!(
+        sp.verify(&epoch_manager, &val_epoch_map, &author_keypair.pubkey())
+            .unwrap_err(),
+        Error::InvalidSignature
+    );
+}
+
+#[test]
+fn test_verify_proposal_hash() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
         SignatureType,
         SignatureCollectionType,
@@ -158,100 +410,6 @@ fn test_proposal_missing_tc() {
 }
 
 #[test]
-fn test_proposal_author_not_sender() {
-    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
-        SignatureType,
-        SignatureCollectionType,
-        _,
-    >(2, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
-    let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
-        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
-    val_epoch_map.insert(
-        Epoch(1),
-        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
-        vmap,
-    );
-
-    let author_keypair = &keypairs[0];
-    let sender_keypair = &keypairs[1];
-    let author = NodeId::new(author_keypair.pubkey());
-
-    let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: setup_block(
-            author,
-            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
-            Round(234),
-            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
-            Round(233),
-            keypairs
-                .iter()
-                .map(|keypair| keypair.pubkey())
-                .collect::<Vec<_>>()
-                .as_ref(),
-        ),
-        last_round_tc: None,
-    });
-    let conmsg = ConsensusMessage {
-        version: "TEST".into(),
-        message: proposal,
-    };
-    let sp = TestSigner::<SignatureType>::sign_object(conmsg, author_keypair);
-    assert_eq!(
-        sp.verify(&epoch_manager, &val_epoch_map, &sender_keypair.pubkey())
-            .unwrap_err(),
-        Error::AuthorNotSender
-    );
-}
-
-#[test]
-fn test_proposal_invalid_author() {
-    let mut vlist = Vec::new();
-    let author_keypair = get_key::<SignatureType>(6);
-    let non_valdiator_keypair = get_key::<SignatureType>(7);
-
-    vlist.push((NodeId::new(author_keypair.pubkey()), Stake(0)));
-
-    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
-    let vmap: ValidatorMapping<PubKeyType, _> = ValidatorMapping::new(vec![(
-        NodeId::new(author_keypair.pubkey()),
-        author_keypair.pubkey(),
-    )]);
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
-    let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
-        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
-    val_epoch_map.insert(
-        Epoch(1),
-        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
-        vmap,
-    );
-
-    let author = NodeId::new(author_keypair.pubkey());
-    let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: setup_block(
-            author,
-            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
-            Round(234),
-            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
-            Round(233),
-            &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
-        ),
-        last_round_tc: None,
-    });
-    let conmsg = ConsensusMessage {
-        version: "TEST".into(),
-        message: proposal,
-    };
-    let sp = TestSigner::<SignatureType>::sign_object(conmsg, &non_valdiator_keypair);
-
-    assert_eq!(
-        sp.verify(&epoch_manager, &val_epoch_map, &author.pubkey())
-            .unwrap_err(),
-        Error::InvalidAuthor
-    );
-}
-
-#[test]
 fn test_proposal_invalid_qc() {
     let mut vlist = Vec::new();
     let non_staked_keypair = get_key::<SignatureType>(6);
@@ -292,7 +450,7 @@ fn test_proposal_invalid_qc() {
         last_round_tc: None,
     });
 
-    let validate_result = proposal.validate(&epoch_manager, &val_epoch_map);
+    let validate_result = proposal.clone().validate(&epoch_manager, &val_epoch_map);
 
     assert!(matches!(validate_result, Err(Error::InsufficientStake)));
 }
