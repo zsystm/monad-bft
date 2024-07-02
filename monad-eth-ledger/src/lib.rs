@@ -12,6 +12,7 @@ use futures::Stream;
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
     block::{Block, BlockType},
+    payload::TransactionPayload,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -22,7 +23,7 @@ use monad_eth_tx::EthTransaction;
 use monad_eth_types::EthAddress;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_types::{BlockId, SeqNum};
+use monad_types::{BlockId, Round};
 use monad_updaters::ledger::MockableLedger;
 
 /// A ledger for commited Monad Blocks
@@ -34,8 +35,8 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    blocks: BTreeMap<SeqNum, Block<SCT>>,
-    block_ids: HashMap<BlockId, SeqNum>,
+    blocks: BTreeMap<Round, Block<SCT>>,
+    block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<SCT>>,
 
     state: Arc<Mutex<InMemoryState>>,
@@ -75,38 +76,41 @@ where
             match command {
                 LedgerCommand::LedgerCommit(blocks) => {
                     for block in blocks {
-                        match self.blocks.entry(block.get_seq_num()) {
+                        if let TransactionPayload::List(eth_txns_rlp) = &block.payload.txns {
+                            // generate eth block and update the state backend with committed nonces
+                            let new_account_nonces =
+                                Vec::<EthTransaction>::decode(&mut eth_txns_rlp.bytes().as_ref())
+                                    .expect("invalid eth tx in block")
+                                    .into_iter()
+                                    .map(|tx| (EthAddress(tx.signer()), tx.nonce() + 1))
+                                    // collecting into a map will handle a sender sending multiple
+                                    // transactions gracefully
+                                    //
+                                    // this is because nonces are always increasing per account
+                                    .collect();
+                            let mut state = self.state.lock().unwrap();
+                            state.update_committed_nonces(block.get_seq_num(), new_account_nonces);
+                        }
+
+                        match self.blocks.entry(block.get_round()) {
                             std::collections::btree_map::Entry::Vacant(entry) => {
                                 let block_id = block.get_id();
-                                let seq_num = block.get_seq_num();
-                                entry.insert(block.clone());
-                                self.block_ids.insert(block_id, seq_num);
+                                let round = block.get_round();
+                                entry.insert(block);
+                                self.block_ids.insert(block_id, round);
                             }
                             std::collections::btree_map::Entry::Occupied(entry) => {
                                 assert_eq!(entry.get(), &block, "two conflicting blocks committed")
                             }
                         }
-                        // generate eth block and update the state backend with committed nonces
-                        let new_account_nonces =
-                            Vec::<EthTransaction>::decode(&mut block.payload.txns.bytes().as_ref())
-                                .expect("invalid eth tx in block")
-                                .into_iter()
-                                .map(|tx| (EthAddress(tx.signer()), tx.nonce() + 1))
-                                // collecting into a map will handle a sender sending multiple
-                                // transactions gracefully
-                                //
-                                // this is because nonces are always increasing per account
-                                .collect();
-                        let mut state = self.state.lock().unwrap();
-                        state.update_committed_nonces(block.get_seq_num(), new_account_nonces);
                     }
                 }
                 LedgerCommand::LedgerFetch(block_id) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
                         response: match self.block_ids.get(&block_id) {
-                            Some(seq_num) => BlockSyncResponseMessage::BlockFound(
+                            Some(round) => BlockSyncResponseMessage::BlockFound(
                                 self.blocks
-                                    .get(seq_num)
+                                    .get(round)
                                     .expect("block_id mapping inconsistent")
                                     .clone(),
                             ),
@@ -158,7 +162,7 @@ where
         !self.events.is_empty()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<SeqNum, Block<SCT>> {
+    fn get_blocks(&self) -> &BTreeMap<Round, Block<SCT>> {
         &self.blocks
     }
 }

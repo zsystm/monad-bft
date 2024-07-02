@@ -11,7 +11,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList},
+    payload::{ExecutionArtifacts, FullTransactionList, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -74,7 +74,7 @@ impl MonadEventBencher {
 }
 
 fn bench_proposal(c: &mut Criterion) {
-    let txns = FullTransactionList::new(vec![0x23_u8; 32 * 10000].into());
+    let txns = TransactionPayload::List(FullTransactionList::new(vec![0x23_u8; 32 * 10000].into()));
     let validator_factory = ValidatorSetFactory::default();
     let (keypairs, _certkeypairs, _validators, validator_mapping) =
         create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(1, validator_factory);

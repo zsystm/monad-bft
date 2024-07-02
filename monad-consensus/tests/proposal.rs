@@ -8,7 +8,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::Error,
     voting::{ValidatorMapping, Vote, VoteInfo},
@@ -42,7 +42,7 @@ fn setup_block(
     qc_round: Round,
     signers: &[PubKeyType],
 ) -> Block<MockSignatures<SignatureType>> {
-    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
+    let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         epoch: qc_epoch,

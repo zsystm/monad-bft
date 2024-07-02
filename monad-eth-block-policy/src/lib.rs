@@ -136,8 +136,8 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
         self.validated_txns.len()
     }
 
-    fn is_txn_list_empty(&self) -> bool {
-        self.validated_txns.is_empty()
+    fn is_empty_block(&self) -> bool {
+        self.block.is_empty_block()
     }
 }
 
@@ -532,15 +532,17 @@ where
         state_backend: &SBT,
     ) -> Result<(), BlockPolicyError> {
         trace!(?block, "check_coherency");
-        assert_eq!(
-            extending_blocks
-                .iter()
-                .chain(std::iter::once(&block))
-                .next()
-                .unwrap()
-                .get_seq_num(),
-            self.last_commit + SeqNum(1)
-        );
+        // TODO: short circuit check_coherency for null blocks
+        let first_block = extending_blocks
+            .iter()
+            .chain(std::iter::once(&block))
+            .next()
+            .unwrap();
+        if first_block.is_empty_block() {
+            assert_eq!(first_block.get_seq_num(), self.last_commit);
+        } else {
+            assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
+        }
 
         // TODO fix this unnecessary copy into a new vec to generate an owned EthAddress
         let tx_signers = block

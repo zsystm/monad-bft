@@ -108,7 +108,7 @@ pub fn swarm_ledger_verification<S: SwarmRelation>(swarm: &Nodes<S>, min_ledger_
 }
 
 pub fn ledger_verification<SCT: SignatureCollection>(
-    ledgers: &Vec<BTreeMap<SeqNum, Block<SCT>>>,
+    ledgers: &Vec<BTreeMap<Round, Block<SCT>>>,
     min_ledger_len: usize,
 ) {
     let (max_ledger_idx, max_b) = ledgers

@@ -6,7 +6,7 @@ use monad_crypto::{
     hasher::{Hash, Hashable, Hasher},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_types::{DontCare, Round, SeqNum};
+use monad_types::{DontCare, EnumDiscriminant, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::state_root_hash::StateRootHash;
@@ -135,11 +135,31 @@ impl AsRef<[u8]> for RandaoReveal {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionPayload {
+    List(FullTransactionList),
+    Empty,
+}
+
+impl Hashable for TransactionPayload {
+    fn hash(&self, state: &mut impl Hasher) {
+        match self {
+            TransactionPayload::List(txns) => {
+                EnumDiscriminant(1).hash(state);
+                state.update(txns);
+            }
+            TransactionPayload::Empty => {
+                EnumDiscriminant(2).hash(state);
+            }
+        }
+    }
+}
+
 /// Contents of a proposal that are part of the Monad protocol
 /// but not in the core bft consensus protocol
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
-    pub txns: FullTransactionList,
+    pub txns: TransactionPayload,
     pub header: ExecutionArtifacts,
     pub seq_num: SeqNum,
     pub beneficiary: EthAddress,
@@ -148,7 +168,7 @@ pub struct Payload {
 
 impl Hashable for Payload {
     fn hash(&self, state: &mut impl Hasher) {
-        state.update(&self.txns);
+        self.txns.hash(state);
         self.header.hash(state);
         state.update(self.seq_num);
         state.update(self.beneficiary);
@@ -159,7 +179,7 @@ impl Hashable for Payload {
 impl DontCare for Payload {
     fn dont_care() -> Self {
         Self {
-            txns: FullTransactionList::empty(),
+            txns: TransactionPayload::List(FullTransactionList::empty()),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),

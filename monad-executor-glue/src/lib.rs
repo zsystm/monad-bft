@@ -26,7 +26,7 @@ use monad_crypto::certificate_signature::{
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum RouterCommand<PT: PubKey, OM> {
     // Publish should not be replayed
     Publish {
@@ -48,6 +48,7 @@ pub trait Message: Clone + Send + Sync {
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event;
 }
 
+#[derive(Debug)]
 pub enum TimerCommand<E> {
     /// ScheduleReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
@@ -63,6 +64,19 @@ pub enum TimerCommand<E> {
 pub enum LedgerCommand<SCT: SignatureCollection> {
     LedgerCommit(Vec<Block<SCT>>),
     LedgerFetch(BlockId),
+}
+
+impl<SCT: SignatureCollection> std::fmt::Debug for LedgerCommand<SCT> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LedgerCommand::LedgerCommit(blocks) => {
+                f.debug_tuple("LedgerCommit").field(blocks).finish()
+            }
+            LedgerCommand::LedgerFetch(block_id) => {
+                f.debug_tuple("LedgerFetch").field(block_id).finish()
+            }
+        }
+    }
 }
 
 pub enum CheckpointCommand<SCT: SignatureCollection> {
@@ -121,6 +135,7 @@ pub enum ControlPanelCommand<SCT: SignatureCollection> {
     Write(WriteCommand<SCT>),
 }
 
+#[derive(Debug)]
 pub enum LoopbackCommand<E> {
     Forward(E),
 }

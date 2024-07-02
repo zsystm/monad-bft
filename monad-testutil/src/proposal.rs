@@ -7,7 +7,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{Block, BlockType},
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
+    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -78,7 +78,7 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-        txns: FullTransactionList,
+        txns: TransactionPayload,
         execution_header: ExecutionArtifacts,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal
@@ -107,6 +107,10 @@ where
             })
             .expect("key not in valset");
 
+        let seq_num = match txns {
+            TransactionPayload::List(_) => qc.get_seq_num() + SeqNum(1),
+            TransactionPayload::Empty => qc.get_seq_num(),
+        };
         let block = Block::new(
             NodeId::new(leader_key.pubkey()),
             self.timestamp,
@@ -115,7 +119,7 @@ where
             &Payload {
                 txns,
                 header: execution_header,
-                seq_num: qc.get_seq_num() + SeqNum(1),
+                seq_num,
                 beneficiary: EthAddress::default(),
                 randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
             },

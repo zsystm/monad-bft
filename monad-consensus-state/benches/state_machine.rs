@@ -13,7 +13,10 @@ use monad_consensus_state::{
 use monad_consensus_types::{
     checkpoint::RootInfo,
     metrics::Metrics,
-    payload::{Bloom, ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator},
+    payload::{
+        Bloom, ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator,
+        TransactionPayload,
+    },
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
     txpool::TxPool,
@@ -101,7 +104,7 @@ where
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            FullTransactionList::empty(),
+            TransactionPayload::Empty,
             ExecutionArtifacts::zero(),
         )
     }
@@ -117,7 +120,7 @@ where
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            txn_list,
+            TransactionPayload::List(txn_list),
             execution_hdr,
         )
     }
@@ -130,7 +133,7 @@ where
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            FullTransactionList::new(vec![5].into()),
+            TransactionPayload::List(FullTransactionList::new(vec![5].into())),
             ExecutionArtifacts::zero(),
         )
     }
@@ -147,7 +150,7 @@ where
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            txn_list,
+            TransactionPayload::List(txn_list),
             execution_hdr,
         )
     }
@@ -506,7 +509,9 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT
     let mut txns_encoded: Vec<u8> = vec![];
     txns.encode(&mut txns_encoded);
 
-    let txns = FullTransactionList::new(Bytes::copy_from_slice(&txns_encoded));
+    let txns = TransactionPayload::List(FullTransactionList::new(Bytes::copy_from_slice(
+        &txns_encoded,
+    )));
 
     Block::new(
         NodeId::new(NopPubKey::from_bytes(&[0u8; 32]).unwrap()),

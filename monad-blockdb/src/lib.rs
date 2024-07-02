@@ -2,7 +2,7 @@ use std::path::Path;
 
 use heed::{types::SerdeBincode, Database, Env, EnvOpenOptions};
 use monad_consensus_types::quorum_certificate::GENESIS_BLOCK_ID;
-use reth_primitives::{Block, BlockHash, BlockNumber, Header, TxHash};
+use reth_primitives::{Block as EthBlock, BlockHash, BlockNumber, Header, TxHash};
 use serde::{Deserialize, Serialize};
 
 pub const BLOCK_DB_MAP_SIZE: usize = 512 * 1000 * 1024 * 1024;
@@ -43,7 +43,7 @@ pub struct BlockTableKey(
 pub struct BlockValue {
     // this can be deleted once BlockId is hash of eth block
     key: BlockTableKey,
-    pub block: Block,
+    pub block: EthBlock,
 }
 
 impl BlockValue {
@@ -64,8 +64,8 @@ pub struct BlockTagValue {
     pub block_number: BlockNumTableKey,
 }
 
-pub fn genesis_block() -> Block {
-    Block {
+pub fn genesis_block() -> EthBlock {
+    EthBlock {
         header: Header {
             parent_hash: Default::default(),
             ommers_hash: Default::default(),
@@ -148,7 +148,7 @@ pub struct BlockDb {
 }
 
 impl BlockDb {
-    pub fn write_txn_hashes(&self, block: &Block, block_table_key: &BlockTableKey) {
+    pub fn write_txn_hashes(&self, block: &EthBlock, block_table_key: &BlockTableKey) {
         let mut txn_hash_table_txn = self.env.write_txn().expect("txn_hash txn create failed");
 
         for (i, eth_tx) in block.body.iter().enumerate() {
@@ -208,7 +208,7 @@ impl BlockDb {
             .expect("block_tag commit failed");
     }
 
-    pub fn write_genesis_block(&self, block: Block, bft_block_id: monad_types::BlockId) {
+    pub fn write_genesis_block(&self, block: EthBlock, bft_block_id: monad_types::BlockId) {
         let block_table_key = BlockTableKey(bft_block_id);
 
         self.write_txn_hashes(&block, &block_table_key);
@@ -225,23 +225,38 @@ impl BlockDb {
         block_txn.commit().expect("block_dbi commit failed");
     }
 
+    /// Write only the bft block. Invoked when this is an empty block, whose eth
+    /// block is filtered out
+    #[allow(clippy::ptr_arg)]
+    pub fn write_only_bft_block(
+        &self,
+        bft_block_id: monad_types::BlockId,
+        bft_table_value: &Vec<u8>,
+    ) {
+        let mut block_txn = self.env.write_txn().expect("block txn create failed");
+        self.bft_ledger_dbi
+            .put(&mut block_txn, &bft_block_id, bft_table_value)
+            .expect("bft_ledger_table put failed");
+        block_txn.commit().expect("block_dbi commit failed");
+    }
+
     #[allow(clippy::ptr_arg)]
     pub fn write_eth_and_bft_blocks(
         &self,
-        block: Block,
+        eth_block: EthBlock,
         bft_block_id: monad_types::BlockId,
         serialized_bft_block: &Vec<u8>,
     ) {
         let block_table_key = BlockTableKey(bft_block_id);
 
-        self.write_txn_hashes(&block, &block_table_key);
-        self.write_block_numbers(block.number, &block_table_key);
+        self.write_txn_hashes(&eth_block, &block_table_key);
+        self.write_block_numbers(eth_block.number, &block_table_key);
 
         // eth block and corresponding bft block should be atomically committed
         let mut block_txn = self.env.write_txn().expect("block txn create failed");
         let block_table_value = BlockValue {
             key: block_table_key.clone(),
-            block,
+            block: eth_block,
         };
         self.block_dbi
             .put(&mut block_txn, &block_table_key, &block_table_value)

@@ -13,7 +13,9 @@ pub mod test_tool {
     use monad_consensus_types::{
         block::Block,
         ledger::CommitResult,
-        payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
+        payload::{
+            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+        },
         quorum_certificate::{QcInfo, QuorumCertificate},
         timeout::{Timeout, TimeoutInfo},
         voting::{Vote, VoteInfo},
@@ -71,7 +73,7 @@ pub mod test_tool {
 
     pub fn fake_block(round: Round) -> Block<SC> {
         let payload = Payload {
-            txns: FullTransactionList::empty(),
+            txns: TransactionPayload::List(FullTransactionList::empty()),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),

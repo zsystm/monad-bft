@@ -1,6 +1,6 @@
 use monad_consensus_types::{
     block::Block,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
@@ -71,7 +71,7 @@ pub fn generate_random_block_with_txns(
         Epoch(1),
         Round(1),
         &Payload {
-            txns: full_txn_list,
+            txns: TransactionPayload::List(full_txn_list),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),

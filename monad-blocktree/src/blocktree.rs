@@ -506,7 +506,7 @@ mod test {
     use monad_consensus_types::{
         block::{Block as ConsensusBlock, BlockType, PassthruBlockPolicy},
         ledger::CommitResult,
-        payload::{FullTransactionList, Payload},
+        payload::{FullTransactionList, Payload, TransactionPayload},
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
     };
@@ -861,7 +861,7 @@ mod test {
             Epoch(1),
             Round(2),
             &Payload {
-                txns: FullTransactionList::new(vec![1].into()),
+                txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
                 ..DontCare::dont_care()
             },
             &mock_qc(v1),
@@ -873,7 +873,7 @@ mod test {
             Epoch(1),
             Round(2),
             &Payload {
-                txns: FullTransactionList::new(vec![2].into()),
+                txns: TransactionPayload::List(FullTransactionList::new(vec![2].into())),
                 ..DontCare::dont_care()
             },
             &mock_qc(v1),
@@ -893,7 +893,7 @@ mod test {
             Epoch(1),
             Round(3),
             &Payload {
-                txns: FullTransactionList::new(vec![3].into()),
+                txns: TransactionPayload::List(FullTransactionList::new(vec![3].into())),
                 ..DontCare::dont_care()
             },
             &mock_qc(v2),
@@ -968,7 +968,7 @@ mod test {
             Epoch(1),
             Round(2),
             &Payload {
-                txns: FullTransactionList::new(vec![1].into()),
+                txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
                 ..DontCare::dont_care()
             },
             &mock_qc(v1),

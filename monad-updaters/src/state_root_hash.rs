@@ -280,6 +280,7 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashSwap<ST, SCT> {
             val_data_2: ValidatorSetData(val_data_2),
             next_val_data: None,
             val_set_update_interval,
+
             waker: None,
             metrics: Default::default(),
             phantom: PhantomData,
@@ -378,7 +379,6 @@ where
                             })
                         };
                     }
-
                     wake = true;
                 }
             }

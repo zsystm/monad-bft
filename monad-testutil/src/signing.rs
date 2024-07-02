@@ -3,6 +3,7 @@ use std::{collections::HashSet, marker::PhantomData};
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
     block::Block,
+    payload::TransactionPayload,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
@@ -104,7 +105,17 @@ pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
         hasher.update(b.timestamp.as_bytes());
         hasher.update(b.epoch);
         hasher.update(b.round);
-        hasher.update(b.payload.txns.bytes());
+        match &b.payload.txns {
+            TransactionPayload::List(rlp) => {
+                // EnumDiscriminant(1)
+                hasher.update(1_i32.to_le_bytes());
+                hasher.update(rlp.bytes())
+            }
+            TransactionPayload::Empty => {
+                // EnumDiscriminant(2)
+                hasher.update(2_i32.to_le_bytes());
+            }
+        }
         hasher.update(b.payload.header.parent_hash);
         hasher.update(b.payload.header.state_root);
         hasher.update(b.payload.header.transactions_root);

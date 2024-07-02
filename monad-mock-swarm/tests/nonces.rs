@@ -11,7 +11,7 @@ mod test {
     use alloy_rlp::Decodable;
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-    use monad_consensus_types::payload::StateRoot;
+    use monad_consensus_types::payload::{StateRoot, TransactionPayload};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -161,9 +161,14 @@ mod test {
         for node_id in node_ids {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
-            for (seq_num, block) in state.executor.ledger().get_blocks() {
-                let decoded_txns =
-                    Vec::<EthSignedTransaction>::decode(&mut block.payload.txns.as_ref()).unwrap();
+            for (round, block) in state.executor.ledger().get_blocks() {
+                let decoded_txns = match &block.payload.txns {
+                    TransactionPayload::List(rlp) => {
+                        Vec::<EthSignedTransaction>::decode(&mut rlp.as_ref()).unwrap()
+                    }
+                    TransactionPayload::Empty => Vec::new(),
+                };
+
                 let decoded_txn_hashes: HashSet<_> =
                     HashSet::from_iter(decoded_txns.iter().map(|t| t.hash()));
                 for txn_hash in decoded_txn_hashes {
@@ -171,8 +176,8 @@ mod test {
                         txns_to_see.remove(&txn_hash);
                     } else {
                         println!(
-                            "Unexpected transaction in block {}. NodeID: {}, TxnHash: {}",
-                            seq_num.0, node_id, txn_hash
+                            "Unexpected transaction in block round {}. NodeID: {}, TxnHash: {}",
+                            round.0, node_id, txn_hash
                         );
                         return false;
                     }
@@ -449,6 +454,8 @@ mod test {
             CONSENSUS_DELTA,
         ))];
         swarm.update_outbound_pipeline_for_all(regular_pipeline);
+
+        println!("restoring pipeline");
 
         // Send transactions with nonces 10..20 to node 1 so that it can propose them after it catches up with blocksync
         for nonce in 10..20 {

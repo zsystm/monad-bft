@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use monad_consensus_types::block::BlockType;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_transformer::ID;
-use monad_types::{Round, SeqNum};
+use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::ledger::MockableLedger;
 
 use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
@@ -127,7 +128,7 @@ where
             );
         }
 
-        let mut block_ref = None;
+        let mut longest_ledger_ref = None;
         for (peer_id, expected_len) in &self.nodes_monitor {
             let blocks = nodes
                 .states
@@ -139,18 +140,18 @@ where
             if blocks.len() < *expected_len {
                 return false;
             }
-            match block_ref {
-                None => block_ref = Some(blocks),
+            match longest_ledger_ref {
+                None => longest_ledger_ref = Some(blocks),
                 Some(reference) => {
                     if reference.len() < blocks.len() {
-                        block_ref = Some(blocks);
+                        longest_ledger_ref = Some(blocks);
                     }
                 }
             }
         }
 
         // reference to the longest ledger
-        let block_ref = block_ref.expect("must have at least 1 entry");
+        let longest_ledger_ref = longest_ledger_ref.expect("must have at least 1 entry");
         // once termination condition is met, all the ledger should also have identical blocks
         for (peer_id, expected_len) in &self.nodes_monitor {
             let blocks = nodes
@@ -160,16 +161,26 @@ where
                 .executor
                 .ledger()
                 .get_blocks();
-            for i in 1..=(*expected_len) {
-                assert!(
-                    block_ref
-                        .get(&SeqNum(i as u64))
-                        .unwrap_or_else(|| panic!("block {} doesn't exist", i))
-                        == blocks
-                            .get(&SeqNum(i as u64))
-                            .unwrap_or_else(|| panic!("block {} doesn't exist", i))
+
+            let mut next_seq_num = GENESIS_SEQ_NUM + SeqNum(1);
+            for (round, block) in longest_ledger_ref.iter().take(*expected_len) {
+                assert_eq!(
+                    block.get_seq_num(),
+                    next_seq_num,
+                    "block {:?} doesn't exist",
+                    next_seq_num
                 );
+
+                assert!(
+                    block
+                        == blocks
+                            .get(round)
+                            .unwrap_or_else(|| panic!("block {:?} doesn't exist", next_seq_num))
+                );
+                next_seq_num += SeqNum(1);
             }
+
+            for i in 1..=(*expected_len) {}
         }
 
         true

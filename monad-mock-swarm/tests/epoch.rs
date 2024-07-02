@@ -9,8 +9,11 @@ mod test {
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
-        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-        payload::StateRoot, txpool::MockTxPool,
+        block::{BlockType, PassthruBlockPolicy},
+        block_validator::MockValidator,
+        metrics::Metrics,
+        payload::StateRoot,
+        txpool::MockTxPool,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -103,12 +106,15 @@ mod test {
         let mut epoch_start_rounds = Vec::new();
 
         for node in nodes {
-            let update_block = node
-                .executor
-                .ledger()
-                .get_blocks()
-                .get(&update_block_num)
-                .unwrap();
+            let mut update_block = None;
+            for block in node.executor.ledger().get_blocks().values() {
+                if block.get_seq_num() == update_block_num {
+                    update_block = Some(block);
+                    break;
+                }
+            }
+            let update_block = update_block.unwrap();
+
             let update_block_round = update_block.round;
             let epoch_manager = node.state.epoch_manager();
             let epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;

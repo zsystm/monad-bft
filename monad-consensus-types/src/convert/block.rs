@@ -9,7 +9,10 @@ use monad_proto::{
 
 use crate::{
     block::Block,
-    payload::{Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal},
+    payload::{
+        Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
+        TransactionPayload,
+    },
     signature_collection::SignatureCollection,
 };
 
@@ -153,10 +156,41 @@ impl TryFrom<ProtoExecutionArtifacts> for ExecutionArtifacts {
     }
 }
 
+impl From<&TransactionPayload> for ProtoTransactionPayload {
+    fn from(value: &TransactionPayload) -> Self {
+        let txns = Some(match value {
+            TransactionPayload::List(txns) => {
+                proto_transaction_payload::Txns::List(txns.bytes().clone())
+            }
+            TransactionPayload::Empty => {
+                proto_transaction_payload::Txns::Empty(ProtoEmptyBlockTransactionList {})
+            }
+        });
+        Self { txns }
+    }
+}
+
+impl TryFrom<ProtoTransactionPayload> for TransactionPayload {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoTransactionPayload) -> Result<Self, Self::Error> {
+        let txns = value.txns.ok_or(Self::Error::MissingRequiredField(
+            "TransactionPayload.txns".to_owned(),
+        ))?;
+        let txn_payload = match txns {
+            proto_transaction_payload::Txns::List(txns) => {
+                TransactionPayload::List(FullTransactionList::new(txns))
+            }
+            proto_transaction_payload::Txns::Empty(_) => TransactionPayload::Empty,
+        };
+        Ok(txn_payload)
+    }
+}
+
 impl From<&Payload> for ProtoPayload {
     fn from(value: &Payload) -> Self {
         ProtoPayload {
-            txns: value.txns.bytes().clone(),
+            txns: Some((&(value.txns)).into()),
             header: Some((&(value.header)).into()),
             seq_num: Some((&(value.seq_num)).into()),
             beneficiary: value.beneficiary.0.to_vec().into(),
@@ -169,7 +203,10 @@ impl TryFrom<ProtoPayload> for Payload {
     type Error = ProtoError;
     fn try_from(value: ProtoPayload) -> Result<Self, Self::Error> {
         Ok(Self {
-            txns: FullTransactionList::new(value.txns),
+            txns: value
+                .txns
+                .ok_or(Self::Error::MissingRequiredField("Payload.txns".to_owned()))?
+                .try_into()?,
             header: value
                 .header
                 .ok_or(Self::Error::MissingRequiredField(

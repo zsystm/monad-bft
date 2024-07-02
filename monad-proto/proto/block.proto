@@ -15,8 +15,19 @@ message ProtoExecutionArtifacts {
   monad_proto.basic.ProtoGas gas_used = 6;
 }
 
+
+message ProtoEmptyBlockTransactionList {}
+
+message ProtoTransactionPayload {
+  oneof txns {
+    bytes list = 1;
+    ProtoEmptyBlockTransactionList empty = 2;
+    
+  }
+}
+
 message ProtoPayload {
-  bytes txns = 1;
+  ProtoTransactionPayload txns = 1;
   ProtoExecutionArtifacts header = 2;
   monad_proto.basic.ProtoSeqNum seq_num = 3;
   bytes beneficiary = 4;

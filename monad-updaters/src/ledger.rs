@@ -17,7 +17,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_types::{BlockId, SeqNum};
+use monad_types::{BlockId, Round};
 
 pub trait MockableLedger:
     Executor<Command = LedgerCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin
@@ -26,7 +26,7 @@ pub trait MockableLedger:
     type Event;
 
     fn ready(&self) -> bool;
-    fn get_blocks(&self) -> &BTreeMap<SeqNum, Block<Self::SignatureCollection>>;
+    fn get_blocks(&self) -> &BTreeMap<Round, Block<Self::SignatureCollection>>;
 }
 
 impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
@@ -37,7 +37,7 @@ impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
         (**self).ready()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<SeqNum, Block<Self::SignatureCollection>> {
+    fn get_blocks(&self) -> &BTreeMap<Round, Block<Self::SignatureCollection>> {
         (**self).get_blocks()
     }
 }
@@ -47,8 +47,8 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    blocks: BTreeMap<SeqNum, Block<SCT>>,
-    block_ids: HashMap<BlockId, SeqNum>,
+    blocks: BTreeMap<Round, Block<SCT>>,
+    block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<SCT>>,
 
     waker: Option<Waker>,
@@ -84,12 +84,12 @@ where
             match cmd {
                 LedgerCommand::LedgerCommit(blocks) => {
                     for block in blocks {
-                        match self.blocks.entry(block.get_seq_num()) {
+                        match self.blocks.entry(block.get_round()) {
                             std::collections::btree_map::Entry::Vacant(entry) => {
                                 let block_id = block.get_id();
-                                let seq_num = block.get_seq_num();
+                                let round = block.get_round();
                                 entry.insert(block);
-                                self.block_ids.insert(block_id, seq_num);
+                                self.block_ids.insert(block_id, round);
                             }
                             std::collections::btree_map::Entry::Occupied(entry) => {
                                 assert_eq!(entry.get(), &block, "two conflicting blocks committed")
@@ -100,9 +100,9 @@ where
                 LedgerCommand::LedgerFetch(block_id) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
                         response: match self.block_ids.get(&block_id) {
-                            Some(seq_num) => BlockSyncResponseMessage::BlockFound(
+                            Some(round) => BlockSyncResponseMessage::BlockFound(
                                 self.blocks
-                                    .get(seq_num)
+                                    .get(round)
                                     .expect("block_id mapping inconsistent")
                                     .clone(),
                             ),
@@ -153,7 +153,7 @@ where
         !self.events.is_empty()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<SeqNum, Block<SCT>> {
+    fn get_blocks(&self) -> &BTreeMap<Round, Block<SCT>> {
         &self.blocks
     }
 }

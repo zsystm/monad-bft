@@ -2,7 +2,7 @@ use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMe
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -181,7 +181,7 @@ fn timeout_msg_hash() {
 fn proposal_msg_hash() {
     use monad_testutil::signing::block_hash;
 
-    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
+    let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
 
     let mut privkey: [u8; 32] = [127; 32];
     let keypair = <NopKeyPair as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();

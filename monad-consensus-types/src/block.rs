@@ -7,7 +7,7 @@ use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
-    payload::{FullTransactionList, Payload},
+    payload::{Payload, TransactionPayload},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
@@ -46,7 +46,7 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     /// get list of all txn hashes in this block
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash>;
 
-    fn is_txn_list_empty(&self) -> bool;
+    fn is_empty_block(&self) -> bool;
 
     fn get_txn_list_len(&self) -> usize;
 
@@ -102,7 +102,15 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
             .field("timestamp", &self.timestamp)
             .field("qc", &self.qc)
             .field("id", &self.id)
-            .field("txn_payload_len", &self.payload.txns.bytes().len())
+            .field(
+                "txn_payload_len",
+                &match &self.payload.txns {
+                    TransactionPayload::List(txns) => {
+                        format!("{:?}", txns.bytes().len())
+                    }
+                    TransactionPayload::Empty => "empty".to_owned(),
+                },
+            )
             .field("seq_num", &self.payload.seq_num)
             .field("execution_state_root", &self.payload.header.state_root)
             .finish_non_exhaustive()
@@ -147,6 +155,14 @@ impl<SCT: SignatureCollection> Block<SCT> {
             },
         }
     }
+
+    /// Check if the block is a consensus protocol empty block. Note there's a
+    /// distinction between a block with no transactions
+    /// `TransactionPayload::List(FullTransactionList::empty())` and a consensus
+    /// protocol empty block `TransactionPayload::Empty`
+    pub fn is_empty_block(&self) -> bool {
+        matches!(self.payload.txns, TransactionPayload::Empty)
+    }
 }
 
 impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
@@ -189,12 +205,18 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
         vec![]
     }
 
-    fn is_txn_list_empty(&self) -> bool {
-        self.payload.txns == FullTransactionList::empty()
+    fn is_empty_block(&self) -> bool {
+        match &self.payload.txns {
+            TransactionPayload::List(_) => false,
+            TransactionPayload::Empty => true,
+        }
     }
 
     fn get_txn_list_len(&self) -> usize {
-        self.payload.txns.bytes().len()
+        match &self.payload.txns {
+            TransactionPayload::List(list) => list.bytes().len(),
+            TransactionPayload::Empty => 0,
+        }
     }
 
     fn get_qc(&self) -> &QuorumCertificate<SCT> {

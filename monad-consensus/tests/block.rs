@@ -1,7 +1,7 @@
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     voting::{Vote, VoteInfo},
 };
@@ -17,7 +17,7 @@ type SignatureType = NopSignature;
 
 #[test]
 fn block_hash_id() {
-    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
+    let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
     let author = node_id::<SignatureType>();
     let epoch = Epoch(1);
     let round = Round(234);

@@ -7,7 +7,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList},
+    payload::{ExecutionArtifacts, FullTransactionList, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -323,7 +323,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         Round(233),
         Round(232),
         BlockId(Hash([43_u8; 32])),
-        FullTransactionList::new(vec![1, 2, 3, 4].into()),
+        TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into())),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
         validator_mapping,
@@ -384,7 +384,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         Round(233),
         Round(231),
         BlockId(Hash([43_u8; 32])),
-        FullTransactionList::new(vec![1, 2, 3, 4].into()),
+        TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into())),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
         validator_mapping,

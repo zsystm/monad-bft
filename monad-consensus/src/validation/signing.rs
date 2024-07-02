@@ -327,9 +327,18 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
     }
 
     fn valid_seq_num(&self) -> Result<(), Error> {
-        if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() + SeqNum(1) {
-            return Err(Error::InvalidSeqNum);
+        if self.obj.block.is_empty_block() {
+            // Empty block doesn't occupy a sequence number
+            if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() {
+                return Err(Error::InvalidSeqNum);
+            }
+        } else {
+            // Non-empty blocks must extend their parent QC by 1
+            if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() + SeqNum(1) {
+                return Err(Error::InvalidSeqNum);
+            }
         }
+
         Ok(())
     }
 
@@ -679,7 +688,9 @@ mod test {
     use monad_consensus_types::{
         block::Block,
         ledger::CommitResult,
-        payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
+        payload::{
+            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+        },
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -1137,7 +1148,7 @@ mod test {
             Epoch(2), // wrong epoch: should be 1
             Round(1),
             &Payload {
-                txns: FullTransactionList::empty(),
+                txns: TransactionPayload::List(FullTransactionList::empty()),
                 header: ExecutionArtifacts::zero(),
                 seq_num: GENESIS_SEQ_NUM + SeqNum(1),
                 beneficiary: EthAddress::from_bytes([0x00_u8; 20]),

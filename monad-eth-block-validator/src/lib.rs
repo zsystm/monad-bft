@@ -4,6 +4,7 @@ use alloy_rlp::Decodable;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
     block_validator::{BlockValidationError, BlockValidator},
+    payload::TransactionPayload,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
@@ -46,64 +47,83 @@ where
         author_pubkey: &SignatureCollectionPubKeyType<SCT>,
     ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock, BlockValidationError>
     {
-        // RLP decodes the txns
-        let Ok(eth_txns) =
-            Vec::<EthSignedTransaction>::decode(&mut block.payload.txns.bytes().as_ref())
-        else {
-            return Err(BlockValidationError::TxnError);
-        };
+        match &block.payload.txns {
+            TransactionPayload::List(txns_rlp) => {
+                // RLP decodes the txns
+                let Ok(eth_txns) =
+                    Vec::<EthSignedTransaction>::decode(&mut txns_rlp.bytes().as_ref())
+                else {
+                    return Err(BlockValidationError::TxnError);
+                };
 
-        // recovering the signers verifies that these are valid signatures
-        let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
-            .ok_or(BlockValidationError::TxnError)?;
+                // recovering the signers verifies that these are valid signatures
+                let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
+                    .ok_or(BlockValidationError::TxnError)?;
 
-        // recover the account nonces in this block
-        let mut nonces = BTreeMap::new();
+                // recover the account nonces in this block
+                let mut nonces = BTreeMap::new();
 
-        let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
+                let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
 
-        for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
-            eth_txn
-                .chain_id()
-                .and_then(|cid| (cid == self.chain_id).then_some(()))
-                .ok_or(BlockValidationError::TxnError)?;
+                for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
+                    eth_txn
+                        .chain_id()
+                        .and_then(|cid| (cid == self.chain_id).then_some(()))
+                        .ok_or(BlockValidationError::TxnError)?;
 
-            let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
-            // txn iteration is following the same order as they are in the
-            // block. A block is invalid if we see a smaller or equal nonce
-            // after the first
-            if let Some(old_nonce) = maybe_old_nonce {
-                if old_nonce >= eth_txn.nonce() {
+                    let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
+                    // txn iteration is following the same order as they are in the
+                    // block. A block is invalid if we see a smaller or equal nonce
+                    // after the first
+                    if let Some(old_nonce) = maybe_old_nonce {
+                        if old_nonce >= eth_txn.nonce() {
+                            return Err(BlockValidationError::TxnError);
+                        }
+                    }
+                    validated_txns.push(eth_txn.with_signer(signer));
+                }
+
+                if validated_txns.len() > self.tx_limit {
                     return Err(BlockValidationError::TxnError);
                 }
+
+                let total_gas = validated_txns
+                    .iter()
+                    .fold(0, |acc, tx| acc + tx.gas_limit());
+                if total_gas > self.block_gas_limit {
+                    return Err(BlockValidationError::TxnError);
+                }
+
+                if let Err(e) = block
+                    .payload
+                    .randao_reveal
+                    .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
+                {
+                    warn!("Invalid randao_reveal signature, reason: {:?}", e);
+                    return Err(BlockValidationError::RandaoError);
+                };
+
+                Ok(EthValidatedBlock {
+                    block,
+                    validated_txns,
+                    nonces, // (address -> highest txn nonce) in the block
+                })
             }
-            validated_txns.push(eth_txn.with_signer(signer));
+            TransactionPayload::Empty => {
+                if let Err(e) = block
+                    .payload
+                    .randao_reveal
+                    .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
+                {
+                    warn!("Invalid randao_reveal signature, reason: {:?}", e);
+                    return Err(BlockValidationError::RandaoError);
+                };
+                Ok(EthValidatedBlock {
+                    block,
+                    validated_txns: Default::default(),
+                    nonces: Default::default(), // (address -> highest txn nonce) in the block
+                })
+            }
         }
-
-        if validated_txns.len() > self.tx_limit {
-            return Err(BlockValidationError::TxnError);
-        }
-
-        let total_gas = validated_txns
-            .iter()
-            .fold(0, |acc, tx| acc + tx.gas_limit());
-        if total_gas > self.block_gas_limit {
-            return Err(BlockValidationError::TxnError);
-        }
-
-        if let Err(e) = block
-            .payload
-            .randao_reveal
-            .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
-        {
-            warn!("Invalid randao_reveal signature, reason: {:?}", e);
-            return Err(BlockValidationError::RandaoError);
-        };
-
-        Ok(EthValidatedBlock {
-            block,
-            validated_txns,
-            nonces, // (address -> highest txn nonce) in the block
-        })
     }
 }

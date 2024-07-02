@@ -15,7 +15,7 @@ use monad_blockdb::BlockDb;
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
     block::{Block as MonadBlock, BlockType},
-    payload::{ExecutionArtifacts, FullTransactionList},
+    payload::{ExecutionArtifacts, FullTransactionList, TransactionPayload},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
@@ -28,7 +28,7 @@ use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_proto::proto::block::ProtoBlock;
 use monad_types::SeqNum;
 use prost::Message;
-use reth_primitives::{Block, BlockBody, Header};
+use reth_primitives::{Block as EthBlock, BlockBody, Header};
 use tracing::{info, trace};
 
 /// Protocol parameters that go into Eth block header
@@ -102,17 +102,23 @@ where
         Ok(())
     }
 
-    fn create_eth_block(&self, block: &MonadBlock<SCT>) -> Block {
-        // use the full transactions to create the eth block body
-        let block_body = generate_block_body(&block.payload.txns);
+    fn create_eth_block(&mut self, block: &MonadBlock<SCT>) -> EthBlock {
+        assert!(!block.is_empty_block());
+        if let TransactionPayload::List(txns) = &block.payload.txns {
+            // use the full transactions to create the eth block body
+            let block_body = generate_block_body(txns);
 
-        // the payload inside the monad block will be used to generate the eth header
-        let header = generate_header(&self.header_param, block, &block_body);
+            // the payload inside the monad block will be used to generate the eth header
 
-        let mut header_bytes = Vec::default();
-        header.encode(&mut header_bytes);
+            let header = generate_header(&self.header_param, block, &block_body);
 
-        block_body.create_block(header)
+            let mut header_bytes = Vec::default();
+            header.encode(&mut header_bytes);
+
+            block_body.create_block(header)
+        } else {
+            unreachable!()
+        }
     }
 }
 
@@ -127,44 +133,61 @@ where
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(full_blocks) => {
-                    let eth_blocks: Vec<Block> = full_blocks
-                        .iter()
-                        .map(|b| self.create_eth_block(b))
+                    let full_blocks: Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)> = full_blocks
+                        .into_iter()
+                        .map(|b| {
+                            if b.is_empty_block() {
+                                (b.get_seq_num(), None, b)
+                            } else {
+                                (b.get_seq_num(), Some(self.create_eth_block(&b)), b)
+                            }
+                        })
                         .collect();
-                    for eth_block in &eth_blocks {
-                        self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
-                        self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] +=
-                            eth_block.body.len() as u64;
-                        self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
-                        info!(
-                            num_tx = eth_block.body.len(),
-                            block_num = eth_block.number,
-                            "committed block"
-                        );
 
-                        for t in &eth_block.body {
-                            trace!(txn_hash = ?t.hash(), "txn committed");
+                    for block in &full_blocks {
+                        if let (_, Some(eth_block), _) = block {
+                            self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
+                            self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] +=
+                                eth_block.body.len() as u64;
+                            self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
+                            info!(
+                                num_tx = eth_block.body.len(),
+                                block_num = eth_block.number,
+                                "committed block"
+                            );
+
+                            for t in &eth_block.body {
+                                trace!(txn_hash = ?t.hash(), "txn committed");
+                            }
                         }
                     }
-                    let encoded_blocks: Vec<(SeqNum, Vec<u8>)> =
-                        std::iter::zip(eth_blocks.iter(), full_blocks.iter())
-                            .map(|(eth, monad)| (monad.get_seq_num(), encode_eth_block(eth)))
-                            .collect();
+
+                    let encoded_eth_blocks: Vec<(SeqNum, Vec<u8>)> = full_blocks
+                        .iter()
+                        .filter_map(|(seqnum, maybe_eth_block, _)| {
+                            maybe_eth_block
+                                .as_ref()
+                                .map(|eth_block| (*seqnum, encode_eth_block(eth_block)))
+                        })
+                        .collect();
 
                     let env = self.blockdb.clone();
                     tokio::task::spawn_blocking(move || {
-                        for (eth_block, bft_block) in
-                            std::iter::zip(eth_blocks.into_iter(), full_blocks.iter())
-                        {
+                        for (_, maybe_eth_block, bft_block) in full_blocks {
                             let bft_id = bft_block.get_id();
-                            let pblock: ProtoBlock = bft_block.into();
+                            let pblock: ProtoBlock = (&bft_block).into();
                             let data = pblock.encode_to_vec();
-
-                            env.write_eth_and_bft_blocks(eth_block, bft_id, &data);
+                            // if eth block is present, it must be written with
+                            // the matching bft block atomically
+                            match maybe_eth_block {
+                                Some(eth_block) => {
+                                    env.write_eth_and_bft_blocks(eth_block, bft_id, &data);
+                                }
+                                None => env.write_only_bft_block(bft_id, &data),
+                            }
                         }
                     });
-
-                    for (seqnum, b) in encoded_blocks {
+                    for (seqnum, b) in encoded_eth_blocks {
                         self.write_block(seqnum, &b).unwrap();
                         self.last_commit = Some(seqnum);
                     }
@@ -217,7 +240,7 @@ where
     }
 }
 
-fn encode_eth_block(block: &Block) -> Vec<u8> {
+fn encode_eth_block(block: &EthBlock) -> Vec<u8> {
     let mut buf = Vec::default();
     block.encode(&mut buf);
     buf
