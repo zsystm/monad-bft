@@ -75,6 +75,48 @@ fn setup_block(
         &qc,
     )
 }
+// combine this with above
+fn setup_block_yes(
+    author: NodeId<PubKeyType>,
+    block_epoch: Epoch,
+    block_round: Round,
+    qc_epoch: Epoch,
+    qc_round: Round,
+    signers: &[PubKeyType],
+) -> Block<MockSignatures<SignatureType>> {
+    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
+    let vi = VoteInfo {
+        id: BlockId(Hash([0x00_u8; 32])),
+        epoch: qc_epoch,
+        round: qc_round,
+        parent_id: BlockId(Hash([0x00_u8; 32])),
+        parent_round: Round(0),
+        seq_num: SeqNum(1),
+    };
+    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
+        QcInfo {
+            vote: Vote {
+                vote_info: vi,
+                ledger_commit_info: CommitResult::Commit,
+            },
+        },
+        MockSignatures::with_pubkeys(signers),
+    );
+
+    Block::<MockSignatures<SignatureType>>::new(
+        author,
+        block_epoch,
+        block_round,
+        &Payload {
+            txns,
+            header: ExecutionArtifacts::zero(),
+            seq_num: SeqNum(1),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
+        },
+        &qc,
+    )
+}
 // Error during verify if block epoch does not exist in epoch manager
 #[test]
 fn test_verify_incorrect_block_epoch() {
@@ -372,7 +414,45 @@ fn test_verify_proposal_hash() {
 }
 
 #[test]
-fn test_proposal_missing_tc() {
+fn test_validate_invalid_seq_num() {
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(1, ValidatorSetFactory::default());
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+    let author = NodeId::new(keypairs[0].pubkey());
+
+    let proposal = Unvalidated::new(ProposalMessage {
+        block: setup_block_yes(
+            author,
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+            Round(234),
+            epoch_manager.get_epoch(Round(232)).expect("epoch exists"),
+            Round(232),
+            keypairs
+                .iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
+        last_round_tc: None,
+    });
+
+    assert!(matches!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::InvalidSeqNum)
+    ));
+}
+
+#[test]
+fn test_validate_missing_tc() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
         SignatureType,
         SignatureCollectionType,
@@ -409,8 +489,9 @@ fn test_proposal_missing_tc() {
     ));
 }
 
+
 #[test]
-fn test_proposal_invalid_qc() {
+fn test_validate_incorrect_block_epoch() {
     let mut vlist = Vec::new();
     let non_staked_keypair = get_key::<SignatureType>(6);
     let staked_keypair = get_key::<SignatureType>(7);
@@ -429,6 +510,190 @@ fn test_proposal_invalid_qc() {
             non_staked_keypair.pubkey(),
         ),
     ]);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(2), Round(1000))]);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(2),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+
+    let author = NodeId::new(non_staked_keypair.pubkey());
+    let proposal = Unvalidated::new(ProposalMessage {
+        block: setup_block(
+            author,
+            Epoch(1),
+            Round(234),
+            Epoch(2),
+            Round(233),
+            &[non_staked_keypair.pubkey()],
+        ),
+        last_round_tc: None,
+    });
+
+    let validate_result = proposal.clone().validate(&epoch_manager, &val_epoch_map);
+
+    assert!(matches!(validate_result, Err(Error::InvalidEpoch)));
+}
+
+#[test]
+fn test_validate__qc_epoch() {
+    let mut vlist = Vec::new();
+    let non_staked_keypair = get_key::<SignatureType>(6);
+    let staked_keypair = get_key::<SignatureType>(7);
+
+    vlist.push((NodeId::new(non_staked_keypair.pubkey()), Stake(0)));
+    vlist.push((NodeId::new(staked_keypair.pubkey()), Stake(1)));
+
+    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
+    let vmap = ValidatorMapping::new(vec![
+        (
+            NodeId::new(staked_keypair.pubkey()),
+            staked_keypair.pubkey(),
+        ),
+        (
+            NodeId::new(non_staked_keypair.pubkey()),
+            non_staked_keypair.pubkey(),
+        ),
+    ]);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(2), Round(1000))]);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(2),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+
+    let author = NodeId::new(non_staked_keypair.pubkey());
+    let proposal = Unvalidated::new(ProposalMessage {
+        block: setup_block(
+            author,
+            Epoch(2),
+            Round(1000),
+            Epoch(1),
+            Round(999),
+            &[non_staked_keypair.pubkey()],
+        ),
+        last_round_tc: None,
+    });
+
+    let validate_result = proposal.clone().validate(&epoch_manager, &val_epoch_map);
+    
+    assert!(matches!(validate_result, Err(Error::InvalidEpoch)));
+}
+
+
+#[test]
+fn test_validate_mismatch_qc_epoch() {
+    let mut vlist = Vec::new();
+    let non_staked_keypair = get_key::<SignatureType>(6);
+    let staked_keypair = get_key::<SignatureType>(7);
+
+    vlist.push((NodeId::new(non_staked_keypair.pubkey()), Stake(0)));
+    vlist.push((NodeId::new(staked_keypair.pubkey()), Stake(1)));
+
+    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
+    let vmap = ValidatorMapping::new(vec![
+        (
+            NodeId::new(staked_keypair.pubkey()),
+            staked_keypair.pubkey(),
+        ),
+        (
+            NodeId::new(non_staked_keypair.pubkey()),
+            non_staked_keypair.pubkey(),
+        ),
+    ]);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(2), Round(999))]);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(2),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+
+    let author = NodeId::new(non_staked_keypair.pubkey());
+    let proposal = Unvalidated::new(ProposalMessage {
+        block: setup_block(
+            author,
+            Epoch(2),
+            Round(1000),
+            Epoch(1),
+            Round(999),
+            &[non_staked_keypair.pubkey()],
+        ),
+        last_round_tc: None,
+    });
+
+    let validate_result = proposal.clone().validate(&epoch_manager, &val_epoch_map);
+    assert!(matches!(validate_result, Err(Error::InvalidEpoch)));
+}
+// validators dont exist in this epoch 
+#[test]
+fn test_proposal_invalid_qcckyou() {
+    let mut vlist = Vec::new();
+    let non_staked_keypair = get_key::<SignatureType>(6);
+    let staked_keypair = get_key::<SignatureType>(7);
+
+    vlist.push((NodeId::new(non_staked_keypair.pubkey()), Stake(0)));
+    vlist.push((NodeId::new(staked_keypair.pubkey()), Stake(1)));
+
+    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
+    let vmap = ValidatorMapping::new(vec![
+        (
+            NodeId::new(staked_keypair.pubkey()),
+            staked_keypair.pubkey(),
+        ),
+        (
+            NodeId::new(non_staked_keypair.pubkey()),
+            non_staked_keypair.pubkey(),
+        ),
+    ]);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(5),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+
+    let author = NodeId::new(non_staked_keypair.pubkey());
+    let proposal = Unvalidated::new(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+            Round(234),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+            Round(233),
+            &[non_staked_keypair.pubkey()],
+        ),
+        last_round_tc: None,
+    });
+
+    let validate_result = proposal.clone().validate(&epoch_manager, &val_epoch_map);
+    println!("{:?}",validate_result.clone());
+    assert!(matches!(validate_result, Err(Error::ValidatorSetDataUnavailable)));
+}
+#[test]
+fn test_validate_insufficent_qc_stake() {
+    let mut vlist = Vec::new();
+    let non_staked_keypair = get_key::<SignatureType>(6);
+    let staked_keypair = get_key::<SignatureType>(7);
+
+    vlist.push((NodeId::new(non_staked_keypair.pubkey()), Stake(0)));
+    vlist.push((NodeId::new(staked_keypair.pubkey()), Stake(1)));
+
+    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
+    let vmap = ValidatorMapping::new(vec![
+        (
+            NodeId::new(staked_keypair.pubkey()),
+            staked_keypair.pubkey(),
+        ),
+        (
+            NodeId::new(non_staked_keypair.pubkey()),
+            non_staked_keypair.pubkey(),
+        ),
+    ]);
+
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
@@ -451,6 +716,52 @@ fn test_proposal_invalid_qc() {
     });
 
     let validate_result = proposal.clone().validate(&epoch_manager, &val_epoch_map);
+    
+    assert!(matches!(validate_result, Err(Error::InsufficientStake)));
+}
+#[test]
+fn test_validate_insufficent_qc_stakeoko() {
+    let mut vlist = Vec::new();
+    let non_staked_keypair = get_key::<SignatureType>(6);
+    let staked_keypair = get_key::<SignatureType>(7);
 
+    vlist.push((NodeId::new(non_staked_keypair.pubkey()), Stake(0)));
+    vlist.push((NodeId::new(staked_keypair.pubkey()), Stake(1)));
+
+    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
+    let vmap = ValidatorMapping::new(vec![
+        (
+            NodeId::new(staked_keypair.pubkey()),
+            staked_keypair.pubkey(),
+        ),
+        (
+            NodeId::new(non_staked_keypair.pubkey()),
+            non_staked_keypair.pubkey(),
+        ),
+    ]);
+
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+
+    let author = NodeId::new(non_staked_keypair.pubkey());
+    let proposal = Unvalidated::new(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+            Round(234),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+            Round(233),
+            &[non_staked_keypair.pubkey()],
+        ),
+        last_round_tc: None,
+    });
+
+    let validate_result = proposal.clone().validate(&epoch_manager, &val_epoch_map);
+    
     assert!(matches!(validate_result, Err(Error::InsufficientStake)));
 }
