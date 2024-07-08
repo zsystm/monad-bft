@@ -40,6 +40,7 @@ fn setup_block(
     block_round: Round,
     qc_epoch: Epoch,
     qc_round: Round,
+    seq_num: SeqNum,
     signers: &[PubKeyType],
 ) -> Block<MockSignatures<SignatureType>> {
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
@@ -49,49 +50,7 @@ fn setup_block(
         round: qc_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
-        seq_num: SeqNum(0),
-    };
-    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
-        QcInfo {
-            vote: Vote {
-                vote_info: vi,
-                ledger_commit_info: CommitResult::Commit,
-            },
-        },
-        MockSignatures::with_pubkeys(signers),
-    );
-
-    Block::<MockSignatures<SignatureType>>::new(
-        author,
-        block_epoch,
-        block_round,
-        &Payload {
-            txns,
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(1),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        },
-        &qc,
-    )
-}
-// combine this with above
-fn setup_block_yes(
-    author: NodeId<PubKeyType>,
-    block_epoch: Epoch,
-    block_round: Round,
-    qc_epoch: Epoch,
-    qc_round: Round,
-    signers: &[PubKeyType],
-) -> Block<MockSignatures<SignatureType>> {
-    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
-    let vi = VoteInfo {
-        id: BlockId(Hash([0x00_u8; 32])),
-        epoch: qc_epoch,
-        round: qc_round,
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: Round(0),
-        seq_num: SeqNum(1),
+        seq_num: seq_num,
     };
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
         QcInfo {
@@ -143,6 +102,7 @@ fn test_verify_incorrect_block_epoch() {
             Round(234),
             Epoch(1),
             Round(233),
+            SeqNum(0),
             keypairs
                 .iter()
                 .map(|kp| kp.pubkey())
@@ -188,6 +148,7 @@ fn test_verify_incorrect_validator_epoch() {
             Round(234),
             Epoch(1),
             Round(233),
+            SeqNum(0),
             keypairs
                 .iter()
                 .map(|kp| kp.pubkey())
@@ -210,6 +171,7 @@ fn test_verify_incorrect_validator_epoch() {
 
 #[test]
 fn test_verify_invalid_author() {
+    // sender is not in signer set  
     let mut vlist = Vec::new();
     let author_keypair = get_key::<SignatureType>(6);
     let non_valdiator_keypair = get_key::<SignatureType>(7);
@@ -238,6 +200,7 @@ fn test_verify_invalid_author() {
             Round(234),
             epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
+            SeqNum(0),
             &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
         ),
         last_round_tc: None,
@@ -282,6 +245,7 @@ fn test_verify_author_not_sender() {
             Round(234),
             epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
+            SeqNum(0),
             keypairs
                 .iter()
                 .map(|keypair| keypair.pubkey())
@@ -304,6 +268,7 @@ fn test_verify_author_not_sender() {
 
 #[test]
 fn test_verify_invalid_signature() {
+    // signed message is different then message to validate
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
         SignatureType,
         SignatureCollectionType,
@@ -329,6 +294,7 @@ fn test_verify_invalid_signature() {
             Round(234),
             epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
+            SeqNum(0),
             keypairs
                 .iter()
                 .map(|keypair| keypair.pubkey())
@@ -345,6 +311,7 @@ fn test_verify_invalid_signature() {
             Round(2),
             epoch_manager.get_epoch(Round(2)).expect("epoch exists"),
             Round(2),
+            SeqNum(0),
             keypairs
                 .iter()
                 .map(|keypair| keypair.pubkey())
@@ -372,6 +339,7 @@ fn test_verify_invalid_signature() {
 
 #[test]
 fn test_verify_proposal_hash() {
+    // good path
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
         SignatureType,
         SignatureCollectionType,
@@ -394,6 +362,7 @@ fn test_verify_proposal_hash() {
             Round(234),
             epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
+            SeqNum(0),
             keypairs
                 .iter()
                 .map(|kp| kp.pubkey())
@@ -415,44 +384,7 @@ fn test_verify_proposal_hash() {
 
 #[test]
 fn test_validate_invalid_seq_num() {
-    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
-        SignatureType,
-        SignatureCollectionType,
-        _,
-    >(1, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
-    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
-    val_epoch_map.insert(
-        Epoch(1),
-        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
-        vmap,
-    );
-    let author = NodeId::new(keypairs[0].pubkey());
-
-    let proposal = Unvalidated::new(ProposalMessage {
-        block: setup_block_yes(
-            author,
-            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
-            Round(234),
-            epoch_manager.get_epoch(Round(232)).expect("epoch exists"),
-            Round(232),
-            keypairs
-                .iter()
-                .map(|kp| kp.pubkey())
-                .collect::<Vec<_>>()
-                .as_slice(),
-        ),
-        last_round_tc: None,
-    });
-
-    assert!(matches!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
-        Err(Error::InvalidSeqNum)
-    ));
-}
-
-#[test]
-fn test_validate_missing_tc() {
+    // seq num mismatch between block and QC
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
         SignatureType,
         SignatureCollectionType,
@@ -474,6 +406,47 @@ fn test_validate_missing_tc() {
             Round(234),
             epoch_manager.get_epoch(Round(232)).expect("epoch exists"),
             Round(232),
+            SeqNum(1),
+            keypairs
+                .iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
+        last_round_tc: None,
+    });
+
+    assert!(matches!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::InvalidSeqNum)
+    ));
+}
+
+#[test]
+fn test_validate_missing_tc() {
+    // Old QC and TC is missing 
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(1, ValidatorSetFactory::default());
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
+    let author = NodeId::new(keypairs[0].pubkey());
+
+    let proposal = Unvalidated::new(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+            Round(234),
+            epoch_manager.get_epoch(Round(232)).expect("epoch exists"),
+            Round(232),
+            SeqNum(0),
             keypairs
                 .iter()
                 .map(|kp| kp.pubkey())
@@ -526,6 +499,7 @@ fn test_validate_incorrect_block_epoch() {
             Round(234),
             Epoch(2),
             Round(233),
+            SeqNum(0),
             &[non_staked_keypair.pubkey()],
         ),
         last_round_tc: None,
@@ -537,7 +511,8 @@ fn test_validate_incorrect_block_epoch() {
 }
 
 #[test]
-fn test_validate__qc_epoch() {
+fn test_validate_qc_epoch() {
+    // epoch corresponding to qc round does not exist 
     let mut vlist = Vec::new();
     let non_staked_keypair = get_key::<SignatureType>(6);
     let staked_keypair = get_key::<SignatureType>(7);
@@ -572,6 +547,7 @@ fn test_validate__qc_epoch() {
             Round(1000),
             Epoch(1),
             Round(999),
+            SeqNum(0),
             &[non_staked_keypair.pubkey()],
         ),
         last_round_tc: None,
@@ -585,6 +561,7 @@ fn test_validate__qc_epoch() {
 
 #[test]
 fn test_validate_mismatch_qc_epoch() {
+    // local epoch determined by qc round is not equivalent to qc epoch
     let mut vlist = Vec::new();
     let non_staked_keypair = get_key::<SignatureType>(6);
     let staked_keypair = get_key::<SignatureType>(7);
@@ -619,6 +596,7 @@ fn test_validate_mismatch_qc_epoch() {
             Round(1000),
             Epoch(1),
             Round(999),
+            SeqNum(0),
             &[non_staked_keypair.pubkey()],
         ),
         last_round_tc: None,
@@ -627,9 +605,9 @@ fn test_validate_mismatch_qc_epoch() {
     let validate_result = proposal.clone().validate(&epoch_manager, &val_epoch_map);
     assert!(matches!(validate_result, Err(Error::InvalidEpoch)));
 }
-// validators dont exist in this epoch 
 #[test]
-fn test_proposal_invalid_qcckyou() {
+fn test_proposal_invalid_qc_validator_set() {
+    // validators dont exist in this qc epoch 
     let mut vlist = Vec::new();
     let non_staked_keypair = get_key::<SignatureType>(6);
     let staked_keypair = get_key::<SignatureType>(7);
@@ -664,6 +642,7 @@ fn test_proposal_invalid_qcckyou() {
             Round(234),
             epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
+            SeqNum(0),
             &[non_staked_keypair.pubkey()],
         ),
         last_round_tc: None,
@@ -710,6 +689,7 @@ fn test_validate_insufficent_qc_stake() {
             Round(234),
             epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
+            SeqNum(0),
             &[non_staked_keypair.pubkey()],
         ),
         last_round_tc: None,
@@ -756,6 +736,7 @@ fn test_validate_insufficent_qc_stakeoko() {
             Round(234),
             epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
+            SeqNum(0),
             &[non_staked_keypair.pubkey()],
         ),
         last_round_tc: None,
