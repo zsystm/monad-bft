@@ -22,6 +22,7 @@ use monad_consensus_types::block::BlockType;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{LogFriendlyMonadEvent, MonadEvent};
 use monad_secp::SecpSignature;
+use monad_types::Epoch;
 use monad_wal::wal::WALoggerConfig;
 use ratatui::{
     prelude::*,
@@ -477,9 +478,16 @@ impl Widget for &EventListWidget {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct BlockInfo {
+    author: String,
+    epoch: Epoch,
+}
+
 #[derive(Debug, Serialize, Default)]
 struct EventStat {
     block_time: BTreeMap<u64, DateTime<Utc>>,
+    leader: BTreeMap<u64, BlockInfo>,
 }
 
 struct StatExtractor {
@@ -508,8 +516,13 @@ impl StatExtractor {
                     let msg = unverified_message.get_obj_unsafe();
                     match &msg.message {
                         ProtocolMessage::Proposal(p) => {
-                            let r = p.block.get_round();
-                            stat.block_time.insert(r.0, event.timestamp);
+                            let (author, round, epoch) = (
+                                format!("{:?}", p.block.author.pubkey()),
+                                p.block.get_round(),
+                                p.block.epoch,
+                            );
+                            stat.block_time.insert(round.0, event.timestamp);
+                            stat.leader.insert(round.0, BlockInfo { author, epoch });
                         }
                         _ => continue,
                     }

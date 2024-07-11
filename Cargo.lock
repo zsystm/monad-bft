@@ -3560,7 +3560,6 @@ dependencies = [
  "clap 4.4.10",
  "futures",
  "inquire",
- "itertools 0.10.5",
  "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
