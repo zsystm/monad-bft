@@ -180,14 +180,17 @@ impl<ST: CertificateSignatureRecoverable> TestSigner<ST> {
 
         Unverified::new(Unvalidated::new(o), sig)
     }
-    
-    pub fn sign_incorrect_object<T: Hashable>(o: T, a: T, key: &ST::KeyPairType) -> Unverified<ST, Unvalidated<T>> {
+
+    pub fn sign_incorrect_object<T: Hashable>(
+        o: T,
+        a: T,
+        key: &ST::KeyPairType,
+    ) -> Unverified<ST, Unvalidated<T>> {
         let msg = HasherType::hash_object(&o);
         let sig = ST::sign(msg.as_ref(), key);
 
         Unverified::new(Unvalidated::new(a), sig)
     }
-
 }
 
 pub fn get_key<ST: CertificateSignatureRecoverable>(seed: u64) -> ST::KeyPairType {
