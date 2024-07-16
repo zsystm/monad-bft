@@ -16,10 +16,8 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
-    hasher::{Hash},
-    NopSignature,
-    NopPubKey,
-    NopKeyPair,
+    hasher::Hash,
+    NopKeyPair, NopPubKey, NopSignature,
 };
 use monad_eth_types::EthAddress;
 use monad_testutil::{
@@ -37,7 +35,7 @@ type SignatureType = NopSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 
-static _NUM_NODES:u32 = 4;
+static _NUM_NODES: u32 = 4;
 static _VAL_SET_UPDATE_INTERVAL: SeqNum = SeqNum(2000);
 static _EPOCH_START_DELAY: Round = Round(50);
 
@@ -48,7 +46,7 @@ fn setup_block(
     block_seq_num: SeqNum,
     qc_epoch: Epoch,
     qc_round: Round,
-    qc_parent_round: Round, 
+    qc_parent_round: Round,
     seq_num: SeqNum,
     signers: &[PubKeyType],
 ) -> Block<MockSignatures<SignatureType>> {
@@ -85,17 +83,16 @@ fn setup_block(
         &qc,
     )
 }
-fn setup_val_state(    
+fn setup_val_state(
     known_epoch: Epoch,
-    known_round: Round, 
+    known_round: Round,
     val_epoch: Epoch,
 ) -> (
-    Vec<NopKeyPair>, 
-    Vec<NopKeyPair>, 
-    EpochManager, 
-    ValidatorsEpochMapping<ValidatorSetFactory<NopPubKey>, SignatureCollectionType>
-){
-
+    Vec<NopKeyPair>,
+    Vec<NopKeyPair>,
+    EpochManager,
+    ValidatorsEpochMapping<ValidatorSetFactory<NopPubKey>, SignatureCollectionType>,
+) {
     let (keypairs, _certkeys, _, _) = create_keys_w_validators::<
         SignatureType,
         SignatureCollectionType,
@@ -104,40 +101,43 @@ fn setup_val_state(
 
     let mut vlist = Vec::new();
     let mut vmap_vec = Vec::new();
-        
+
     for keypair in &keypairs {
         let node_id = NodeId::new(keypair.pubkey());
-    
+
         vlist.push((node_id, Stake(33)));
         vmap_vec.push((node_id, keypair.pubkey()));
     }
-    
+
     let _vset = ValidatorSetFactory::default().create(vlist).unwrap();
     let _vmap = ValidatorMapping::new(vmap_vec);
-    
 
-    let epoch_manager = EpochManager::new(_VAL_SET_UPDATE_INTERVAL, _EPOCH_START_DELAY, &[(known_epoch, known_round)]);
+    let epoch_manager = EpochManager::new(
+        _VAL_SET_UPDATE_INTERVAL,
+        _EPOCH_START_DELAY,
+        &[(known_epoch, known_round)],
+    );
     let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
-    ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
 
     val_epoch_map.insert(
         val_epoch,
         _vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
         _vmap,
     );
-    
+
     (keypairs, _certkeys, epoch_manager, val_epoch_map)
 }
 fn define_proposal_with_tc(
     known_epoch: Epoch,
-    known_round: Round, 
+    known_round: Round,
     val_epoch: Epoch,
     block_epoch: Epoch,
     block_round: Round,
     block_seq_num: SeqNum,
     qc_epoch: Epoch,
     qc_round: Round,
-    qc_parent_round: Round, 
+    qc_parent_round: Round,
     qc_seq_num: SeqNum,
     has_tc: bool,
     tc_epoch: Epoch,
@@ -145,12 +145,12 @@ fn define_proposal_with_tc(
     tc_epoch_signed: Epoch,
     tc_round_signed: Round,
 ) -> (
-    Vec<NopKeyPair>, 
-    Vec<NopKeyPair>, 
-    EpochManager, 
+    Vec<NopKeyPair>,
+    Vec<NopKeyPair>,
+    EpochManager,
     ValidatorsEpochMapping<ValidatorSetFactory<NopPubKey>, SignatureCollectionType>,
     ProposalMessage<SignatureCollectionType>,
-){
+) {
     let (keys, cert_keys, _, _) = create_keys_w_validators::<
         SignatureType,
         SignatureCollectionType,
@@ -159,14 +159,14 @@ fn define_proposal_with_tc(
 
     let mut vlist = Vec::new();
     let mut vmap_vec = Vec::new();
-        
+
     for keypair in &keys {
         let node_id = NodeId::new(keypair.pubkey());
-    
+
         vlist.push((node_id, Stake(1)));
         vmap_vec.push((node_id, keypair.pubkey()));
     }
-    
+
     let _vset = ValidatorSetFactory::default().create(vlist).unwrap();
 
     // create valid QC
@@ -186,16 +186,17 @@ fn define_proposal_with_tc(
                 ledger_commit_info: CommitResult::Commit,
             },
         },
-        MockSignatures::with_pubkeys(keys
-            .iter()
-            .map(|kp| kp.pubkey())
-            .collect::<Vec<_>>()
-            .as_slice()),
+        MockSignatures::with_pubkeys(
+            keys.iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
     );
 
     // Not actually signed
     let _tminfo = TimeoutInfo {
-        epoch: tc_epoch_signed, 
+        epoch: tc_epoch_signed,
         round: tc_round_signed,
         high_qc: qc.clone(),
     };
@@ -204,11 +205,12 @@ fn define_proposal_with_tc(
         high_qc_round: HighQcRound {
             qc_round: qc.get_round(),
         },
-        sigs: MockSignatures::with_pubkeys(keys
-            .iter()
-            .map(|kp| kp.pubkey())
-            .collect::<Vec<_>>()
-            .as_slice()),
+        sigs: MockSignatures::with_pubkeys(
+            keys.iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
     };
 
     let tc = TimeoutCertificate {
@@ -216,16 +218,20 @@ fn define_proposal_with_tc(
         round: tc_round,
         high_qc_rounds: vec![high_qc_sig_tuple],
     };
-    
+
     // moved here because of valmap ownership
-    let epoch_manager = EpochManager::new(_VAL_SET_UPDATE_INTERVAL, _EPOCH_START_DELAY, &[(known_epoch, known_round)]);
+    let epoch_manager = EpochManager::new(
+        _VAL_SET_UPDATE_INTERVAL,
+        _EPOCH_START_DELAY,
+        &[(known_epoch, known_round)],
+    );
     let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
-    ValidatorsEpochMapping::new(ValidatorSetFactory::default());
-    
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+
     val_epoch_map.insert(
-        val_epoch, 
+        val_epoch,
         _vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
-        ValidatorMapping::new(vmap_vec)
+        ValidatorMapping::new(vmap_vec),
     );
 
     let author = NodeId::new(keys[0].pubkey());
@@ -241,7 +247,7 @@ fn define_proposal_with_tc(
         &[keys[0].pubkey(), keys[1].pubkey(), keys[2].pubkey()],
     );
 
-    let proposal; 
+    let proposal;
     if has_tc {
         proposal = ProposalMessage {
             block: block,
@@ -258,25 +264,22 @@ fn define_proposal_with_tc(
 }
 // epoch determined by block round does not exist in epoch manager
 #[test]
-fn test_verify_incorrect_block_epoch() {  
+fn test_verify_incorrect_block_epoch() {
     let known_epoch = Epoch(2);
     let known_round = Round(300);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = Epoch(1);
     let block_round = Round(234);
     let block_seq_num = SeqNum(110);
-    
+
     let qc_epoch = Epoch(1);
     let qc_round = Round(233);
     let qc_parent_round = Round(0);
     let qc_seq_num = SeqNum(0);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round, 
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
 
     let author = NodeId::new(keypairs[0].pubkey());
 
@@ -314,8 +317,8 @@ fn test_verify_incorrect_block_epoch() {
 fn test_verify_incorrect_validator_epoch() {
     let known_epoch = Epoch(2);
     let known_round = Round(200);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = Epoch(1);
     let block_round = Round(234);
     let block_seq_num = SeqNum(110);
@@ -325,11 +328,8 @@ fn test_verify_incorrect_validator_epoch() {
     let qc_parent_round = Round(0);
     let qc_seq_num = SeqNum(0);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round, 
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
 
     let author = NodeId::new(keypairs[0].pubkey());
 
@@ -356,7 +356,7 @@ fn test_verify_incorrect_validator_epoch() {
         message: proposal,
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
-    
+
     assert_eq!(
         sp.verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey()),
         Err(Error::ValidatorSetDataUnavailable)
@@ -367,8 +367,8 @@ fn test_verify_incorrect_validator_epoch() {
 fn test_verify_invalid_author() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = Epoch(1);
     let block_round = Round(234);
     let block_seq_num = SeqNum(110);
@@ -378,11 +378,8 @@ fn test_verify_invalid_author() {
     let qc_parent_round = Round(0);
     let qc_seq_num = SeqNum(0);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,   
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
 
     let non_valdiator_keypair = get_key::<SignatureType>(7);
     let author = NodeId::new(keypairs[0].pubkey());
@@ -418,8 +415,8 @@ fn test_verify_invalid_author() {
 fn test_verify_author_not_sender() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = Epoch(1);
     let block_round = Round(234);
     let block_seq_num = SeqNum(110);
@@ -429,11 +426,8 @@ fn test_verify_author_not_sender() {
     let qc_parent_round = Round(0);
     let qc_seq_num = SeqNum(0);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round, 
-        val_epoch,   
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
 
     let author_keypair = &keypairs[0];
     let sender_keypair = &keypairs[1];
@@ -473,8 +467,8 @@ fn test_verify_author_not_sender() {
 fn test_verify_invalid_signature() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = Epoch(1);
     let block_round = Round(234);
     let block_seq_num = SeqNum(110);
@@ -484,11 +478,8 @@ fn test_verify_invalid_signature() {
     let qc_parent_round = Round(0);
     let qc_seq_num = SeqNum(0);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round, 
-        val_epoch,   
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
 
     let author_keypair = &keypairs[0];
     let author = NodeId::new(author_keypair.pubkey());
@@ -550,9 +541,9 @@ fn test_verify_invalid_signature() {
 #[test]
 fn test_verify_proposal_hash() {
     let known_epoch = Epoch(1);
-    let known_round = Round(0); 
-    let val_epoch = known_epoch; 
-    
+    let known_round = Round(0);
+    let val_epoch = known_epoch;
+
     let block_epoch = Epoch(1);
     let block_round = known_round + Round(2344);
     let block_seq_num = SeqNum(110);
@@ -562,11 +553,8 @@ fn test_verify_proposal_hash() {
     let qc_parent_round = Round(0);
     let qc_seq_num = SeqNum(0);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
     let author = NodeId::new(keypairs[0].pubkey());
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
@@ -600,25 +588,21 @@ fn test_verify_proposal_hash() {
 // block seq num is not QC seq num + 1
 #[test]
 fn test_validate_invalid_seq_num() {
-
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = Epoch(1);
     let block_round = Round(234);
     let block_seq_num = SeqNum(110);
-    
+
     let qc_epoch = Epoch(1);
     let qc_round = Round(233);
     let qc_parent_round = Round(0);
     let qc_seq_num = block_seq_num - SeqNum(2);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
     let author = NodeId::new(keypairs[0].pubkey());
 
     let proposal = Unvalidated::new(ProposalMessage {
@@ -641,32 +625,28 @@ fn test_validate_invalid_seq_num() {
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map), 
+        proposal.validate(&epoch_manager, &val_epoch_map),
         Err(Error::InvalidSeqNum)
     );
-    
 }
-// block round is not either QC seq num + 1 or TC block round + 1 
+// block round is not either QC seq num + 1 or TC block round + 1
 #[test]
 fn test_validate_missing_tc() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = Epoch(1); 
+    let val_epoch = Epoch(1);
 
     let block_epoch = Epoch(1);
     let block_round = Round(23);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = Epoch(1);
     let qc_round = Round(233);
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
     let author = NodeId::new(keypairs[0].pubkey());
 
     let proposal = Unvalidated::new(ProposalMessage {
@@ -689,7 +669,7 @@ fn test_validate_missing_tc() {
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map), 
+        proposal.validate(&epoch_manager, &val_epoch_map),
         Err(Error::NotWellFormed)
     );
 }
@@ -698,22 +678,19 @@ fn test_validate_missing_tc() {
 fn test_validate_incorrect_block_epoch() {
     let known_epoch = Epoch(4);
     let known_round = Round(0);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = Epoch(1);
     let block_round = Round(23);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = Epoch(1);
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
     let author = NodeId::new(keypairs[0].pubkey());
 
     let proposal = Unvalidated::new(ProposalMessage {
@@ -732,31 +709,28 @@ fn test_validate_incorrect_block_epoch() {
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map), 
+        proposal.validate(&epoch_manager, &val_epoch_map),
         Err(Error::InvalidEpoch)
     );
 }
-// epoch corresponding to qc round does not exist 
+// epoch corresponding to qc round does not exist
 #[test]
 fn test_validate_qc_epoch() {
     let known_epoch = Epoch(4);
     let known_round = Round(0);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = Epoch(1);
     let block_round = Round(23);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = Epoch(1);
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
     let author = NodeId::new(keypairs[0].pubkey());
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
@@ -772,9 +746,9 @@ fn test_validate_qc_epoch() {
         ),
         last_round_tc: None,
     });
-    
+
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map), 
+        proposal.validate(&epoch_manager, &val_epoch_map),
         Err(Error::InvalidEpoch)
     );
 }
@@ -783,22 +757,19 @@ fn test_validate_qc_epoch() {
 fn test_validate_mismatch_qc_epoch() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = Epoch(1); 
-    
+    let val_epoch = Epoch(1);
+
     let block_epoch = known_epoch;
     let block_round = Round(23);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = Epoch(2);
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
     let author = NodeId::new(keypairs[0].pubkey());
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
@@ -816,31 +787,28 @@ fn test_validate_mismatch_qc_epoch() {
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map), 
+        proposal.validate(&epoch_manager, &val_epoch_map),
         Err(Error::InvalidEpoch)
     );
 }
-// validators do not exist for correspond qc epoch 
+// validators do not exist for correspond qc epoch
 #[test]
 fn test_proposal_invalid_qc_validator_set() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = Epoch(2); 
-    
+    let val_epoch = Epoch(2);
+
     let block_epoch = known_epoch;
     let block_round = Round(23);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
     let author = NodeId::new(keypairs[0].pubkey());
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
@@ -858,31 +826,28 @@ fn test_proposal_invalid_qc_validator_set() {
     });
 
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map), 
+        proposal.validate(&epoch_manager, &val_epoch_map),
         Err(Error::ValidatorSetDataUnavailable)
     );
 }
-// QC has insufficent stake 
+// QC has insufficent stake
 #[test]
 fn test_validate_insufficent_qc_stake() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = Round(23);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
 
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
@@ -898,33 +863,30 @@ fn test_validate_insufficent_qc_stake() {
         ),
         last_round_tc: None,
     });
-    
+
     assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map), 
+        proposal.validate(&epoch_manager, &val_epoch_map),
         Err(Error::InsufficientStake)
     );
 }
-// validate happy path for empty TC 
+// validate happy path for empty TC
 #[test]
 fn test_validate_qc_fuzz() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let (keypairs, _certkeys, epoch_manager, val_epoch_map) = setup_val_state(    
-        known_epoch,  
-        known_round,  
-        val_epoch,    
-    );
+    let (keypairs, _certkeys, epoch_manager, val_epoch_map) =
+        setup_val_state(known_epoch, known_round, val_epoch);
 
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
@@ -936,7 +898,12 @@ fn test_validate_qc_fuzz() {
             qc_round,
             qc_parent_round,
             qc_seq_num,
-            &[keypairs[0].pubkey(),keypairs[1].pubkey(),keypairs[2].pubkey(),keypairs[3].pubkey()],
+            &[
+                keypairs[0].pubkey(),
+                keypairs[1].pubkey(),
+                keypairs[2].pubkey(),
+                keypairs[3].pubkey(),
+            ],
         ),
         last_round_tc: None,
     });
@@ -948,12 +915,12 @@ fn test_validate_qc_fuzz() {
 fn test_validate_tc_invalid_seq_num() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
@@ -964,10 +931,10 @@ fn test_validate_tc_invalid_seq_num() {
     let tc_round = Round(2);
     let tc_epoch_signed = Epoch(1);
     let tc_round_signed = known_round + Round(3);
-    
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
-        known_epoch, 
-        known_round, 
+
+    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+        known_epoch,
+        known_round,
         val_epoch,
         block_epoch,
         block_round,
@@ -984,19 +951,22 @@ fn test_validate_tc_invalid_seq_num() {
     );
 
     let proposal = Unvalidated::new(proposal);
-    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::InvalidSeqNum));
+    assert_eq!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::InvalidSeqNum)
+    );
 }
-// TC round is not 1 behind block round 
+// TC round is not 1 behind block round
 #[test]
 fn test_validate_tc_invalid_round_block() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(3);
     let qc_parent_round = block_round - Round(3);
@@ -1007,10 +977,10 @@ fn test_validate_tc_invalid_round_block() {
     let tc_round = Round(1);
     let tc_epoch_signed = Epoch(1);
     let tc_round_signed = known_round + Round(3);
-    
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
-        known_epoch, 
-        known_round, 
+
+    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+        known_epoch,
+        known_round,
         val_epoch,
         block_epoch,
         block_round,
@@ -1027,19 +997,22 @@ fn test_validate_tc_invalid_round_block() {
     );
 
     let proposal = Unvalidated::new(proposal);
-    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::NotWellFormed));
+    assert_eq!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::NotWellFormed)
+    );
 }
-// TC Epoch does not exist 
+// TC Epoch does not exist
 #[test]
 fn test_validate_tc_incorrect_epoch() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
@@ -1050,10 +1023,10 @@ fn test_validate_tc_incorrect_epoch() {
     let tc_round = Round(2);
     let tc_epoch_signed = Epoch(1);
     let tc_round_signed = known_round + Round(3);
-    
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
-        known_epoch, 
-        known_round, 
+
+    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+        known_epoch,
+        known_round,
         val_epoch,
         block_epoch,
         block_round,
@@ -1068,22 +1041,24 @@ fn test_validate_tc_incorrect_epoch() {
         tc_epoch_signed,
         tc_round_signed,
     );
- 
 
     let proposal = Unvalidated::new(proposal);
-    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::InvalidEpoch));
+    assert_eq!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::InvalidEpoch)
+    );
 }
-// TC Epoch does not match local Epoch 
+// TC Epoch does not match local Epoch
 #[test]
 fn test_validate_tc_invalid_epoch() {
     let known_epoch = Epoch(1);
     let known_round = Round(1);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
@@ -1094,10 +1069,10 @@ fn test_validate_tc_invalid_epoch() {
     let tc_round = Round(0);
     let tc_epoch_signed = Epoch(1);
     let tc_round_signed = known_round + Round(3);
-    
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
-        known_epoch, 
-        known_round, 
+
+    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+        known_epoch,
+        known_round,
         val_epoch,
         block_epoch,
         block_round,
@@ -1112,21 +1087,24 @@ fn test_validate_tc_invalid_epoch() {
         tc_epoch_signed,
         tc_round_signed,
     );
- 
+
     let proposal = Unvalidated::new(proposal);
-    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::InvalidEpoch));
+    assert_eq!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::InvalidEpoch)
+    );
 }
-// TC Epoch does not determine a validator set 
+// TC Epoch does not determine a validator set
 #[test]
 fn test_validate_tc_invalid_val_set() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = Epoch(0); 
+    let val_epoch = Epoch(0);
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
@@ -1137,10 +1115,10 @@ fn test_validate_tc_invalid_val_set() {
     let tc_round = Round(0);
     let tc_epoch_signed = Epoch(1);
     let tc_round_signed = known_round + Round(3);
-    
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
-        known_epoch, 
-        known_round, 
+
+    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+        known_epoch,
+        known_round,
         val_epoch,
         block_epoch,
         block_round,
@@ -1155,22 +1133,24 @@ fn test_validate_tc_invalid_val_set() {
         tc_epoch_signed,
         tc_round_signed,
     );
- 
 
     let proposal = Unvalidated::new(proposal);
-    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::ValidatorSetDataUnavailable));
+    assert_eq!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::ValidatorSetDataUnavailable)
+    );
 }
-// TC round does is smaller or equal to QC round  
+// TC round does is smaller or equal to QC round
 #[test]
 fn test_validate_tc_invalid_round() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(2);
@@ -1181,10 +1161,10 @@ fn test_validate_tc_invalid_round() {
     let tc_round = Round(0);
     let tc_epoch_signed = Epoch(1);
     let tc_round_signed = known_round + Round(3);
-    
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
-        known_epoch, 
-        known_round, 
+
+    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+        known_epoch,
+        known_round,
         val_epoch,
         block_epoch,
         block_round,
@@ -1199,22 +1179,24 @@ fn test_validate_tc_invalid_round() {
         tc_epoch_signed,
         tc_round_signed,
     );
- 
 
     let proposal = Unvalidated::new(proposal);
-    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::InvalidTcRound));
+    assert_eq!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::InvalidTcRound)
+    );
 }
-// Signed TC message is not equivalent to TC message 
+// Signed TC message is not equivalent to TC message
 #[test]
 fn test_validate_tc_sig() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(3);
     let qc_parent_round = block_round - Round(3);
@@ -1225,10 +1207,10 @@ fn test_validate_tc_sig() {
     let tc_round = block_round - Round(1);
     let tc_epoch_signed = Epoch(1);
     let tc_round_signed = known_round + Round(3);
-    
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
-        known_epoch, 
-        known_round, 
+
+    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+        known_epoch,
+        known_round,
         val_epoch,
         block_epoch,
         block_round,
@@ -1243,22 +1225,24 @@ fn test_validate_tc_sig() {
         tc_epoch_signed,
         tc_round_signed,
     );
- 
 
     let proposal = Unvalidated::new(proposal);
-    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::InvalidSignature));
+    assert_eq!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::InvalidSignature)
+    );
 }
 // validate happy path for TC case
 #[test]
 fn test_validate_tc_fuzz() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(3);
     let block_seq_num = SeqNum(2);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(2);
     let qc_parent_round = block_round - Round(3);
@@ -1270,9 +1254,9 @@ fn test_validate_tc_fuzz() {
     let tc_epoch_signed = tc_epoch;
     let tc_round_signed = tc_round;
 
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
-        known_epoch, 
-        known_round, 
+    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
+        known_epoch,
+        known_round,
         val_epoch,
         block_epoch,
         block_round,
@@ -1287,7 +1271,6 @@ fn test_validate_tc_fuzz() {
         tc_epoch_signed,
         tc_round_signed,
     );
- 
 
     let proposal = Unvalidated::new(proposal);
     assert!(proposal.validate(&epoch_manager, &val_epoch_map).is_ok());
@@ -1297,12 +1280,12 @@ fn test_validate_tc_fuzz() {
 fn test_validate_valid_qc_old_tc() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
-    let val_epoch = known_epoch; 
+    let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
     let block_round = known_round + Round(10);
     let block_seq_num = SeqNum(4);
-    
+
     let qc_epoch = known_epoch;
     let qc_round = block_round - Round(1);
     let qc_parent_round = block_round - Round(5);
@@ -1310,15 +1293,14 @@ fn test_validate_valid_qc_old_tc() {
 
     let tc_epoch = Epoch(1);
 
-    let (keys, _, _, _) = create_keys_w_validators::<
-        SignatureType,
-        SignatureCollectionType,
-        _,
-    >(_NUM_NODES, ValidatorSetFactory::default());
+    let (keys, _, _, _) = create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(
+        _NUM_NODES,
+        ValidatorSetFactory::default(),
+    );
 
     let mut vlist = Vec::new();
     let mut vmap_vec = Vec::new();
-    
+
     for keypair in &keys {
         let node_id = NodeId::new(keypair.pubkey());
 
@@ -1327,7 +1309,6 @@ fn test_validate_valid_qc_old_tc() {
     }
 
     let _vset = ValidatorSetFactory::default().create(vlist).unwrap();
-
 
     // create old QC
     let old_vi = VoteInfo {
@@ -1346,22 +1327,24 @@ fn test_validate_valid_qc_old_tc() {
                 ledger_commit_info: CommitResult::Commit,
             },
         },
-        MockSignatures::with_pubkeys(keys
-            .iter()
-            .map(|kp| kp.pubkey())
-            .collect::<Vec<_>>()
-            .as_slice()),
+        MockSignatures::with_pubkeys(
+            keys.iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
     );
 
     let high_qc_sig_tuple = HighQcRoundSigColTuple {
         high_qc_round: HighQcRound {
             qc_round: old_qc.get_round(),
         },
-        sigs: MockSignatures::with_pubkeys(keys
-            .iter()
-            .map(|kp| kp.pubkey())
-            .collect::<Vec<_>>()
-            .as_slice()),
+        sigs: MockSignatures::with_pubkeys(
+            keys.iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
     };
     // Create Old TC
     let tc = TimeoutCertificate {
@@ -1370,14 +1353,18 @@ fn test_validate_valid_qc_old_tc() {
         high_qc_rounds: vec![high_qc_sig_tuple],
     };
     // moved here because of valmap ownership
-    let epoch_manager = EpochManager::new(_VAL_SET_UPDATE_INTERVAL, _EPOCH_START_DELAY, &[(known_epoch, known_round)]);
+    let epoch_manager = EpochManager::new(
+        _VAL_SET_UPDATE_INTERVAL,
+        _EPOCH_START_DELAY,
+        &[(known_epoch, known_round)],
+    );
     let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
-    ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
 
     val_epoch_map.insert(
-        val_epoch, 
+        val_epoch,
         _vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
-        ValidatorMapping::new(vmap_vec)
+        ValidatorMapping::new(vmap_vec),
     );
 
     let author = NodeId::new(keys[0].pubkey());
@@ -1400,4 +1387,3 @@ fn test_validate_valid_qc_old_tc() {
     let proposal = Unvalidated::new(proposal);
     assert!(proposal.validate(&epoch_manager, &val_epoch_map).is_ok());
 }
- 
