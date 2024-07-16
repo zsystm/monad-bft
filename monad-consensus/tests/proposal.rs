@@ -961,6 +961,97 @@ fn test_validate_qc_fuzz() {
 }
 
 #[test]
+fn test_validate_tc_invalid_seq_num() {
+    let known_epoch = Epoch(1);
+    let known_round = Round(0);
+    let val_epoch = known_epoch; 
+
+    let block_epoch = known_epoch;
+    let block_round = known_round + Round(3);
+    let block_seq_num = SeqNum(2);
+    
+    let qc_epoch = known_epoch;
+    let qc_round = block_round - Round(1);
+    let qc_parent_round = block_round - Round(2);
+    let qc_seq_num = block_seq_num;
+
+    let has_tc = true;
+    let tc_epoch = Epoch(3);
+    let tc_round = Round(2);
+    let tc_epoch_signed = Epoch(1);
+    let tc_round_signed = known_round + Round(3);
+    let tc_highest_qc_round = Round(0);
+    
+    let (keypairs, certkeys, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
+        known_epoch, 
+        known_round, 
+        val_epoch,
+        block_epoch,
+        block_round,
+        block_seq_num,
+        qc_epoch,
+        qc_round,
+        qc_parent_round,
+        qc_seq_num,
+        has_tc,
+        tc_epoch,
+        tc_round,
+        tc_epoch_signed,
+        tc_round_signed,
+        tc_highest_qc_round,
+    );
+
+    let proposal = Unvalidated::new(proposal);
+    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::InvalidSeqNum));
+}
+
+
+#[test]
+fn test_validate_tc_invalid_seq_num_round() {
+    let known_epoch = Epoch(1);
+    let known_round = Round(0);
+    let val_epoch = known_epoch; 
+
+    let block_epoch = known_epoch;
+    let block_round = known_round + Round(3);
+    let block_seq_num = SeqNum(2);
+    
+    let qc_epoch = known_epoch;
+    let qc_round = block_round - Round(3);
+    let qc_parent_round = block_round - Round(3);
+    let qc_seq_num = block_seq_num - SeqNum(1);
+
+    let has_tc = true;
+    let tc_epoch = Epoch(3);
+    let tc_round = Round(1);
+    let tc_epoch_signed = Epoch(1);
+    let tc_round_signed = known_round + Round(3);
+    let tc_highest_qc_round = Round(0);
+    
+    let (keypairs, certkeys, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
+        known_epoch, 
+        known_round, 
+        val_epoch,
+        block_epoch,
+        block_round,
+        block_seq_num,
+        qc_epoch,
+        qc_round,
+        qc_parent_round,
+        qc_seq_num,
+        has_tc,
+        tc_epoch,
+        tc_round,
+        tc_epoch_signed,
+        tc_round_signed,
+        tc_highest_qc_round,
+    );
+
+    let proposal = Unvalidated::new(proposal);
+    assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::NotWellFormed));
+}
+
+#[test]
 fn test_validate_tc_incorrect_epoch() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
@@ -1188,9 +1279,9 @@ fn test_validate_tc_sig() {
     let proposal = Unvalidated::new(proposal);
     assert_eq!(proposal.validate(&epoch_manager, &val_epoch_map), Err(Error::InvalidSignature));
 }
-// validate happy path for empty TC 
+// validate happy path for TC 
 #[test]
-fn test_validate_qc_tc_fuzz() {
+fn test_validate_tc_fuzz() {
     let known_epoch = Epoch(1);
     let known_round = Round(0);
     let val_epoch = known_epoch; 
@@ -1210,8 +1301,6 @@ fn test_validate_qc_tc_fuzz() {
     let tc_epoch_signed = tc_epoch;
     let tc_round_signed = tc_round;
     let tc_highest_qc_round = qc_round;
-
-    
 
     let (keypairs, certkeys, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(   
         known_epoch, 
@@ -1234,10 +1323,155 @@ fn test_validate_qc_tc_fuzz() {
  
 
     let proposal = Unvalidated::new(proposal);
-    println!("FUCKK{:?}",proposal.clone());
-
-    println!("{:?}",proposal.clone().validate(&epoch_manager, &val_epoch_map));
     assert!(proposal.validate(&epoch_manager, &val_epoch_map).is_ok());
 }
 
+#[test]
+fn test_validate_valid_qc_old_tc() {
+    let known_epoch = Epoch(1);
+    let known_round = Round(0);
+    let val_epoch = known_epoch; 
+
+    let block_epoch = known_epoch;
+    let block_round = known_round + Round(5);
+    let block_seq_num = SeqNum(2);
+    
+    let qc_epoch = known_epoch;
+    let qc_round = block_round - Round(1);
+    let qc_parent_round = block_round - Round(5);
+    let qc_seq_num = block_seq_num - SeqNum(1);
+
+    let has_tc = true;
+    let tc_epoch = Epoch(1);
+    let tc_round = block_round - Round(1);
+    let tc_epoch_signed = tc_epoch;
+    let tc_round_signed = tc_round;
+    let tc_highest_qc_round = block_round - Round(2);
+
+
+    let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<
+    SignatureType,
+    SignatureCollectionType,
+    _,
+>(_NUM_NODES, ValidatorSetFactory::default());
+
+let validator_stakes = Vec::from_iter(valset.get_members().clone());
+
+let mut vlist = Vec::new();
+let mut vmap_vec = Vec::new();
+    
+for keypair in &keys {
+    let node_id = NodeId::new(keypair.pubkey());
+
+    vlist.push((node_id, Stake(1)));
+    vmap_vec.push((node_id, keypair.pubkey()));
+}
+
+let _vset = ValidatorSetFactory::default().create(vlist).unwrap();
+
+
+// create valid QC
+let old_vi = VoteInfo {
+    id: BlockId(Hash([0x09_u8; 32])),
+    epoch: qc_epoch,
+    round: qc_round,
+    parent_id: BlockId(Hash([0x00_u8; 32])),
+    parent_round: qc_parent_round,
+    seq_num: qc_seq_num,
+};
+
+let old_qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
+    QcInfo {
+        vote: Vote {
+            vote_info: old_vi,
+            ledger_commit_info: CommitResult::Commit,
+        },
+    },
+    MockSignatures::with_pubkeys(keys
+        .iter()
+        .map(|kp| kp.pubkey())
+        .collect::<Vec<_>>()
+        .as_slice()),
+);
+
+// create valid QC
+let vi = VoteInfo {
+    id: BlockId(Hash([0x09_u8; 32])),
+    epoch: qc_epoch,
+    round: tc_round - Round(1), //tc_round, tc_highest_qc_round
+    parent_id: BlockId(Hash([0x00_u8; 32])),
+    parent_round: tc_highest_qc_round - Round(1),
+    seq_num: qc_seq_num,
+};
+
+let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
+    QcInfo {
+        vote: Vote {
+            vote_info: vi,
+            ledger_commit_info: CommitResult::Commit,
+        },
+    },
+    MockSignatures::with_pubkeys(keys
+        .iter()
+        .map(|kp| kp.pubkey())
+        .collect::<Vec<_>>()
+        .as_slice()),
+);
+
+let tminfo = TimeoutInfo {
+    epoch: tc_epoch_signed, 
+    round: tc_round_signed,
+    high_qc: qc.clone(),
+};
+
+let high_qc_sig_tuple = HighQcRoundSigColTuple {
+    high_qc_round: HighQcRound {
+        qc_round: qc.get_round(),
+    },
+    sigs: MockSignatures::with_pubkeys(keys
+        .iter()
+        .map(|kp| kp.pubkey())
+        .collect::<Vec<_>>()
+        .as_slice()),
+};
+
+let tc = TimeoutCertificate {
+    epoch: tc_epoch, // wrong epoch here
+    round: tc_round,
+    high_qc_rounds: vec![high_qc_sig_tuple],
+};
+// moved here because of valmap ownership
+let epoch_manager = EpochManager::new(_VAL_SET_UPDATE_INTERVAL, _EPOCH_START_DELAY, &[(known_epoch, known_round)]);
+let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
+ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+
+val_epoch_map.insert(
+    val_epoch, 
+    _vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+    ValidatorMapping::new(vmap_vec)
+);
+
+let author = NodeId::new(keys[0].pubkey());
+let block = setup_block(
+    author,
+    block_epoch,
+    block_round + Round(1),
+    block_seq_num,
+    qc_epoch,
+    qc_round + Round(1),
+    qc_parent_round + Round(1),
+    qc_seq_num,
+    &[keys[0].pubkey(), keys[1].pubkey(), keys[2].pubkey()],
+);
+
+let proposal = ProposalMessage {
+    block: block,
+    last_round_tc: Some(tc),
+};
+
+ 
+
+    let proposal = Unvalidated::new(proposal);
+    assert!(proposal.validate(&epoch_manager, &val_epoch_map).is_ok());
+}
  
