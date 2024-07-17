@@ -247,9 +247,9 @@ fn define_proposal_with_tc(
     );
 
     let proposal = ProposalMessage {
-            block,
-            last_round_tc: Some(tc),
-        };
+        block,
+        last_round_tc: Some(tc),
+    };
 
     (keys, cert_keys, epoch_manager, val_epoch_map, proposal)
 }
