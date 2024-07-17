@@ -57,7 +57,7 @@ fn setup_block(
         round: qc_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: qc_parent_round,
-        seq_num: seq_num,
+        seq_num,
     };
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
         QcInfo {
@@ -139,7 +139,6 @@ fn define_proposal_with_tc(
     qc_round: Round,
     qc_parent_round: Round,
     qc_seq_num: SeqNum,
-    has_tc: bool,
     tc_epoch: Epoch,
     tc_round: Round,
     tc_epoch_signed: Epoch,
@@ -247,18 +246,10 @@ fn define_proposal_with_tc(
         &[keys[0].pubkey(), keys[1].pubkey(), keys[2].pubkey()],
     );
 
-    let proposal;
-    if has_tc {
-        proposal = ProposalMessage {
-            block: block,
+    let proposal = ProposalMessage {
+            block,
             last_round_tc: Some(tc),
         };
-    } else {
-        proposal = ProposalMessage {
-            block: block,
-            last_round_tc: None,
-        };
-    }
 
     (keys, cert_keys, epoch_manager, val_epoch_map, proposal)
 }
@@ -926,7 +917,6 @@ fn test_validate_tc_invalid_seq_num() {
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num;
 
-    let has_tc = true;
     let tc_epoch = Epoch(3);
     let tc_round = Round(2);
     let tc_epoch_signed = Epoch(1);
@@ -943,7 +933,6 @@ fn test_validate_tc_invalid_seq_num() {
         qc_round,
         qc_parent_round,
         qc_seq_num,
-        has_tc,
         tc_epoch,
         tc_round,
         tc_epoch_signed,
@@ -972,7 +961,6 @@ fn test_validate_tc_invalid_round_block() {
     let qc_parent_round = block_round - Round(3);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let has_tc = true;
     let tc_epoch = Epoch(3);
     let tc_round = Round(1);
     let tc_epoch_signed = Epoch(1);
@@ -989,7 +977,6 @@ fn test_validate_tc_invalid_round_block() {
         qc_round,
         qc_parent_round,
         qc_seq_num,
-        has_tc,
         tc_epoch,
         tc_round,
         tc_epoch_signed,
@@ -1018,7 +1005,6 @@ fn test_validate_tc_incorrect_epoch() {
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let has_tc = true;
     let tc_epoch = Epoch(3);
     let tc_round = Round(2);
     let tc_epoch_signed = Epoch(1);
@@ -1035,7 +1021,6 @@ fn test_validate_tc_incorrect_epoch() {
         qc_round,
         qc_parent_round,
         qc_seq_num,
-        has_tc,
         tc_epoch,
         tc_round,
         tc_epoch_signed,
@@ -1064,7 +1049,6 @@ fn test_validate_tc_invalid_epoch() {
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let has_tc = true;
     let tc_epoch = Epoch(3);
     let tc_round = Round(0);
     let tc_epoch_signed = Epoch(1);
@@ -1081,7 +1065,6 @@ fn test_validate_tc_invalid_epoch() {
         qc_round,
         qc_parent_round,
         qc_seq_num,
-        has_tc,
         tc_epoch,
         tc_round,
         tc_epoch_signed,
@@ -1110,7 +1093,6 @@ fn test_validate_tc_invalid_val_set() {
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let has_tc = true;
     let tc_epoch = Epoch(1);
     let tc_round = Round(0);
     let tc_epoch_signed = Epoch(1);
@@ -1127,7 +1109,6 @@ fn test_validate_tc_invalid_val_set() {
         qc_round,
         qc_parent_round,
         qc_seq_num,
-        has_tc,
         tc_epoch,
         tc_round,
         tc_epoch_signed,
@@ -1156,7 +1137,6 @@ fn test_validate_tc_invalid_round() {
     let qc_parent_round = block_round - Round(2);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let has_tc = true;
     let tc_epoch = Epoch(1);
     let tc_round = Round(0);
     let tc_epoch_signed = Epoch(1);
@@ -1173,7 +1153,6 @@ fn test_validate_tc_invalid_round() {
         qc_round,
         qc_parent_round,
         qc_seq_num,
-        has_tc,
         tc_epoch,
         tc_round,
         tc_epoch_signed,
@@ -1202,7 +1181,6 @@ fn test_validate_tc_sig() {
     let qc_parent_round = block_round - Round(3);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let has_tc = true;
     let tc_epoch = Epoch(1);
     let tc_round = block_round - Round(1);
     let tc_epoch_signed = Epoch(1);
@@ -1219,7 +1197,6 @@ fn test_validate_tc_sig() {
         qc_round,
         qc_parent_round,
         qc_seq_num,
-        has_tc,
         tc_epoch,
         tc_round,
         tc_epoch_signed,
@@ -1248,7 +1225,6 @@ fn test_validate_tc_fuzz() {
     let qc_parent_round = block_round - Round(3);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
-    let has_tc = true;
     let tc_epoch = Epoch(1);
     let tc_round = block_round - Round(1);
     let tc_epoch_signed = tc_epoch;
@@ -1265,7 +1241,6 @@ fn test_validate_tc_fuzz() {
         qc_round,
         qc_parent_round,
         qc_seq_num,
-        has_tc,
         tc_epoch,
         tc_round,
         tc_epoch_signed,
@@ -1381,7 +1356,7 @@ fn test_validate_valid_qc_old_tc() {
     );
 
     let proposal = ProposalMessage {
-        block: block,
+        block,
         last_round_tc: Some(tc),
     };
     let proposal = Unvalidated::new(proposal);
