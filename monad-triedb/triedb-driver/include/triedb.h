@@ -25,8 +25,8 @@ int triedb_read_data(
 // found. If >=0, returns length of
 // value. Call triedb_finalize when
 // done with the value.
-typedef void (*state_callback)(bytes, size_t, bytes, size_t);
-void triedb_traverse_state(triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id, state_callback callback);
+typedef void (*state_callback)(void*, bytes, size_t);
+void triedb_traverse_state(triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id, void* context, state_callback callback);
 void triedb_async_read(
     triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
     void (*completed)(bytes value, int length, void *user), void *user);

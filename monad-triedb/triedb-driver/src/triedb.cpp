@@ -13,6 +13,10 @@
 
 #include "triedb.h"
 
+namespace {
+    constexpr size_t PREFIX_LEN = 1;
+}
+
 struct triedb
 {
     explicit triedb(std::vector<std::filesystem::path> dbname_paths)
@@ -153,10 +157,10 @@ void triedb_async_read(
     state->initiate();
 }
 
-void triedb_traverse_state(triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id, state_callback callback)
+void triedb_traverse_state(triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id, void* context, state_callback callback)
 {
-    auto cursor =
-        db->db_.find(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
+    auto key_nibbles = monad::mpt::NibblesView{0, key_len_nibbles, key};
+    auto cursor = db->db_.find(key_nibbles, block_id);
     if (!cursor.has_value()) {
         return;
     }
@@ -164,13 +168,15 @@ void triedb_traverse_state(triedb *db, bytes key, uint8_t key_len_nibbles, uint6
     class Traverse final : public monad::mpt::TraverseMachine
     {
         state_callback callback_;
+        void* context_;
         monad::mpt::Nibbles path_;
         monad::mpt::NibblesView const root_;
 
     public:
-        explicit Traverse(
+        explicit Traverse(void* context,
             state_callback callback, monad::mpt::NibblesView const root = {})
             : callback_(std::move(callback))
+            , context_(std::move(context))
             , path_(root)
             , root_(root)
         {
@@ -186,17 +192,16 @@ void triedb_traverse_state(triedb *db, bytes key, uint8_t key_len_nibbles, uint6
             path_ =
                 monad::mpt::concat(monad::mpt::NibblesView{path_}, branch, node.path_nibble_view());
 
-            const bool account_node = (path_.nibble_size() == (KECCAK256_SIZE * 2));
-            const bool state_node = (path_.nibble_size() == ((KECCAK256_SIZE + KECCAK256_SIZE) * 2));
-            if (account_node || state_node) {
+            bool const account_leaf = (path_.nibble_size() == (KECCAK256_SIZE * 2));
+            bool const storage_leaf = (path_.nibble_size() == ((KECCAK256_SIZE + KECCAK256_SIZE) * 2));
+            if (account_leaf || storage_leaf) {
                 uint8_t path_bytes[64];
                 for (unsigned n = 0; n < (unsigned) path_.nibble_size(); ++n)
                 {
                     set_nibble(path_bytes, n, path_.get(n));
                 }
-                auto const value = node.data();
-                size_t path_size = account_node ? KECCAK256_SIZE : KECCAK256_SIZE+KECCAK256_SIZE;
-                callback_(path_bytes, path_size, value.data(), value.size());
+                MONAD_ASSERT(node.has_value());
+                callback_(context_, node.value().data(), node.value().size());
             }
             return true;
         }
@@ -221,7 +226,7 @@ void triedb_traverse_state(triedb *db, bytes key, uint8_t key_len_nibbles, uint6
             return std::make_unique<Traverse>(*this);
         }
 
-    } machine(callback, cursor.value().node->path_nibble_view());
+    } machine(context, callback, key_nibbles.substr(PREFIX_LEN));
     db->db_.traverse(cursor.value(), machine, block_id);
 }
 
