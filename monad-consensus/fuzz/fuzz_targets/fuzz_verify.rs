@@ -1,66 +1,18 @@
 #![no_main]
-use libfuzzer_sys::{
-    arbitrary::{Arbitrary, Error, Unstructured},
-    fuzz_target,
-};
+use libfuzzer_sys::fuzz_target;
 use monad_consensus::messages::{
     consensus_message::{ConsensusMessage, ProtocolMessage},
     message::ProposalMessage,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopSignature};
+use monad_message_fuzz::fuzz_test_utils::VerifyBlockData;
 use monad_testutil::{block::set_block_and_qc, signing::TestSigner, validators::setup_val_state};
 use monad_types::{Epoch, NodeId, Round, SeqNum};
-type SignatureType = NopSignature;
 
+type SignatureType = NopSignature;
 static _NUM_NODES: u32 = 4;
 static _VAL_SET_UPDATE_INTERVAL: SeqNum = SeqNum(2000);
 static _EPOCH_START_DELAY: Round = Round(50);
-
-#[derive(Clone, Debug)]
-struct VerifyBlockData {
-    pub block_round: Round,
-    pub qc_round: Round,
-    pub parent_round: Round,
-    pub qc_seq_num: SeqNum,
-    pub block_seq_num: SeqNum,
-}
-
-impl<'a> Arbitrary<'a> for VerifyBlockData {
-    fn arbitrary(raw: &mut Unstructured<'a>) -> Result<Self, Error> {
-        let mut buf = [0; 40];
-        raw.fill_buffer(&mut buf)?;
-
-        Ok(VerifyBlockData {
-            block_round: Round(u64::from_ne_bytes(
-                buf[0..8].try_into().expect("slice with incorrect length"),
-            )),
-            qc_round: Round(u64::from_ne_bytes(
-                buf[8..16].try_into().expect("slice with incorrect length"),
-            )),
-            parent_round: Round(u64::from_ne_bytes(
-                buf[16..24].try_into().expect("slice with incorrect length"),
-            )),
-            qc_seq_num: SeqNum(u64::from_ne_bytes(
-                buf[24..32].try_into().expect("slice with incorrect length"),
-            )),
-            block_seq_num: SeqNum(u64::from_ne_bytes(
-                buf[32..40].try_into().expect("slice with incorrect length"),
-            )),
-        })
-    }
-}
-
-impl VerifyBlockData {
-    fn unwrap(self) -> (Round, Round, Round, SeqNum, SeqNum) {
-        (
-            self.block_round,
-            self.qc_round,
-            self.parent_round,
-            self.qc_seq_num,
-            self.block_seq_num,
-        )
-    }
-}
 
 fuzz_target!(|data: VerifyBlockData| {
     let (f_block_round, f_qc_round, f_parent_round, f_qc_seq_num, f_block_seq_num) = data.unwrap();
@@ -108,7 +60,6 @@ fuzz_target!(|data: VerifyBlockData| {
         message: proposal,
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
-
     assert!(sp
         .verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
         .is_ok());

@@ -335,7 +335,7 @@ fn test_verify_invalid_signature() {
         Error::InvalidSignature
     );
 }
-// happy path for verification (fuzz target)
+// happy path for verification. can be used to debug bad proposals
 #[test]
 fn test_verify_proposal_hash() {
     let known_epoch = Epoch(1);
@@ -715,7 +715,7 @@ fn test_validate_insufficent_qc_stake() {
         Err(Error::InsufficientStake)
     );
 }
-// validate happy path for empty TC
+// validate happy path for empty TC. can be used to debug bad proposals
 #[test]
 fn test_validate_qc_fuzz() {
     let known_epoch = Epoch(1);
@@ -1091,7 +1091,7 @@ fn test_validate_tc_sig() {
         Err(Error::InvalidSignature)
     );
 }
-// validate happy path for TC case
+// validate happy path for TC case. can be used to debug bad proposal message
 #[test]
 fn test_validate_tc_fuzz() {
     let known_epoch = Epoch(1);

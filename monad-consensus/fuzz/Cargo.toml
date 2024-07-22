@@ -21,9 +21,24 @@ monad-state = { path = "../../monad-state" }
 monad-testutil = { path = "../../monad-testutil" }
 monad-consensus = { path = "../" }
 
+
 [[bin]]
 name = "fuzz_verify"
 path = "fuzz_targets/fuzz_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_validate"
+path = "fuzz_targets/fuzz_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_validate_tc"
+path = "fuzz_targets/fuzz_validate_tc.rs"
 test = false
 doc = false
 bench = false
