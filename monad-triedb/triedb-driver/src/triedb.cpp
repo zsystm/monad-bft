@@ -5,7 +5,10 @@
 #include <optional>
 #include <vector>
 
+#include <monad/core/byte_string.hpp>
+#include <monad/core/nibble.h>
 #include <monad/mpt/db.hpp>
+#include <monad/mpt/traverse.hpp>
 #include <monad/mpt/ondisk_db_config.hpp>
 
 #include "triedb.h"
@@ -76,10 +79,10 @@ int triedb_read(
         // value length doesn't fit in return type
         return -2;
     }
-    int const value_len = (int)value_view.size();
+    size_t const value_len = value_view.size();
     *value = new uint8_t[value_len];
     memcpy((void *)*value, value_view.data(), value_len);
-    return value_len;
+    return (int) value_len;
 }
 
 int triedb_read_data(
@@ -97,10 +100,10 @@ int triedb_read_data(
         // value length doesn't fit in return type
         return -2;
     }
-    int const value_len = (int)value_view.size();
+    size_t const value_len = value_view.size();
     *value = new uint8_t[value_len];
     memcpy((void *)*value, value_view.data(), value_len);
-    return value_len;
+    return (int) value_len;
 }
 
 void triedb_async_read(
@@ -131,9 +134,9 @@ void triedb_async_read(
                     length = -2;
                 }
                 else {
+                    value = new uint8_t[value_view.size()];
+                    memcpy((void *)value, value_view.data(), value_view.size());
                     length = (int)value_view.size();
-                    value = new uint8_t[length];
-                    memcpy((void *)value, value_view.data(), (size_t)length);
                 }
             }
             delete state;
@@ -148,6 +151,78 @@ void triedb_async_read(
             block_id),
         receiver_t{completed, user}));
     state->initiate();
+}
+
+void triedb_traverse_state(triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id, state_callback callback)
+{
+    auto cursor =
+        db->db_.find(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
+    if (!cursor.has_value()) {
+        return;
+    }
+
+    class Traverse final : public monad::mpt::TraverseMachine
+    {
+        state_callback callback_;
+        monad::mpt::Nibbles path_;
+        monad::mpt::NibblesView const root_;
+
+    public:
+        explicit Traverse(
+            state_callback callback, monad::mpt::NibblesView const root = {})
+            : callback_(std::move(callback))
+            , path_(root)
+            , root_(root)
+        {
+        }
+
+        virtual bool
+        down(unsigned char const branch, monad::mpt::Node const &node) override
+        {
+            if (branch == monad::mpt::INVALID_BRANCH) {
+                MONAD_ASSERT(path_ == root_);
+                return true;
+            }
+            path_ =
+                monad::mpt::concat(monad::mpt::NibblesView{path_}, branch, node.path_nibble_view());
+
+            const bool account_node = (path_.nibble_size() == (KECCAK256_SIZE * 2));
+            const bool state_node = (path_.nibble_size() == ((KECCAK256_SIZE + KECCAK256_SIZE) * 2));
+            if (account_node || state_node) {
+                uint8_t path_bytes[64];
+                for (unsigned n = 0; n < (unsigned) path_.nibble_size(); ++n)
+                {
+                    set_nibble(path_bytes, n, path_.get(n));
+                }
+                auto const value = node.data();
+                size_t path_size = account_node ? KECCAK256_SIZE : KECCAK256_SIZE+KECCAK256_SIZE;
+                callback_(path_bytes, path_size, value.data(), value.size());
+            }
+            return true;
+        }
+
+        virtual void
+        up(unsigned char const branch, monad::mpt::Node const &node) override
+        {
+            auto const path_view = monad::mpt::NibblesView{path_};
+            auto const rem_size = [&] {
+                if (branch == monad::mpt::INVALID_BRANCH) {
+                    return 0;
+                }
+                int const rem_size = path_view.nibble_size() - 1 -
+                                        node.path_nibble_view().nibble_size();
+                return rem_size;
+            }();
+            path_ = path_view.substr(0, static_cast<unsigned>(rem_size));
+        }
+
+        virtual std::unique_ptr<TraverseMachine> clone() const override
+        {
+            return std::make_unique<Traverse>(*this);
+        }
+
+    } machine(callback, cursor.value().node->path_nibble_view());
+    db->db_.traverse(cursor.value(), machine, block_id);
 }
 
 size_t triedb_poll(triedb *db, bool blocking, size_t count)
