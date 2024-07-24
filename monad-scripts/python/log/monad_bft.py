@@ -12,7 +12,7 @@ class BftLog:
             (self.df["target"] == "monad_ledger")
             & (self.df["message"] == "committed block")
         ]
-        df = df.join(pd.json_normalize(df.pop("fields")))
+        df = pd.concat([df.reset_index(drop=True), pd.json_normalize(df.pop("fields"))], axis=1)
         df = df.set_index(df["timestamp"])
         df = df.drop("timestamp", axis=1)
         return df
