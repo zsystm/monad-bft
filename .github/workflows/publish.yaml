@@ -19,8 +19,19 @@ jobs:
       packages: write
 
     steps:
+      - name: Generate a token
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private-key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          repositories: "monad,monad-bft,evmone,thread-safe-lru"
+
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
 
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
@@ -93,43 +104,6 @@ jobs:
           context: .
           push: true
           file: docker/rpc/Dockerfile
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  publish-blockwatch:
-    runs-on: ubuntu-24.04-32
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@v3.1.0
-        with:
-          registry: peach10.devcore4.com
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5.5.1
-        with:
-          images: |
-            peach10.devcore4.com/monad-crypto/blockwatch
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5.3.0
-        with:
-          context: .
-          push: true
-          file: docker/blockwatch/Dockerfile
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
