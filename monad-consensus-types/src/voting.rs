@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use display_json::DebugAsJson;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, PubKey},
     hasher::{Hashable, Hasher},
@@ -33,7 +34,7 @@ impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, 
 }
 
 /// Vote for consensus proposals
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, DebugAsJson)]
 pub struct Vote {
     /// contents of the vote over which the QC is eventually formed
     pub vote_info: VoteInfo,
@@ -41,6 +42,7 @@ pub struct Vote {
     pub ledger_commit_info: CommitResult,
 }
 
+/*
 impl std::fmt::Debug for Vote {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Vote")
@@ -49,6 +51,7 @@ impl std::fmt::Debug for Vote {
             .finish()
     }
 }
+*/
 
 impl Hashable for Vote {
     fn hash(&self, state: &mut impl Hasher) {
@@ -57,7 +60,7 @@ impl Hashable for Vote {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Deserialize, Serialize, DebugAsJson)]
 pub struct VoteInfo {
     /// id of the proposed block
     pub id: BlockId,
@@ -73,6 +76,7 @@ pub struct VoteInfo {
     pub seq_num: SeqNum,
 }
 
+/*
 impl std::fmt::Debug for VoteInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VoteInfo")
@@ -85,6 +89,7 @@ impl std::fmt::Debug for VoteInfo {
             .finish()
     }
 }
+*/
 
 impl Hashable for VoteInfo {
     fn hash(&self, state: &mut impl Hasher) {

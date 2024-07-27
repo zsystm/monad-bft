@@ -1,4 +1,5 @@
 import pandas as pd
+import json
 
 
 class BftLog:
@@ -16,6 +17,45 @@ class BftLog:
         df = df.set_index(df["timestamp"])
         df = df.drop("timestamp", axis=1)
         return df
+
+    def consensus_state(self):
+        df = self.df[
+            (self.df["target"] == "monad_consensus_state")
+        ]
+        return df
+
+    def create_proposal_df(self):
+        cs = self.consensus_state()
+        df = cs[cs["message"] == "Creating Proposal"]
+        return df
+
+    def try_vote_df(self):
+        cs = self.consensus_state()
+        df = cs[cs["message"] == "try vote"]
+        return df
+
+    def created_vote_df(self):
+        cs = self.consensus_state()
+        df = cs[cs["message"] == "created vote"]
+
+        fields = pd.json_normalize(df["fields"])
+        return fields
+
+    def get_vote_from_df(self, df):
+        x = df["vote"].apply(json.loads)
+
+        print(x)
+
+        y = pd.json_normalize(x)
+        print(y)
+        
+        #x = df["vote"].iloc[0]
+
+        #y = json.loads(x)
+        #print(y["vote_info"]["round"])
+
+        #vote = pd.json_normalize(df["vote"])
+        #return vote
 
     @staticmethod
     def from_json(filepath_or_buffer):

@@ -20,6 +20,7 @@ monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 alloy-rlp = { workspace = true }
 alloy-primitives = { workspace = true }
 bytes = { workspace = true }
+display_json = { workspace = true }
 hex = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
@@ -27,6 +28,7 @@ rand_chacha = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }

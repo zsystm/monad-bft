@@ -2087,6 +2087,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "display_json"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e8619be5104f2a5fe15929a69a960db3dc3f71a879f15e1c4255083d9b57a1c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3536,6 +3549,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "bytes",
+ "display_json",
  "hex",
  "monad-crypto",
  "monad-eth-reserve-balance",
@@ -3546,6 +3560,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "serde",
+ "serde_json",
  "test-case",
  "tracing",
  "zerocopy 0.6.5",
