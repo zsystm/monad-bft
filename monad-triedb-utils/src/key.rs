@@ -26,6 +26,33 @@ pub fn create_addr_key(addr: &[u8; 20]) -> (Vec<u8>, u8) {
     (key, num_nibbles)
 }
 
+pub fn create_call_frame_key(txn_index: u64) -> (Vec<u8>, u8) {
+    let mut key_nibbles: Vec<u8> = vec![];
+
+    let call_frame_nibble = 3_u8;
+    key_nibbles.push(call_frame_nibble);
+
+    let mut rlp_buf = vec![];
+    txn_index.encode(&mut rlp_buf);
+
+    for byte in rlp_buf {
+        key_nibbles.push(byte >> 4);
+        key_nibbles.push(byte & 0xF);
+    }
+
+    let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
+    if num_nibbles % 2 != 0 {
+        key_nibbles.push(0);
+    }
+
+    let key: Vec<_> = key_nibbles
+        .chunks(2)
+        .map(|chunk| (chunk[0] << 4) | chunk[1])
+        .collect();
+
+    (key, num_nibbles)
+}
+
 pub fn create_storage_at_key(addr: &[u8; 20], at: &[u8; 32]) -> (Vec<u8>, u8) {
     let mut key_nibbles: Vec<u8> = vec![];
 

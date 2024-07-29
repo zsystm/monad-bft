@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 
 use crate::{
     decode::rlp_decode_account,
-    key::{create_addr_key, create_code_key, create_receipt_key, create_storage_at_key},
+    key::{create_addr_key, create_call_frame_key, create_code_key, create_receipt_key, create_storage_at_key},
 };
 
 pub mod decode;
@@ -128,6 +128,12 @@ impl TriedbReader {
 
     pub fn get_receipt(&self, txn_index: u64, block_id: u64) -> Option<Vec<u8>> {
         let (triedb_key, key_len_nibbles) = create_receipt_key(txn_index);
+
+        self.handle.read(&triedb_key, key_len_nibbles, block_id)
+    }
+
+    pub fn get_call_frame(&self, txn_index: u64, block_id: u64) -> Option<Vec<u8>> {
+        let (triedb_key, key_len_nibbles) = create_call_frame_key(txn_index);
 
         self.handle.read(&triedb_key, key_len_nibbles, block_id)
     }

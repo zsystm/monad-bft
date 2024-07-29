@@ -153,19 +153,3 @@ pub async fn monad_debug_traceCall(
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
-
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
-pub struct DebugTraceTransactionParams {
-    pub tx: EthHash,
-    pub tracer: TracerObject,
-}
-
-#[rpc(method = "debug_traceTransaction")]
-#[allow(non_snake_case)]
-/// Returns all traces of a given transaction.
-pub async fn monad_debug_traceTransaction(
-    triedb_env: &TriedbEnv,
-    params: DebugTraceTransactionParams,
-) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
-}

@@ -20,7 +20,6 @@ use cli::Cli;
 use debug::{
     monad_debug_getRawHeader, monad_debug_getRawReceipts, monad_debug_getRawTransaction,
     monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceCall,
-    monad_debug_traceTransaction,
 };
 use eth_json_types::serialize_result;
 use eth_txn_handlers::{
@@ -38,6 +37,7 @@ use trace::{
     monad_trace_transaction,
 };
 use tracing::{debug, info};
+use trace_handlers::monad_debugTraceTransaction;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -78,6 +78,7 @@ mod receipt;
 mod trace;
 mod triedb;
 mod txpool;
+mod trace_handlers;
 mod websocket;
 
 async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
@@ -211,11 +212,9 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "debug_traceTransaction" => {
+            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceTransaction(triedb_env, params)
-                .await
-                .map(serialize_result)?
+            monad_debugTraceTransaction(reader, triedb_env, params).await
         }
         "eth_call" => {
             let Some(reader) = &app_state.blockdb_reader else {
