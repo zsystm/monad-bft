@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct ValidationErrors {
+    // if you add stuff here, remember to add it the `Metrics::metrics` impl
     pub invalid_author: u64,
     pub not_well_formed_sig: u64,
     pub invalid_signature: u64,
@@ -17,6 +18,7 @@ pub struct ValidationErrors {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct ConsensusEvents {
+    // if you add stuff here, remember to add it the `Metrics::metrics` impl
     pub local_timeout: u64,
     pub handle_proposal: u64,
     pub failed_txn_validation: u64,
@@ -53,6 +55,7 @@ pub struct ConsensusEvents {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct TxPoolEvents {
+    // if you add stuff here, remember to add it the `Metrics::metrics` impl
     pub local_inserted_txns: u64,
     pub dropped_txns: u64,
     pub external_inserted_txns: u64,
@@ -60,6 +63,7 @@ pub struct TxPoolEvents {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct BlocktreeEvents {
+    // if you add stuff here, remember to add it the `Metrics::metrics` impl
     pub prune_success: u64,
     pub add_success: u64,
     pub add_dup: u64,
@@ -67,6 +71,7 @@ pub struct BlocktreeEvents {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct BlocksyncEvents {
+    // if you add stuff here, remember to add it the `Metrics::metrics` impl
     pub blocksync_response_successful: u64,
     pub blocksync_response_failed: u64,
     pub blocksync_response_unexpected: u64,
@@ -76,6 +81,7 @@ pub struct BlocksyncEvents {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Metrics {
+    // if you add stuff here, remember to add it the `Metrics::metrics` impl
     pub validation_errors: ValidationErrors,
     pub consensus_events: ConsensusEvents,
     pub txpool_events: TxPoolEvents,
@@ -108,6 +114,7 @@ impl Metrics {
             metric!(self, consensus_events.local_timeout),
             metric!(self, consensus_events.handle_proposal),
             metric!(self, consensus_events.failed_txn_validation),
+            metric!(self, consensus_events.failed_ts_validation),
             metric!(self, consensus_events.invalid_proposal_round_leader),
             metric!(self, consensus_events.out_of_order_proposals),
             metric!(self, consensus_events.created_vote),
