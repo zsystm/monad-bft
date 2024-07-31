@@ -229,8 +229,10 @@ async fn run(
         loopback: LoopbackExecutor::default(),
     };
 
-    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> =
-        WALoggerConfig::new(node_state.wal_path.clone(), true);
+    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> = WALoggerConfig::new(
+        node_state.wal_path.clone(), // output wal path
+        false,                       // flush on every write
+    );
     let Ok((mut wal, wal_events)) = logger_config.build() else {
         event!(
             Level::ERROR,
