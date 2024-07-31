@@ -405,7 +405,11 @@ where
             }
         } else {
             self.metrics.consensus_events.failed_ts_validation += 1;
-            warn!("Timestamp validation failed");
+            warn!(prev_block_ts = ?block.get_qc().get_timestamp(),
+                  curr_block_ts = ?block.get_timestamp(),
+                  local_ts = ?self.block_timestamp.get_current_time(),
+                  "Timestamp validation failed"
+            );
             return cmds;
         }
 
