@@ -225,9 +225,9 @@ async fn run(
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         ipc: IpcReceiver::new(
             node_state.mempool_ipc_path,
-            500, // tx_batch_size
-            6,   // max_queued_batches
-            3,   // queued_batches_watermark
+            node_state.node_config.ipc_tx_batch_size as usize, // tx_batch_size
+            node_state.node_config.ipc_max_queued_batches as usize, // max_queued_batches
+            node_state.node_config.ipc_queued_batches_watermark as usize, // queued_batches_watermark
         )
         .expect("uds bind failed"),
         control_panel: ControlPanelIpcReceiver::new(node_state.control_panel_ipc_path, 1000)

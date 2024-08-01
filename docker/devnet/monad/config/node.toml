@@ -5,17 +5,40 @@
 #                                                       #
 #########################################################
 
+#########################################################
+# Node-specific configuration
+#########################################################
 beneficiary = "0x0000000000000000000000000000000000000000"
+
+ipc_tx_batch_size = 500
+ipc_max_queued_batches = 6
+# must be <= ipc_max_queued_batches
+ipc_queued_batches_watermark = 3
+
+#########################################################
+# Network-wide configuration
+#########################################################
 chain_id = 41454
 
+#########################################################
+# Node-specific configuration
+#########################################################
 [bootstrap]
 peers = []
-
 # [[bootstrap.peers]]
 # address = "x.x.x.x:xxxx"
 # mempool_address = "x.x.x.x:xxxx"
 # secp256k1_pubkey = "..."
 
+[network]
+bind_address_host = "0.0.0.0"
+bind_address_port = 8888
+max_rtt_ms = 300
+max_mbps = 1000
+
+#########################################################
+# Network-wide configuration
+#########################################################
 [consensus]
 block_txn_limit = 10_000
 block_gas_limit = 1_000_000_000
@@ -23,8 +46,3 @@ max_reserve_balance = 9_223_372_036_854_775_807
 execution_delay = 10
 reserve_balance_check_mode = 0
 
-[network]
-bind_address_host = "0.0.0.0"
-bind_address_port = 8888
-max_rtt_ms = 300
-max_mbps = 1000

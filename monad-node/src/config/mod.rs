@@ -25,15 +25,28 @@ pub type SignatureCollectionType =
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
+    ////////////////////////////////
+    // NODE-SPECIFIC CONFIGURATION //
+    ////////////////////////////////
     pub name: Option<String>,
     pub network_name: Option<String>,
-    pub chain_id: u64,
 
     #[serde(deserialize_with = "deserialize_eth_address_from_str")]
     pub beneficiary: EthAddress,
 
+    pub ipc_tx_batch_size: u32,
+    pub ipc_max_queued_batches: u8,
+    // must be <= ipc_max_queued_batches
+    pub ipc_queued_batches_watermark: u8,
+
     pub bootstrap: NodeBootstrapConfig,
     pub network: NodeNetworkConfig,
+
+    // TODO split network-wide configuration into separate file
+    ////////////////////////////////
+    // NETWORK-WIDE CONFIGURATION //
+    ////////////////////////////////
+    pub chain_id: u64,
     pub consensus: NodeConsensusConfig,
 }
 

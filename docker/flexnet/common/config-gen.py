@@ -215,10 +215,17 @@ if __name__ == "__main__":
         node_toml_path = vol_path / "config" / "node.toml"
 
         toml = {}
+        ################################
+        # Node-specific config options #
+        ################################
+
         # use the first 20 bytes of the secp_pubkey as the beneficiary address
         # 42 = 2 ("0x") + 40 (20 bytes of hex string)
         toml["beneficiary"] = peers[this_volume].secp_pubkey[:42]
-        toml["chain_id"] = 41454
+        toml["ipc_tx_batch_size"] = 500
+        toml["ipc_max_queued_batches"] = 6
+        # must be <= ipc_max_queued_batches
+        toml["ipc_queued_batches_watermark"] = 3
 
         local_peers = []
         for volume, peer in peers.items():
@@ -232,22 +239,25 @@ if __name__ == "__main__":
                     "secp256k1_pubkey": peer.secp_pubkey,
                 }
             )
-
         toml["bootstrap"] = {"peers": local_peers}
-
-        toml["consensus"] = {
-            "block_txn_limit": 1000,
-            "block_gas_limit": 800_000_000,
-            "max_reserve_balance": 9_223_372_036_854_775_807,
-            "execution_delay": 10,
-            "reserve_balance_check_mode": 0,
-        }
 
         toml["network"] = {
             "bind_address_host": "0.0.0.0",
             "bind_address_port": BIND_ADDRESS_PORT,
             "max_rtt_ms": 300,
             "max_mbps": 1000,
+        }
+
+        ###############################
+        # Network-wide config options #
+        ###############################
+        toml["chain_id"] = 41454
+        toml["consensus"] = {
+            "block_txn_limit": 1000,
+            "block_gas_limit": 800_000_000,
+            "max_reserve_balance": 9_223_372_036_854_775_807,
+            "execution_delay": 10,
+            "reserve_balance_check_mode": 0,
         }
 
         with open(node_toml_path, "wb+") as f:
