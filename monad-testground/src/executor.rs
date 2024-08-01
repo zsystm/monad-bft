@@ -150,7 +150,13 @@ where
             )),
         },
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 86400),
-        ipc: IpcReceiver::new(generate_uds_path().into(), 100).expect("uds bind failed"),
+        ipc: IpcReceiver::new(
+            generate_uds_path().into(),
+            500, // tx_batch_size
+            6,   // max_queued_batches
+            3,   // queued_batches_watermark
+        )
+        .expect("uds bind failed"),
         control_panel: ControlPanelIpcReceiver::new(generate_uds_path().into(), 1000)
             .expect("usd bind failed"),
         loopback: LoopbackExecutor::default(),

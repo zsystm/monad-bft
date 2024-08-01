@@ -1,4 +1,4 @@
-use std::{path::PathBuf, pin::Pin, task::Poll};
+use std::{marker::PhantomData, path::PathBuf, pin::Pin, task::Poll};
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -16,7 +16,7 @@ use tokio::{
     time::{Duration, Instant},
 };
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
-use tracing::{debug, warn};
+use tracing::{debug, error, trace, warn};
 
 const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "./monad_mempool";
 const DEFAULT_MEMPOOL_BIND_PATH_EXT: &str = ".sock";
@@ -49,7 +49,8 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    read_events_recv: mpsc::Receiver<MonadEvent<ST, SCT>>,
+    read_tx_batch_recv: mpsc::Receiver<Vec<Bytes>>,
+    _phantom: PhantomData<(ST, SCT)>,
 }
 
 impl<ST, SCT> IpcReceiver<ST, SCT>
@@ -57,10 +58,22 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(bind_path: PathBuf, buf_size: usize) -> Result<Self, std::io::Error> {
-        let (read_events_send, read_events_recv) = mpsc::channel(buf_size);
+    /// tx_batch_size: number of txs per batch
+    /// max_queued_batches: max number of batches to queue
+    /// queued_batches_watermark: warn if number of queued batches exceeds this
+    pub fn new(
+        bind_path: PathBuf,
+        tx_batch_size: usize,
+        max_queued_batches: usize,
+        queued_batches_watermark: usize,
+    ) -> Result<Self, std::io::Error> {
+        assert!(queued_batches_watermark <= max_queued_batches);
+        let (read_tx_batch_send, read_tx_batch_recv) = mpsc::channel(max_queued_batches);
 
-        let r = Self { read_events_recv };
+        let r = Self {
+            read_tx_batch_recv,
+            _phantom: Default::default(),
+        };
 
         let listener = UnixListener::bind(bind_path)?;
         tokio::spawn(async move {
@@ -68,7 +81,12 @@ where
                 match listener.accept().await {
                     Ok((stream, sockaddr)) => {
                         debug!("new ipc connection sockaddr={:?}", sockaddr);
-                        IpcReceiver::new_connection(stream, read_events_send.clone(), buf_size);
+                        Self::new_connection(
+                            stream,
+                            read_tx_batch_send.clone(),
+                            tx_batch_size,
+                            queued_batches_watermark,
+                        );
                     }
                     Err(err) => {
                         warn!("listener poll accept error={:?}", err);
@@ -84,8 +102,9 @@ where
 
     fn new_connection(
         stream: UnixStream,
-        event_channel: mpsc::Sender<MonadEvent<ST, SCT>>,
-        buf_size: usize,
+        tx_batch_channel: mpsc::Sender<Vec<Bytes>>,
+        tx_batch_size: usize,
+        queued_batches_watermark: usize,
     ) {
         let mut reader = FramedRead::new(stream, LengthDelimitedCodec::default());
 
@@ -93,14 +112,27 @@ where
             if tx.is_empty() {
                 return;
             }
-            match event_channel.try_send(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(
-                tx.to_vec(),
-            ))) {
-                Ok(_) => debug!("bytes received from IPC and sent to channel"),
-                Err(mpsc::error::TrySendError::Full(_)) => todo!(
-                    "IPC recv channel full, max_capacity={}",
-                    event_channel.max_capacity()
-                ),
+            match tx_batch_channel.try_send(tx.to_vec()) {
+                Ok(()) => {
+                    trace!("bytes received from IPC and sent to channel");
+                    let capacity = tx_batch_channel.capacity();
+                    let num_queued = tx_batch_channel.max_capacity() - capacity;
+                    if num_queued > queued_batches_watermark {
+                        warn!(
+                            queued_batches_watermark,
+                            num_queued,
+                            max_capacity = tx_batch_channel.max_capacity(),
+                            "transaction IPC recv channel exceeded watermark, are transactions being ingested fast enough?"
+                        );
+                    }
+                }
+                Err(mpsc::error::TrySendError::Full(dropped_batch)) => {
+                    error!(
+                        dropped_batch_len = dropped_batch.len(),
+                        max_capacity = tx_batch_channel.max_capacity(),
+                        "transaction IPC recv channel full, dropping batch"
+                    );
+                }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     warn!("failed to send, channel closed")
                 }
@@ -109,7 +141,7 @@ where
         };
 
         tokio::spawn(async move {
-            let mut txns = Vec::with_capacity(buf_size);
+            let mut txns = Vec::with_capacity(tx_batch_size);
             let mut batch_timeout = ArmedSleep::new();
 
             loop {
@@ -124,7 +156,7 @@ where
 
                                 txns.push(bytes);
                                 batch_timeout.arm();
-                                if txns.len() >= buf_size {
+                                if txns.len() >= tx_batch_size {
                                     send_batch(&mut txns);
                                     batch_timeout.reset();
                                 }
@@ -172,7 +204,10 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        self.read_events_recv.poll_recv(cx)
+        self.read_tx_batch_recv.poll_recv(cx).map(|maybe_batch| {
+            let batch = maybe_batch.expect("read_tx_batch_send should never be dropped");
+            Some(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(batch)))
+        })
     }
 }
 

@@ -223,7 +223,13 @@ async fn run(
             val_set_update_interval,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        ipc: IpcReceiver::new(node_state.mempool_ipc_path, 1000).expect("uds bind failed"),
+        ipc: IpcReceiver::new(
+            node_state.mempool_ipc_path,
+            500, // tx_batch_size
+            6,   // max_queued_batches
+            3,   // queued_batches_watermark
+        )
+        .expect("uds bind failed"),
         control_panel: ControlPanelIpcReceiver::new(node_state.control_panel_ipc_path, 1000)
             .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),

@@ -14,7 +14,7 @@ use monad_eth_tx::{EthTransaction, EthTxHash};
 use monad_eth_types::{Balance, EthAddress, Nonce};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
-use tracing::{debug, trace};
+use tracing::trace;
 
 pub mod nonce;
 
@@ -386,21 +386,24 @@ impl EthBlockPolicy {
             ReserveBalanceCacheResult::Val(acc_balance, _) => {
                 reserve_balance = min(acc_balance, self.max_reserve_balance);
 
-                debug!(
+                trace!(
                     "ReserveBalance compute 1: \
                         balance from cache: {:?} \
                         for TDB block: {:?} \
                         for address: {:?}",
-                    reserve_balance, base_seq_num, eth_address
+                    reserve_balance,
+                    base_seq_num,
+                    eth_address
                 );
             }
             ReserveBalanceCacheResult::NeedSync => {
-                debug!(
+                trace!(
                     "ReserveBalance compute 2: \
                         triedb needs sync \
                         consensus block seq num: {:?} \
                         for address: {:?}",
-                    consensus_block_seq_num, eth_address
+                    consensus_block_seq_num,
+                    eth_address
                 );
                 return Err(CarriageCostValidationError::TrieDBNeedsSync);
             }
@@ -418,25 +421,31 @@ impl EthBlockPolicy {
             .compute_carriage_cost(base_seq_num, eth_address);
 
         if reserve_balance < carriage_cost_committed {
-            debug!(
+            trace!(
                 "ReserveBalance compute 3: \
                     Not sufficient balance: {:?} \
                     Carriage Cost Committed: {:?} \
                     consensus block:seq num {:?} \
                     for address: {:?}",
-                reserve_balance, carriage_cost_committed, consensus_block_seq_num, eth_address
+                reserve_balance,
+                carriage_cost_committed,
+                consensus_block_seq_num,
+                eth_address
             );
             // FIXME: transactions are incorrectly included in committed block
             return Err(CarriageCostValidationError::InsufficientReserveBalance);
         } else {
             reserve_balance -= carriage_cost_committed;
-            debug!(
+            trace!(
                 "ReserveBalance compute 4: \
                     updated balance to: {:?} \
                     Carriage Cost Committed: {:?} \
                     consensus block:seq num {:?} \
                     for address: {:?}",
-                reserve_balance, carriage_cost_committed, consensus_block_seq_num, eth_address
+                reserve_balance,
+                carriage_cost_committed,
+                consensus_block_seq_num,
+                eth_address
             );
         }
 
@@ -464,25 +473,31 @@ impl EthBlockPolicy {
         }
 
         if reserve_balance < carriage_cost_pending {
-            debug!(
+            trace!(
                 "ReserveBalance compute 5: \
                     Not sufficient balance: {:?} \
                     Carriage Cost Pending: {:?} \
                     consensus block:seq num {:?} \
                     for address: {:?}",
-                reserve_balance, carriage_cost_pending, consensus_block_seq_num, eth_address
+                reserve_balance,
+                carriage_cost_pending,
+                consensus_block_seq_num,
+                eth_address
             );
             // FIXME: transactions are incorrectly included in pending blocks
             return Err(CarriageCostValidationError::InsufficientReserveBalance);
         } else {
             reserve_balance -= carriage_cost_pending;
-            debug!(
+            trace!(
                 "ReserveBalance compute 6: \
                     updated balance to: {:?} \
                     Carriage Cost Pending: {:?} \
                     consensus block:seq num {:?} \
                     for address: {:?}",
-                reserve_balance, carriage_cost_pending, consensus_block_seq_num, eth_address
+                reserve_balance,
+                carriage_cost_pending,
+                consensus_block_seq_num,
+                eth_address
             );
         }
 

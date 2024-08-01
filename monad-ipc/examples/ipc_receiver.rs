@@ -94,8 +94,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         std::fs::remove_file(ipc_path.clone()).unwrap();
     }
 
-    let mut receiver =
-        IpcReceiver::<MessageSignatureType, SignatureCollectionType>::new(ipc_path.clone(), 100)?;
+    let mut receiver = IpcReceiver::<MessageSignatureType, SignatureCollectionType>::new(
+        ipc_path.clone(),
+        500, // tx_batch_size
+        6,   // max_queued_batches
+        3,   // queued_batches_watermark
+    )?;
 
     // https://etherscan.io/tx/0xc97438c9ac71f94040abec76967bcaf16445ff747bcdeb383e5b94033cbed201
     let raw_tx = hex!("02f871018302877a8085070adf56b2825208948880bb98e7747f73b52a9cfa34dab9a4a06afa3887eecbb1ada2fad280c080a0d5e6f03b507cc86b59bed88c201f98c9ca6514dc5825f41aa923769cf0402839a0563f21850c0c212ce6f402f140acdcebbb541c9bb6a051070851efec99e4dd8d");

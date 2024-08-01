@@ -122,7 +122,7 @@ where
                             self.reserve_balance_cache,
                         ) {
                             self.metrics.txpool_events.dropped_txns += 1;
-                            tracing::warn!("failed to insert rpc tx: {:?}", err);
+                            tracing::trace!(?err, "failed to insert rpc tx");
                             None
                         } else {
                             self.metrics.txpool_events.local_inserted_txns += 1;
@@ -146,7 +146,8 @@ where
                         self.txpool
                             .insert_tx(tx, self.block_policy, self.reserve_balance_cache)
                     {
-                        tracing::warn!(?sender, "failed to insert forwarded tx: {:?}", err);
+                        self.metrics.txpool_events.dropped_txns += 1;
+                        tracing::trace!(?sender, ?err, "failed to insert forwarded tx");
                     } else {
                         self.metrics.txpool_events.external_inserted_txns += 1;
                     }
