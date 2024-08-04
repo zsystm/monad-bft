@@ -10,7 +10,7 @@ pub type Balance = u128;
 
 // FIXME reth types shouldn't be leaked
 /// A 20-byte Eth address
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EthAddress(pub Address);
 
 impl EthAddress {
@@ -31,7 +31,7 @@ impl AsRef<[u8; 20]> for EthAddress {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,

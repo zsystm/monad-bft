@@ -14,9 +14,6 @@ use monad_consensus_types::{
     payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_reserve_balance::{
-    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
-};
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     fetch_metric,
@@ -29,6 +26,7 @@ use monad_mock_swarm::{
 };
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
+use monad_state_backend::NopStateBackend;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_tracing_counter::counter::{counter_get, CounterLayer, MetricFilter};
 use monad_transformer::{
@@ -50,7 +48,7 @@ fn two_nodes_noser() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
+        || NopStateBackend,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -119,7 +117,7 @@ fn two_nodes_quic_latency() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
+        || NopStateBackend,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -241,7 +239,7 @@ fn two_nodes_quic_bw() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
+        || NopStateBackend,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay

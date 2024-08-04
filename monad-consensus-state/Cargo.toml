@@ -18,7 +18,7 @@ monad-types = { path = "../monad-types" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-validator = { path = "../monad-validator" }
 sorted_vector_map = { workspace = true }
-monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
+monad-state-backend = { path = "../monad-state-backend" }
 
 bytes = { workspace = true }
 tracing = { workspace = true }

@@ -13,7 +13,7 @@ alloy-rlp = { workspace = true }
 alloy-primitives = { workspace = true }
 
 monad-consensus-types = { path = "../monad-consensus-types" }
-monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
+monad-state-backend = { path = "../monad-state-backend" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 

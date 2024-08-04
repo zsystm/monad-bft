@@ -45,7 +45,8 @@ int triedb_open(char const *dbdirpath, triedb **db)
 
     try {
         *db = new triedb{std::move(paths)};
-    } catch (const std::exception &e) {
+    }
+    catch (std::exception const &e) {
         std::cerr << e.what();
         return -3;
     }
@@ -83,8 +84,8 @@ int triedb_read_data(
     triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
     uint64_t block_id)
 {
-    auto result =
-        db->db_.get_data(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
+    auto result = db->db_.get_data(
+        monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
     if (!result.has_value()) {
         return -1;
     }
@@ -158,6 +159,20 @@ int triedb_finalize(bytes value)
     return 0;
 }
 
+uint64_t triedb_earliest_block(triedb *db)
+{
+    std::optional<uint64_t> earliest_block_id = db->db_.get_earliest_block_id();
+
+    if (earliest_block_id.has_value()) {
+        return earliest_block_id.value();
+    }
+    else {
+        // no block has been produced
+        // FIXME we need an error value for this
+        return 0;
+    }
+}
+
 uint64_t triedb_latest_block(triedb *db)
 {
     std::optional<uint64_t> latest_block_id = db->db_.get_latest_block_id();
@@ -167,6 +182,7 @@ uint64_t triedb_latest_block(triedb *db)
     }
     else {
         // no block has been produced
+        // FIXME we need an error value for this
         return 0;
     }
 }

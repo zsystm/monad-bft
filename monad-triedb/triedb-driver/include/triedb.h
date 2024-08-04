@@ -33,6 +33,7 @@ void triedb_async_read(
 // how many were processed.
 size_t triedb_poll(triedb *, bool blocking, size_t count);
 int triedb_finalize(bytes value);
+uint64_t triedb_earliest_block(triedb *);
 uint64_t triedb_latest_block(triedb *);
 
 #ifdef __cplusplus

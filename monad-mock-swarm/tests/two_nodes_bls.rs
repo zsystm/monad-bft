@@ -8,9 +8,6 @@ use monad_consensus_types::{
     txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_eth_reserve_balance::{
-    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
-};
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
@@ -22,6 +19,7 @@ use monad_mock_swarm::{
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_secp::SecpSignature;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_state_backend::NopStateBackend;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
@@ -37,7 +35,6 @@ impl SwarmRelation for BLSSwarm {
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
     type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -82,7 +79,7 @@ fn two_nodes_bls() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
+        || NopStateBackend,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay

@@ -42,6 +42,7 @@ members = [
     "monad-rpc",
     "monad-secp",
     "monad-state",
+    "monad-state-backend",
     "monad-testground",
     "monad-testutil",
     "monad-tracing-counter",

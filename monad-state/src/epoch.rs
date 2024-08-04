@@ -7,8 +7,8 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValidatorEvent};
+use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Stake};
 use monad_validator::{
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
@@ -16,18 +16,18 @@ use monad_validator::{
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct EpochChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct EpochChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     val_epoch_map: &'a mut ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, ASVT, BPT, SBT, RBCT)>,
+    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, ASVT, BPT, SBT)>,
 }
 
 pub(super) enum EpochCommand<PT>
@@ -37,19 +37,18 @@ where
     AddEpochValidatorSet(Epoch, Vec<(NodeId<PT>, Stake)>),
 }
 
-impl<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
-    EpochChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+    EpochChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,

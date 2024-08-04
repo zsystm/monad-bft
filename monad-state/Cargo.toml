@@ -21,7 +21,7 @@ monad-proto = { path = "../monad-proto" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
-monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
+monad-state-backend = { path = "../monad-state-backend" }
 
 bytes = { workspace = true }
 itertools = { workspace = true }

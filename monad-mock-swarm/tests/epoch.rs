@@ -16,9 +16,6 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
-    use monad_eth_reserve_balance::{
-        state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
-    };
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
@@ -31,6 +28,7 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
     use monad_state::{MonadMessage, VerifiedMonadMessage};
+    use monad_state_backend::NopStateBackend;
     use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
     use monad_transformer::{
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
@@ -52,7 +50,6 @@ mod test {
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type StateBackendType = NopStateBackend;
         type BlockPolicyType = PassthruBlockPolicy;
-        type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
         type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -164,7 +161,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
+            || NopStateBackend,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -259,7 +256,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
+            || NopStateBackend,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -422,7 +419,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
+            || NopStateBackend,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -617,7 +614,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache::new(NopStateBackend, 4),
+            || NopStateBackend,
             || {
                 StateRoot::new(
                     SeqNum(4), // state_root_delay

@@ -4,7 +4,6 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
-use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
 use monad_multi_sig::MultiSig;
@@ -46,7 +45,7 @@ struct BenchController {
     pub transactions: FullTransactionList,
     pub gas_limit: u64,
     pub block_policy: EthBlockPolicy,
-    pub reserve_balance_cache: PassthruReserveBalanceCache<InMemoryState>,
+    pub state_backend: InMemoryState,
 }
 
 type SignatureCollectionType = MultiSig<NopSignature>;
@@ -67,8 +66,7 @@ fn create_pool_and_transactions() -> BenchController {
     let acc = txns
         .iter()
         .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
-    let mut reserve_balance_cache =
-        PassthruReserveBalanceCache::new(InMemoryState::new(acc, Balance::MAX, 0), EXECUTION_DELAY);
+    let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
 
     let proposal_gas_limit: u64 = txns
         .iter()
@@ -85,18 +83,15 @@ fn create_pool_and_transactions() -> BenchController {
         .map(|t| Bytes::from(t.envelope_encoded()))
         .collect();
 
-    assert!(!TxPool::<
-        SignatureCollectionType,
-        EthBlockPolicy,
-        InMemoryState,
-        PassthruReserveBalanceCache<InMemoryState>,
-    >::insert_tx(
-        &mut txpool,
-        txns,
-        &eth_block_policy,
-        &mut reserve_balance_cache,
-    )
-    .is_empty());
+    assert!(
+        !TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::insert_tx(
+            &mut txpool,
+            txns,
+            &eth_block_policy,
+            &state_backend,
+        )
+        .is_empty()
+    );
     let txns_list = FullTransactionList::new(bytes);
 
     BenchController {
@@ -104,7 +99,7 @@ fn create_pool_and_transactions() -> BenchController {
         transactions: txns_list,
         gas_limit: proposal_gas_limit,
         block_policy: eth_block_policy,
-        reserve_balance_cache,
+        state_backend,
     }
 }
 
@@ -123,7 +118,6 @@ fn criterion_benchmark(c: &mut Criterion) {
                             SignatureCollectionType,
                             EthBlockPolicy,
                             InMemoryState,
-                            PassthruReserveBalanceCache<InMemoryState>,
                         >::create_proposal(
                             &mut controller.pool,
                             controller.block_policy.get_last_commit() + SeqNum(1),
@@ -131,7 +125,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                             controller.gas_limit,
                             &controller.block_policy,
                             Default::default(),
-                            &mut controller.reserve_balance_cache,
+                            &controller.state_backend,
                         )
                         .unwrap();
                         perf.disable();
@@ -153,7 +147,6 @@ fn criterion_benchmark(c: &mut Criterion) {
                             SignatureCollectionType,
                             EthBlockPolicy,
                             InMemoryState,
-                            PassthruReserveBalanceCache<InMemoryState>,
                         >::create_proposal(
                             &mut controller.pool,
                             controller.block_policy.get_last_commit() + SeqNum(1),
@@ -161,7 +154,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                             controller.gas_limit,
                             &controller.block_policy,
                             Default::default(),
-                            &mut controller.reserve_balance_cache,
+                            &controller.state_backend,
                         )
                         .unwrap();
                     },

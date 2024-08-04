@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
-use tracing::trace;
 
 use crate::StateBackend;
 
@@ -13,7 +12,7 @@ pub struct InMemoryState {
     /// `max_reserve_balance` as the balance every time so txn reserve balance
     /// will pass if the sum doesn't exceed the max reserve
     max_reserve_balance: Balance,
-    last_state: u64,
+    last_state: SeqNum,
 }
 
 impl Default for InMemoryState {
@@ -21,7 +20,7 @@ impl Default for InMemoryState {
         Self {
             account_nonces: Default::default(),
             max_reserve_balance: Balance::MAX,
-            last_state: GENESIS_SEQ_NUM.0,
+            last_state: GENESIS_SEQ_NUM,
         }
     }
 }
@@ -35,7 +34,7 @@ impl InMemoryState {
         Self {
             account_nonces: existing_nonces.into_iter().collect(),
             max_reserve_balance,
-            last_state,
+            last_state: SeqNum(last_state),
         }
     }
 
@@ -50,25 +49,26 @@ impl InMemoryState {
         for (address, account_nonce) in new_account_nonces {
             self.account_nonces.insert(address, account_nonce);
         }
-        self.last_state = seq_num.0;
+        self.last_state = seq_num;
     }
 }
 
 impl StateBackend for InMemoryState {
-    fn get_account(&self, block: u64, eth_address: &EthAddress) -> Option<EthAccount> {
+    fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
         assert!(block <= self.last_state);
-        if let Some(nonce) = self.account_nonces.get(eth_address) {
-            return Some(EthAccount {
-                nonce: *nonce,
-                balance: self.max_reserve_balance,
-                code_hash: None,
-            });
-        }
-        None
+        let nonce = self.account_nonces.get(address)?;
+        Some(EthAccount {
+            nonce: *nonce,
+            balance: self.max_reserve_balance,
+            code_hash: None,
+        })
     }
 
-    fn is_available(&self, block: u64) -> bool {
-        trace!(?self.last_state,?block,"InMemoryState is_available");
-        self.last_state >= block
+    fn raw_read_earliest_block(&self) -> SeqNum {
+        SeqNum::MIN
+    }
+
+    fn raw_read_latest_block(&self) -> SeqNum {
+        self.last_state
     }
 }

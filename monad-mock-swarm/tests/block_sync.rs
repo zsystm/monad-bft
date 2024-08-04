@@ -13,9 +13,6 @@ mod test {
         payload::StateRoot, txpool::MockTxPool,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
-    use monad_eth_reserve_balance::{
-        state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
-    };
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
@@ -27,6 +24,7 @@ mod test {
         verifier::MockSwarmVerifier,
     };
     use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
+    use monad_state_backend::NopStateBackend;
     use monad_testutil::swarm::{
         ledger_verification, make_state_configs, swarm_ledger_verification,
     };
@@ -54,7 +52,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
+            || NopStateBackend,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -173,7 +171,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
+            || NopStateBackend,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -254,7 +252,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
+            || NopStateBackend,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -385,7 +383,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
+            || NopStateBackend,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay

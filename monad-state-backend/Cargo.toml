@@ -1,5 +1,5 @@
 [package]
-name = "monad-eth-reserve-balance"
+name = "monad-state-backend"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,5 +9,3 @@ bench = false
 [dependencies]
 monad-eth-types = { path = "../monad-eth-types" }
 monad-types = { path = "../monad-types" }
-
-tracing = { workspace = true }

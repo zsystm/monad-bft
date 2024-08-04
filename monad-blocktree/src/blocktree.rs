@@ -5,12 +5,12 @@ use std::{
 };
 
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockPolicyError, BlockType, CarriageCostValidationError},
+    block::{BlockPolicy, BlockPolicyError, BlockType},
     checkpoint::RootInfo,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
+use monad_state_backend::{StateBackend, StateBackendError};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, SeqNum};
 use tracing::trace;
@@ -18,19 +18,16 @@ use tracing::trace;
 type Result<T> = StdResult<T, BlockTreeError>;
 
 #[derive(Debug, PartialEq)]
-#[non_exhaustive]
 pub enum BlockTreeError {
-    BlockNotExist(BlockId),
     BlockNotCoherent(BlockId),
-    CarriageCostError(CarriageCostValidationError),
+    StateBackendError(StateBackendError),
 }
 
 impl fmt::Display for BlockTreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BlockNotExist(bid) => write!(f, "Block not exist: {:?}", bid),
             Self::BlockNotCoherent(bid) => write!(f, "Block not coherent {:?}", bid),
-            Self::CarriageCostError(err) => write!(f, "Carriage cost validation error: {:?}", err),
+            Self::StateBackendError(err) => write!(f, "StateBackend error: {:?}", err),
         }
     }
 }
@@ -41,19 +38,19 @@ impl std::error::Error for BlockTreeError {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Root {
     info: RootInfo,
     children_blocks: Vec<BlockId>,
 }
 
-pub struct BlockTreeEntry<
+pub struct BlockTreeEntry<SCT, BPT, SBT>
+where
     SCT: SignatureCollection,
-    BP: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
-> {
-    pub validated_block: BP::ValidatedBlock,
+{
+    pub validated_block: BPT::ValidatedBlock,
     /// A blocktree entry is coherent if there is a path to root from the entry and it
     /// is a valid extension of the chain
     pub is_coherent: bool,
@@ -61,12 +58,11 @@ pub struct BlockTreeEntry<
     pub children_blocks: Vec<BlockId>,
 }
 
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        BP: BlockPolicy<SCT, SBT, RBCT>,
-    > Clone for BlockTreeEntry<SCT, BP, SBT, RBCT>
+impl<SCT, BPT, SBT> Clone for BlockTreeEntry<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
 {
     fn clone(&self) -> Self {
         Self {
@@ -77,12 +73,11 @@ impl<
     }
 }
 
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        BP: BlockPolicy<SCT, SBT, RBCT>,
-    > fmt::Debug for BlockTreeEntry<SCT, BP, SBT, RBCT>
+impl<SCT, BPT, SBT> fmt::Debug for BlockTreeEntry<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlockTreeEntry")
@@ -93,12 +88,11 @@ impl<
     }
 }
 
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        BP: BlockPolicy<SCT, SBT, RBCT>,
-    > PartialEq<Self> for BlockTreeEntry<SCT, BP, SBT, RBCT>
+impl<SCT, BPT, SBT> PartialEq<Self> for BlockTreeEntry<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
 {
     fn eq(&self, other: &Self) -> bool {
         self.validated_block == other.validated_block
@@ -107,57 +101,34 @@ impl<
     }
 }
 
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        BP: BlockPolicy<SCT, SBT, RBCT>,
-    > Eq for BlockTreeEntry<SCT, BP, SBT, RBCT>
+impl<SCT, BPT, SBT> Eq for BlockTreeEntry<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
 {
 }
 
 type Tree<T> = HashMap<BlockId, T>;
 
-pub struct BlockTree<
+pub struct BlockTree<SCT, BPT, SBT>
+where
     SCT: SignatureCollection,
-    BP: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
-> {
+{
     /// The round and block_id of last committed block
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
-    tree: Tree<BlockTreeEntry<SCT, BP, SBT, RBCT>>,
+    tree: Tree<BlockTreeEntry<SCT, BPT, SBT>>,
 }
 
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        BP: BlockPolicy<SCT, SBT, RBCT>,
-    > PartialEq<Self> for BlockTree<SCT, BP, SBT, RBCT>
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.root == other.root && self.tree == other.tree
-    }
-}
-
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        BP: BlockPolicy<SCT, SBT, RBCT>,
-    > Eq for BlockTree<SCT, BP, SBT, RBCT>
-{
-}
-
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        BP: BlockPolicy<SCT, SBT, RBCT>,
-    > fmt::Debug for BlockTree<SCT, BP, SBT, RBCT>
+impl<SCT, BPT, SBT> fmt::Debug for BlockTree<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlockTree")
@@ -167,12 +138,30 @@ impl<
     }
 }
 
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        BP: BlockPolicy<SCT, SBT, RBCT>,
-    > BlockTree<SCT, BP, SBT, RBCT>
+impl<SCT, BPT, SBT> PartialEq<Self> for BlockTree<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root && self.tree == other.tree
+    }
+}
+
+impl<SCT, BPT, SBT> Eq for BlockTree<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
+{
+}
+
+impl<SCT, BPT, SBT> BlockTree<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
 {
     pub fn new(root: RootInfo) -> Self {
         Self {
@@ -209,9 +198,9 @@ impl<
     /// - When prune is called on round `new_root` block, only round `n+1` block
     ///   is added (as `new_root`'s children) All the blocks that remains
     ///   shouldn't be pruned -> complete
-    pub fn prune(&mut self, new_root: &BlockId) -> Vec<BP::ValidatedBlock> {
+    pub fn prune(&mut self, new_root: &BlockId) -> Vec<BPT::ValidatedBlock> {
         assert!(self.is_coherent(new_root));
-        let mut commit: Vec<BP::ValidatedBlock> = Vec::new();
+        let mut commit: Vec<BPT::ValidatedBlock> = Vec::new();
 
         if new_root == &self.root.info.block_id {
             return commit;
@@ -269,9 +258,9 @@ impl<
     /// than the root block's round number
     pub fn add(
         &mut self,
-        block: BP::ValidatedBlock,
-        block_policy: &mut BP,
-        reserve_balance_cache: &mut RBCT,
+        block: BPT::ValidatedBlock,
+        block_policy: &mut BPT,
+        state_backend: &SBT,
     ) -> Result<()> {
         if !self.is_valid_to_insert(&block) {
             inc_count!(blocktree.add.duplicate);
@@ -329,7 +318,7 @@ impl<
             self.update_coherency(
                 incoherent_parent_or_self.get_id(),
                 block_policy,
-                reserve_balance_cache,
+                state_backend,
             )?
         }
 
@@ -341,8 +330,8 @@ impl<
     pub fn update_coherency(
         &mut self,
         block_id: BlockId,
-        block_policy: &mut BP,
-        reserve_balance_cache: &mut RBCT,
+        block_policy: &mut BPT,
+        state_backend: &SBT,
     ) -> Result<()> {
         let mut block_ids_to_update: VecDeque<BlockId> = vec![block_id].into();
 
@@ -363,19 +352,16 @@ impl<
 
             // extending blocks are always coherent, because we only call
             // update_coherency on the first incoherent block in the chain
-            if let Err(err) =
-                block_policy.check_coherency(block, extending_blocks, reserve_balance_cache)
-            {
+            if let Err(err) = block_policy.check_coherency(block, extending_blocks, state_backend) {
                 trace!("check_coherency returned an error: {:?}", err);
-                match err {
-                    BlockPolicyError::CarriageCostError(cost_err) => {
-                        return Err(BlockTreeError::CarriageCostError(cost_err));
+                return match err {
+                    BlockPolicyError::StateBackendError(err) => {
+                        Err(BlockTreeError::StateBackendError(err))
                     }
                     BlockPolicyError::BlockNotCoherent => {
-                        return Err(BlockTreeError::BlockNotCoherent(block.get_id()));
+                        Err(BlockTreeError::BlockNotCoherent(block.get_id()))
                     }
-                    _ => {}
-                }
+                };
             } else {
                 self.tree.entry(next_block).and_modify(|entry| {
                     entry.is_coherent = true;
@@ -465,7 +451,7 @@ impl<
     }
 
     /// Fetches blocks on path from root
-    pub fn get_blocks_on_path_from_root(&self, b: &BlockId) -> Option<Vec<&BP::ValidatedBlock>> {
+    pub fn get_blocks_on_path_from_root(&self, b: &BlockId) -> Option<Vec<&BPT::ValidatedBlock>> {
         let mut blocks = Vec::new();
         if b == &self.root.info.block_id {
             return Some(blocks);
@@ -490,11 +476,11 @@ impl<
 
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
-    pub fn is_valid_to_insert(&self, b: &BP::ValidatedBlock) -> bool {
+    pub fn is_valid_to_insert(&self, b: &BPT::ValidatedBlock) -> bool {
         !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.info.round
     }
 
-    pub fn tree(&self) -> &Tree<BlockTreeEntry<SCT, BP, SBT, RBCT>> {
+    pub fn tree(&self) -> &Tree<BlockTreeEntry<SCT, BPT, SBT>> {
         &self.tree
     }
 
@@ -506,11 +492,11 @@ impl<
         self.root.info.seq_num
     }
 
-    pub fn get_block(&self, block_id: &BlockId) -> Option<&BP::ValidatedBlock> {
+    pub fn get_block(&self, block_id: &BlockId) -> Option<&BPT::ValidatedBlock> {
         self.tree.get(block_id).map(|block| &block.validated_block)
     }
 
-    pub fn get_entry(&self, block_id: &BlockId) -> Option<&BlockTreeEntry<SCT, BP, SBT, RBCT>> {
+    pub fn get_entry(&self, block_id: &BlockId) -> Option<&BlockTreeEntry<SCT, BPT, SBT>> {
         self.tree.get(block_id)
     }
 }
@@ -531,11 +517,9 @@ mod test {
         hasher::Hash,
         NopSignature,
     };
-    use monad_eth_reserve_balance::{
-        state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
-    };
+    use monad_state_backend::NopStateBackend;
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum};
+    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round};
 
     use super::BlockTree;
     use crate::blocktree::RootInfo;
@@ -543,12 +527,11 @@ mod test {
     type SignatureType = NopSignature;
     type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache<StateBackendType>;
+    type BlockTreeType =
+        BlockTree<MockSignatures<SignatureType>, BlockPolicyType, StateBackendType>;
     type PubKeyType = CertificateSignaturePubKey<SignatureType>;
     type Block = ConsensusBlock<MockSignatures<SignatureType>>;
     type QC = QuorumCertificate<MockSignatures<SignatureType>>;
-
-    const EXECUTION_DELAY: SeqNum = SeqNum(5);
 
     fn node_id() -> NodeId<PubKeyType> {
         let mut privkey: [u8; 32] = [127; 32];
@@ -696,12 +679,7 @@ mod test {
         //        |
         //        b6
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -710,29 +688,27 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b3.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b4.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b4.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b5.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b5.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b6.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b6.clone(), &mut block_policy, &state_backend)
             .is_ok());
         println!("{:?}", blocktree);
 
@@ -773,9 +749,7 @@ mod test {
         //  |
         //  b7
 
-        assert!(blocktree
-            .add(b7, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
+        assert!(blocktree.add(b7, &mut block_policy, &state_backend).is_ok());
 
         let v8 = VoteInfo {
             id: b5.get_id(),
@@ -787,9 +761,7 @@ mod test {
 
         let b8 = Block::new(node_id(), 0, Epoch(1), Round(8), &payload, &mock_qc(v8));
 
-        assert!(blocktree
-            .add(b8, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
+        assert!(blocktree.add(b8, &mut block_policy, &state_backend).is_ok());
         println!("{:?}", blocktree);
     }
 
@@ -827,12 +799,7 @@ mod test {
 
         let gid = g.get_id();
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -841,14 +808,10 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
-        assert!(blocktree
-            .add(g, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
+        assert!(blocktree.add(g, &mut block_policy, &state_backend).is_ok());
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert_eq!(blocktree.tree.len(), 2);
         assert_eq!(
@@ -858,7 +821,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert_eq!(blocktree.tree.len(), 3);
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -943,12 +906,7 @@ mod test {
         //  |
         //  b3
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -957,20 +915,16 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
-        assert!(blocktree
-            .add(b3, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
+        assert!(blocktree.add(b3, &mut block_policy, &state_backend).is_ok());
 
         assert_eq!(blocktree.size(), 4);
 
@@ -1021,12 +975,7 @@ mod test {
         );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1035,20 +984,14 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
+        assert!(blocktree.add(g, &mut block_policy, &state_backend).is_ok());
         assert!(blocktree
-            .add(g, &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
-        assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
-        assert!(blocktree
-            .add(b1, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
+        assert!(blocktree.add(b1, &mut block_policy, &state_backend).is_ok());
 
         assert_eq!(blocktree.tree.len(), 2);
     }
@@ -1086,12 +1029,7 @@ mod test {
         let b4 = Block::new(node_id(), 0, Epoch(1), Round(5), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1100,31 +1038,29 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b1.get_id()));
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b3.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
         assert!(blocktree
-            .add(b4.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b4.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(!blocktree.is_coherent(&b4.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.is_coherent(&b1.get_id()));
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1179,12 +1115,7 @@ mod test {
         let b4 = Block::new(node_id(), 0, Epoch(1), Round(5), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1193,30 +1124,28 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b3.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         assert!(blocktree
-            .add(b4.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b4.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b4.qc);
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b1.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
@@ -1273,12 +1202,7 @@ mod test {
         let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             epoch: genesis_qc.get_epoch(),
             seq_num: genesis_qc.get_seq_num(),
@@ -1287,13 +1211,11 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
 
         let b1_entry = blocktree.tree.get_mut(&b1.get_id()).unwrap();
@@ -1304,7 +1226,7 @@ mod test {
 
         // when b2 is added, b1 coherency should be updated
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
 
         // all blocks must be coherent
@@ -1353,12 +1275,7 @@ mod test {
         let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1367,15 +1284,13 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
@@ -1384,7 +1299,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
 
@@ -1443,12 +1358,7 @@ mod test {
         let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v3));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1457,15 +1367,13 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b3.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
@@ -1475,7 +1383,7 @@ mod test {
 
         // add block 2
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b2.qc);
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
@@ -1487,7 +1395,7 @@ mod test {
 
         // add block 1
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
@@ -1548,12 +1456,7 @@ mod test {
         let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v3));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1562,15 +1465,13 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b3.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
@@ -1580,7 +1481,7 @@ mod test {
 
         // add block 1
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
@@ -1591,7 +1492,7 @@ mod test {
 
         // add block 2
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
@@ -1645,12 +1546,7 @@ mod test {
         let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1659,20 +1555,18 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b3.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
@@ -1682,7 +1576,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
@@ -1757,12 +1651,7 @@ mod test {
         let b6 = Block::new(node_id(), 0, Epoch(1), Round(7), &payload, &mock_qc(v4));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1771,35 +1660,33 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(g.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b3.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         assert!(blocktree
-            .add(b4.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b4.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b2.qc);
 
         assert!(blocktree
-            .add(b5.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b5.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b5.qc).unwrap() == b3.qc);
 
         assert!(blocktree
-            .add(b6.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b6.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b6.qc).unwrap() == b3.qc);
 
@@ -1812,7 +1699,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b6.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
@@ -1857,12 +1744,7 @@ mod test {
         );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -1871,15 +1753,13 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b2.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree.root.children_blocks.is_empty());
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b1.clone(), &mut block_policy, &state_backend)
             .is_ok());
         assert_eq!(blocktree.root.children_blocks, vec![b1.get_id()]);
         let b1_children = blocktree
@@ -1992,12 +1872,7 @@ mod test {
         );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
-        let mut blocktree = BlockTree::<
-            MockSignatures<NopSignature>,
-            BlockPolicyType,
-            StateBackendType,
-            ReserveBalanceCacheType,
-        >::new(RootInfo {
+        let mut blocktree = BlockTreeType::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
@@ -2006,38 +1881,22 @@ mod test {
         });
         let state_backend = NopStateBackend;
         let mut block_policy = PassthruBlockPolicy;
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY.0);
 
         // insertion order: insert all blocks except b3, then b3
+        assert!(blocktree.add(g, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree.add(b4, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree.add(b5, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree.add(b6, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree.add(b7, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree.add(b9, &mut block_policy, &state_backend).is_ok());
         assert!(blocktree
-            .add(g, &mut block_policy, &mut reserve_balance_cache)
+            .add(b10, &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b4, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
-        assert!(blocktree
-            .add(b5, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
-        assert!(blocktree
-            .add(b6, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
-        assert!(blocktree
-            .add(b7, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
-        assert!(blocktree
-            .add(b9, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
-        assert!(blocktree
-            .add(b10, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
-        assert!(blocktree
-            .add(b11.clone(), &mut block_policy, &mut reserve_balance_cache)
+            .add(b11.clone(), &mut block_policy, &state_backend)
             .is_ok());
 
-        assert!(blocktree
-            .add(b3, &mut block_policy, &mut reserve_balance_cache)
-            .is_ok());
+        assert!(blocktree.add(b3, &mut block_policy, &state_backend).is_ok());
 
         let high_commit_qc = blocktree.get_high_committable_qc();
         assert_eq!(high_commit_qc, Some(b11.get_qc().clone()));

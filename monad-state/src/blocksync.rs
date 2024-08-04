@@ -17,11 +17,11 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_executor_glue::{
     BlockSyncEvent, Command, ConsensusEvent, LedgerCommand, LoopbackCommand, MonadEvent,
     RouterCommand, TimerCommand,
 };
+use monad_state_backend::StateBackend;
 use monad_types::{BlockId, NodeId, RouterTarget, TimeoutVariant};
 use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -68,44 +68,42 @@ pub(crate) enum BlockSyncCommand<SCT: SignatureCollection> {
     Emit(Block<SCT>),
 }
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     block_sync: &'a mut BlockSync<ST>,
 
     /// BlockSync queries consensus first when receiving
     /// BlockSyncRequest
-    consensus: &'a ConsensusState<SCT, BPT, SBT, RBCT>,
+    consensus: &'a ConsensusState<SCT, BPT, SBT>,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     delta: &'a Duration,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT)>,
 }
 
-impl<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
-    BlockSyncChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+    BlockSyncChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,

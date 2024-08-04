@@ -1,17 +1,16 @@
-use std::{cmp::min, collections::BTreeMap};
+use std::collections::BTreeMap;
 
+use itertools::Itertools;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockPolicyError, BlockType, CarriageCostValidationError},
+    block::{Block, BlockPolicy, BlockPolicyError, BlockType},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
 };
 use monad_crypto::hasher::{Hashable, Hasher};
-use monad_eth_reserve_balance::{
-    state_backend::StateBackend, ReserveBalanceCacheResult, ReserveBalanceCacheTrait,
-};
 use monad_eth_tx::{EthTransaction, EthTxHash};
 use monad_eth_types::{Balance, EthAddress, Nonce};
+use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
 use tracing::trace;
@@ -334,40 +333,56 @@ impl EthBlockPolicy {
         }
     }
 
-    pub fn get_account_nonce<SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>(
+    /// returns account nonces at the start of the provided consensus block
+    pub fn get_account_base_nonces<'a, SCT>(
         &self,
         consensus_block_seq_num: SeqNum,
-        eth_address: &EthAddress,
-        pending_block_nonces: &BTreeMap<EthAddress, Nonce>,
-        reserve_balance_cache: &mut RBCT,
-    ) -> Result<Nonce, CarriageCostValidationError> {
+        state_backend: &impl StateBackend,
+        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
+        addresses: impl Iterator<Item = &'a EthAddress>,
+    ) -> Result<BTreeMap<&'a EthAddress, Nonce>, StateBackendError>
+    where
+        SCT: SignatureCollection,
+    {
         // Layers of access
-        // 1. pending_block_nonces: coherent blocks in the blocks tree
+        // 1. extending_blocks: coherent blocks in the blocks tree
         // 2. committed_block_nonces: always buffers the nonce of last `delay`
         //    committed blocks
-        // 2. LRU cache of triedb nonces
-        // 3. triedb query
-        if let Some(&coherent_block_nonce) = pending_block_nonces.get(eth_address) {
-            Ok(coherent_block_nonce)
-        } else if let Some(committed_nonce) = self.committed_cache.get_nonce(eth_address) {
-            Ok(committed_nonce)
-        } else {
-            // the cached account nonce must overlap with latest triedb, i.e.
-            // account_nonces must keep nonces for last delay blocks in cache
-            // the cache should keep track of block number for the nonce state
-            // when purging, we never purge nonces newer than last_commit - delay
-
-            let base_seq_num =
-                consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
-
-            match reserve_balance_cache.get_account(base_seq_num, eth_address) {
-                ReserveBalanceCacheResult::Val(_, nonce) => Ok(nonce),
-                ReserveBalanceCacheResult::None => Err(CarriageCostValidationError::AccountNoExist),
-                ReserveBalanceCacheResult::NeedSync => {
-                    Err(CarriageCostValidationError::TrieDBNeedsSync)
-                }
+        // 3. LRU cache of triedb nonces
+        // 4. triedb query
+        let mut account_nonces = BTreeMap::default();
+        let pending_block_nonces = extending_blocks.get_account_nonces();
+        let mut cache_misses = Vec::new();
+        for address in addresses.unique() {
+            if let Some(&pending_nonce) = pending_block_nonces.get(address) {
+                // hit cache level 1
+                account_nonces.insert(address, pending_nonce);
+                continue;
             }
+            if let Some(committed_nonce) = self.committed_cache.get_nonce(address) {
+                // hit cache level 2
+                account_nonces.insert(address, committed_nonce);
+                continue;
+            }
+            cache_misses.push(address)
         }
+
+        // the cached account nonce must overlap with latest triedb, i.e.
+        // account_nonces must keep nonces for last delay blocks in cache
+        // the cache should keep track of block number for the nonce state
+        // when purging, we never purge nonces newer than last_commit - delay
+
+        let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
+        let cache_miss_statuses =
+            state_backend.get_account_statuses(base_seq_num, cache_misses.iter().copied())?;
+        account_nonces.extend(
+            cache_misses
+                .into_iter()
+                .zip_eq(cache_miss_statuses)
+                .map(|(address, status)| (address, status.map_or(0, |status| status.nonce))),
+        );
+
+        Ok(account_nonces)
     }
 
     pub fn get_last_commit(&self) -> SeqNum {
@@ -383,144 +398,119 @@ impl EthBlockPolicy {
     }
 
     // Computes reserve balance available for the account
-    pub fn compute_reserve_balance<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-    >(
+    pub fn compute_account_base_reserve_balances<'a, SCT>(
         &self,
         consensus_block_seq_num: SeqNum,
-        cache: &mut RBCT,
+        state_backend: &impl StateBackend,
         extending_blocks: Option<&Vec<&EthValidatedBlock<SCT>>>,
-        eth_address: &EthAddress,
-    ) -> Result<u128, CarriageCostValidationError> {
+        addresses: impl Iterator<Item = &'a EthAddress>,
+    ) -> Result<BTreeMap<&'a EthAddress, Balance>, StateBackendError>
+    where
+        SCT: SignatureCollection,
+    {
         trace!(block = consensus_block_seq_num.0, "compute_reserve_balance");
-        let mut reserve_balance: u128;
 
         // calculation correct only if GENESIS_SEQ_NUM == 0
         assert_eq!(GENESIS_SEQ_NUM, SeqNum(0));
         let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
 
-        match cache.get_account(base_seq_num, eth_address) {
-            ReserveBalanceCacheResult::Val(acc_balance, _) => {
-                reserve_balance = min(acc_balance, self.max_reserve_balance);
+        let addresses = addresses.unique().collect_vec();
+        let account_balances = state_backend
+            .get_account_statuses(base_seq_num, addresses.iter().copied())?
+            .into_iter()
+            .map(|maybe_status| {
+                maybe_status.map_or(0, |status| status.balance.min(self.max_reserve_balance))
+            })
+            .collect_vec();
 
-                trace!(
-                    "ReserveBalance compute 1: \
-                        balance from cache: {:?} \
-                        for TDB block: {:?} \
-                        for address: {:?}",
-                    reserve_balance,
-                    base_seq_num,
-                    eth_address
-                );
-            }
-            ReserveBalanceCacheResult::NeedSync => {
-                trace!(
-                    "ReserveBalance compute 2: \
-                        triedb needs sync \
-                        consensus block seq num: {:?} \
-                        for address: {:?}",
-                    consensus_block_seq_num,
-                    eth_address
-                );
-                return Err(CarriageCostValidationError::TrieDBNeedsSync);
-            }
-            ReserveBalanceCacheResult::None => {
-                return Err(CarriageCostValidationError::AccountNoExist);
-            }
-        }
-
-        // Apply Carriage Cost for the txns from committed blocks
-        let CommittedCarriageCostResult {
-            carriage_cost: carriage_cost_committed,
-            next_validate,
-        } = self
-            .committed_cache
-            .compute_carriage_cost(base_seq_num, eth_address);
-
-        if reserve_balance < carriage_cost_committed {
-            trace!(
-                "ReserveBalance compute 3: \
-                    Not sufficient balance: {:?} \
-                    Carriage Cost Committed: {:?} \
-                    consensus block:seq num {:?} \
-                    for address: {:?}",
-                reserve_balance,
-                carriage_cost_committed,
-                consensus_block_seq_num,
-                eth_address
-            );
-            // FIXME: transactions are incorrectly included in committed block
-            return Err(CarriageCostValidationError::InsufficientReserveBalance);
-        } else {
-            reserve_balance -= carriage_cost_committed;
-            trace!(
-                "ReserveBalance compute 4: \
-                    updated balance to: {:?} \
-                    Carriage Cost Committed: {:?} \
-                    consensus block:seq num {:?} \
-                    for address: {:?}",
-                reserve_balance,
-                carriage_cost_committed,
-                consensus_block_seq_num,
-                eth_address
-            );
-        }
-
-        // Apply Carriage Cost for txns in extending blocks
-        let mut carriage_cost_pending: u128 = 0;
-        if let Some(blocks) = extending_blocks {
-            if let Some(first_block) = blocks.first() {
-                assert_eq!(
-                    first_block.get_seq_num(),
+        let account_balances = addresses
+            .into_iter()
+            .zip_eq(account_balances)
+            .map(|(address, mut reserve_balance)| {
+                // Apply Carriage Cost for the txns from committed blocks
+                let CommittedCarriageCostResult {
+                    carriage_cost: carriage_cost_committed,
                     next_validate,
-                    "consensus sq {:?}\n first block {:?}\n committed_cache {:?}\n",
-                    consensus_block_seq_num,
-                    first_block,
-                    self.committed_cache
-                );
-            }
+                } = self
+                    .committed_cache
+                    .compute_carriage_cost(base_seq_num, address);
 
-            for extending_block in blocks {
-                for txn in &extending_block.validated_txns {
-                    if EthAddress(txn.signer()) == *eth_address {
-                        carriage_cost_pending += compute_txn_carriage_cost(txn);
+                if reserve_balance < carriage_cost_committed {
+                    panic!(
+                        "Committed block with incoherent reserve balance
+                            Not sufficient balance: {:?} \
+                            Carriage Cost Committed: {:?} \
+                            consensus block:seq num {:?} \
+                            for address: {:?}",
+                        reserve_balance, carriage_cost_committed, consensus_block_seq_num, address
+                    );
+                } else {
+                    reserve_balance -= carriage_cost_committed;
+                    trace!(
+                        "ReserveBalance compute 4: \
+                            updated balance to: {:?} \
+                            Carriage Cost Committed: {:?} \
+                            consensus block:seq num {:?} \
+                            for address: {:?}",
+                        reserve_balance,
+                        carriage_cost_committed,
+                        consensus_block_seq_num,
+                        address
+                    );
+                }
+
+                // Apply Carriage Cost for txns in extending blocks
+                let mut carriage_cost_pending: Balance = 0;
+                if let Some(blocks) = extending_blocks {
+                    if let Some(first_block) = blocks.first() {
+                        assert_eq!(
+                            first_block.get_seq_num(),
+                            next_validate,
+                            "consensus sq {:?}\n first block {:?}\n committed_cache {:?}\n",
+                            consensus_block_seq_num,
+                            first_block,
+                            self.committed_cache
+                        );
+                    }
+
+                    for extending_block in blocks {
+                        // FIXME this is n^2, we can cache these (similar to compute_carriage_cost)
+                        for txn in &extending_block.validated_txns {
+                            if &EthAddress(txn.signer()) == address {
+                                carriage_cost_pending += compute_txn_carriage_cost(txn);
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        if reserve_balance < carriage_cost_pending {
-            trace!(
-                "ReserveBalance compute 5: \
-                    Not sufficient balance: {:?} \
-                    Carriage Cost Pending: {:?} \
-                    consensus block:seq num {:?} \
-                    for address: {:?}",
-                reserve_balance,
-                carriage_cost_pending,
-                consensus_block_seq_num,
-                eth_address
-            );
-            // FIXME: transactions are incorrectly included in pending blocks
-            return Err(CarriageCostValidationError::InsufficientReserveBalance);
-        } else {
-            reserve_balance -= carriage_cost_pending;
-            trace!(
-                "ReserveBalance compute 6: \
+                if reserve_balance < carriage_cost_pending {
+                    panic!(
+                        "Majority extended a block with an incoherent reserve balance \
+                            Not sufficient balance: {:?} \
+                            Carriage Cost Pending: {:?} \
+                            consensus block:seq num {:?} \
+                            for address: {:?}",
+                        reserve_balance, carriage_cost_pending, consensus_block_seq_num, address
+                    );
+                } else {
+                    reserve_balance -= carriage_cost_pending;
+                    trace!(
+                        "ReserveBalance compute 6: \
                     updated balance to: {:?} \
                     Carriage Cost Pending: {:?} \
                     consensus block:seq num {:?} \
                     for address: {:?}",
-                reserve_balance,
-                carriage_cost_pending,
-                consensus_block_seq_num,
-                eth_address
-            );
-        }
+                        reserve_balance,
+                        carriage_cost_pending,
+                        consensus_block_seq_num,
+                        address
+                    );
+                }
 
-        Ok(reserve_balance)
+                (address, reserve_balance)
+            })
+            .collect();
+        Ok(account_balances)
     }
 
     pub fn get_chain_id(&self) -> u64 {
@@ -528,8 +518,10 @@ impl EthBlockPolicy {
     }
 }
 
-impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>
-    BlockPolicy<SCT, SBT, RBCT> for EthBlockPolicy
+impl<SCT, SBT> BlockPolicy<SCT, SBT> for EthBlockPolicy
+where
+    SCT: SignatureCollection,
+    SBT: StateBackend,
 {
     type ValidatedBlock = EthValidatedBlock<SCT>;
 
@@ -537,7 +529,7 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
-        account_balance_cache: &mut RBCT,
+        state_backend: &SBT,
     ) -> Result<(), BlockPolicyError> {
         trace!(?block, "check_coherency");
         assert_eq!(
@@ -549,83 +541,49 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
                 .get_seq_num(),
             self.last_commit + SeqNum(1)
         );
-        // Get the account nonce from coherent blocks to extend
-        let mut pending_account_nonces = extending_blocks.get_account_nonces();
 
-        let mut reserve_balance_remaining = BTreeMap::new();
+        // TODO fix this unnecessary copy into a new vec to generate an owned EthAddress
+        let tx_signers = block
+            .validated_txns
+            .iter()
+            .map(|txn| EthAddress(txn.signer()))
+            .collect_vec();
+        // these must be updated as we go through txs in the block
+        let mut account_nonces = self.get_account_base_nonces(
+            block.get_seq_num(),
+            state_backend,
+            &extending_blocks,
+            tx_signers.iter(),
+        )?;
+        // these must be updated as we go through txs in the block
+        let mut account_reserve_balances = self.compute_account_base_reserve_balances(
+            block.get_seq_num(),
+            state_backend,
+            Some(&extending_blocks),
+            tx_signers.iter(),
+        )?;
+
         for txn in block.validated_txns.iter() {
             let eth_address = EthAddress(txn.signer());
             let txn_nonce = txn.nonce();
 
-            let expected_nonce = self
-                .get_account_nonce(
-                    block.get_seq_num(),
-                    &eth_address,
-                    &pending_account_nonces,
-                    account_balance_cache,
-                )
-                .map_err(|err| match err {
-                    // FIXME: restructure error types
-                    CarriageCostValidationError::AccountNoExist => {
-                        BlockPolicyError::BlockNotCoherent
-                    }
-                    _ => BlockPolicyError::CarriageCostError(err),
-                })?;
+            let expected_nonce = account_nonces
+                .get_mut(&eth_address)
+                .expect("account_nonces should have been populated");
 
-            if txn_nonce != expected_nonce {
+            if &txn_nonce != expected_nonce {
                 return Err(BlockPolicyError::BlockNotCoherent);
             }
 
-            if !reserve_balance_remaining.contains_key(&eth_address) {
-                let res = self.compute_reserve_balance::<SCT, SBT, RBCT>(
-                    block.get_seq_num(),
-                    account_balance_cache,
-                    Some(&extending_blocks),
-                    &eth_address,
-                );
-                let base_reserve_balance = match res {
-                    Ok(val) => {
-                        trace!(
-                            "ReserveBalance - check_coherency 1: \
-                                    reserve balance {:?} \
-                                    consensus block:seq num {:?} \
-                                    for address: {:?}",
-                            val,
-                            block.get_seq_num(),
-                            eth_address
-                        );
-                        val
-                    }
-                    Err(err) => {
-                        trace!(
-                            "ReserveBalance - check_coherency 2: \
-                                            Carriage Cost Error:  {:?} \
-                                            consensus block:seq num {:?} \
-                                            for address: {:?}",
-                            err,
-                            block.get_seq_num(),
-                            eth_address
-                        );
-                        return Err(match err {
-                            CarriageCostValidationError::AccountNoExist => {
-                                BlockPolicyError::BlockNotCoherent
-                            }
-                            _ => BlockPolicyError::CarriageCostError(err),
-                        });
-                    }
-                };
-                reserve_balance_remaining.insert(eth_address, base_reserve_balance);
-            }
-
-            let reserve_balance = reserve_balance_remaining
+            let reserve_balance = account_reserve_balances
                 .get_mut(&eth_address)
-                .expect("fetched");
+                .expect("account_reserve_balances should have been populated");
 
             let txn_carriage_cost = compute_txn_carriage_cost(txn);
 
             if *reserve_balance >= txn_carriage_cost {
                 *reserve_balance -= txn_carriage_cost;
-                pending_account_nonces.insert(eth_address, txn_nonce + 1);
+                *expected_nonce += 1;
             } else {
                 trace!(
                     "ReserveBalance - check_coherency 3: \

@@ -8,3 +8,4 @@
 /docker/devnet/monad/config/forkpoint.toml
 
 test-keys
+.vscode

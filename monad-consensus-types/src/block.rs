@@ -2,7 +2,7 @@ use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
 };
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
+use monad_state_backend::{NopStateBackend, StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
@@ -214,29 +214,23 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     }
 }
 
-// TODO: rename & restructure
 #[derive(Debug, PartialEq)]
-pub enum CarriageCostValidationError {
-    TrieDBNeedsSync,
-    InsufficientReserveBalance,
-    InternalError,
-    AccountNoExist,
-}
-
-#[derive(Debug, PartialEq)]
-#[non_exhaustive]
 pub enum BlockPolicyError {
     BlockNotCoherent,
-    // TODO: rename general to account fetch
-    CarriageCostError(CarriageCostValidationError),
+    StateBackendError(StateBackendError),
+}
+
+impl From<StateBackendError> for BlockPolicyError {
+    fn from(err: StateBackendError) -> Self {
+        Self::StateBackendError(err)
+    }
 }
 
 /// Trait that represents how inner contents of a block should be validated
-pub trait BlockPolicy<
+pub trait BlockPolicy<SCT, SBT>
+where
     SCT: SignatureCollection,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
->
 {
     type ValidatedBlock: Sized
         + Clone
@@ -251,18 +245,19 @@ pub trait BlockPolicy<
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
-        reserve_balance_cache: &mut RBCT,
+        state_backend: &SBT,
     ) -> Result<(), BlockPolicyError>;
 
+    // TODO delete this function, pass recently committed blocks to check_coherency instead
+    // This way, BlockPolicy doesn't need to be mutated
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
 }
 
-impl<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        T: BlockPolicy<SCT, SBT, RBCT> + ?Sized,
-    > BlockPolicy<SCT, SBT, RBCT> for Box<T>
+impl<SCT, SBT, T> BlockPolicy<SCT, SBT> for Box<T>
+where
+    SCT: SignatureCollection,
+    SBT: StateBackend,
+    T: BlockPolicy<SCT, SBT> + ?Sized,
 {
     type ValidatedBlock = T::ValidatedBlock;
 
@@ -270,9 +265,9 @@ impl<
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
-        reserve_balance_cache: &mut RBCT,
+        state_backend: &SBT,
     ) -> Result<(), BlockPolicyError> {
-        (**self).check_coherency(block, extending_blocks, reserve_balance_cache)
+        (**self).check_coherency(block, extending_blocks, state_backend)
     }
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
@@ -284,8 +279,9 @@ impl<
 #[derive(Copy, Clone, Default)]
 pub struct PassthruBlockPolicy;
 
-impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>
-    BlockPolicy<SCT, SBT, RBCT> for PassthruBlockPolicy
+impl<SCT> BlockPolicy<SCT, NopStateBackend> for PassthruBlockPolicy
+where
+    SCT: SignatureCollection,
 {
     type ValidatedBlock = Block<SCT>;
 
@@ -293,7 +289,7 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
         &self,
         _: &Self::ValidatedBlock,
         _: Vec<&Self::ValidatedBlock>,
-        _: &mut RBCT,
+        _: &NopStateBackend,
     ) -> Result<(), BlockPolicyError> {
         Ok(())
     }

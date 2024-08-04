@@ -7,8 +7,9 @@ use std::{
 use alloy_primitives::{keccak256, B256};
 use alloy_rlp::Decodable;
 use key::create_addr_key;
-use monad_eth_reserve_balance::state_backend::StateBackend;
 use monad_eth_types::{EthAccount, EthAddress};
+use monad_state_backend::StateBackend;
+use monad_types::SeqNum;
 use tracing::{debug, error};
 
 pub mod key;
@@ -128,6 +129,10 @@ impl Handle {
         Some(value)
     }
 
+    pub fn earliest_block(&self) -> u64 {
+        unsafe { bindings::triedb_earliest_block(self.db_ptr) }
+    }
+
     pub fn latest_block(&self) -> u64 {
         unsafe { bindings::triedb_latest_block(self.db_ptr) }
     }
@@ -192,12 +197,18 @@ impl Drop for Handle {
 }
 
 impl StateBackend for Handle {
-    fn get_account(&self, block: u64, eth_address: &EthAddress) -> Option<EthAccount> {
-        self.get_account(eth_address.as_ref(), block)
+    // TODO implement custom StateBackend::get_account_statuses using async api
+
+    fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
+        self.get_account(address.as_ref(), block.0)
     }
 
-    fn is_available(&self, block: u64) -> bool {
-        self.latest_block() >= block
+    fn raw_read_earliest_block(&self) -> SeqNum {
+        SeqNum(self.earliest_block())
+    }
+
+    fn raw_read_latest_block(&self) -> SeqNum {
+        SeqNum(self.latest_block())
     }
 }
 

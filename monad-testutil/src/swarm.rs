@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
@@ -22,7 +22,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     transaction_pool: impl Fn() -> S::TxPool,
     block_validator: impl Fn() -> S::BlockValidator,
     block_policy: impl Fn() -> S::BlockPolicyType,
-    reserve_balance_cache: impl Fn() -> S::ReserveBalanceCacheType,
+    state_backend: impl Fn() -> S::StateBackendType,
     state_root_validator: impl Fn() -> S::StateRootValidator,
     async_state_verify: impl Fn(fn(Stake) -> Stake) -> S::AsyncStateRootVerify,
 
@@ -38,7 +38,6 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::SignatureCollectionType,
         S::BlockPolicyType,
         S::StateBackendType,
-        S::ReserveBalanceCacheType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::TxPool,
@@ -76,7 +75,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             transaction_pool: transaction_pool(),
             block_validator: block_validator(),
             block_policy: block_policy(),
-            reserve_balance_cache: reserve_balance_cache(),
+            state_backend: state_backend(),
             state_root_validator: state_root_validator(),
             async_state_verify: async_state_verify(state_root_quorum_threshold),
             forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
@@ -95,7 +94,6 @@ pub fn make_state_configs<S: SwarmRelation>(
                 state_sync_threshold,
                 timestamp_latency_estimate_ms: 10,
             },
-            _pd: PhantomData,
         })
         .collect()
 }

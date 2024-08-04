@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    marker::PhantomData,
     time::Duration,
 };
 
@@ -37,7 +36,6 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::SignatureCollectionType,
         S::BlockPolicyType,
         S::StateBackendType,
-        S::ReserveBalanceCacheType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::TxPool,
@@ -61,7 +59,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::SignatureCollectionType,
             S::BlockPolicyType,
             S::StateBackendType,
-            S::ReserveBalanceCacheType,
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
             S::TxPool,
@@ -95,10 +92,9 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         S: SwarmRelation<
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
-                TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
-                BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
-                StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
-            ReserveBalanceCacheType = <DebugSwarmRelation as SwarmRelation>::ReserveBalanceCacheType,
+            TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+            BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
+            StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
         >,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
@@ -115,7 +111,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 transaction_pool: Box::new(self.state_builder.transaction_pool),
                 block_validator: Box::new(self.state_builder.block_validator),
                 block_policy: self.state_builder.block_policy,
-                reserve_balance_cache: self.state_builder.reserve_balance_cache,
+                state_backend: self.state_builder.state_backend,
                 state_root_validator: Box::new(self.state_builder.state_root_validator),
                 async_state_verify: BoxedAsyncStateVerifyProcess::new(
                     self.state_builder.async_state_verify,
@@ -127,7 +123,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 beneficiary: self.state_builder.beneficiary,
                 forkpoint: self.state_builder.forkpoint,
                 consensus_config: self.state_builder.consensus_config,
-                _pd: PhantomData,
             },
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),

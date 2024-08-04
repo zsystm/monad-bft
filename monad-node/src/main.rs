@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -25,7 +24,6 @@ use monad_crypto::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
-use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message};
@@ -39,7 +37,7 @@ use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_triedb::Handle as TriedbHandle;
-use monad_triedb_cache::ReserveBalanceCache;
+use monad_triedb_cache::StateBackendCache;
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
@@ -272,10 +270,10 @@ async fn run(
             node_state.node_config.consensus.reserve_balance_check_mode,
             node_state.node_config.chain_id,
         ),
-        reserve_balance_cache: ReserveBalanceCache::new(
+        state_backend: StateBackendCache::new(
             TriedbHandle::try_new(node_state.triedb_path.as_path())
                 .expect("triedb should exist in path"),
-            node_state.node_config.consensus.execution_delay,
+            SeqNum(node_state.node_config.consensus.execution_delay),
         ),
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),
@@ -292,7 +290,6 @@ async fn run(
             state_sync_threshold: SeqNum(state_sync_bound as u64),
             timestamp_latency_estimate_ms: 20,
         },
-        _pd: PhantomData,
     };
 
     // parse test mode commands

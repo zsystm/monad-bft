@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, time::Duration};
+use std::time::Duration;
 
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::ConsensusConfig;
@@ -10,9 +10,6 @@ use monad_consensus_types::{
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
-};
-use monad_eth_reserve_balance::{
-    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
@@ -27,6 +24,7 @@ use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{
     Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
 };
+use monad_state_backend::NopStateBackend;
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, local_router::LocalPeerRouter,
@@ -158,7 +156,6 @@ type MonadStateType<ST, SCT> = MonadState<
     SCT,
     PassthruBlockPolicy,
     NopStateBackend,
-    PassthruReserveBalanceCache<NopStateBackend>,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     MockTxPool,
@@ -199,7 +196,7 @@ where
         transaction_pool: MockTxPool::default(),
         block_validator: MockValidator {},
         block_policy: PassthruBlockPolicy {},
-        reserve_balance_cache: PassthruReserveBalanceCache::new(NopStateBackend::default(), 0),
+        state_backend: NopStateBackend::default(),
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),
         key: config.key,
@@ -209,7 +206,6 @@ where
         beneficiary: EthAddress::default(),
         forkpoint: Forkpoint::genesis(config.validators, StateRootHash::default()),
         consensus_config: config.consensus_config,
-        _pd: PhantomData,
     }
     .build()
 }

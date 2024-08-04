@@ -12,10 +12,10 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_executor_glue::{
     AsyncStateVerifyEvent, Command, LoopbackCommand, MonadEvent, RouterCommand,
 };
+use monad_state_backend::StateBackend;
 use monad_types::{NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager, validator_set::ValidatorSetTypeFactory,
@@ -24,25 +24,12 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct AsyncStateVerifyChildState<
-    'a,
-    ST,
-    SCT,
-    BPT,
-    SBT,
-    RBCT,
-    VTF,
-    LT,
-    TT,
-    BVT,
-    SVT,
-    ASVT,
-> where
+pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     async_state_verify: &'a mut ASVT,
@@ -56,18 +43,17 @@ pub(super) struct AsyncStateVerifyChildState<
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, BPT, SBT, RBCT)>,
+    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, BPT, SBT)>,
 }
 
-impl<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
-    AsyncStateVerifyChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+    AsyncStateVerifyChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     ASVT: AsyncStateVerifyProcess<
@@ -76,7 +62,7 @@ where
     >,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             async_state_verify: &mut monad_state.async_state_verify,

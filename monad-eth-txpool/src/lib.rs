@@ -5,18 +5,16 @@ use std::{
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
+use itertools::Itertools;
 use monad_consensus_types::{
-    block::CarriageCostValidationError,
     payload::FullTransactionList,
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
 };
-use monad_eth_block_policy::{
-    compute_txn_carriage_cost, AccountNonceRetrievable, EthBlockPolicy, EthValidatedBlock,
-};
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
+use monad_eth_block_policy::{compute_txn_carriage_cost, EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
-use monad_eth_types::{EthAddress, Nonce};
+use monad_eth_types::{Balance, EthAddress, Nonce};
+use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
@@ -120,25 +118,34 @@ pub struct EthTxPool {
 impl EthTxPool {
     /// Removes nonces that cannot extend the current block tree branch, as the
     /// txpool is transient and garbage collected after proposal creation
-    fn validate_nonces_and_carriage_fee<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-    >(
+    fn validate_nonces_and_carriage_fee<SCT>(
         &mut self,
         proposed_seq_num: SeqNum,
         block_policy: &EthBlockPolicy,
-        extending_blocks: Vec<&EthValidatedBlock<SCT>>,
-        blocktree_nonce_deltas: BTreeMap<EthAddress, Nonce>,
-        account_balance_cache: &mut RBCT,
-    ) -> Result<(), CarriageCostValidationError> {
+        state_backend: &impl StateBackend,
+        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
+    ) -> Result<(), StateBackendError>
+    where
+        SCT: SignatureCollection,
+    {
+        // TODO don't copy all the addresses
+        let addresses = self.pool.keys().copied().collect::<Vec<_>>();
+        let account_base_nonces = block_policy.get_account_base_nonces(
+            proposed_seq_num,
+            state_backend,
+            extending_blocks,
+            addresses.iter(),
+        )?;
+        let account_base_reserve_balances = block_policy.compute_account_base_reserve_balances(
+            proposed_seq_num,
+            state_backend,
+            Some(extending_blocks),
+            addresses.iter(),
+        )?;
         for (eth_address, transaction_group) in self.pool.iter_mut() {
-            let lowest_valid_nonce = block_policy.get_account_nonce(
-                proposed_seq_num,
-                eth_address,
-                &blocktree_nonce_deltas,
-                account_balance_cache,
-            )?;
+            let &lowest_valid_nonce = account_base_nonces
+                .get(eth_address)
+                .expect("account_base_nonces must be populated");
 
             // Remove transactions with nonces lower than the lowest valid nonce
             transaction_group
@@ -152,22 +159,9 @@ impl EthTxPool {
                 let _ = transaction_group.transactions.split_off(&gap);
             }
 
-            let res = block_policy.compute_reserve_balance(
-                proposed_seq_num,
-                account_balance_cache,
-                Some(&extending_blocks),
-                eth_address,
-            );
-            let mut reserve_balance = match res {
-                Ok(res_balance) => res_balance,
-                Err(err) => match err {
-                    CarriageCostValidationError::InsufficientReserveBalance => 0,
-                    _ => {
-                        // FIXME: unreachable?
-                        return Err(err);
-                    }
-                },
-            };
+            let mut reserve_balance = *account_base_reserve_balances
+                .get(eth_address)
+                .expect("account_base_reserve_balances must be populated");
             trace!(
                 "ReserveBalance validate_nonces_and_carriage_fee 1 \
                     balance is: {:?} \
@@ -225,24 +219,18 @@ impl EthTxPool {
             .sum()
     }
 
-    fn txn_validation<
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-    >(
+    fn validate_and_insert_tx(
         &mut self,
+        valid_chain_id: u64,
         eth_tx: EthTransaction,
-        block_policy: &EthBlockPolicy,
-        reserve_balance_cache: &mut RBCT,
+        reserve_balance: &Balance,
     ) -> Result<(), TxPoolInsertionError> {
         let sender = EthAddress(eth_tx.signer());
         let txn_hash = eth_tx.hash();
 
         // Do not add transaction with incorrect or missing chain id
-        let valid_chain_id = eth_tx
-            .chain_id()
-            .and_then(|cid| (cid == block_policy.get_chain_id()).then_some(()));
-        if valid_chain_id.is_none() {
+        let valid_chain_id = eth_tx.chain_id().is_some_and(|cid| cid == valid_chain_id);
+        if !valid_chain_id {
             return Err(TxPoolInsertionError::NotWellFormed);
         }
 
@@ -261,102 +249,92 @@ impl EthTxPool {
         if ratio.is_nan() {
             return Err(TxPoolInsertionError::NotWellFormed);
         }
-        let block_seq_num = block_policy.get_last_commit() + SeqNum(1); // ?????
-        let res = block_policy.compute_reserve_balance::<SCT, _, _>(
-            block_seq_num,
-            reserve_balance_cache,
-            None,
-            &sender,
-        );
 
-        let (inserted, reserve_balance) = match res {
-            Ok(val) => {
-                let txn_carriage_cost = compute_txn_carriage_cost(&eth_tx);
-                // TODO: this doesn't account for txns already in the mempool,
-                // an account can still send infinite transactions into the
-                // mempool
-                if val >= txn_carriage_cost {
-                    // TODO(rene): should any transaction validation occur here before inserting into mempool
-                    self.pool.entry(sender).or_default().add(eth_tx, ratio);
-                    trace!(
-                        "ReserveBalance insert_tx 1 \
-                            reserve balance: {:?} \
-                            txn carriage cost: {:?} \
-                            block_seq_num: {:?} \
-                            for address: {:?}",
-                        val,
-                        txn_carriage_cost,
-                        block_seq_num,
-                        sender
-                    );
-                    (Ok(()), val)
-                } else {
-                    trace!(
-                        "ReserveBalance insert_tx 2 \
+        // TODO nonce check
+
+        let txn_carriage_cost = compute_txn_carriage_cost(&eth_tx);
+        if &txn_carriage_cost > reserve_balance {
+            trace!(
+                "ReserveBalance insert_tx 2 \
                             do not add txn to the pool. insufficient balance: {:?} \
                             txn_carriage_cost: {:?} \
-                            block_id: {:?} \
                             for address: {:?}",
-                        val,
-                        txn_carriage_cost,
-                        block_seq_num,
-                        sender
-                    );
-                    (Err(TxPoolInsertionError::InsufficientBalance), val)
-                }
-            }
-            Err(CarriageCostValidationError::InsufficientReserveBalance) => {
-                trace!(
-                    "ReserveBalance insert_tx 3 \
-                        insufficient reserve balance error: \
-                        block_seq_num: {:?} \
-                        for address: {:?}",
-                    block_seq_num,
-                    sender
-                );
-                (Err(TxPoolInsertionError::InsufficientBalance), 0)
-            }
-            _ => {
-                let err = res.err().unwrap();
-                trace!(
-                    "ReserveBalance insert_tx 4 \
-                        reserve balance compute error: {:?} \
-                        block_seq_num: {:?} \
-                        for address: {:?}",
-                    err,
-                    block_seq_num,
-                    sender
-                );
-                (Err(TxPoolInsertionError::CarriageCostError(err)), 0)
-            }
-        };
-
-        match inserted {
-            Ok(_) => {
-                trace!(txn_hash = ?txn_hash, ?sender, "txn inserted into txpool");
-                Ok(())
-            }
-            Err(e) => {
-                trace!(hash = ?txn_hash, err = ?e, "txn validation failed");
-                Err(e)
-            }
+                reserve_balance,
+                txn_carriage_cost,
+                sender
+            );
+            return Err(TxPoolInsertionError::InsufficientBalance);
         }
+
+        // TODO: this doesn't account for txns already in the mempool,
+        // an account can still send infinite transactions into the
+        // mempool
+
+        // TODO(rene): should any transaction validation occur here before inserting into mempool
+        self.pool.entry(sender).or_default().add(eth_tx, ratio);
+        trace!(
+            "ReserveBalance insert_tx 1 \
+                            reserve balance: {:?} \
+                            txn carriage cost: {:?} \
+                            for address: {:?}",
+            reserve_balance,
+            txn_carriage_cost,
+            sender
+        );
+        trace!(txn_hash = ?txn_hash, ?sender, "txn inserted into txpool");
+        Ok(())
+    }
+
+    fn validate_and_insert_txs<SCT>(
+        &mut self,
+        block_policy: &EthBlockPolicy,
+        state_backend: &impl StateBackend,
+        txs: Vec<EthTransaction>,
+    ) -> Result<Vec<Result<(), TxPoolInsertionError>>, StateBackendError>
+    where
+        SCT: SignatureCollection,
+    {
+        let senders = txs.iter().map(|tx| EthAddress(tx.signer())).collect_vec();
+        let block_seq_num = block_policy.get_last_commit() + SeqNum(1); // ?????
+        let sender_reserve_balances = block_policy.compute_account_base_reserve_balances::<SCT>(
+            block_seq_num,
+            state_backend,
+            None,
+            senders.iter(),
+        )?;
+
+        let results = txs
+            .into_iter()
+            .zip(senders.iter())
+            .map(|(eth_tx, sender)| {
+                self.validate_and_insert_tx(
+                    block_policy.get_chain_id(),
+                    eth_tx,
+                    sender_reserve_balances
+                        .get(sender)
+                        .expect("sender_reserve_balances should be populated"),
+                )
+            })
+            .collect();
+        Ok(results)
     }
 }
 
-impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>
-    TxPool<SCT, EthBlockPolicy, SBT, RBCT> for EthTxPool
+impl<SCT, SBT> TxPool<SCT, EthBlockPolicy, SBT> for EthTxPool
+where
+    SCT: SignatureCollection,
+    SBT: StateBackend,
 {
     fn insert_tx(
         &mut self,
         txns: Vec<Bytes>,
         block_policy: &EthBlockPolicy,
-        reserve_balance_cache: &mut RBCT,
+        state_backend: &SBT,
     ) -> Vec<Bytes> {
         // TODO: unwrap can be removed when this is made generic over the actual
         // tx type rather than Bytes and decoding won't be necessary
         // TODO(rene): sender recovery is done inline here
-        let decoded_txns = txns
+        let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
             .into_par_iter()
             .filter_map(|b| {
                 if let Ok(valid_tx) = EthTransaction::decode(&mut b.as_ref()) {
@@ -365,19 +343,20 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
                     None
                 }
             })
-            .collect::<Vec<_>>();
+            .unzip();
 
-        decoded_txns
+        let Ok(insertion_results) =
+            self.validate_and_insert_txs::<SCT>(block_policy, state_backend, decoded_txs)
+        else {
+            // can't insert, state backend is delayed
+            return Vec::new();
+        };
+        insertion_results
             .into_iter()
-            .filter_map(|(eth_tx, b)| {
-                match self.txn_validation::<SCT, SBT, RBCT>(
-                    eth_tx,
-                    block_policy,
-                    reserve_balance_cache,
-                ) {
-                    Ok(_) => Some(b),
-                    Err(_) => None,
-                }
+            .zip(raw_txs)
+            .filter_map(|(insertion_result, b)| match insertion_result {
+                Ok(()) => Some(b),
+                Err(_) => None,
             })
             .collect::<Vec<_>>()
     }
@@ -389,16 +368,13 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
         proposal_gas_limit: u64,
         block_policy: &EthBlockPolicy,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
-        reserve_balance_cache: &mut RBCT,
-    ) -> Result<FullTransactionList, CarriageCostValidationError> {
-        // Get the latest nonce from txns in the extending blocks
-        let extending_account_nonces = extending_blocks.get_account_nonces();
+        state_backend: &SBT,
+    ) -> Result<FullTransactionList, StateBackendError> {
         if let Err(err) = self.validate_nonces_and_carriage_fee(
             proposed_seq_num,
             block_policy,
-            extending_blocks,
-            extending_account_nonces,
-            reserve_balance_cache,
+            state_backend,
+            &extending_blocks,
         ) {
             trace!("ReserveBalance create_proposal returned error: {:?}", err);
             return Err(err);
@@ -508,7 +484,6 @@ mod test {
     use monad_consensus_types::txpool::TxPool;
     use monad_crypto::NopSignature;
     use monad_eth_block_policy::nonce::InMemoryState;
-    use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
     use monad_eth_testutil::{generate_random_block_with_txns, make_tx};
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_types::{Balance, EthAddress};
@@ -520,12 +495,7 @@ mod test {
 
     const EXECUTION_DELAY: u64 = 4;
 
-    type Pool = dyn TxPool<
-        MultiSig<NopSignature>,
-        EthBlockPolicy,
-        InMemoryState,
-        PassthruReserveBalanceCache<InMemoryState>,
-    >;
+    type Pool = dyn TxPool<MultiSig<NopSignature>, EthBlockPolicy, InMemoryState>;
 
     fn make_test_block_policy() -> EthBlockPolicy {
         EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY, 0, 1337)
@@ -539,13 +509,11 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         assert!(!Pool::insert_tx(
             &mut pool,
             vec![tx.envelope_encoded().into()],
             &eth_block_policy,
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .is_empty());
         assert_eq!(pool.pool.len(), 1);
@@ -558,7 +526,7 @@ mod test {
             1_000_000,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
 
@@ -575,13 +543,11 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         assert!(!Pool::insert_tx(
             &mut pool,
             vec![tx.envelope_encoded().into()],
             &eth_block_policy,
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .is_empty());
         assert_eq!(pool.pool.len(), 1);
@@ -594,7 +560,7 @@ mod test {
             6399,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
 
@@ -617,8 +583,6 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
 
         let txns = vec![
             t1.envelope_encoded().into(),
@@ -626,13 +590,7 @@ mod test {
             t3.envelope_encoded().into(),
         ];
 
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
         assert_eq!(pool.pool.len(), 1);
         assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 3);
 
@@ -643,7 +601,7 @@ mod test {
             6400 * 2,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -663,20 +621,12 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(vec![(a1, 0), (a2, 0)], Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
 
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
             .collect();
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
 
         let encoded_txns = Pool::create_proposal(
             &mut pool,
@@ -685,7 +635,7 @@ mod test {
             3,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -703,19 +653,11 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(vec![(a1, 0)], Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
             .collect();
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
         let encoded_txns = Pool::create_proposal(
             &mut pool,
             SeqNum(0),
@@ -723,7 +665,7 @@ mod test {
             3,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -767,19 +709,11 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
             .collect();
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
         let encoded_txns = Pool::create_proposal(
             &mut pool,
             SeqNum(0),
@@ -787,7 +721,7 @@ mod test {
             300,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -826,19 +760,11 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
             .collect();
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
         let encoded_txns = Pool::create_proposal(
             &mut pool,
             SeqNum(0),
@@ -846,7 +772,7 @@ mod test {
             300,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -893,19 +819,11 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
             .collect();
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
         let encoded_txns = Pool::create_proposal(
             &mut pool,
             SeqNum(0),
@@ -913,7 +831,7 @@ mod test {
             10,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -959,19 +877,11 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
             .collect();
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
         let encoded_txns = Pool::create_proposal(
             &mut pool,
             SeqNum(0),
@@ -979,7 +889,7 @@ mod test {
             10,
             &eth_block_policy,
             Default::default(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -998,26 +908,18 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
             .collect();
-        assert!(Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
         /*
         for tx in txs.iter() {
             let r = Pool::insert_tx(
                 &mut pool,
                 tx.clone().envelope_encoded().into(),
                 &eth_block_policy,
-                &mut reserve_balance_cache,
+                &state_backend,
             );
             assert!(matches!(
                 r.expect_err("gas limit 0 tx"),
@@ -1071,19 +973,11 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
             .collect();
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
         let encoded_txns = Pool::create_proposal(
             &mut pool,
             SeqNum(0),
@@ -1091,7 +985,7 @@ mod test {
             10,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1109,18 +1003,12 @@ mod test {
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
 
         let txns = vec![txn_nonce_zero.envelope_encoded().into()];
 
-        assert!(!Pool::insert_tx(
-            &mut eth_tx_pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(
+            !Pool::insert_tx(&mut eth_tx_pool, txns, &eth_block_policy, &state_backend,).is_empty()
+        );
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,
@@ -1129,7 +1017,7 @@ mod test {
             50_000,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1152,8 +1040,6 @@ mod test {
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(vec![(sender_1_address, 0)], Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
 
         let txns = vec![
             txn_nonce_zero.envelope_encoded().into(),
@@ -1161,13 +1047,9 @@ mod test {
             txn_nonce_three.envelope_encoded().into(),
         ];
 
-        assert!(!Pool::insert_tx(
-            &mut eth_tx_pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(
+            !Pool::insert_tx(&mut eth_tx_pool, txns, &eth_block_policy, &state_backend,).is_empty()
+        );
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,
@@ -1176,7 +1058,7 @@ mod test {
             50_000,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1197,20 +1079,14 @@ mod test {
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(vec![(sender_1_address, 1)], Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
 
         let txns = vec![
             txn_nonce_zero.envelope_encoded().into(),
             txn_nonce_one.envelope_encoded().into(),
         ];
-        assert!(!Pool::insert_tx(
-            &mut eth_tx_pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(
+            !Pool::insert_tx(&mut eth_tx_pool, txns, &eth_block_policy, &state_backend,).is_empty()
+        );
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,
@@ -1219,7 +1095,7 @@ mod test {
             50_000,
             &eth_block_policy,
             Vec::new(),
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1241,8 +1117,6 @@ mod test {
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
         // create the extending block with txn 1
         let extending_block = generate_random_block_with_txns(vec![txn_1_nonce_zero]);
 
@@ -1250,13 +1124,9 @@ mod test {
             txn_2_nonce_zero.envelope_encoded().into(),
             txn_nonce_one.envelope_encoded().into(),
         ];
-        assert!(!Pool::insert_tx(
-            &mut eth_tx_pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(
+            !Pool::insert_tx(&mut eth_tx_pool, txns, &eth_block_policy, &state_backend,).is_empty()
+        );
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,
@@ -1265,7 +1135,7 @@ mod test {
             50_000,
             &eth_block_policy,
             vec![&extending_block],
-            &mut reserve_balance_cache,
+            &state_backend,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1292,8 +1162,6 @@ mod test {
 
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryState::new(vec![(sender_1_address, 1)], Balance::MAX, 0);
-        let mut reserve_balance_cache =
-            PassthruReserveBalanceCache::new(state_backend, EXECUTION_DELAY);
 
         let txns = vec![
             txn_nonce_one.envelope_encoded().into(),
@@ -1301,13 +1169,9 @@ mod test {
             txn_nonce_three.envelope_encoded().into(),
         ];
 
-        assert!(!Pool::insert_tx(
-            &mut eth_tx_pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .is_empty());
+        assert!(
+            !Pool::insert_tx(&mut eth_tx_pool, txns, &eth_block_policy, &state_backend,).is_empty()
+        );
 
         // create the extending block 1 with txn 1
         let extending_block_1 = generate_random_block_with_txns(vec![txn_nonce_one]);
@@ -1321,7 +1185,7 @@ mod test {
                 50_000,
                 &eth_block_policy,
                 vec![&extending_block_1, &extending_block_2],
-                &mut reserve_balance_cache,
+                &state_backend,
             )
             .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1339,18 +1203,10 @@ mod test {
 
         // eth block policy has a different chain id than the transaction
         let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, 0, 0, 1);
-        let mut reserve_balance_cache = PassthruReserveBalanceCache::new(
-            InMemoryState::new(vec![(sender_1_address, 1)], u128::MAX, 0),
-            0,
-        );
+        let state_backend = InMemoryState::new(vec![(sender_1_address, 1)], u128::MAX, 0);
 
         let txns = vec![txn_nonce_one.envelope_encoded().into()];
-        let result = Pool::insert_tx(
-            &mut eth_tx_pool,
-            txns,
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        );
+        let result = Pool::insert_tx(&mut eth_tx_pool, txns, &eth_block_policy, &state_backend);
 
         // transaction should not be inserted into the pool
         assert!(result.is_empty());

@@ -26,12 +26,10 @@ use monad_crypto::{
     NopPubKey, NopSignature,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_reserve_balance::{
-    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
-};
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
+use monad_state_backend::NopStateBackend;
 use monad_testutil::{
     proposal::ProposalGen,
     signing::{create_certificate_keys, create_keys},
@@ -174,15 +172,9 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend, PassthruReserveBalanceCache<NopStateBackend>>
-        + Default,
+    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend> + Default,
 {
-    consensus_state: ConsensusState<
-        SCT,
-        EthBlockPolicy,
-        NopStateBackend,
-        PassthruReserveBalanceCache<NopStateBackend>,
-    >,
+    consensus_state: ConsensusState<SCT, EthBlockPolicy, NopStateBackend>,
 
     metrics: Metrics,
     txpool: TT,
@@ -195,7 +187,7 @@ where
     state_root_validator: SVT,
     block_validator: EthValidator,
     block_policy: EthBlockPolicy,
-    reserve_balance_cache: PassthruReserveBalanceCache<NopStateBackend>,
+    state_backend: NopStateBackend,
     block_timestamp: BlockTimestamp,
     beneficiary: EthAddress,
     nodeid: NodeId<CertificateSignaturePubKey<ST>>,
@@ -212,8 +204,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend, PassthruReserveBalanceCache<NopStateBackend>>
-        + Default,
+    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend> + Default,
     // BPT: BlockPolicy<SCT, ValidatedBlock = EthValidatedBlock<SCT>>,
 {
     fn wrapped_state(
@@ -223,7 +214,6 @@ where
         SCT,
         EthBlockPolicy,
         NopStateBackend,
-        PassthruReserveBalanceCache<NopStateBackend>,
         VTF,
         LT,
         TT,
@@ -244,7 +234,7 @@ where
             state_root_validator: &self.state_root_validator,
             block_validator: &self.block_validator,
             block_policy: &mut self.block_policy,
-            reserve_balance_cache: &mut self.reserve_balance_cache,
+            state_backend: &self.state_backend,
             block_timestamp: &mut self.block_timestamp,
             beneficiary: &self.beneficiary,
             nodeid: &self.nodeid,
@@ -290,8 +280,7 @@ fn setup<
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend, PassthruReserveBalanceCache<NopStateBackend>>
-        + Default,
+    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend> + Default,
 >(
     num_states: u32,
     valset_factory: VTF,
@@ -369,10 +358,7 @@ fn setup<
                 state_root_validator: state_root(),
                 block_validator: EthValidator::new(10_000, u64::MAX, 1337),
                 block_policy: EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 0, 1337),
-                reserve_balance_cache: PassthruReserveBalanceCache::new(
-                    NopStateBackend::default(),
-                    0,
-                ),
+                state_backend: NopStateBackend::default(),
                 block_timestamp: BlockTimestamp::new(
                     100,
                     consensus_config.timestamp_latency_estimate_ms,
@@ -413,7 +399,6 @@ type SignatureCollectionType = MultiSig<SignatureType>;
 type StateRootValidatorType = NopStateRoot;
 type BlockPolicyType = EthBlockPolicy;
 type StateBackendType = NopStateBackend;
-type ReserveBalanceCacheType = PassthruReserveBalanceCache<StateBackendType>;
 
 use monad_consensus::messages::consensus_message::ProtocolMessage;
 use monad_consensus_types::{
@@ -490,16 +475,11 @@ fn init(seed_mempool: bool) -> BenchTuple {
             .iter()
             .map(|t| Bytes::from(t.envelope_encoded()))
             .collect();
-        <EthTxPool as TxPool<
-            SignatureCollectionType,
-            EthBlockPolicy,
-            NopStateBackend,
-            PassthruReserveBalanceCache<NopStateBackend>,
-        >>::insert_tx(
+        <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, NopStateBackend>>::insert_tx(
             wrapped_state.tx_pool,
             txns,
             wrapped_state.block_policy,
-            wrapped_state.reserve_balance_cache,
+            wrapped_state.state_backend,
         );
     }
     let (author, _, proposal_message) = env
@@ -633,11 +613,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     .iter()
                     .map(|t| Bytes::from(t.envelope_encoded()))
                     .collect();
-                <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, NopStateBackend,PassthruReserveBalanceCache<NopStateBackend>>>::insert_tx(
+                <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, NopStateBackend>>::insert_tx(
                     wrapped_state.tx_pool,
                     txns,
                     wrapped_state.block_policy,
-                    wrapped_state.reserve_balance_cache,
+                    wrapped_state.state_backend,
                 );
                 let (author, _, proposal_message) = env
                     .next_proposal(
@@ -690,8 +670,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
                 let (raw_txns, _) = make_txns();
                 let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 0, 1337);
-                let mut reserve_balance_cache =
-                    PassthruReserveBalanceCache::new(NopStateBackend::default(), 0);
+                let state_backend = NopStateBackend::default();
                 let txns: Vec<Bytes> = raw_txns
                     .iter()
                     .map(|t| Bytes::from(t.envelope_encoded()))
@@ -700,12 +679,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     SignatureCollectionType,
                     EthBlockPolicy,
                     NopStateBackend,
-                    PassthruReserveBalanceCache<NopStateBackend>,
                 >>::insert_tx(
-                    &mut ctx[3].txpool,
-                    txns,
-                    &block_policy,
-                    &mut reserve_balance_cache,
+                    &mut ctx[3].txpool, txns, &block_policy, &state_backend
                 );
                 let _ = env.next_tc(Epoch(1));
                 let tc = env.next_tc(Epoch(1));

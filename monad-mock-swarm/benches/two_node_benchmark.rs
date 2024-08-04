@@ -7,14 +7,12 @@ use monad_consensus_types::{
     txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_reserve_balance::{
-    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
-};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
+use monad_state_backend::NopStateBackend;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
@@ -40,7 +38,7 @@ fn two_nodes() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
+        || NopStateBackend,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay

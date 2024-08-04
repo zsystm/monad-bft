@@ -39,7 +39,7 @@ monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
-monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
+monad-state-backend = { path = "../monad-state-backend" }
 monad-triedb = { path = "../monad-triedb" }
 monad-triedb-cache = { path = "../monad-triedb-cache" }
 

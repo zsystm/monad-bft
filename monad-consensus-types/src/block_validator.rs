@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
+use monad_state_backend::{NopStateBackend, StateBackend};
 
 use crate::{
     block::{Block, BlockPolicy, PassthruBlockPolicy},
@@ -15,12 +15,11 @@ pub enum BlockValidationError {
     RandaoError,
 }
 
-pub trait BlockValidator<SCT, BPT, SBT, RBCT>
+pub trait BlockValidator<SCT, BPT, SBT>
 where
     SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
 {
     fn validate(
         &self,
@@ -29,13 +28,12 @@ where
     ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
 }
 
-impl<SCT, BPT, SBT, RBCT, T> BlockValidator<SCT, BPT, SBT, RBCT> for Box<T>
+impl<SCT, BPT, SBT, T> BlockValidator<SCT, BPT, SBT> for Box<T>
 where
     SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
-    T: BlockValidator<SCT, BPT, SBT, RBCT> + ?Sized,
+    T: BlockValidator<SCT, BPT, SBT> + ?Sized,
 {
     fn validate(
         &self,
@@ -49,15 +47,16 @@ where
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
-impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>
-    BlockValidator<SCT, PassthruBlockPolicy, SBT, RBCT> for MockValidator
+impl<SCT> BlockValidator<SCT, PassthruBlockPolicy, NopStateBackend> for MockValidator
+where
+    SCT: SignatureCollection,
 {
     fn validate(
         &self,
         block: Block<SCT>,
         _author_pubkey: &SignatureCollectionPubKeyType<SCT>,
     ) -> Result<
-        <PassthruBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock,
+        <PassthruBlockPolicy as BlockPolicy<SCT, NopStateBackend>>::ValidatedBlock,
         BlockValidationError,
     > {
         Ok(block)

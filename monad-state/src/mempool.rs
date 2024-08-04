@@ -10,8 +10,8 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_executor_glue::{Command, MempoolEvent, MonadEvent, RouterCommand};
+use monad_state_backend::StateBackend;
 use monad_types::{NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager,
@@ -25,61 +25,59 @@ use crate::{MonadState, VerifiedMonadMessage};
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct MempoolChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT, RBCT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    TT: TxPool<SCT, BPT, SBT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
 
     SVT: StateRootValidator,
 {
     txpool: &'a mut TT,
     block_policy: &'a BPT,
-    reserve_balance_cache: &'a mut RBCT,
+    state_backend: &'a SBT,
 
     metrics: &'a mut Metrics,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
-    consensus: &'a ConsensusState<SCT, BPT, SBT, RBCT>,
+    consensus: &'a ConsensusState<SCT, BPT, SBT>,
     leader_election: &'a LT,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT)>,
 }
 
 pub(super) enum MempoolCommand<PT: PubKey> {
     ForwardTxns(Vec<NodeId<PT>>, Vec<Bytes>),
 }
 
-impl<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
-    MempoolChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+    MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT, RBCT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    TT: TxPool<SCT, BPT, SBT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,
             metrics: &mut monad_state.metrics,
             block_policy: &monad_state.block_policy,
-            reserve_balance_cache: &mut monad_state.reserve_balance_cache,
+            state_backend: &monad_state.state_backend,
 
             nodeid: &monad_state.nodeid,
             consensus: &monad_state.consensus,
@@ -112,7 +110,7 @@ where
                 let num_txns = txns.len() as u64;
                 let valid_encoded_txs =
                     self.txpool
-                        .insert_tx(txns, self.block_policy, self.reserve_balance_cache);
+                        .insert_tx(txns, self.block_policy, self.state_backend);
 
                 let num_valid_txns = valid_encoded_txs.len() as u64;
                 self.metrics.txpool_events.local_inserted_txns += num_valid_txns;
@@ -134,7 +132,7 @@ where
                 let num_txns = txns.len() as u64;
                 let valid_encoded_txs =
                     self.txpool
-                        .insert_tx(txns, self.block_policy, self.reserve_balance_cache);
+                        .insert_tx(txns, self.block_policy, self.state_backend);
 
                 let num_valid_txns = valid_encoded_txs.len() as u64;
                 self.metrics.txpool_events.external_inserted_txns += num_valid_txns;

@@ -8,7 +8,7 @@ use monad_consensus_types::{
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::{Vote, VoteInfo},
 };
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
+use monad_state_backend::StateBackend;
 use monad_types::*;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -106,16 +106,16 @@ impl Safety {
     /// Make a Vote if it's safe to vote in the round. Set the commit field if
     /// QC formed on the voted block can cause a commit: `block.qc.round` is
     /// consecutive with `block.round`
-    pub fn make_vote<
-        SCT: SignatureCollection,
-        BPT: BlockPolicy<SCT, SBT, RBCT>,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-    >(
+    pub fn make_vote<SCT, BPT, SBT>(
         &mut self,
         block: &BPT::ValidatedBlock,
         last_tc: &Option<TimeoutCertificate<SCT>>,
-    ) -> Option<Vote> {
+    ) -> Option<Vote>
+    where
+        SCT: SignatureCollection,
+        BPT: BlockPolicy<SCT, SBT>,
+        SBT: StateBackend,
+    {
         let qc_round = block.get_parent_round();
         if self.safe_to_vote(block.get_round(), qc_round, last_tc) {
             self.update_highest_qc_round(qc_round);

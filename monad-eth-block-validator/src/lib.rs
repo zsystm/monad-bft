@@ -7,9 +7,9 @@ use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_eth_tx::{EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
+use monad_state_backend::StateBackend;
 use tracing::warn;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
@@ -35,17 +35,16 @@ impl EthValidator {
 }
 
 // FIXME: add specific error returns for the different failures
-impl<SCT, SBT, RBCT> BlockValidator<SCT, EthBlockPolicy, SBT, RBCT> for EthValidator
+impl<SCT, SBT> BlockValidator<SCT, EthBlockPolicy, SBT> for EthValidator
 where
     SCT: SignatureCollection,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
 {
     fn validate(
         &self,
         block: Block<SCT>,
         author_pubkey: &SignatureCollectionPubKeyType<SCT>,
-    ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock, BlockValidationError>
+    ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock, BlockValidationError>
     {
         // RLP decodes the txns
         let Ok(eth_txns) =

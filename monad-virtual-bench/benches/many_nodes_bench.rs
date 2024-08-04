@@ -14,9 +14,6 @@ use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
-use monad_eth_reserve_balance::{
-    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
-};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
@@ -26,6 +23,7 @@ use monad_multi_sig::MultiSig;
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_router_scheduler::RouterSchedulerBuilder;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_state_backend::NopStateBackend;
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{
     BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer, ID,
@@ -47,7 +45,6 @@ impl SwarmRelation for NopSwarm {
     type SignatureCollectionType = MultiSig<NopSignature>;
     type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage = Bytes;
 
@@ -82,7 +79,6 @@ impl SwarmRelation for BlsSwarm {
     type SignatureCollectionType = BlsSignatureCollection<NodeIdPubKey>;
     type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage = Bytes;
 
@@ -119,7 +115,7 @@ fn many_nodes_nop_timeout() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache::new(NopStateBackend, u64::MAX),
+        || NopStateBackend,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay
@@ -197,7 +193,7 @@ fn many_nodes_bls_timeout() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache::new(NopStateBackend, u64::MAX),
+        || NopStateBackend,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay

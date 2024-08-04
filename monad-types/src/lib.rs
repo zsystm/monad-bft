@@ -100,6 +100,11 @@ pub struct SeqNum(
     pub u64,
 );
 
+impl SeqNum {
+    pub const MIN: SeqNum = SeqNum(u64::MIN);
+    pub const MAX: SeqNum = SeqNum(u64::MAX);
+}
+
 impl Serialize for SeqNum {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

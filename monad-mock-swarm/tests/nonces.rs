@@ -19,7 +19,6 @@ mod test {
     use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
-    use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
     use monad_eth_testutil::{make_tx, secret_to_eth_address};
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
@@ -55,7 +54,6 @@ mod test {
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type StateBackendType = Arc<Mutex<InMemoryState>>;
         type BlockPolicyType = EthBlockPolicy;
-        type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
         type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -108,14 +106,11 @@ mod test {
             || EthValidator::new(10_000, 1_000_000, 1337),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, execution_delay.0, 0, 1337),
             || {
-                PassthruReserveBalanceCache::new(
-                    Arc::new(Mutex::new(InMemoryState::new(
-                        existing_nonces.clone(),
-                        Balance::MAX,
-                        0,
-                    ))),
-                    execution_delay.0,
-                )
+                Arc::new(Mutex::new(InMemoryState::new(
+                    existing_nonces.clone(),
+                    Balance::MAX,
+                    0,
+                )))
             },
             || StateRoot::new(execution_delay),
             PeerAsyncStateVerify::new,
@@ -136,8 +131,7 @@ mod test {
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let validators = state_builder.forkpoint.validator_sets[0].clone();
-                    let state_backend =
-                        Arc::clone(&state_builder.reserve_balance_cache.get_state_backend());
+                    let state_backend = Arc::clone(&state_builder.state_backend);
                     NodeBuilder::<EthSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,

@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{fmt::Debug, ops::Deref};
 
 use async_state_verify::AsyncStateVerifyChildState;
 use blocksync::BlockSyncChildState;
@@ -33,13 +33,13 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MonadEvent,
     ReadCommand, StateRootHashCommand, ValidatorEvent, WriteCommand,
 };
+use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_validator::{
     epoch_manager::EpochManager,
@@ -387,14 +387,13 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
     }
 }
 
-pub struct MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     keypair: ST::KeyPairType,
@@ -404,7 +403,7 @@ where
     consensus_config: ConsensusConfig,
 
     /// Core consensus algorithm state machine
-    consensus: ConsensusState<SCT, BPT, SBT, RBCT>,
+    consensus: ConsensusState<SCT, BPT, SBT>,
     /// Handles blocksync servicing
     block_sync: BlockSync<ST>,
 
@@ -423,7 +422,7 @@ where
     block_timestamp: BlockTimestamp,
     block_validator: BVT,
     block_policy: BPT,
-    reserve_balance_cache: RBCT,
+    state_backend: SBT,
     beneficiary: EthAddress,
 
     /// Metrics counters for events and errors
@@ -433,24 +432,23 @@ where
     version: MonadVersion,
 }
 
-impl<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT, RBCT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    TT: TxPool<SCT, BPT, SBT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub fn consensus(&self) -> &ConsensusState<SCT, BPT, SBT, RBCT> {
+    pub fn consensus(&self) -> &ConsensusState<SCT, BPT, SBT> {
         &self.consensus
     }
 
@@ -470,7 +468,7 @@ where
         self.nodeid.pubkey()
     }
 
-    pub fn blocktree(&self) -> &BlockTree<SCT, BPT, SBT, RBCT> {
+    pub fn blocktree(&self) -> &BlockTree<SCT, BPT, SBT> {
         self.consensus.blocktree()
     }
 
@@ -631,16 +629,15 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT, RBCT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    TT: TxPool<SCT, BPT, SBT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
 
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
@@ -655,7 +652,7 @@ where
     pub transaction_pool: TT,
     pub block_validator: BVT,
     pub block_policy: BPT,
-    pub reserve_balance_cache: RBCT,
+    pub state_backend: SBT,
     pub state_root_validator: SVT,
     pub async_state_verify: ASVT,
     pub forkpoint: Forkpoint<SCT>,
@@ -666,21 +663,19 @@ where
     pub beneficiary: EthAddress,
 
     pub consensus_config: ConsensusConfig,
-    pub _pd: PhantomData<(BPT, SBT)>,
 }
 
-impl<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadStateBuilder<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT, RBCT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    TT: TxPool<SCT, BPT, SBT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
 
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
@@ -691,7 +686,7 @@ where
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
         Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>,
     ) {
         assert_eq!(
@@ -753,7 +748,7 @@ where
             block_timestamp,
             block_validator: self.block_validator,
             block_policy: self.block_policy,
-            reserve_balance_cache: self.reserve_balance_cache,
+            state_backend: self.state_backend,
             beneficiary: self.beneficiary,
 
             metrics: Metrics::default(),
@@ -789,18 +784,17 @@ where
     }
 }
 
-impl<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
-    RBCT: ReserveBalanceCacheTrait<SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT, RBCT>,
-    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+    TT: TxPool<SCT, BPT, SBT>,
+    BVT: BlockValidator<SCT, BPT, SBT>,
 
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
