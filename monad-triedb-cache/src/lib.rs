@@ -45,13 +45,13 @@ where
 
         let mut cache = self.cache.lock().unwrap();
 
+        // TODO consider removing this uniqueness filter... the callers we have so far already only
+        // pass in a unique set of accounts
+        let unique_addresses = addresses.iter().unique().copied();
         // find accounts that are missing from cache
-        let cache_misses = match cache.get(&block) {
-            None => addresses.clone(),
-            Some(block_cache) => addresses
-                .iter()
-                .copied()
-                .unique()
+        let cache_misses: Vec<_> = match cache.get(&block) {
+            None => unique_addresses.collect(),
+            Some(block_cache) => unique_addresses
                 .filter(|address| !block_cache.contains_key(address))
                 .collect(),
         };
