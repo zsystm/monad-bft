@@ -391,7 +391,9 @@ impl StateRootValidator for MissingNextStateRoot {
     }
 
     fn get_delay(&self) -> SeqNum {
-        SeqNum(4)
+        // Note: Zero delay means that this node never requests state root
+        // updates
+        SeqNum(0)
     }
 }
 
