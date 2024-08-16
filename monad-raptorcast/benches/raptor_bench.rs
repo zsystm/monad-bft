@@ -1,15 +1,15 @@
-use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use itertools::Itertools;
+use lru::LruCache;
 use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::network::MONAD_GSO_SIZE;
 use monad_raptor::ManagedDecoder;
-use monad_raptorcast::{build_messages, parse_message, BuildTarget, EpochValidators, Validator};
+use monad_raptorcast::{
+    build_messages, parse_message, BuildTarget, EpochValidators, Validator, SIGNATURE_CACHE_SIZE,
+};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
 
@@ -103,7 +103,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         .collect_vec();
 
         let example_chunk = parse_message::<SecpSignature>(
-            &mut Default::default(),
+            &mut LruCache::new(SIGNATURE_CACHE_SIZE),
             messages[0].clone().split_to(MONAD_GSO_SIZE),
         )
         .expect("valid chunk");
@@ -111,7 +111,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter_batched(
             || messages.clone(),
             |messages| {
-                let mut signature_cache = HashMap::new();
+                let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
                 let mut decoder = {
                     let symbol_len = example_chunk.chunk.len();
 

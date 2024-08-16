@@ -1,7 +1,8 @@
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     marker::PhantomData,
     net::SocketAddr,
+    num::NonZero,
     ops::{DerefMut, Range},
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -11,6 +12,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use itertools::Itertools;
+use lru::LruCache;
 use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -41,6 +43,11 @@ where
     pub local_addr: String,
 }
 
+pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
+
+pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
+pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
+
 pub struct RaptorCast<ST, M, OM>
 where
     ST: CertificateSignatureRecoverable,
@@ -60,11 +67,14 @@ where
     // can't be induced by spamming broadcast chunks to any given node
     // TODO we also need to cap the max number chunks that are decoded - because an adversary could
     // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
-    // TODO GC these based on time elapsed since first chunk? Right now we do no GC - we can't do
-    // this by round because some node may be trying to sync to us with a much older round.
-    message_cache: BTreeMap<MessageCacheKey<CertificateSignaturePubKey<ST>>, ManagedDecoder>,
+    // TODO strong bound on max amount of memory used per decoder?
+    // TODO make eviction more sophisticated than LRU - should look at Round as well
+    pending_message_cache:
+        LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, ManagedDecoder>,
     signature_cache:
-        HashMap<[u8; HEADER_LEN as usize - 65 + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+        LruCache<[u8; HEADER_LEN as usize - 65 + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+    /// Value in this map represents the # of excess chunks received for a successfully decoded msg
+    recently_decoded_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, usize>,
 
     dataplane: Dataplane,
     pending_events: VecDeque<M::Event>,
@@ -130,7 +140,7 @@ pub struct Validator {
     pub stake: Stake,
 }
 
-#[derive(Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct MessageCacheKey<PT>
 where
     PT: PubKey,
@@ -160,8 +170,9 @@ where
             current_epoch: Epoch(0),
             current_round: Round(0),
 
-            message_cache: Default::default(),
-            signature_cache: Default::default(),
+            pending_message_cache: LruCache::unbounded(),
+            signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
+            recently_decoded_cache: LruCache::new(RECENTLY_DECODED_CACHE_SIZE),
 
             dataplane,
             pending_events: Default::default(),
@@ -368,19 +379,15 @@ where
             return Poll::Ready(Some(event));
         }
 
-        while this.message_cache.len() > 1_000 {
-            // FIXME this is a super jank way of bounding size of message_cache
-            // should switch this to LRU eviction
-            let (key, decoder) = this.message_cache.first_entry().unwrap().remove_entry();
-            if !decoder.decoding_done() {
-                tracing::warn!(
-                    num_source_symbols = decoder.num_source_symbols(),
-                    num_encoded_symbols_received = decoder.num_encoded_symbols_received(),
-                    inactivation_symbol_threshold = decoder.inactivation_symbol_threshold(),
-                    ?key,
-                    "dropping unfinished ManagedDecoder"
-                );
-            }
+        while this.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.into() {
+            let (key, decoder) = this.pending_message_cache.pop_lru().expect("nonempty");
+            tracing::warn!(
+                num_source_symbols = decoder.num_source_symbols(),
+                num_encoded_symbols_received = decoder.num_encoded_symbols_received(),
+                inactivation_symbol_threshold = decoder.inactivation_symbol_threshold(),
+                ?key,
+                "dropped unfinished ManagedDecoder"
+            )
         }
 
         let self_id = NodeId::new(this.key.pubkey());
@@ -450,39 +457,44 @@ where
                 }
 
                 let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
-                let entry = this
-                    .message_cache
-                    .entry(MessageCacheKey {
-                        round: Round(parsed_message.round),
-                        author: parsed_message.author,
-                        app_message_hash: parsed_message.app_message_hash,
-                        app_message_len,
-                    })
-                    .or_insert_with(|| {
-                        let symbol_len = parsed_message.chunk.len();
+                let key = MessageCacheKey {
+                    round: Round(parsed_message.round),
+                    author: parsed_message.author,
+                    app_message_hash: parsed_message.app_message_hash,
+                    app_message_len,
+                };
 
-                        // data_size is always greater than zero, so this division is safe
-                        let num_source_symbols =
-                            app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
-
-                        // TODO: verify unwrap
-                        ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
-                    });
-
-                if entry.decoding_done() {
+                if let Some(excess_chunk_count) = this.recently_decoded_cache.get_mut(&key) {
                     // already decoded
+                    *excess_chunk_count += 1;
                     continue;
                 }
 
-                entry
+                let decoder = this.pending_message_cache.get_or_insert_mut(key, || {
+                    let symbol_len = parsed_message.chunk.len();
+
+                    // data_size is always greater than zero, so this division is safe
+                    let num_source_symbols =
+                        app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
+
+                    // TODO: verify unwrap
+                    ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
+                });
+
+                // can we assert!(!decoder.decoding_done()) ?
+
+                decoder
                     .received_encoded_symbol(&parsed_message.chunk, parsed_message.chunk_id.into());
 
-                if entry.try_decode() {
-                    let Some(mut decoded) = entry.reconstruct_source_data() else {
+                if decoder.try_decode() {
+                    let Some(mut decoded) = decoder.reconstruct_source_data() else {
                         tracing::error!("failed to reconstruct source data");
                         continue;
                     };
                     decoded.truncate(app_message_len);
+                    // successfully decoded, so pop out from pending_messages
+                    this.pending_message_cache.pop(&key);
+                    this.recently_decoded_cache.push(key, 0);
 
                     let Ok(message) = M::deserialize(&Bytes::from(decoded)) else {
                         tracing::error!("failed to deserialize message");
@@ -889,7 +901,7 @@ pub enum MessageValidationError {
 /// - 2 bytes => Merkle chunk payload len
 /// - (merkle_chunk_payload_len bytes) => data
 pub fn parse_message<ST>(
-    signature_cache: &mut HashMap<
+    signature_cache: &mut LruCache<
         [u8; HEADER_LEN as usize - 65 + 20],
         NodeId<CertificateSignaturePubKey<ST>>,
     >,
@@ -1000,21 +1012,12 @@ where
     signed_over[..HEADER_LEN as usize - 65].copy_from_slice(&message[65..HEADER_LEN as usize]);
     signed_over[HEADER_LEN as usize - 65..].copy_from_slice(&root);
 
-    let author = match signature_cache.entry(signed_over) {
-        Entry::Occupied(entry) => *entry.get(),
-        Entry::Vacant(entry) => {
-            let author = signature
-                .recover_pubkey(&signed_over)
-                .map_err(|_| MessageValidationError::InvalidSignature)?;
-            *entry.insert(NodeId::new(author))
-        }
-    };
-
-    if signature_cache.len() > 10_000 {
-        // FIXME this is a super jank way of bounding size of signature_cache
-        // should switch this to LRU eviction
-        signature_cache.clear();
-    }
+    let author = *signature_cache.try_get_or_insert(signed_over, || {
+        let author = signature
+            .recover_pubkey(&signed_over)
+            .map_err(|_| MessageValidationError::InvalidSignature)?;
+        Ok(NodeId::new(author))
+    })?;
 
     Ok(ValidatedMessage {
         message,
@@ -1107,11 +1110,15 @@ mod tests {
 
     use bytes::{Bytes, BytesMut};
     use itertools::Itertools;
+    use lru::LruCache;
     use monad_crypto::hasher::{Hasher, HasherType};
     use monad_secp::SecpSignature;
     use monad_types::{NodeId, Stake};
 
-    use crate::{build_messages, parse_message, BuildTarget, EpochValidators, Validator, GSO_SIZE};
+    use crate::{
+        build_messages, parse_message, BuildTarget, EpochValidators, Validator, GSO_SIZE,
+        SIGNATURE_CACHE_SIZE,
+    };
 
     #[test]
     fn test_roundtrip() {
@@ -1161,7 +1168,7 @@ mod tests {
             &known_addresses,
         );
 
-        let mut signature_cache = Default::default();
+        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
 
         for (to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
@@ -1222,7 +1229,7 @@ mod tests {
             &known_addresses,
         );
 
-        let mut signature_cache = Default::default();
+        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
 
         for (to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {

@@ -23,6 +23,7 @@ monad-types = { path = "../monad-types" }
 bytes = { workspace = true }
 futures = { workspace = true }
 itertools = { workspace = true }
+lru = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
