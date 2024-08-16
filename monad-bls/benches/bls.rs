@@ -1,5 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_bls::BlsSignatureCollection;
+use monad_bls::ScaledBlsSignatureCollection;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -51,6 +52,25 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter_batched(
             || {
                 SignatureCollectionType::new(sigs.clone(), &validator_mapping, data.as_ref())
+                    .unwrap()
+            },
+            |sig_col| sig_col.verify(&validator_mapping, data.as_ref()).unwrap(),
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    c.bench_function("bls_aggregate_1000_with_random_scaler", |b| {
+        b.iter_batched(
+            || sigs.clone(),
+            |sigs| ScaledBlsSignatureCollection::new(sigs, &validator_mapping, data.as_ref()).unwrap(),
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    // verify
+    c.bench_function("bls_verify_random_scaler", |b| {
+        b.iter_batched(
+            || {
+                ScaledBlsSignatureCollection::new(sigs.clone(), &validator_mapping, data.as_ref())
                     .unwrap()
             },
             |sig_col| sig_col.verify(&validator_mapping, data.as_ref()).unwrap(),

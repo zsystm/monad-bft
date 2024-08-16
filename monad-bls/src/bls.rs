@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 
-use monad_crypto::hasher::{Hashable, Hasher};
+use blst::*;
+use min_pk::{AggregatePublicKey, AggregateSignature};
+use monad_crypto::{certificate_signature::PubKey, hasher::{Hashable, Hasher}};
 use zeroize::Zeroize;
 
 /// The cipher suite
@@ -165,6 +167,86 @@ impl BlsPubKey {
         blst_core::PublicKey::uncompress(msg)
             .map(Self)
             .map_err(BlsError)
+    }
+
+    pub fn add_pubkeys(vector_pubkeys :&[Self]) ->  Self  {
+        let vector_proj: Vec<blst_p1> = vector_pubkeys.iter().map(|pubs| {
+            let pubkey_bytes = pubs.0.to_bytes();
+            let mut pubs_affine = blst_p1_affine::default();
+            unsafe {
+                blst_p1_deserialize(&mut pubs_affine, pubkey_bytes.as_ptr());
+            }
+            let mut pubs_proj = blst_p1::default();
+            unsafe {
+                blst_p1_from_affine(&mut pubs_proj, &pubs_affine);
+            }
+            pubs_proj
+        }).collect();
+        let mut agg_proj = blst_p1::default();
+        for item in vector_proj.iter() {
+            unsafe {
+                blst_p1_add_or_double(&mut agg_proj, &agg_proj, item);
+            }
+        }
+        let mut result_affine = blst_p1_affine::default();
+        unsafe {
+            blst_p1_to_affine(&mut result_affine, &agg_proj);
+        }
+        // Serialize the result back to bytes
+        let mut result_bytes = [0u8;48]; // Adjust size if needed
+        unsafe {
+            blst_p1_affine_compress(result_bytes.as_mut_ptr(), &result_affine);
+        }
+        // Deserialize the resulting bytes back to a blst_core::Signature
+        BlsPubKey(blst_core::PublicKey::from_bytes(&result_bytes).expect("pub type"))  
+    }
+
+    pub fn mult_scalar(&self, scalar: &[u8]) ->Self{
+        // Convert the pubkey to bytes
+        let byte_pub = self.0.to_bytes();
+        let mut pub_affine = blst_p1_affine::default();
+        unsafe {
+            blst_p1_deserialize(&mut pub_affine, byte_pub.as_ptr());
+        }
+        // Convert the scalar bytes to a blst_scalar
+        let mut scalar_struct = blst_scalar::default();
+        unsafe {
+            blst_scalar_from_lendian(&mut scalar_struct, scalar.as_ptr());
+        }
+        // Convert affine point to projective point for multiplication
+        let mut pub_proj = blst_p1::default();
+        unsafe {
+            blst_p1_from_affine(&mut pub_proj , &pub_affine);
+        }
+        // Perform scalar multiplication
+        let mut result_proj = blst_p1::default();
+        unsafe {
+            blst_p1_mult(&mut result_proj, &pub_proj, scalar.as_ptr(), 8*scalar.len());
+        }
+        // Convert the resulting projective point back to an affine point
+        let mut result_affine = blst_p1_affine::default();
+        unsafe {
+            blst_p1_to_affine(&mut result_affine, &result_proj);
+        }   
+        // Serialize the result back to bytes
+        let mut result_bytes = [0u8; 48]; // Adjust size if needed
+        unsafe {
+            blst_p1_affine_compress(result_bytes.as_mut_ptr(), &result_affine);
+        }
+        let result =blst_core::PublicKey::from_bytes(&result_bytes).expect("PublicKey type");
+        BlsPubKey(result)
+    }
+
+    pub fn aggregate_pubs(pubs_vec: &Vec<Self> , randoms : &Vec<Vec<u8>> , group_check:bool )->BlsAggregatePubKey{
+        if pubs_vec.is_empty() {
+            return BlsAggregatePubKey::infinity();
+        }
+        let nbits = randoms[0].len()*8;
+        let randomness: Vec<u8> = randoms.iter().flatten().cloned().collect();
+        let pubs: Vec<min_pk::PublicKey> = pubs_vec.iter().map(|x|(x.0)).collect();
+        let agg_pub = blst_core::AggregatePublicKey::aggregate_with_randomness(&pubs, randomness.as_slice(), nbits, group_check).expect("aggregated public keys");
+
+        BlsAggregatePubKey(agg_pub)
     }
 }
 
@@ -380,8 +462,90 @@ impl BlsSignature {
     ) -> blst::BLST_ERROR {
         self.0
             .fast_aggregate_verify_pre_aggregated(sig_groupcheck, msg, dst, &pk.as_pubkey().0)
+    }   
+
+    pub fn add_signatures(vector_signatures :&[Self]) ->  Self  {
+        let vector_proj: Vec<blst_p2> = vector_signatures.iter().map(|sig| {
+            let sig_bytes = sig.0.to_bytes();
+            let mut sig_affine = blst_p2_affine::default();
+            unsafe {
+                blst_p2_deserialize(&mut sig_affine, sig_bytes.as_ptr());
+            }
+            let mut sig_proj = blst_p2::default();
+            unsafe {
+                blst_p2_from_affine(&mut sig_proj, &sig_affine);
+            }
+            sig_proj
+        }).collect();
+        let mut agg_proj = blst_p2::default();
+        for item in vector_proj.iter() {
+            unsafe {
+                blst_p2_add_or_double(&mut agg_proj, &agg_proj, item);
+            }
+        }
+        // agg_proj
+        // Convert the aggregate projective point back to an affine point
+        let mut result_affine = blst_p2_affine::default();
+        unsafe {
+            blst_p2_to_affine(&mut result_affine, &agg_proj);
+        }
+        // Serialize the result back to bytes
+        let mut result_bytes = [0u8; 96]; // Adjust size if needed
+        unsafe {
+            blst_p2_affine_compress(result_bytes.as_mut_ptr(), &result_affine);
+        }
+        // Deserialize the resulting bytes back to a blst_core::Signature
+        BlsSignature(blst_core::Signature::from_bytes(&result_bytes).expect("signature type"))  
     }
 
+    pub fn mult_scalar(&self, scalar: &[u8]) ->Self{
+        // Convert the signature to bytes
+        let byte_sig = self.0.to_bytes();
+        let mut sig_affine = blst_p2_affine::default();
+        unsafe {
+            blst_p2_deserialize(&mut sig_affine, byte_sig.as_ptr());
+        }
+        // Convert the scalar bytes to a blst_scalar
+        let mut scalar_struct = blst_scalar::default();
+        unsafe {
+            blst_scalar_from_lendian(&mut scalar_struct, scalar.as_ptr());
+        }
+        // Convert affine point to projective point for multiplication
+        let mut sig_proj = blst_p2::default();
+        unsafe {
+            blst_p2_from_affine(&mut sig_proj, &sig_affine);
+        }
+        // Perform scalar multiplication
+        let mut result_proj = blst_p2::default();
+        unsafe {
+            blst_p2_mult(&mut result_proj, &sig_proj, scalar.as_ptr(), 8*scalar.len());
+        }
+        // Convert the resulting projective point back to an affine point
+        let mut result_affine = blst_p2_affine::default();
+        unsafe {
+            blst_p2_to_affine(&mut result_affine, &result_proj);
+        }   
+        // Serialize the result back to bytes
+        let mut result_bytes = [0u8; 96]; // Adjust size if needed
+        unsafe {
+            blst_p2_affine_compress(result_bytes.as_mut_ptr(), &result_affine);
+        }
+        // Create blst_core::Signature from bytes
+       BlsSignature(blst_core::Signature::from_bytes(&result_bytes).expect("Signature type"))
+    }
+    
+    pub fn aggregate_sigs(sigs_vec: &Vec<Self> , randoms : &Vec<Vec<u8>> , group_check:bool )->BlsAggregateSignature{
+        if sigs_vec.is_empty() || randoms.is_empty() {
+            return BlsAggregateSignature::infinity();
+        }
+        let nbits = randoms[0].len()*8;
+        let randomness: Vec<u8> = randoms.iter().flatten().cloned().collect();
+        let sigs: Vec<min_pk::Signature> = sigs_vec.iter().map(|x|(x.0)).collect();
+        let agg_sig = blst_core::AggregateSignature::aggregate_with_randomness(&sigs, randomness.as_slice(), nbits, group_check).expect("aggregated signatures");
+
+        BlsAggregateSignature(agg_sig)
+    }
+    
     pub fn serialize(&self) -> Vec<u8> {
         self.0.serialize().to_vec()
     }
@@ -423,6 +587,7 @@ impl BlsAggregateSignature {
 
     /// Aggregate a signature to self
     pub fn add_assign(&mut self, other: &BlsSignature) -> Result<(), BlsError> {
+        
         self.0.add_signature(&other.0, false).map_err(BlsError)
     }
 
@@ -457,7 +622,7 @@ impl BlsAggregateSignature {
         self.0.to_signature().into()
     }
 
-    fn from_signature(sig: &BlsSignature) -> Self {
+    pub fn from_signature(sig: &BlsSignature) -> Self {
         blst_core::AggregateSignature::from_signature(&sig.0).into()
     }
 
@@ -497,6 +662,11 @@ impl std::hash::Hash for BlsAggregateSignature {
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
+
+    use blst::*;
+    use monad_crypto::certificate_signature::PubKey;
+
+    use crate::bls;
 
     use super::{
         BlsAggregatePubKey, BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature,
@@ -819,6 +989,8 @@ mod test {
         let msg = b"hello world";
 
         let sig = keypair.sign(msg);
+
+
         assert!(sig.verify(msg, &pubkey).is_ok());
     }
 
@@ -1006,5 +1178,52 @@ mod test {
         assert!(sig1.fast_verify(msg, &agg_pk).is_ok());
         assert!(sig2.fast_verify(msg, &agg_pk).is_ok());
         assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    //this test we compute sig^2 in two different approaches
+    fn test_mult_scalar_and_add_signature(){
+        // not sure why scalar u8 fails 
+        let keypair = keygen(7);
+        let msg = b"hello world";
+        let sig = keypair.sign(msg);
+        let scalar: u64= 1200;
+        let scalar_bytes = scalar.to_le_bytes();
+        let sig_2 = sig.mult_scalar(&scalar_bytes);
+        let vector_signs  = vec! [sig;1200];
+        let sum_ = BlsSignature::add_signatures(&vector_signs);
+        assert_eq!(sig_2,sum_);
+        let scalar: u64 = 4;
+        let scalar_bytes = scalar.to_le_bytes();
+        let sig_3 = sig.mult_scalar(&scalar_bytes);
+        assert_ne!(sig_3,sum_);
+        let pubkey = keypair.pubkey();
+        let scalar: u64= 1200;
+        let scalar_bytes = scalar.to_le_bytes();
+        let result = pubkey.mult_scalar(&scalar_bytes);
+        let vector_pubkeys  = vec! [pubkey;1200];
+        let sum_ = BlsPubKey::add_pubkeys(&vector_pubkeys);
+        assert_eq!(result,sum_);
+    }
+
+    #[test]
+    fn test_bls_sig_aggregation(){
+        let keypair1 = keygen(7);
+        let keypair2 = keygen(8);
+        let msg = b"hello world";
+        let sig1 = keypair1.sign(msg);
+        let sig2 = keypair2.sign(msg);
+        let scalar1: u64 =1200;
+        let scalar2 : u64 = 75;
+        let sigs_vec = vec![sig1,sig2];
+        let randoms = vec![scalar1.to_le_bytes().to_vec(), scalar2.to_le_bytes().to_vec()];
+        let group_check = false;
+        let aggregated_result = BlsSignature::aggregate_sigs(&sigs_vec,&randoms, group_check);
+        //computing it with mult_scaler 
+        let sig1_scaled = sig1.mult_scalar(&(scalar1.to_le_bytes()));
+        let sig2_scaled = sig2.mult_scalar(&(scalar2.to_le_bytes()));
+        let aggregated_result_2 = BlsSignature::add_signatures(&(vec![sig1_scaled,sig2_scaled]));
+        let aggregated_type =  BlsAggregateSignature::from_signature(&aggregated_result_2);
+        assert_eq!(aggregated_result,aggregated_type);
     }
 }
