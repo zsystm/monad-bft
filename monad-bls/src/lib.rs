@@ -4,9 +4,11 @@ use monad_crypto::{
     },
     hasher::{Hashable, Hasher},
 };
-
 mod aggregation_tree;
+mod scaled_aggregation_tree;
 pub use aggregation_tree::BlsSignatureCollection;
+pub use scaled_aggregation_tree::ScaledBlsSignatureCollection;
+
 mod bls;
 pub use bls::{BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature};
 mod convert;

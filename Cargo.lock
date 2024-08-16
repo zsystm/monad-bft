@@ -1288,9 +1288,9 @@ dependencies = [
 
 [[package]]
 name = "blst"
-version = "0.3.11"
+version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c94087b935a822949d3291a9989ad2b2051ea141eda0fd4e478a75f6aa3e604b"
+checksum = "4378725facc195f1a538864863f6de233b500a8862747e7f165078a419d5e874"
 dependencies = [
  "cc",
  "glob",
@@ -3463,8 +3463,10 @@ dependencies = [
 name = "monad-bls"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "bitvec",
  "blst",
+ "bytes",
  "criterion",
  "hex",
  "monad-consensus-types",
@@ -3475,6 +3477,9 @@ dependencies = [
  "monad-validator",
  "prost 0.11.9",
  "rand",
+ "rand_chacha",
+ "rayon",
+ "serde",
  "serde_cbor",
  "test-case",
  "zeroize",

@@ -5,7 +5,7 @@ use zeroize::Zeroize;
 
 /// The cipher suite
 ///
-/// POP (proof of posession) uses a separate pubkey validation step to defend
+/// POP (proof of possession) uses a separate pubkey validation step to defend
 /// against rogue key attack. It enables fast verification for signatures over
 /// the same message
 /// https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-bls-signature-05#name-proof-of-possession
@@ -166,6 +166,12 @@ impl BlsPubKey {
             .map(Self)
             .map_err(BlsError)
     }
+
+    pub fn mult_scalar(&self, scalar: &[u8]) -> Self {
+        BlsAggregatePubKey::aggregate_with_randomness(&[*self], &[scalar], false)
+            .expect("scalar multiply success")
+            .as_pubkey()
+    }
 }
 
 impl std::hash::Hash for BlsAggregatePubKey {
@@ -209,6 +215,39 @@ impl BlsAggregatePubKey {
         blst_core::AggregatePublicKey::aggregate(pks.as_ref(), false)
             .map(Self)
             .map_err(BlsError)
+    }
+
+    /// Create an AggregatePubKey from an slice of PubKeys, each scaled with
+    /// corresponding randomness
+    pub fn aggregate_with_randomness(
+        pubkeys: &[BlsPubKey],
+        randomness: &[&[u8]],
+        group_check: bool,
+    ) -> Result<BlsAggregatePubKey, BlsError> {
+        if pubkeys.is_empty() {
+            return Ok(BlsAggregatePubKey::infinity());
+        }
+
+        assert_eq!(pubkeys.len(), randomness.len());
+        randomness
+            .iter()
+            .for_each(|r| assert_eq!(r.len(), randomness.first().unwrap().len()));
+
+        let nbits = randomness[0].len() * 8;
+        let randomness_flat: Vec<u8> = randomness
+            .iter()
+            .flat_map(|&slice| slice.iter().copied())
+            .collect();
+        let pubs: Vec<blst_core::PublicKey> = pubkeys.iter().map(|x| (x.0)).collect();
+        let agg_pub = blst_core::AggregatePublicKey::aggregate_with_randomness(
+            &pubs,
+            randomness_flat.as_slice(),
+            nbits,
+            group_check,
+        )
+        .map_err(BlsError)?;
+
+        Ok(BlsAggregatePubKey(agg_pub))
     }
 
     /// Aggregate a Pubkey to self
@@ -258,6 +297,11 @@ impl BlsSecretKey {
     fn sk_to_pk(&self) -> BlsPubKey {
         self.0.sk_to_pk().into()
     }
+    fn from_bytes(sk_in: &[u8]) -> Result<Self, BlsError> {
+        blst_core::SecretKey::from_bytes(sk_in)
+            .map(Self)
+            .map_err(BlsError)
+    }
 }
 
 impl BlsKeyPair {
@@ -266,6 +310,17 @@ impl BlsKeyPair {
     pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, BlsError> {
         let secret = secret.as_mut();
         let sk = BlsSecretKey::key_gen(secret, &[])?;
+        secret.zeroize();
+        let keypair = Self {
+            pubkey: sk.sk_to_pk(),
+            secretkey: sk,
+        };
+        Ok(keypair)
+    }
+
+    pub fn from_privkey_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, BlsError> {
+        let secret = secret.as_mut();
+        let sk = BlsSecretKey::from_bytes(secret)?;
         secret.zeroize();
         let keypair = Self {
             pubkey: sk.sk_to_pk(),
@@ -382,6 +437,12 @@ impl BlsSignature {
             .fast_aggregate_verify_pre_aggregated(sig_groupcheck, msg, dst, &pk.as_pubkey().0)
     }
 
+    pub fn mult_scalar(&self, scalar: &[u8]) -> Self {
+        BlsAggregateSignature::aggregate_with_randomness(&[*self], &[scalar], false)
+            .expect("scalar multiply success")
+            .as_signature()
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         self.0.serialize().to_vec()
     }
@@ -431,6 +492,46 @@ impl BlsAggregateSignature {
         self.0.add_aggregate(&other.0)
     }
 
+    /// Create an AggregateSignature from an slice of Signatures
+    fn aggregate(sigs: &[&BlsSignature], group_check: bool) -> Result<Self, BlsError> {
+        let sigs_owned = sigs.iter().map(|&sig| &sig.0).collect::<Vec<_>>();
+        Ok(Self(
+            blst_core::AggregateSignature::aggregate(&sigs_owned, group_check).map_err(BlsError)?,
+        ))
+    }
+
+    /// Create an AggregateSignature from an slice of Signatures, each scaled with corresponding randomness
+    pub fn aggregate_with_randomness(
+        sigs: &[BlsSignature],
+        randomness: &[&[u8]],
+        group_check: bool,
+    ) -> Result<BlsAggregateSignature, BlsError> {
+        if sigs.is_empty() {
+            return Ok(BlsAggregateSignature::infinity());
+        }
+
+        assert_eq!(sigs.len(), randomness.len());
+        randomness
+            .iter()
+            .for_each(|r| assert_eq!(r.len(), randomness.first().unwrap().len()));
+
+        let nbits = randomness[0].len() * 8;
+        let randomness_flat: Vec<u8> = randomness
+            .iter()
+            .flat_map(|&slice| slice.iter().copied())
+            .collect();
+        let sigs: Vec<blst_core::Signature> = sigs.iter().map(|x| (x.0)).collect();
+        let agg_sig = blst_core::AggregateSignature::aggregate_with_randomness(
+            &sigs,
+            &randomness_flat,
+            nbits,
+            group_check,
+        )
+        .map_err(BlsError)?;
+
+        Ok(BlsAggregateSignature(agg_sig))
+    }
+
     /// Verify the aggregate signature created over the same message. It only requires 2 pairing function calls, hence the name fast
     pub fn fast_verify(&self, msg: &[u8], pubkey: &BlsAggregatePubKey) -> Result<(), BlsError> {
         let err = self
@@ -457,7 +558,7 @@ impl BlsAggregateSignature {
         self.0.to_signature().into()
     }
 
-    fn from_signature(sig: &BlsSignature) -> Self {
+    pub fn from_signature(sig: &BlsSignature) -> Self {
         blst_core::AggregateSignature::from_signature(&sig.0).into()
     }
 
@@ -498,9 +599,7 @@ impl std::hash::Hash for BlsAggregateSignature {
 mod test {
     use std::collections::HashSet;
 
-    use super::{
-        BlsAggregatePubKey, BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature,
-    };
+    use super::*;
 
     fn keygen(secret: u8) -> BlsKeyPair {
         let mut secret = [secret; 32];
@@ -819,6 +918,7 @@ mod test {
         let msg = b"hello world";
 
         let sig = keypair.sign(msg);
+
         assert!(sig.verify(msg, &pubkey).is_ok());
     }
 
@@ -1006,5 +1106,67 @@ mod test {
         assert!(sig1.fast_verify(msg, &agg_pk).is_ok());
         assert!(sig2.fast_verify(msg, &agg_pk).is_ok());
         assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_sig_mult_scalar() {
+        let keypair = keygen(7);
+        let msg = b"hello world";
+        let sig = keypair.sign(msg);
+        let scalar: u64 = 1200;
+        let scalar_bytes = scalar.to_le_bytes();
+        let sig_1200 = sig.mult_scalar(&scalar_bytes);
+        let alt_1200 = BlsAggregateSignature::aggregate(&[&sig; 1200], false)
+            .unwrap()
+            .as_signature();
+        assert_eq!(sig_1200, alt_1200);
+        let scalar: u64 = 4;
+        let scalar_bytes = scalar.to_le_bytes();
+        let sig_4 = sig.mult_scalar(&scalar_bytes);
+        assert_ne!(sig_4, sig_1200);
+    }
+
+    #[test]
+    fn test_pubkey_mult_scalar() {
+        let keypair = keygen(7);
+        let pubkey = keypair.pubkey();
+        let scalar: u64 = 1200;
+        let scalar_bytes = scalar.to_le_bytes();
+        let pk_1200 = pubkey.mult_scalar(&scalar_bytes);
+        let alt_1200 = BlsAggregatePubKey::aggregate(&[&pubkey; 1200])
+            .unwrap()
+            .as_pubkey();
+        assert_eq!(pk_1200, alt_1200);
+        let scalar: u64 = 4;
+        let scalar_bytes = scalar.to_le_bytes();
+        let pk_4 = pubkey.mult_scalar(&scalar_bytes);
+        assert_ne!(pk_4, pk_1200);
+    }
+
+    #[test]
+    fn test_aggregate_with_randomness() {
+        let keypair1 = keygen(7);
+        let keypair2 = keygen(8);
+        let msg = b"hello world";
+        let sig1 = keypair1.sign(msg);
+        let sig2 = keypair2.sign(msg);
+        let scalar1: u64 = 1200;
+        let scalar2: u64 = 75;
+        let sigs_vec = vec![sig1, sig2];
+        let randoms = [scalar1.to_le_bytes(), scalar2.to_le_bytes()];
+        let randoms_slice: Vec<&[u8]> = randoms.iter().map(|r| r.as_slice()).collect();
+        let group_check = false;
+        let aggregate_with_randomness_sig = BlsAggregateSignature::aggregate_with_randomness(
+            &sigs_vec,
+            &randoms_slice,
+            group_check,
+        )
+        .unwrap();
+        //computing it with mult_scaler
+        let sig1_scaled = sig1.mult_scalar(&(scalar1.to_le_bytes()));
+        let sig2_scaled = sig2.mult_scalar(&(scalar2.to_le_bytes()));
+        let aggregate_sig =
+            BlsAggregateSignature::aggregate(&[&sig1_scaled, &sig2_scaled], true).unwrap();
+        assert_eq!(aggregate_with_randomness_sig, aggregate_sig);
     }
 }

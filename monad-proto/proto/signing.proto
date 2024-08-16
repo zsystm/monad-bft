@@ -18,6 +18,14 @@ message ProtoBlsSignatureCollection {
   bytes sig = 2; 
 }
 
+message ProtoScaledBlsSignatureCollection {
+  bytes signers = 1;
+  // BlsAggregateSignature is not a CertificateSignature
+  // hence using raw bytes
+  bytes sig = 2; 
+  bytes seed = 3;
+}
+
 message ProtoSignatureCollection {
   bytes data = 1; 
 }
