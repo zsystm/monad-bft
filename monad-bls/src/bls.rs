@@ -340,6 +340,11 @@ impl BlsSecretKey {
     fn sk_to_pk(&self) -> BlsPubKey {
         self.0.sk_to_pk().into()
     }
+    fn from_bytes(sk_in: &[u8]) -> Result<Self, BlsError> {
+        blst_core::SecretKey::from_bytes(sk_in)
+            .map(Self)
+            .map_err(BlsError)
+    }
 }
 
 impl BlsKeyPair {
@@ -348,6 +353,16 @@ impl BlsKeyPair {
     pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, BlsError> {
         let secret = secret.as_mut();
         let sk = BlsSecretKey::key_gen(secret, &[])?;
+        secret.zeroize();
+        let keypair = Self {
+            pubkey: sk.sk_to_pk(),
+            secretkey: sk,
+        };
+        Ok(keypair)
+    }
+    pub fn from_priv_key(mut secret: impl AsMut<[u8]>) -> Result<Self, BlsError> {
+        let secret = secret.as_mut();
+        let sk = BlsSecretKey::from_bytes(secret)?;
         secret.zeroize();
         let keypair = Self {
             pubkey: sk.sk_to_pk(),

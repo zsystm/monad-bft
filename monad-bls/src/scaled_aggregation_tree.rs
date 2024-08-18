@@ -30,12 +30,12 @@ struct ScaledAggregationTree<PT: PubKey> {
 
 impl<PT: PubKey> ScaledAggregationTree<PT> {
     fn new(
-        scaled_sigs: &[(NodeId<PT>, BlsSignature)],
+        sigs: &[(NodeId<PT>, BlsSignature)],
         validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
         validator_index: &HashMap<NodeId<PT>, usize>,
     ) -> Self {
         // build the binary heap represented as vector
-        if scaled_sigs.is_empty() {
+        if sigs.is_empty() {
             return Self {
                 nodes: vec![ScaledBlsSignatureCollection::with_capacity(
                     validator_mapping.map.len(),
@@ -43,13 +43,13 @@ impl<PT: PubKey> ScaledAggregationTree<PT> {
             };
         }
 
-        let n = scaled_sigs.len();
+        let n = sigs.len();
         let total_nodes = n * 2 - 1;
         let mut nodes =
             vec![ScaledBlsSignatureCollection::with_capacity(validator_mapping.map.len()); total_nodes];
 
         // copy all the signature as leaves
-        for (i, (node_id, sig)) in scaled_sigs.iter().enumerate() {
+        for (i, (node_id, sig)) in sigs.iter().enumerate() {
             let cert = nodes.get_mut(n + i - 1).expect("node in range");
             cert.signers.set(
                 *validator_index.get(node_id).expect("validator index"),
@@ -320,7 +320,7 @@ impl<PT: PubKey> SignatureCollection for ScaledBlsSignatureCollection<PT> {
 #[cfg(test)]
 mod test {
     use std::collections::{HashMap, HashSet};
-
+    use crate::aggregation_tree::BlsSignatureCollection;
     use monad_consensus_types::signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     };
@@ -340,7 +340,7 @@ mod test {
     use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
     use test_case::test_case;
 
-    use super::{merge_nodes, ScaledAggregationTree, ScaledBlsSignatureCollection};
+    use super::{merge_nodes, ScaledAggregationTree, ScaledBlsSignatureCollection,BlsAggregatePubKey,BlsKeyPair,BlsPubKey,BlsSignature,BlsAggregateSignature};
 
     type SignatureType = NopSignature;
     type PubKey = CertificateSignaturePubKey<SignatureType>;
@@ -846,4 +846,76 @@ mod test {
             }
         };
     }
+    
+    #[test]
+    fn test_splitting_zero_attack() {
+        let num_keys: u32 = 4;
+        let (keys, mut voting_keys, _, mut valmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(num_keys, ValidatorSetFactory::default());
+        
+    // Creating two private keys adding to zero 
+
+    let mut x1bytes: [u8; 32] = [99 , 64 , 58 , 175 , 15 , 139 , 113 , 184 , 37 ,
+    222 , 127 , 204 , 233 , 209 , 34 , 8 , 61 , 27 , 85 , 251 , 68 , 31 , 255 , 214 , 8
+    , 189 , 190 , 71 , 198 , 16 , 210 , 91 ];
+
+
+    let mut x2bytes: [u8; 32] = [16 , 173 , 108 , 164 , 26 , 18 , 11 , 144 , 13 , 91
+    , 88 , 59 , 31 , 208 , 181 , 253 , 22 , 162 , 78 , 7 , 187 , 222 , 92 , 40 , 247 ,
+    66 , 65 , 183 , 57 , 239 , 45 , 166];
+    
+    
+    // replacing the keypair and valmap with the malicious public keys
+    let key_pair_1 = BlsKeyPair::from_priv_key(&mut x1bytes).unwrap() ;
+    let key_pair_2 = BlsKeyPair::from_priv_key(&mut x2bytes).unwrap() ;
+    let mut vec_nodes = Vec::new();
+    for (key,value) in valmap.map.iter_mut() {
+        if *value == voting_keys[0].pubkey() {
+            vec_nodes.push( key);
+            *value = key_pair_1.pubkey();
+        }
+        if *value == voting_keys[1].pubkey() {
+            vec_nodes.push( key);
+            *value = key_pair_2.pubkey();
+
+        }
+    }
+    voting_keys[0] = key_pair_1;
+    voting_keys[1] = key_pair_2;
+    //signing a random message with malicious keyparis
+    let fake_msg =   [130_u8; 32];
+    let fake_msg_1 = voting_keys[0].sign(&fake_msg);
+    let fake_msg_2 = voting_keys[1].sign(&fake_msg);
+
+    let voting_keys: Vec<_> = keys
+        .iter()
+        .map(CertificateKeyPair::pubkey)
+        .map(NodeId::new)
+        .zip(voting_keys)
+        .collect();
+
+    let msg_hash = Hash([129_u8; 32]);
+    let mut sigs: Vec<(NodeId<monad_crypto::NopPubKey>, BlsSignature)> = get_sigs(msg_hash.as_ref(), voting_keys.iter());
+    for (nodeid, sig) in &mut sigs {
+        if *nodeid == *vec_nodes[0] {  
+            *sig = fake_msg_1.clone();  
+        }
+        if *nodeid == *vec_nodes[1] {  
+            *sig = fake_msg_2.clone();  
+        }
+    }
+    
+    // Aggregated sig by BLS aggregation is OK but  Scaled Bls aggregation raises error
+    let sigcol = BlsSignatureCollection::new(sigs.clone(), &valmap, msg_hash.as_ref());
+    assert!(sigcol.is_ok());
+
+    let sigcol = ScaledBlsSignatureCollection::new(sigs, &valmap, msg_hash.as_ref()).unwrap_err();
+
+    assert!(matches!(
+        sigcol,
+        SignatureCollectionError::InvalidSignaturesCreate(_)
+    ));    }
 }
