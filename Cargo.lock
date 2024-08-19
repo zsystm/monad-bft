@@ -3736,6 +3736,7 @@ name = "monad-eth-testutil"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "clap 4.5.7",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
@@ -3745,7 +3746,11 @@ dependencies = [
  "monad-secp",
  "monad-types",
  "rand",
+ "reqwest",
  "reth-primitives",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
