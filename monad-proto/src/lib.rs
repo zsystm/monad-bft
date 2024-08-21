@@ -6,6 +6,10 @@ macro_rules! include_proto {
                 env!("OUT_DIR"),
                 concat!("/monad_proto.", stringify!($proto_name), ".rs")
             ));
+            include!(concat!(
+                env!("OUT_DIR"),
+                concat!("/monad_proto.", stringify!($proto_name), ".serde.rs")
+            ));
         }
     };
 }

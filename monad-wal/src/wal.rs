@@ -33,47 +33,19 @@ where
         }
     }
 
-    pub fn load_read_only(self, start: usize, end: usize) -> Result<Vec<M>, WALError> {
-        let file = AppendOnlyFile::read_only(self.file_path)?;
+    pub fn events(self) -> impl Iterator<Item = M> {
+        let file = AppendOnlyFile::read_only(self.file_path).expect("failed to read file");
         let mut logger = WALogger {
             _marker: PhantomData,
             file_handle: file,
             sync: self.sync,
         };
-        let mut msg_vec = Vec::new();
 
-        let mut n = 0;
-        while n < start {
-            match logger.load_one() {
-                Ok(_) => {}
-                Err(WALError::IOError(err)) => match err.kind() {
-                    io::ErrorKind::UnexpectedEof => {
-                        return Ok(msg_vec);
-                    }
-                    _ => return Err(WALError::IOError(err)),
-                },
-                Err(err) => return Err(err),
-            }
-            n += 1;
-        }
-
-        while n < end {
-            match logger.load_one() {
-                Ok((msg, _)) => {
-                    msg_vec.push(msg);
-                }
-                Err(WALError::IOError(err)) => match err.kind() {
-                    io::ErrorKind::UnexpectedEof => {
-                        return Ok(msg_vec);
-                    }
-                    _ => return Err(WALError::IOError(err)),
-                },
-                Err(err) => return Err(err),
-            }
-            n += 1;
-        }
-
-        Ok(msg_vec)
+        std::iter::repeat(()).map_while(move |()| match logger.load_one() {
+            Ok((msg, _)) => Some(msg),
+            Err(WALError::IOError(err)) if err.kind() == io::ErrorKind::UnexpectedEof => None,
+            Err(err) => panic!("error reading WAL: {:?}", err),
+        })
     }
 }
 

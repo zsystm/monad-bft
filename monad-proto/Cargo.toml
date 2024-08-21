@@ -10,7 +10,10 @@ bench = false
 
 [dependencies]
 prost = { workspace = true }
+pbjson = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [build-dependencies]
+pbjson-build = { workspace = true }
 prost-build = { workspace = true }
 protobuf-src = { workspace = true }
