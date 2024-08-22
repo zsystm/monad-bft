@@ -50,6 +50,8 @@ pub struct NetworkSocket<'a> {
 
     pub recv_ctrl: RecvCtrl<'a>,
     pub send_ctrl: SendCtrl,
+
+    pub next_transmit: std::time::Instant,
 }
 
 pub struct RecvCtrl<'a> {
@@ -161,6 +163,7 @@ impl<'a> NetworkSocket<'a> {
                 bufs: send_bufs,
                 iovecs,
             },
+            next_transmit: std::time::Instant::now(),
         }
     }
 
@@ -374,6 +377,11 @@ impl<'a> NetworkSocket<'a> {
 
         unsafe {
             for i in 0..num_msgs as usize {
+                let now = std::time::Instant::now();
+                if self.next_transmit > now {
+                    std::thread::sleep(self.next_transmit - now);
+                }
+
                 // TODO instead of 1 sendmmsg per msg, we should create 1 sendmmsg per 65k of data
                 let r = super::retry_eintr(|| {
                     libc::sendmmsg(
@@ -396,7 +404,10 @@ impl<'a> NetworkSocket<'a> {
                     }
                 }
 
-                std::thread::sleep(std::time::Duration::from_micros(750));
+                let sleep = std::time::Duration::from_micros(
+                    (self.send_ctrl.msgs[i].msg_len as u64) * 8 / 1000,
+                );
+                self.next_transmit = std::time::Instant::now() + sleep;
             }
         }
         // // TODO try sending the stuff that wasn't sent
