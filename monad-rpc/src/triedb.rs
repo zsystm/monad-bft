@@ -19,6 +19,7 @@ pub enum TriedbResult {
     Storage([u8; 32]),
     Code(Vec<u8>),
     Receipt(Vec<u8>),
+    CallFrame(Vec<u8>),
     BlockNum(u64),
 }
 
@@ -168,6 +169,26 @@ impl TriedbEnv {
             });
         });
         recv.await.expect("rayon panic get_receipt")
+    }
+
+    pub async fn get_call_frame(&self, txn_index: u64, block_num: u64) -> TriedbResult {
+        let triedb_path = self.triedb_path.clone();
+        let (send, recv) = tokio::sync::oneshot::channel();
+        rayon::spawn(move || {
+            TriedbEnv::DB.with_borrow_mut(|db_handle| {
+                let db = db_handle.get_or_insert_with(|| {
+                    TriedbReader::try_new(&triedb_path).expect("triedb should exist in path")
+                });
+
+                let Some(frames) = db.get_call_frame(txn_index, block_num) else {
+                    let _ = send.send(TriedbResult::Null);
+                    return;
+                };
+
+                let _ = send.send(TriedbResult::CallFrame(frames));
+            });
+        });
+        recv.await.expect("rayon panic get_call_frame")
     }
 
     pub fn path(&self) -> PathBuf {

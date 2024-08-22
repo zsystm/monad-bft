@@ -257,6 +257,20 @@ impl FromStr for UnformattedData {
         decode(s).map(UnformattedData)
     }
 }
+impl From<reth_primitives::Bytes> for UnformattedData {
+    fn from(data: reth_primitives::Bytes) -> Self {
+        UnformattedData(data.to_vec())
+    }
+}
+
+impl Serialize for UnformattedData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(&self.0))
+    }
+}
 
 pub fn deserialize_unformatted_data<'de, D>(deserializer: D) -> Result<UnformattedData, D::Error>
 where
@@ -330,6 +344,15 @@ impl<const N: usize> FromStr for FixedData<N> {
     }
 }
 
+impl<const N: usize> Serialize for FixedData<N> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(&self.0))
+    }
+}
+
 impl From<U256> for FixedData<32> {
     fn from(u: U256) -> Self {
         let bytes: [u8; 32] = u.to_be_bytes();
@@ -351,15 +374,6 @@ impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
         let buf = String::deserialize(deserializer)?;
         FixedData::from_str(&buf)
             .map_err(|e| serde::de::Error::custom(format!("FixedData parse failed: {e:?}")))
-    }
-}
-
-impl Serialize for EthHash {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&hex::encode(&self.0))
     }
 }
 
