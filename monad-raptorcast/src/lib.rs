@@ -410,7 +410,7 @@ where
                 let parsed_message = match parse_message::<ST>(&mut this.signature_cache, payload) {
                     Ok(message) => message,
                     Err(err) => {
-                        tracing::warn!("unable to parse message, err={:?}", err);
+                        tracing::warn!(?err, "unable to parse message");
                         continue;
                     }
                 };
@@ -491,6 +491,11 @@ where
                         tracing::error!("failed to reconstruct source data");
                         continue;
                     };
+
+                    if app_message_len > 10_000 {
+                        tracing::debug!(app_message_len, "reconstructed large message");
+                    }
+
                     decoded.truncate(app_message_len);
                     // successfully decoded, so pop out from pending_messages
                     this.pending_message_cache.pop(&key);
@@ -1055,6 +1060,12 @@ impl<'a, PT: PubKey> Drop for BroadcastBatcher<'a, PT> {
 impl<'a, PT: PubKey> BroadcastBatcher<'a, PT> {
     fn flush(&mut self) {
         if let Some(batch) = self.batch.take() {
+            tracing::trace!(
+                author =? batch.author,
+                num_targets = batch.targets.len(),
+                num_bytes = batch.end_idx - batch.start_idx,
+                "rebroadcasting chunks"
+            );
             self.dataplane.broadcast(BroadcastMsg {
                 targets: batch.targets,
                 payload: self.message.slice(batch.start_idx..batch.end_idx),

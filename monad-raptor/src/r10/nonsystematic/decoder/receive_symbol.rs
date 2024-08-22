@@ -13,6 +13,10 @@ impl Decoder {
     ) {
         let buffer_index: u16 = self.buffer_state.len().try_into().unwrap();
 
+        if (buffer_index % 100) == 99 {
+            tracing::debug!(?buffer_index, "received_encoded_symbol");
+        }
+
         let mut buffer = Buffer::new();
 
         let mut used_buffer_indices = Vec::with_capacity(MAX_DEGREE);
