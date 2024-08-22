@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use log::debug;
+use tracing::warn;
 
 pub const MAX_UDP_PKT: usize = 65535;
 const MAX_IPV4_HDR: usize = 20;
@@ -224,7 +224,7 @@ impl<'a> NetworkSocket<'a> {
                             &mut stride,
                             1,
                         );
-                        debug!("cmsg_data = {}", stride);
+                        // debug!("cmsg_data = {}", stride);
 
                         assert!(stride as usize <= MONAD_GSO_SIZE);
                     }
@@ -238,8 +238,8 @@ impl<'a> NetworkSocket<'a> {
                 src_addr: NetworkSocket::get_addr(self.recv_ctrl.name[i]),
                 stride,
             });
-            debug!("from: {}", NetworkSocket::get_addr(self.recv_ctrl.name[i]));
-            debug!("received: {}", msglen);
+            // debug!("from: {}", NetworkSocket::get_addr(self.recv_ctrl.name[i]));
+            // debug!("received: {}", msglen);
         }
 
         Some(retval)
@@ -390,7 +390,7 @@ impl<'a> NetworkSocket<'a> {
                     // TODO: EINVAL return is likely due to MTU/GSO issues -- should getsockopt
                     // IP_MTU and include the returned value in the log message.
                     if e.kind() == std::io::ErrorKind::InvalidInput {
-                        debug!("sendmmsg error {}", e);
+                        warn!("sendmmsg error {}", e);
                     } else {
                         panic!("sendmmsg error {}", e);
                     }

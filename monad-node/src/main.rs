@@ -85,7 +85,7 @@ fn main() {
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
     if let Err(e) = runtime.block_on(wrapped_run(cmd)) {
-        log::error!("monad consensus node crashed: {:?}", e);
+        tracing::error!("monad consensus node crashed: {:?}", e);
     }
 }
 

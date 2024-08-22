@@ -3657,10 +3657,10 @@ dependencies = [
  "futures",
  "futures-util",
  "libc",
- "log",
  "rand",
  "rtrb",
  "socket2 0.5.7",
+ "tracing",
 ]
 
 [[package]]
@@ -4012,7 +4012,6 @@ dependencies = [
  "clap 4.5.7",
  "futures-util",
  "hex",
- "log",
  "monad-async-state-verify",
  "monad-blockdb",
  "monad-blocktree",

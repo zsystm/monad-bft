@@ -3,8 +3,8 @@ use std::{net::SocketAddr, os::fd::AsRawFd, pin::Pin, sync::Arc, task::Poll, thr
 use bytes::Bytes;
 use futures::Stream;
 use futures_util::{task::AtomicWaker, StreamExt};
-use log::debug;
 use rtrb::{PopError, RingBuffer};
+use tracing::warn;
 
 use crate::{
     epoll::{EpollFd, EpollToken, EventFd, RawFd, TimerFd},
@@ -97,11 +97,10 @@ impl Dataplane {
     pub fn broadcast(&mut self, msg: BroadcastMsg) {
         match self.egress_bcast_sender.push(msg) {
             Err(e) => {
-                debug!("bcast egress channel sender error {e}");
+                warn!("bcast egress channel sender error {e}");
                 panic!("bcast egress sender queue is full, consider resizing");
             }
             Ok(()) => {
-                debug!("sending into channel");
                 self.efd.trigger_event(1).unwrap();
             }
         }
@@ -110,11 +109,10 @@ impl Dataplane {
     pub fn unicast(&mut self, msg: UnicastMsg) {
         match self.egress_ucast_sender.push(msg) {
             Err(e) => {
-                debug!("ucast egress channel sender error {e}");
+                warn!("ucast egress channel sender error {e}");
                 panic!("ucast egress sender queue is full, consider resizing");
             }
             Ok(()) => {
-                debug!("sending into channel");
                 self.efd.trigger_event(1).unwrap();
             }
         }
@@ -161,10 +159,10 @@ impl DataplaneEventLoop {
                 // this blocks until something happens
                 let polled_events = self.epoll.wait().unwrap();
 
-                debug!(
-                    "event tokens: {:?}",
-                    polled_events.iter().map(|e| e.token()).collect::<Vec<_>>()
-                );
+                // debug!(
+                //     "event tokens: {:?}",
+                //     polled_events.iter().map(|e| e.token()).collect::<Vec<_>>()
+                // );
 
                 if polled_events.is_empty() {
                     // if a timeout was configured in the call to epoll_wait,
@@ -175,7 +173,7 @@ impl DataplaneEventLoop {
                 }
 
                 for e in polled_events {
-                    debug!("event token: {:?}", e.token());
+                    // debug!("event token: {:?}", e.token());
 
                     'handle_event: loop {
                         if e.token() == RX_EVENT {
@@ -229,11 +227,10 @@ impl DataplaneEventLoop {
             };
             match self.ingress_sender.producer.push(rx) {
                 Err(e) => {
-                    debug!("send failed on ingress sender {e}");
+                    warn!(?e, "send failed on ingress sender");
                     // panic!("consider resizing queue for ingress");
                 }
                 Ok(()) => {
-                    debug!("sent bytes on ingress sender");
                     self.ingress_sender.notify.0.wake();
                 }
             }

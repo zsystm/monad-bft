@@ -1,8 +1,6 @@
 use core::time;
 use std::mem;
 
-use log::debug;
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RawFd(pub i32);
 
@@ -133,7 +131,7 @@ impl EventFd {
                 libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>())
             })
         };
-        debug!("got tx event");
+        // debug!("got tx event");
 
         (n, s)
     }
@@ -180,9 +178,7 @@ impl TimerFd {
     pub fn handle_event(&self) -> isize {
         let mut n: u64 = 0;
         let data = &mut n as *mut u64;
-        let s = unsafe { libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>()) };
-        debug!("handled timer");
-        s
+        unsafe { libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>()) }
     }
 
     pub fn get_fd(&self) -> RawFd {
