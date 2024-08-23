@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Mutex};
 
 use account_handlers::{
     monad_eth_accounts, monad_eth_coinbase, monad_eth_getBalance, monad_eth_getCode,
@@ -62,6 +62,8 @@ mod jsonrpc;
 mod mempool_tx;
 mod receipt;
 mod websocket;
+
+static rpc_count: Mutex<u64> = Mutex::new(0);
 
 async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
     let request: RequestWrapper<Value> = match serde_json::from_slice(&body) {
@@ -142,6 +144,11 @@ async fn rpc_select(
     method: &str,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
+    *rpc_count.lock().unwrap() += 1;
+    if *rpc_count.lock().unwrap() % 1000 == 0 {
+        println!("received {} calls", *rpc_count.lock().unwrap());
+    }
+
     match method {
         "debug_getRawBlock" => {
             let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
@@ -451,7 +458,7 @@ pub fn create_app<S: 'static>(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let args = Cli::parse();
+    let mut args = Cli::parse();
 
     let subscriber = Registry::default()
         .with(EnvFilter::from_default_env())
@@ -501,6 +508,9 @@ async fn main() -> std::io::Result<()> {
     } else {
         None
     };
+
+    args.batch_request_limit = 5000;
+    println!("batch req lim {}", args.batch_request_limit);
 
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),

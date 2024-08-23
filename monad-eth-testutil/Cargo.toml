@@ -17,6 +17,7 @@ monad-secp = { path = "../monad-secp" }
 monad-types = { path = "../monad-types" }
 
 alloy-primitives = { workspace = true }
+async-channel = { workspace = true }
 clap = { workspace = true, features = [ "derive" ] }
 futures = { workspace = true }
 rand = { workspace = true }
@@ -24,5 +25,5 @@ reth-primitives = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, feautres = ["macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tracing = { workspace = true }
