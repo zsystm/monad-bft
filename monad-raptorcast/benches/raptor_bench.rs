@@ -54,7 +54,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 message.clone(),
                 2, // redundancy,
                 0, // epoch_no
-                0, // round_no
+                0, // unix_ts_ms
                 BuildTarget::Raptorcast(epoch_validators),
                 &known_addresses,
             );
@@ -94,7 +94,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             message.clone(),
             2, // redundancy,
             0, // epoch_no
-            0, // round_no
+            0, // unix_ts_ms
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         )

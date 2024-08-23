@@ -119,7 +119,7 @@ where
                 RouterCommand::AddEpochValidatorSet { .. } => {}
                 RouterCommand::UpdateCurrentRound(_, _) => {}
                 RouterCommand::Publish { target, message } => match target {
-                    RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+                    RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                         let message = message.into();
                         for tx in self.txs.values() {
                             tx.send((now, self.me, message.clone())).unwrap();

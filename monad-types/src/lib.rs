@@ -372,8 +372,8 @@ impl<S: Clone> Deserializable<S> for S {
 /// the message toward
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RouterTarget<P: PubKey> {
-    Broadcast(Epoch, Round),
-    Raptorcast(Epoch, Round), // sharded raptor-aware broadcast
+    Broadcast(Epoch),
+    Raptorcast(Epoch), // sharded raptor-aware broadcast
     PointToPoint(NodeId<P>),
 }
 

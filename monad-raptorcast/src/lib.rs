@@ -24,9 +24,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
-use monad_types::{
-    Deserializable, DropTimer, Epoch, NodeId, Round, RouterTarget, Serializable, Stake,
-};
+use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable, Stake};
 
 pub struct RaptorCastConfig<ST>
 where
@@ -61,14 +59,13 @@ where
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     current_epoch: Epoch,
-    current_round: Round,
 
     // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
     // can't be induced by spamming broadcast chunks to any given node
     // TODO we also need to cap the max number chunks that are decoded - because an adversary could
     // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
     // TODO strong bound on max amount of memory used per decoder?
-    // TODO make eviction more sophisticated than LRU - should look at Round as well
+    // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
     pending_message_cache:
         LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, ManagedDecoder>,
     signature_cache:
@@ -140,13 +137,12 @@ pub struct Validator {
     pub stake: Stake,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct MessageCacheKey<PT>
 where
     PT: PubKey,
 {
-    // round should be first for Ord derive implementation
-    round: Round,
+    unix_ts_ms: u64,
     author: NodeId<PT>,
     app_message_hash: [u8; 20],
     app_message_len: usize,
@@ -168,7 +164,6 @@ where
             redundancy: config.redundancy,
 
             current_epoch: Epoch(0),
-            current_round: Round(0),
 
             pending_message_cache: LruCache::unbounded(),
             signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
@@ -196,11 +191,9 @@ where
         let self_id = NodeId::new(self.key.pubkey());
         for command in commands {
             match command {
-                RouterCommand::UpdateCurrentRound(epoch, round) => {
+                RouterCommand::UpdateCurrentRound(epoch, _round) => {
                     assert!(epoch >= self.current_epoch);
                     self.current_epoch = epoch;
-                    assert!(round >= self.current_round);
-                    self.current_round = round;
                     while let Some(entry) = self.epoch_validators.first_entry() {
                         if *entry.key() + Epoch(1) < self.current_epoch {
                             entry.remove();
@@ -252,11 +245,8 @@ where
                         tracing::warn!(?elapsed, app_message_len, "long time to publish message")
                     });
                     // send message to self if applicable
-                    let (epoch, round, build_target) = match &target {
-                        RouterTarget::Broadcast(epoch, round) => {
-                            if &self.current_round != round {
-                                tracing::error!("tried to publish message outside of current_round window - was RouterCommand::UpdateCurrentRound omitted somewhere?")
-                            }
+                    let (epoch, build_target) = match &target {
+                        RouterTarget::Broadcast(epoch) => {
                             let Some(epoch_validators) = self.epoch_validators.get_mut(epoch)
                             else {
                                 tracing::error!(
@@ -280,16 +270,9 @@ where
                                 continue;
                             }
 
-                            (
-                                epoch,
-                                round,
-                                BuildTarget::Broadcast(epoch_validators_without_self),
-                            )
+                            (epoch, BuildTarget::Broadcast(epoch_validators_without_self))
                         }
-                        RouterTarget::Raptorcast(epoch, round) => {
-                            if &self.current_round != round {
-                                tracing::error!("tried to publish message outside of current_round window - was RouterCommand::UpdateCurrentRound omitted somewhere?")
-                            }
+                        RouterTarget::Raptorcast(epoch) => {
                             let Some(epoch_validators) = self.epoch_validators.get_mut(epoch)
                             else {
                                 tracing::error!(
@@ -315,7 +298,6 @@ where
 
                             (
                                 epoch,
-                                round,
                                 BuildTarget::Raptorcast(epoch_validators_without_self),
                             )
                         }
@@ -328,21 +310,23 @@ where
                                 }
                                 continue;
                             } else {
-                                (
-                                    &self.current_epoch,
-                                    &self.current_round,
-                                    BuildTarget::PointToPoint(to),
-                                )
+                                (&self.current_epoch, BuildTarget::PointToPoint(to))
                             }
                         }
                     };
 
+                    let unix_ts_ms = std::time::UNIX_EPOCH
+                        .elapsed()
+                        .expect("time went backwards")
+                        .as_millis()
+                        .try_into()
+                        .expect("unix epoch doesn't fit in u64");
                     let messages = build_messages::<ST>(
                         &self.key,
                         app_message,
                         self.redundancy,
                         epoch.0,
-                        round.0,
+                        unix_ts_ms,
                         build_target,
                         &self.known_addresses,
                     );
@@ -421,8 +405,8 @@ where
                         this.epoch_validators.get_mut(&Epoch(parsed_message.epoch))
                     else {
                         tracing::error!(
-                            "don't have epoch validators populated for round: {:?}",
-                            parsed_message.round
+                            epoch =? parsed_message.epoch,
+                            "don't have epoch validators populated",
                         );
                         continue;
                     };
@@ -430,7 +414,10 @@ where
                         .validators
                         .contains_key(&parsed_message.author)
                     {
-                        tracing::error!("not in validator set: {:?}", parsed_message.author);
+                        tracing::error!(
+                            author =? parsed_message.author,
+                            "not in validator set"
+                        );
                         continue;
                     }
                     if self_hash == parsed_message.recipient_hash {
@@ -458,7 +445,7 @@ where
 
                 let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
                 let key = MessageCacheKey {
-                    round: Round(parsed_message.round),
+                    unix_ts_ms: parsed_message.unix_ts_ms,
                     author: parsed_message.author,
                     app_message_hash: parsed_message.app_message_hash,
                     app_message_len,
@@ -521,12 +508,12 @@ where
 #[derive(Debug)]
 pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
     Broadcast(
-        // validator stakes for given round_no, not including self
+        // validator stakes for given epoch_no, not including self
         // this MUST NOT BE EMPTY
         ValidatorsView<'a, ST>,
     ),
     Raptorcast(
-        // validator stakes for given round_no, not including self
+        // validator stakes for given epoch_no, not including self
         // this MUST NOT BE EMPTY
         ValidatorsView<'a, ST>,
     ), // sharded raptor-aware broadcast
@@ -540,7 +527,7 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
 /// - 1 bit => broadcast or not
 /// - 7 bits => Merkle tree depth
 /// - 8 bytes (u64) => Epoch #
-/// - 8 bytes (u64) => Round #
+/// - 8 bytes (u64) => Unix timestamp in milliseconds
 /// - 20 bytes => first 20 bytes of hash of AppMessage
 ///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
 ///     for simplicity
@@ -565,7 +552,7 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
 //     broadcast: bool,
 //     merkle_tree_depth: u8,
 //     epoch: u64,
-//     round: u64,
+//     unix_ts_ms: u64,
 //     app_message_id: [u8; 20],
 //     app_message_len: u32,
 //
@@ -582,7 +569,7 @@ const HEADER_LEN: u16 = 65  // Sender signature
             + 2  // Version
             + 1  // Broadcast bit, 7 bits for Merkle Tree Depth
             + 8  // Epoch #
-            + 8  // Round #
+            + 8  // Unix timestamp
             + 20 // AppMessage hash
             + 4; // AppMessage length
 const CHUNK_HEADER_LEN: u16 = 1 // Chunk's merkle leaf idx
@@ -622,7 +609,7 @@ pub fn build_messages<ST>(
     app_message: Bytes,
     redundancy: u8, // 2 == send 1 extra packet for every 1 original
     epoch_no: u64,
-    round_no: u64,
+    unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
 
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
@@ -773,7 +760,7 @@ where
     // populate merkle trees/roots/leaf_idx + signatures (cached)
     let version: u16 = 0;
     let epoch_no: u64 = epoch_no;
-    let round_no: u64 = round_no;
+    let unix_ts_ms: u64 = unix_ts_ms;
     let app_message_hash: [u8; 20] = {
         let mut hasher = HasherType::new();
         hasher.update(app_message);
@@ -812,8 +799,8 @@ where
                 cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7) | TREE_DEPTH;
                 let (cursor_epoch_no, cursor) = cursor.split_at_mut(8);
                 cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
-                let (cursor_round_no, cursor) = cursor.split_at_mut(8);
-                cursor_round_no.copy_from_slice(&round_no.to_le_bytes());
+                let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut(8);
+                cursor_unix_ts_ms.copy_from_slice(&unix_ts_ms.to_le_bytes());
                 let (cursor_app_message_hash, cursor) = cursor.split_at_mut(20);
                 cursor_app_message_hash.copy_from_slice(&app_message_hash);
                 let (cursor_app_message_len, cursor) = cursor.split_at_mut(4);
@@ -824,7 +811,7 @@ where
                 // 2  // Version
                 // 1 // Broadcast bit, 7 bits for Merkle Tree Depth
                 // 8  // Epoch #
-                // 8  // Round #
+                // 8  // Unix timestamp
                 // 20 // AppMessage hash
                 // 4 // AppMessage length
                 // --
@@ -866,7 +853,7 @@ where
 
     pub author: NodeId<PT>,
     pub epoch: u64,
-    pub round: u64,
+    pub unix_ts_ms: u64,
     pub app_message_hash: [u8; 20],
     pub app_message_len: u32,
     pub broadcast: bool,
@@ -890,7 +877,7 @@ pub enum MessageValidationError {
 /// - 1 bit => broadcast or not
 /// - 7 bits => Merkle tree depth
 /// - 8 bytes (u64) => Epoch #
-/// - 8 bytes (u64) => Round #
+/// - 8 bytes (u64) => Unix timestamp
 /// - 20 bytes => first 20 bytes of hash of AppMessage
 ///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
 ///     for simplicity
@@ -944,8 +931,13 @@ where
     let cursor_epoch = split_off(8)?;
     let epoch = u64::from_le_bytes(cursor_epoch.as_ref().try_into().expect("u64 is 8 bytes"));
 
-    let cursor_round = split_off(8)?;
-    let round = u64::from_le_bytes(cursor_round.as_ref().try_into().expect("u64 is 8 bytes"));
+    let cursor_unix_ts_ms = split_off(8)?;
+    let unix_ts_ms = u64::from_le_bytes(
+        cursor_unix_ts_ms
+            .as_ref()
+            .try_into()
+            .expect("u64 is 8 bytes"),
+    );
 
     let cursor_app_message_hash = split_off(20)?;
     let app_message_hash: [u8; 20] = cursor_app_message_hash
@@ -1029,7 +1021,7 @@ where
 
         author,
         epoch,
-        round,
+        unix_ts_ms,
         app_message_hash,
         app_message_len,
         broadcast,
@@ -1168,13 +1160,13 @@ mod tests {
         };
 
         const EPOCH: u64 = 5;
-        const ROUND: u64 = 5;
+        const UNIX_TS_MS: u64 = 5;
         let messages = build_messages::<SecpSignature>(
             &keys[0],
             app_message.clone(),
             2,     // redundancy,
             EPOCH, // epoch_no
-            ROUND, // round_no
+            UNIX_TS_MS,
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
@@ -1189,7 +1181,7 @@ mod tests {
                         .expect("valid message");
                 assert_eq!(parsed_message.message, message);
                 assert_eq!(parsed_message.app_message_hash, app_message_hash.0[..20]);
-                assert_eq!(parsed_message.round, ROUND);
+                assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
                 assert!(parsed_message.broadcast);
                 assert_eq!(parsed_message.app_message_len, app_message.len() as u32);
                 assert_eq!(parsed_message.author, NodeId::new(keys[0].pubkey()));
@@ -1229,13 +1221,13 @@ mod tests {
         let app_message: Bytes = vec![1_u8; 1024 * 2].into();
 
         const EPOCH: u64 = 5;
-        const ROUND: u64 = 5;
+        const UNIX_TS_MS: u64 = 5;
         let messages = build_messages::<SecpSignature>(
             &keys[0],
             app_message,
             2,     // redundancy,
             EPOCH, // epoch_no
-            ROUND, // round_no
+            UNIX_TS_MS,
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );

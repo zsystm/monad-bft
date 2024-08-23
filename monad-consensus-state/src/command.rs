@@ -89,7 +89,8 @@ where
                 ConsensusCommand::EnterRound(epoch, round)
             }
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
-                target: RouterTarget::Broadcast(tmo.tminfo.epoch, tmo.tminfo.round),
+                // TODO should this be sent to epoch of next round?
+                target: RouterTarget::Broadcast(tmo.tminfo.epoch),
                 message: ConsensusMessage {
                     version: version.into(),
                     message: ProtocolMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),

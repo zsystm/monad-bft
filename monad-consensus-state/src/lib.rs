@@ -1177,7 +1177,7 @@ where
 
                 vec![
                     ConsensusCommand::Publish {
-                        target: RouterTarget::Raptorcast(epoch, round),
+                        target: RouterTarget::Raptorcast(epoch),
                         message: msg,
                     },
                     ConsensusCommand::ClearMempool,
@@ -1851,7 +1851,7 @@ mod test {
         cmds.iter()
             .find_map(|c| match c {
                 ConsensusCommand::Publish {
-                    target: RouterTarget::Raptorcast(_, _),
+                    target: RouterTarget::Raptorcast(_),
                     message,
                 } => match &message.deref().deref().message {
                     ProtocolMessage::Proposal(p) => Some(p.clone()),
@@ -3301,7 +3301,7 @@ mod test {
             if i >= (num_state * 2 / 3) {
                 let proposal_exists = cmds.into_iter().any(|c| match c {
                     ConsensusCommand::Publish {
-                        target: RouterTarget::Broadcast(_, _),
+                        target: RouterTarget::Broadcast(_),
                         message,
                     } => matches!(
                         &message.deref().deref().message,

@@ -163,7 +163,7 @@ where
                 .unwrap_or(Duration::ZERO)
         );
         match to {
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                 self.events.extend(
                     self.all_peers
                         .iter()
@@ -274,7 +274,7 @@ where
         );
         let message = message.serialize();
         match to {
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                 self.events.extend(
                     self.all_peers
                         .iter()
