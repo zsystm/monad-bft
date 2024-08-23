@@ -57,7 +57,7 @@ pub struct Dataplane {
 
 impl Dataplane {
     pub fn new(local_addr: &str) -> Self {
-        let (ing_send, ing_recv) = RingBuffer::<RecvMsg>::new(1024);
+        let (ing_send, ing_recv) = RingBuffer::<RecvMsg>::new(12_800);
         let n = Notifier::new();
         let ing_producer = WakeableProducer {
             producer: ing_send,
