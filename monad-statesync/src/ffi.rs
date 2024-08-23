@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::CString,
     ops::DerefMut,
     pin::{pin, Pin},
@@ -7,8 +8,10 @@ use std::{
 };
 
 use futures::{FutureExt, Stream};
+use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{StateSyncRequest, StateSyncResponse};
-use monad_types::SeqNum;
+use monad_types::{NodeId, SeqNum};
+use rand::seq::SliceRandom;
 
 use crate::{bindings, outbound_requests::OutboundRequests};
 
@@ -24,9 +27,13 @@ pub extern "C" fn statesync_send_request(
     unsafe { (*statesync)(request) }
 }
 
-pub(crate) struct StateSync {
+pub(crate) struct StateSync<PT: PubKey> {
+    state_sync_peers: Vec<NodeId<PT>>,
     target: SeqNum,
     outbound_requests: OutboundRequests,
+
+    /// for each prefix, the node (if any) that all further responses must come from
+    prefix_peers: HashMap<u64, NodeId<PT>>,
 
     execution_ctx: *mut bindings::monad_statesync_client_context,
     request_rx: tokio::sync::mpsc::UnboundedReceiver<bindings::monad_sync_request>,
@@ -43,10 +50,11 @@ pub(crate) struct Target {
     pub state_root: [u8; 32],
 }
 
-impl StateSync {
+impl<PT: PubKey> StateSync<PT> {
     pub fn start(
         db_paths: &[String],
         genesis_path: &str,
+        state_sync_peers: &[NodeId<PT>],
         max_parallel_requests: usize,
         request_timeout: Duration,
         target: Target,
@@ -94,8 +102,11 @@ impl StateSync {
         };
 
         Self {
+            state_sync_peers: state_sync_peers.to_vec(),
             target: target.n,
             outbound_requests: OutboundRequests::new(max_parallel_requests, request_timeout),
+
+            prefix_peers: Default::default(),
 
             execution_ctx,
             request_rx,
@@ -110,7 +121,19 @@ impl StateSync {
         self.target
     }
 
-    pub fn handle_response(&mut self, response: StateSyncResponse) {
+    pub fn handle_response(&mut self, from: NodeId<PT>, response: StateSyncResponse) {
+        if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
+            tracing::warn!(?from, "dropping state sync response from untrusted peer",);
+            return;
+        }
+        let maybe_prefix_peer = self.prefix_peers.get(&response.request.prefix);
+        if maybe_prefix_peer.is_some_and(|prefix_peer| prefix_peer != &from) {
+            tracing::debug!(
+                ?from,
+                "dropping state sync response, already fixed to different prefix_peer"
+            );
+            return;
+        }
         if self.outbound_requests.handle_response(&response) {
             // valid request
             unsafe {
@@ -133,6 +156,7 @@ impl StateSync {
                     },
                 )
             }
+            self.prefix_peers.insert(response.request.prefix, from);
             if let Some(waker) = self.waker.take() {
                 waker.wake()
             }
@@ -144,14 +168,14 @@ impl StateSync {
     }
 }
 
-impl Drop for StateSync {
+impl<PT: PubKey> Drop for StateSync<PT> {
     fn drop(&mut self) {
         unsafe { bindings::monad_statesync_client_context_destroy(self.execution_ctx) }
     }
 }
 
-impl Stream for StateSync {
-    type Item = StateSyncRequest;
+impl<PT: PubKey> Stream for StateSync<PT> {
+    type Item = (NodeId<PT>, StateSyncRequest);
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -184,7 +208,12 @@ impl Stream for StateSync {
 
         let fut = this.outbound_requests.poll();
         if let Poll::Ready(request) = pin!(fut).poll_unpin(cx) {
-            return Poll::Ready(Some(request));
+            let servicer = this.prefix_peers.get(&request.prefix).unwrap_or_else(|| {
+                this.state_sync_peers
+                    .choose(&mut rand::thread_rng())
+                    .expect("unable to send state-sync request, no peers")
+            });
+            return Poll::Ready(Some((*servicer, request)));
         }
 
         Poll::Pending

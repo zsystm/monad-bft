@@ -15,7 +15,6 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage};
 use monad_types::NodeId;
-use rand::seq::SliceRandom;
 
 use crate::ffi::Target;
 
@@ -38,7 +37,7 @@ where
     request_timeout: Duration,
     uds_path: String,
 
-    state_sync: Option<ffi::StateSync>,
+    state_sync: Option<ffi::StateSync<CertificateSignaturePubKey<ST>>>,
 
     // initialized once StartExecution command is executed
     execution_ipc: Option<StateSyncIpc<CertificateSignaturePubKey<ST>>>,
@@ -94,6 +93,7 @@ where
                     self.state_sync = Some(ffi::StateSync::start(
                         &self.db_paths,
                         &self.genesis_path,
+                        &self.state_sync_peers,
                         self.max_parallel_requests,
                         self.request_timeout,
                         Target {
@@ -113,11 +113,7 @@ where
                         );
                         continue;
                     };
-                    if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
-                        tracing::warn!(?from, "dropping state sync response from untrusted peer",);
-                        continue;
-                    }
-                    state_sync.handle_response(response)
+                    state_sync.handle_response(from, response)
                 }
                 StateSyncCommand::Message((from, StateSyncNetworkMessage::Request(request))) => {
                     if let Some(execution_ipc) = &mut self.execution_ipc {
@@ -161,11 +157,7 @@ where
 
         if let Some(state_sync) = &mut this.state_sync {
             match state_sync.poll_next_unpin(cx) {
-                Poll::Ready(Some(request)) => {
-                    let servicer = *this
-                        .state_sync_peers
-                        .choose(&mut rand::thread_rng())
-                        .expect("unable to send state-sync request, no peers");
+                Poll::Ready(Some((servicer, request))) => {
                     tracing::debug!(?request, ?servicer, "sending request");
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(
                         StateSyncEvent::Outbound(
