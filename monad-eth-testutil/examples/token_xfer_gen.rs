@@ -29,18 +29,17 @@ const CARRIAGE_COST: usize = 21000 * 1000;
 // how fast execution runs on a specific node and network conditions
 const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(8);
 
-const TARGET_TPS: usize = 8000;
-
-// FIXME ?
-// Payload size with 868 raw txns: 262144
-// Payload size with 869 raw txns: 262408 -> payload reached size limit ??
+// Payload size with batch = 868 raw txns: 262144
+// Payload size with batch = 869 raw txns: 262408 -> payload reached size limit ??
 // IPC batch size limit = 500
 const BATCH_SIZE: usize = 500;
 
-// each rpc sender sends BATCH_SIZE transactions every second
-const NUM_RPC_SENDERS: usize = TARGET_TPS / BATCH_SIZE;
-// an rpc sender will send 1 batch every RPC_SENDER_INTERVAL
+// each rpc sender will send 1 batch of BATCH_SIZE transactions every RPC_SENDER_INTERVAL
+const NUM_RPC_SENDERS: usize = 16;
 const RPC_SENDER_INTERVAL: Duration = Duration::from_millis(1000);
+
+// TODO: use float
+const EXPECTED_TPS: usize = NUM_RPC_SENDERS * BATCH_SIZE / RPC_SENDER_INTERVAL.as_secs() as usize;
 
 // balance split from root account
 // 2 splits with 1000 accounts per split = 1000^2 = 1_000_000 final accounts
@@ -388,7 +387,7 @@ async fn rpc_sender(
     println!("spawned rpc sender id: {}", rpc_sender_id);
 
     // interval, not sleep
-    let mut interval = tokio::time::interval(Duration::from_millis(1000));
+    let mut interval = tokio::time::interval(RPC_SENDER_INTERVAL);
     loop {
         interval.tick().await;
 
@@ -487,7 +486,7 @@ async fn start_random_tx_gen(
 
     let (slice_1, slice_2) = final_accounts.split_at_mut(NUM_FINAL_ACCOUNTS / 2);
     let value = 1000;
-    let txns_to_send = 80000;
+    let txns_to_send = 1_000_000;
     let num_batches = txns_to_send / BATCH_SIZE;
     send_between_rand_pairings(
         slice_1,
@@ -497,7 +496,8 @@ async fn start_random_tx_gen(
         random_account_selector,
         txn_batch_sender.clone(),
         num_batches,
-    ).await;
+    )
+    .await;
 
     assert!(txn_batch_sender.close());
 }
@@ -509,6 +509,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     let client = Client::new(args.rpc_url);
+
+    println!(
+        "num rpc senders: {}. batch size: {}. expected TPS ~ {}",
+        NUM_RPC_SENDERS, BATCH_SIZE, EXPECTED_TPS
+    );
 
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
     let tx_counter = Arc::new(Mutex::new(0));
