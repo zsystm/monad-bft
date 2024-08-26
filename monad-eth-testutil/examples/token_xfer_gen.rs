@@ -1,13 +1,13 @@
 use std::{
-    borrow::{Borrow, BorrowMut}, collections::BTreeMap, error::Error, iter::zip, str::FromStr, sync::{atomic::AtomicUsize, Arc}, time::{Duration, Instant}
+    borrow::{BorrowMut}, error::Error, str::FromStr, sync::{Arc}, time::{Duration, Instant}
 };
 
-use alloy_primitives::{Address, Bytes, FixedBytes, B256};
+use alloy_primitives::{Address, Bytes, B256};
 use async_channel::{Receiver, Sender};
 use clap::Parser;
-use futures::{future::join_all, FutureExt, StreamExt};
+use futures::{future::join_all};
 use monad_secp::KeyPair;
-use rand::{seq::SliceRandom, thread_rng, Rng, RngCore};
+use rand::{RngCore};
 use reqwest::Url;
 use reth_primitives::{
     keccak256, sign_message, AccessList, Transaction, TransactionKind, TransactionSigned, TxEip1559,
@@ -22,7 +22,7 @@ const CARRIAGE_COST: usize = 21000 * 1000;
 // trying to refresh nonce and balance so that it is up to date
 // NOTE: This is completely arbitrary, the time may vary depending on
 // how fast execution runs on a specific node and network conditions
-const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(8);
+const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(5);
 
 // Payload size with batch = 868 raw txns: 262144
 // Payload size with batch = 869 raw txns: 262408 -> payload reached size limit ??
@@ -31,15 +31,15 @@ const BATCH_SIZE: usize = 500;
 
 // each rpc sender will send 1 batch of BATCH_SIZE transactions every RPC_SENDER_INTERVAL
 const NUM_RPC_SENDERS: usize = 16;
-const RPC_SENDER_INTERVAL: Duration = Duration::from_millis(1000);
+const RPC_SENDER_INTERVAL: Duration = Duration::from_millis(800);
 
-// TODO: use float
-const EXPECTED_TPS: usize = NUM_RPC_SENDERS * BATCH_SIZE / RPC_SENDER_INTERVAL.as_secs() as usize;
+const EXPECTED_TPS: usize = NUM_RPC_SENDERS * BATCH_SIZE / RPC_SENDER_INTERVAL.as_millis() as usize;
 
 // balance split from root account
 // e.g. 2 splits with 1000 accounts per split = 1000^2 = 1_000_000 final accounts
-const NUM_ACCOUNTS_PER_SPLIT: usize = 500;
-const NUM_SPLITS: u32 = 2;
+// FIXME: This shoudn't exceed BATCH_SIZE for now. nonce issue.
+const NUM_ACCOUNTS_PER_SPLIT: usize = 100;
+const NUM_SPLITS: u32 = 3;
 const NUM_FINAL_ACCOUNTS: usize = NUM_ACCOUNTS_PER_SPLIT.pow(NUM_SPLITS);
 
 // number of batches allowed in the txn batches channel
@@ -180,6 +180,7 @@ impl Account {
     }
 
     async fn create_raw_xfer_transaction_checked(&mut self, dst: Address, value: u128, client: Client) -> Bytes {
+        // Refresh nonce and balance every 20 txns sent
         if self.num_txns_sent % 20 == 0 {
             self.refresh_nonce(client.clone()).await;
             self.refresh_balance(client).await;
@@ -419,6 +420,7 @@ async fn rpc_sender(
 
 async fn split_account_balance(
     mut account_to_split: Account,
+    num_new_accounts: usize,
     client: Client,
     txn_sender: Sender<Vec<Bytes>>,
 ) -> Vec<Account> {
@@ -438,25 +440,21 @@ async fn split_account_balance(
         return Vec::new();
     }
 
-    let num_splits = NUM_ACCOUNTS_PER_SPLIT + 10; // leave some tokens in the root account
+    let num_splits = num_new_accounts + 10; // leave some tokens in the root account
     let transfer_amount = account_to_split
         .balance
         .wrapping_sub(u128::try_from(CARRIAGE_COST * num_splits).unwrap())
         .wrapping_div(u128::try_from(num_splits).unwrap());
 
-    let num_batches = NUM_ACCOUNTS_PER_SPLIT / BATCH_SIZE;
-    let mut new_accounts = Vec::new();
-    for _ in 0..num_batches {
-        let mut dst_accounts = create_rand_accounts(NUM_ACCOUNTS_PER_SPLIT);
+    let mut new_accounts = create_rand_accounts(num_new_accounts);
+    for dst_accounts in new_accounts.chunks_mut(BATCH_SIZE) {
         let txns_batch = create_transfer_txns(
             &mut account_to_split,
-            dst_accounts.as_mut_slice(),
+            dst_accounts,
             transfer_amount,
         );
         let _ = txn_sender.send(txns_batch).await.unwrap();
-
-        new_accounts.extend(dst_accounts);
-    }
+    };
 
     new_accounts
 }
@@ -476,7 +474,7 @@ async fn create_final_accounts_from_root(
 
         let mut new_accounts = Vec::new();
         for account in accounts_to_split {
-            let acc = split_account_balance(account, client.clone(), txn_sender.clone()).await;
+            let acc = split_account_balance(account, NUM_ACCOUNTS_PER_SPLIT, client.clone(), txn_sender.clone()).await;
             new_accounts.extend(acc);
         }
 
@@ -495,12 +493,19 @@ async fn start_random_tx_gen(
     let mut final_accounts =
         create_final_accounts_from_root(root_account, client.clone(), txn_batch_sender.clone())
             .await;
+    
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    println!("final accounts created");
 
-    let value = 1000;
-    let num_batches_per_pair = 80;
+    let value = 10;
+    // let num_slices = NUM_FINAL_ACCOUNTS / 10_000 = 100 slices
+    // let num_pairs = num_slices / 2 = 50 pairs
+    // 4,600 batches per pair = 230,000 total batches = 115,000,000 txns
+    // at 8000 TPS, that will take 14,375 seconds ~ 3.9 hrs
+    let num_batches_per_pair = 4_600;
 
-    // Split final accounts into slices of 5,000 accounts
-    let mut final_account_slices: Vec<&mut [Account]> = final_accounts.chunks_mut(5_000).collect();
+    // Split final accounts into slices of 10,000 accounts
+    let mut final_account_slices: Vec<&mut [Account]> = final_accounts.chunks_mut(10_000).collect();
     // Group the slices into pairs and send transactions between those slices.
     let random_tx_gen_futures = final_account_slices.chunks_mut(2).filter_map(|slice| {
         if slice.len() != 2 {
