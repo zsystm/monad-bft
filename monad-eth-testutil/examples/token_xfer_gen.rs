@@ -1,10 +1,5 @@
 use std::{
-    borrow::{Borrow, BorrowMut},
-    error::Error,
-    iter::zip,
-    str::FromStr,
-    sync::{atomic::AtomicUsize, Arc},
-    time::{Duration, Instant},
+    borrow::{Borrow, BorrowMut}, collections::BTreeMap, error::Error, iter::zip, str::FromStr, sync::{atomic::AtomicUsize, Arc}, time::{Duration, Instant}
 };
 
 use alloy_primitives::{Address, Bytes, FixedBytes, B256};
@@ -42,13 +37,15 @@ const RPC_SENDER_INTERVAL: Duration = Duration::from_millis(1000);
 const EXPECTED_TPS: usize = NUM_RPC_SENDERS * BATCH_SIZE / RPC_SENDER_INTERVAL.as_secs() as usize;
 
 // balance split from root account
-// 2 splits with 1000 accounts per split = 1000^2 = 1_000_000 final accounts
+// e.g. 2 splits with 1000 accounts per split = 1000^2 = 1_000_000 final accounts
 const NUM_ACCOUNTS_PER_SPLIT: usize = 500;
 const NUM_SPLITS: u32 = 2;
 const NUM_FINAL_ACCOUNTS: usize = NUM_ACCOUNTS_PER_SPLIT.pow(NUM_SPLITS);
 
 // number of batches allowed in the txn batches channel
 const TX_BATCHES_CHANNEL_BUFFER: usize = 40;
+
+static mut num_nonce_updates: usize = 0;
 
 #[derive(Parser)]
 struct Args {
@@ -124,6 +121,8 @@ struct Account {
     // NOTE: If user updates this local view of balance after sending a transaction from this
     // account, make sure to periodically refresh to ensure exact gas fees are accounted for.
     balance: u128,
+
+    num_txns_sent: u64,
 }
 
 impl Account {
@@ -147,6 +146,7 @@ impl Account {
             address,
             nonce: 0,
             balance: 0,
+            num_txns_sent: 0,
         }
     }
 
@@ -173,9 +173,21 @@ impl Account {
         let raw_tx = signed_transaction.envelope_encoded();
 
         self.nonce += 1;
+        self.num_txns_sent += 1;
         // TODO: Also update the expected balance of the receiver account
 
         raw_tx
+    }
+
+    async fn create_raw_xfer_transaction_checked(&mut self, dst: Address, value: u128, client: Client) -> Bytes {
+        if self.num_txns_sent % 20 == 0 {
+            self.refresh_nonce(client.clone()).await;
+            self.refresh_balance(client).await;
+            
+            unsafe { num_nonce_updates += 1; }
+        }
+
+        self.create_raw_xfer_transaction(dst, value)
     }
 
     async fn refresh_nonce(&mut self, client: Client) {
@@ -294,7 +306,7 @@ async fn send_many_to_many(
 }
 
 fn random_account_selector(accounts: &mut [Account]) -> &mut Account {
-    let acc_index = rand::thread_rng().gen_range(0..accounts.len());
+    let acc_index = rand::random::<usize>() % accounts.len();
     accounts[acc_index].borrow_mut()
 }
 
@@ -308,16 +320,16 @@ async fn send_between_rand_pairings(
     dst_selection: impl Fn(&mut [Account]) -> &mut Account,
     txn_sender: Sender<Vec<Bytes>>,
     num_batches: usize,
+    client: Client,
 ) {
     for _ in 0..num_batches {
-        let raw_txns = (0..BATCH_SIZE)
-            .map(|_| {
-                let src_account = src_selection(src_accounts);
-                let dst_account = dst_selection(dst_accounts);
+        let mut raw_txns = Vec::new();
+        for _ in 0..BATCH_SIZE {
+            let src_account = src_selection(src_accounts);
+            let dst_account = dst_selection(dst_accounts);
 
-                src_account.create_raw_xfer_transaction(dst_account.address, value)
-            })
-            .collect::<Vec<_>>();
+            raw_txns.push(src_account.create_raw_xfer_transaction_checked(dst_account.address, value, client.clone()).await);
+        }
 
         let _ = txn_sender.send(raw_txns).await.unwrap();
     }
@@ -484,20 +496,30 @@ async fn start_random_tx_gen(
         create_final_accounts_from_root(root_account, client.clone(), txn_batch_sender.clone())
             .await;
 
-    let (slice_1, slice_2) = final_accounts.split_at_mut(NUM_FINAL_ACCOUNTS / 2);
     let value = 1000;
-    let txns_to_send = 1_000_000;
-    let num_batches = txns_to_send / BATCH_SIZE;
-    send_between_rand_pairings(
-        slice_1,
-        slice_2,
-        value,
-        random_account_selector,
-        random_account_selector,
-        txn_batch_sender.clone(),
-        num_batches,
-    )
-    .await;
+    let num_batches_per_pair = 80;
+
+    // Split final accounts into slices of 5,000 accounts
+    let mut final_account_slices: Vec<&mut [Account]> = final_accounts.chunks_mut(5_000).collect();
+    // Group the slices into pairs and send transactions between those slices.
+    let random_tx_gen_futures = final_account_slices.chunks_mut(2).filter_map(|slice| {
+        if slice.len() != 2 {
+            return None;
+        }
+
+        let (slice_1, slice_2) = slice.split_at_mut(1);
+        Some(send_between_rand_pairings(
+            slice_1[0],
+            slice_2[0],
+            value,
+            random_account_selector,
+            random_account_selector,
+            txn_batch_sender.clone(),
+            num_batches_per_pair,
+            client.clone(),
+        ))
+    });
+    join_all(random_tx_gen_futures).await;
 
     assert!(txn_batch_sender.close());
 }
@@ -539,7 +561,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let stop = Instant::now();
     let time = stop.duration_since(start).as_millis();
 
-    println!("ran for {}. num txns: {:?}", time, tx_counter);
+    println!("ran for {}. num txns: {:?}. num nonce updates: {:?}", time, tx_counter, unsafe { num_nonce_updates });
 
     Ok(())
 }
