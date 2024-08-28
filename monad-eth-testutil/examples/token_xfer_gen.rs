@@ -233,7 +233,7 @@ impl Account {
     }
 }
 
-async fn update_nonces(accounts: &mut [Account], client: Client) {
+async fn update_accounts(accounts: &mut [Account], client: Client) {
     assert!(accounts.len() == BATCH_SIZE);
 
     // create BATCH_SIZE requests for nonce updates
@@ -250,41 +250,32 @@ async fn update_nonces(accounts: &mut [Account], client: Client) {
         })
         .collect::<Vec<Value>>();
     let batch_req = serde_json::Value::Array(json_values);
-    let res = client.rpc(batch_req).await.expect("rpc not responding");
+    let nonces_res_future = client.rpc(batch_req);
 
-    for single_res in res
-        .json::<Vec<JsonResponse>>()
-        .await
-        .expect("json deser of response must not fail")
-    {
-        accounts[single_res.id].nonce = single_res.get_result_u128() as u64;
-    }
-}
-
-async fn update_balances(accounts: &mut [Account], client: Client) {
-    assert!(accounts.len() == BATCH_SIZE);
-
-    // create BATCH_SIZE requests for nonce updates
+    // create BATCH_SIZE requests for balance updates
     let json_values = accounts
         .iter()
         .enumerate()
         .map(|(id, acc)| {
             json!({
                     "jsonrpc": "2.0",
-                    "method": "eth_getBalance",
+                    "method": "eth_getTransactionCount",
                     "params": [acc.address, "latest"],
                     "id": id,
             })
         })
         .collect::<Vec<Value>>();
     let batch_req = serde_json::Value::Array(json_values);
-    let res = client.rpc(batch_req).await.expect("rpc not responding");
+    let balances_res_future = client.rpc(batch_req);
+    let (nonces_res, balances_res) = join!(nonces_res_future, balances_res_future);
 
-    for single_res in res
-        .json::<Vec<JsonResponse>>()
-        .await
-        .expect("json deser of response must not fail")
-    {
+    let nonces_res = nonces_res.expect("rpc not responding").json::<Vec<JsonResponse>>().await.expect("json deser of response must not fail");
+    let balances_res = balances_res.expect("rpc not responding").json::<Vec<JsonResponse>>().await.expect("json deser of response must not fail");
+
+    for single_res in nonces_res {
+        accounts[single_res.id].nonce = single_res.get_result_u128() as u64;
+    }
+    for single_res in balances_res {
         accounts[single_res.id].balance = single_res.get_result_u128();
     }
 }
@@ -319,8 +310,7 @@ async fn accounts_refresher(
 
                 // refresh nonce and balance of every account
                 for accounts in refresh_context.accounts_to_refresh.chunks_mut(BATCH_SIZE) {
-                    update_nonces(accounts, client.clone()).await;
-                    update_balances(accounts, client.clone()).await;
+                    update_accounts(accounts, client.clone()).await;
                 }
 
                 // send the refreshed accounts through the ready sender
