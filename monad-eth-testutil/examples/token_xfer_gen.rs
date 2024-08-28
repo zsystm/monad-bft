@@ -1,13 +1,11 @@
 use std::{
     borrow::BorrowMut,
-    collections::VecDeque,
     error::Error,
     str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
 };
 
 use alloy_primitives::{Address, Bytes, B256};
@@ -22,7 +20,7 @@ use reth_primitives::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::join;
+use tokio::{join, time::{Duration, Instant}};
 
 const CARRIAGE_COST: usize = 21000 * 1000;
 // This is the expected wait time after sending transactions before
@@ -41,12 +39,6 @@ const NUM_RPC_SENDERS: usize = 16;
 
 // number of batches allowed in the txn batches channel
 const TX_BATCHES_CHANNEL_BUFFER: usize = 40;
-
-// number of transactions to be sent from each account before refreshing its nonce and
-// balance
-const ACCOUNT_REFRESH_PERIOD: u64 = 20;
-
-static mut NUM_NONCE_UPDATES: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Parser)]
 struct Args {
@@ -67,7 +59,7 @@ struct Args {
     num_final_accounts: u64,
 
     /// interval at which each RPC sender sends a batch of transaction to RPC (in milliseconds)
-    #[arg(long, default_value_t = 800)]
+    #[arg(long, default_value_t = 1000)]
     rpc_sender_interval_ms: u64,
 }
 
@@ -190,25 +182,6 @@ impl Account {
         raw_tx
     }
 
-    async fn create_raw_xfer_transaction_checked(
-        &mut self,
-        dst: Address,
-        value: u128,
-        client: Client,
-    ) -> Bytes {
-        // Refresh nonce and balance every ACCOUNT_REFRESH_PERIOD txns sent
-        if self.num_txns_sent % ACCOUNT_REFRESH_PERIOD == 0 {
-            self.refresh_nonce(client.clone()).await;
-            self.refresh_balance(client).await;
-
-            unsafe {
-                NUM_NONCE_UPDATES.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        self.create_raw_xfer_transaction(dst, value)
-    }
-
     async fn refresh_nonce(&mut self, client: Client) {
         let req = json!(
             {
@@ -260,13 +233,69 @@ impl Account {
     }
 }
 
-pub struct AccountRefreshContext {
+async fn update_nonces(accounts: &mut [Account], client: Client) {
+    assert!(accounts.len() == BATCH_SIZE);
+
+    // create BATCH_SIZE requests for nonce updates
+    let json_values = accounts
+        .iter()
+        .enumerate()
+        .map(|(id, acc)| {
+            json!({
+                    "jsonrpc": "2.0",
+                    "method": "eth_getTransactionCount",
+                    "params": [acc.address, "latest"],
+                    "id": id,
+            })
+        })
+        .collect::<Vec<Value>>();
+    let batch_req = serde_json::Value::Array(json_values);
+    let res = client.rpc(batch_req).await.expect("rpc not responding");
+
+    for single_res in res
+        .json::<Vec<JsonResponse>>()
+        .await
+        .expect("json deser of response must not fail")
+    {
+        accounts[single_res.id].nonce = single_res.get_result_u128() as u64;
+    }
+}
+
+async fn update_balances(accounts: &mut [Account], client: Client) {
+    assert!(accounts.len() == BATCH_SIZE);
+
+    // create BATCH_SIZE requests for nonce updates
+    let json_values = accounts
+        .iter()
+        .enumerate()
+        .map(|(id, acc)| {
+            json!({
+                    "jsonrpc": "2.0",
+                    "method": "eth_getBalance",
+                    "params": [acc.address, "latest"],
+                    "id": id,
+            })
+        })
+        .collect::<Vec<Value>>();
+    let batch_req = serde_json::Value::Array(json_values);
+    let res = client.rpc(batch_req).await.expect("rpc not responding");
+
+    for single_res in res
+        .json::<Vec<JsonResponse>>()
+        .await
+        .expect("json deser of response must not fail")
+    {
+        accounts[single_res.id].balance = single_res.get_result_u128();
+    }
+}
+
+pub struct AccountsRefreshContext {
     accounts_to_refresh: Vec<Account>,
     ready_sender: Sender<Vec<Account>>,
 }
 
 async fn accounts_refresher(
-    refresh_context_receiver: Receiver<AccountRefreshContext>,
+    refresh_context_receiver: Receiver<AccountsRefreshContext>,
     client: Client,
 ) {
     println!("starting account refresher");
@@ -279,15 +308,19 @@ async fn accounts_refresher(
                 // received some accounts to refresh
 
                 num_refreshes += 1;
-                println!("accounts refresher: received accounts to refresh. batch {}", num_refreshes);
+                println!(
+                    "accounts refresher: received accounts to refresh. batch {}",
+                    num_refreshes
+                );
+                let start = Instant::now();
 
                 // wait for execution delay before refreshing
                 tokio::time::sleep(EXECUTION_DELAY_WAIT_TIME).await;
 
                 // refresh nonce and balance of every account
-                for account in refresh_context.accounts_to_refresh.iter_mut() {
-                    account.refresh_nonce(client.clone()).await;
-                    account.refresh_balance(client.clone()).await;
+                for accounts in refresh_context.accounts_to_refresh.chunks_mut(BATCH_SIZE) {
+                    update_nonces(accounts, client.clone()).await;
+                    update_balances(accounts, client.clone()).await;
                 }
 
                 // send the refreshed accounts through the ready sender
@@ -297,7 +330,11 @@ async fn accounts_refresher(
                     .await
                     .expect("ready sender error");
 
-                println!("accounts refresher: sent refreshed accounts. batch {}", num_refreshes);
+                let time_taken_ms = Instant::now().duration_since(start).as_millis();
+                println!(
+                    "accounts refresher: sent refreshed accounts. batch {}. took {}ms",
+                    num_refreshes, time_taken_ms
+                );
             }
             Err(err) => {
                 println!("accounts refresher receiver channel: {}", err);
@@ -399,7 +436,6 @@ async fn send_between_rand_pairings(
     dst_selection: impl Fn(&mut [Account]) -> &mut Account,
     txn_sender: Sender<Vec<Bytes>>,
     num_batches: usize,
-    client: Client,
 ) {
     for _ in 0..num_batches {
         let mut raw_txns = Vec::new();
@@ -407,11 +443,7 @@ async fn send_between_rand_pairings(
             let src_account = src_selection(src_accounts);
             let dst_account = dst_selection(dst_accounts);
 
-            raw_txns.push(
-                src_account
-                    .create_raw_xfer_transaction_checked(dst_account.address, value, client.clone())
-                    .await,
-            );
+            raw_txns.push(src_account.create_raw_xfer_transaction(dst_account.address, value));
         }
 
         let _ = txn_sender.send(raw_txns).await.unwrap();
@@ -422,7 +454,6 @@ async fn generate_uniform_rand_pairings<'a>(
     accounts_ready_receiver: Receiver<Vec<Account>>,
     accounts_completed_sender: Sender<Vec<Account>>,
     txn_batch_sender: Sender<Vec<Bytes>>,
-    client: Client,
 ) {
     let mut num_ready_batches = 0;
     loop {
@@ -430,7 +461,10 @@ async fn generate_uniform_rand_pairings<'a>(
             Ok(mut accounts_slice) => {
                 // received accounts slice to generate transactions with
                 num_ready_batches += 1;
-                println!("generate uniform rand pairings: received refreshed accounts. batch {}", num_ready_batches);
+                println!(
+                    "generate uniform rand pairings: received refreshed accounts. batch {}",
+                    num_ready_batches
+                );
 
                 let num_accounts_in_slice = accounts_slice.len();
                 let (slice_1, slice_2) = accounts_slice.split_at_mut(num_accounts_in_slice / 2);
@@ -445,12 +479,14 @@ async fn generate_uniform_rand_pairings<'a>(
                     uniform_account_selector,
                     txn_batch_sender.clone(),
                     num_batches,
-                    client.clone(),
                 )
                 .await;
 
                 let _ = accounts_completed_sender.send(accounts_slice).await;
-                println!("generate uniform rand pairings: sent completed accounts. batch {}", num_ready_batches);
+                println!(
+                    "generate uniform rand pairings: sent completed accounts. batch {}",
+                    num_ready_batches
+                );
             }
             Err(err) => {
                 // channel is closed and no more accounts exist
@@ -544,7 +580,7 @@ async fn rpc_sender(
             }
             Err(err) => {
                 // channel is closed and no more txns exist
-                println!("rpc sender: {}, err: {}", rpc_sender_id, err);
+                println!("rpc sender: {}: {}", rpc_sender_id, err);
                 break;
             }
         }
@@ -679,7 +715,6 @@ async fn start_random_tx_gen_many_slices(
             uniform_account_selector,
             txn_batch_sender.clone(),
             num_batches_per_pair,
-            client.clone(),
         ))
     });
     join_all(random_tx_gen_futures).await;
@@ -693,14 +728,13 @@ async fn start_random_tx_gen_two_slices(
     client: Client,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) {
-    let final_accounts = create_final_accounts_from_root(
+    let mut final_accounts = create_final_accounts_from_root(
         root_account,
         num_final_accounts,
         client.clone(),
         txn_batch_sender.clone(),
     )
     .await;
-    tokio::time::sleep(EXECUTION_DELAY_WAIT_TIME).await;
     let num_final_accounts = final_accounts.len();
     println!("{} final accounts created", num_final_accounts);
 
@@ -714,33 +748,41 @@ async fn start_random_tx_gen_two_slices(
         accounts_ready_receiver,
         accounts_completed_sender,
         txn_batch_sender.clone(),
-        client.clone(),
     ));
 
-    let mut accounts_slice_1 = final_accounts;
-    let accounts_slice_2 = accounts_slice_1.split_off(num_final_accounts / 2);
-    
-    refresh_context_sender.send(AccountRefreshContext{
-        accounts_to_refresh: accounts_slice_1,
-        ready_sender: accounts_ready_sender.clone(),
-    }).await.unwrap();
-    refresh_context_sender.send(AccountRefreshContext{
-        accounts_to_refresh: accounts_slice_2,
-        ready_sender: accounts_ready_sender.clone(),
-    }).await.unwrap();
+    let mut accounts_batches = Vec::new();
+    let num_slices = 10;
+    let num_accounts_per_slices = num_final_accounts / num_slices;
+    for i in 1..num_slices {
+        accounts_batches.push(final_accounts.split_off(num_final_accounts - (i * num_accounts_per_slices)))
+    }
+    accounts_batches.push(final_accounts);
 
-    let _accounts_slice_1 = accounts_completed_receiver.recv().await.unwrap();
-    println!("received accounts slice 1 back");
-    let _accounts_slice_2 = accounts_completed_receiver.recv().await.unwrap();
-    println!("received accounts slice 2 back");
+    for accounts in accounts_batches {
+        refresh_context_sender
+        .send(AccountsRefreshContext {
+            accounts_to_refresh: accounts,
+            ready_sender: accounts_ready_sender.clone(),
+        })
+        .await
+        .unwrap();
+    }
+
+    let _completed_batches = join_all((0..num_slices).map(|_| async {
+        let received_batch = accounts_completed_receiver.recv().await;
+        println!("received completed batch");
+        received_batch
+    })).await;
 
     assert!(refresh_context_sender.close());
     assert!(accounts_ready_sender.close());
 
     println!("closed refresher and ready channel");
 
-    let (refresher_result, tx_gen_result) = join!(accounts_refresher_handle, tx_gen_rand_pairings_handle);
+    let refresher_result = accounts_refresher_handle.await;
     assert!(refresher_result.is_ok());
+
+    let tx_gen_result = tx_gen_rand_pairings_handle.await;
     assert!(tx_gen_result.is_ok());
 
     assert!(txn_batch_sender.close());
@@ -788,12 +830,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let stop = Instant::now();
     let time = stop.duration_since(start).as_millis();
 
-    println!(
-        "ran for {}. num txns: {:?}. num nonce updates: {:?}",
-        time,
-        tx_counter,
-        unsafe { NUM_NONCE_UPDATES.load(Ordering::SeqCst) }
-    );
+    println!("ran for {}. num txns: {:?}.", time, tx_counter,);
 
     Ok(())
 }
