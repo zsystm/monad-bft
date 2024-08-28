@@ -1,3 +1,4 @@
+use core::num;
 use std::{
     borrow::BorrowMut,
     error::Error,
@@ -20,7 +21,10 @@ use reth_primitives::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::{join, time::{Duration, Instant}};
+use tokio::{
+    join,
+    time::{Duration, Instant},
+};
 
 const CARRIAGE_COST: usize = 21000 * 1000;
 // This is the expected wait time after sending transactions before
@@ -32,13 +36,15 @@ const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(5);
 // Payload size with batch = 868 raw txns: 262144
 // Payload size with batch = 869 raw txns: 262408 -> payload reached size limit
 // IPC batch size limit = 500
-const BATCH_SIZE: usize = 500;
+const TXN_BATCH_SIZE: usize = 500;
 
 // each rpc sender will send 1 batch of BATCH_SIZE transactions every RPC_SENDER_INTERVAL
 const NUM_RPC_SENDERS: usize = 16;
 
-// number of batches allowed in the txn batches channel
+// number of batches of transactions allowed in the txn batches channel
 const TX_BATCHES_CHANNEL_BUFFER: usize = 40;
+// number of batches of accounts allowed in the pipeline
+const ACCOUNTS_BATCHES_CHANNEL_BUFFER: usize = 40;
 
 #[derive(Parser)]
 struct Args {
@@ -233,8 +239,8 @@ impl Account {
     }
 }
 
-async fn update_accounts(accounts: &mut [Account], client: Client) {
-    assert!(accounts.len() == BATCH_SIZE);
+async fn batch_refresh_accounts(accounts: &mut [Account], client: Client) {
+    assert!(accounts.len() == TXN_BATCH_SIZE);
 
     // create BATCH_SIZE requests for nonce updates
     let json_values = accounts
@@ -269,8 +275,16 @@ async fn update_accounts(accounts: &mut [Account], client: Client) {
     let balances_res_future = client.rpc(batch_req);
     let (nonces_res, balances_res) = join!(nonces_res_future, balances_res_future);
 
-    let nonces_res = nonces_res.expect("rpc not responding").json::<Vec<JsonResponse>>().await.expect("json deser of response must not fail");
-    let balances_res = balances_res.expect("rpc not responding").json::<Vec<JsonResponse>>().await.expect("json deser of response must not fail");
+    let nonces_res = nonces_res
+        .expect("rpc not responding")
+        .json::<Vec<JsonResponse>>()
+        .await
+        .expect("json deser of response must not fail");
+    let balances_res = balances_res
+        .expect("rpc not responding")
+        .json::<Vec<JsonResponse>>()
+        .await
+        .expect("json deser of response must not fail");
 
     for single_res in nonces_res {
         accounts[single_res.id].nonce = single_res.get_result_u128() as u64;
@@ -309,8 +323,8 @@ async fn accounts_refresher(
                 tokio::time::sleep(EXECUTION_DELAY_WAIT_TIME).await;
 
                 // refresh nonce and balance of every account
-                for accounts in refresh_context.accounts_to_refresh.chunks_mut(BATCH_SIZE) {
-                    update_accounts(accounts, client.clone()).await;
+                for accounts in refresh_context.accounts_to_refresh.chunks_mut(TXN_BATCH_SIZE) {
+                    batch_refresh_accounts(accounts, client.clone()).await;
                 }
 
                 // send the refreshed accounts through the ready sender
@@ -373,7 +387,7 @@ async fn send_one_to_many(
     txn_sender: Sender<Vec<Bytes>>,
 ) {
     let starting_balance = src_account.balance;
-    let num_receiver_accounts = dst_accounts.len().min(BATCH_SIZE);
+    let num_receiver_accounts = dst_accounts.len().min(TXN_BATCH_SIZE);
 
     match value.checked_mul(CARRIAGE_COST as u128) {
         Some(v) => {
@@ -429,7 +443,7 @@ async fn send_between_rand_pairings(
 ) {
     for _ in 0..num_batches {
         let mut raw_txns = Vec::new();
-        for _ in 0..BATCH_SIZE {
+        for _ in 0..TXN_BATCH_SIZE {
             let src_account = src_selection(src_accounts);
             let dst_account = dst_selection(dst_accounts);
 
@@ -440,7 +454,7 @@ async fn send_between_rand_pairings(
     }
 }
 
-async fn generate_uniform_rand_pairings<'a>(
+async fn generate_uniform_rand_pairings(
     accounts_ready_receiver: Receiver<Vec<Account>>,
     accounts_completed_sender: Sender<Vec<Account>>,
     txn_batch_sender: Sender<Vec<Bytes>>,
@@ -566,7 +580,7 @@ async fn rpc_sender(
             Ok(next_batch) => {
                 // TODO: Use the response to update nonces
                 send_batch_raw_txns(next_batch, client.clone()).await;
-                tx_counter.fetch_add(BATCH_SIZE, Ordering::SeqCst);
+                tx_counter.fetch_add(TXN_BATCH_SIZE, Ordering::SeqCst);
             }
             Err(err) => {
                 // channel is closed and no more txns exist
@@ -606,7 +620,7 @@ async fn split_account_balance(
         .wrapping_div(u128::try_from(num_splits).unwrap());
 
     let mut new_accounts = create_rand_accounts(num_new_accounts);
-    for dst_accounts in new_accounts.chunks_mut(BATCH_SIZE) {
+    for dst_accounts in new_accounts.chunks_mut(TXN_BATCH_SIZE) {
         let txns_batch = create_transfer_txns(&mut account_to_split, dst_accounts, transfer_amount);
         let _ = txn_sender.send(txns_batch).await.unwrap();
     }
@@ -627,10 +641,10 @@ async fn create_final_accounts_from_root(
     // accounts, followed by 500 per account, followed by 500 per account.
     // Total accounts created = 4 * 500 * 500 = 1,000,000
     let mut split_levels = Vec::new();
-    while num_final_accounts > BATCH_SIZE {
-        split_levels.push(BATCH_SIZE);
+    while num_final_accounts > TXN_BATCH_SIZE {
+        split_levels.push(TXN_BATCH_SIZE);
         // This may create more accounts than num_final_accounts
-        num_final_accounts = num_final_accounts.div_ceil(BATCH_SIZE);
+        num_final_accounts = num_final_accounts.div_ceil(TXN_BATCH_SIZE);
     }
     split_levels.push(num_final_accounts);
 
@@ -667,49 +681,23 @@ async fn create_final_accounts_from_root(
     accounts_to_split
 }
 
-async fn start_random_tx_gen_many_slices(
-    root_account: Account,
-    num_final_accounts: usize,
-    client: Client,
-    txn_batch_sender: Sender<Vec<Bytes>>,
-) {
-    let mut final_accounts = create_final_accounts_from_root(
-        root_account,
-        num_final_accounts,
-        client.clone(),
-        txn_batch_sender.clone(),
-    )
-    .await;
+/// Splits the final accounts into chunks
+/// 10 batches 1,000,000 accounts would return a vec of 100,000 accounts per batch
+fn split_final_accounts_into_batches(
+    mut final_accounts: Vec<Account>,
+    num_batches: usize,
+) -> Vec<Vec<Account>> {
+    let num_final_accounts = final_accounts.len();
 
-    tokio::time::sleep(EXECUTION_DELAY_WAIT_TIME).await;
-    println!("final accounts created");
+    let mut accounts_batches = Vec::new();
+    let num_accounts_per_slices = num_final_accounts / num_batches;
+    for i in 1..num_batches {
+        accounts_batches
+            .push(final_accounts.split_off(num_final_accounts - (i * num_accounts_per_slices)))
+    }
+    accounts_batches.push(final_accounts);
 
-    // at 8000 TPS, this will take ~ 3.5 hrs
-    let num_batches_per_pair = 4_000;
-
-    // Split final accounts into slices of 10,000 accounts
-    let mut final_account_slices: Vec<&mut [Account]> = final_accounts.chunks_mut(10_000).collect();
-    // Group the slices into pairs and send transactions between those slices.
-    let transfer_value = 10;
-    let random_tx_gen_futures = final_account_slices.chunks_mut(2).filter_map(|slice| {
-        if slice.len() != 2 {
-            return None;
-        }
-
-        let (slice_1, slice_2) = slice.split_at_mut(1);
-        Some(send_between_rand_pairings(
-            slice_1[0],
-            slice_2[0],
-            transfer_value,
-            uniform_account_selector,
-            uniform_account_selector,
-            txn_batch_sender.clone(),
-            num_batches_per_pair,
-        ))
-    });
-    join_all(random_tx_gen_futures).await;
-
-    assert!(txn_batch_sender.close());
+    accounts_batches
 }
 
 async fn start_random_tx_gen_two_slices(
@@ -718,7 +706,7 @@ async fn start_random_tx_gen_two_slices(
     client: Client,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) {
-    let mut final_accounts = create_final_accounts_from_root(
+    let final_accounts = create_final_accounts_from_root(
         root_account,
         num_final_accounts,
         client.clone(),
@@ -728,44 +716,40 @@ async fn start_random_tx_gen_two_slices(
     let num_final_accounts = final_accounts.len();
     println!("{} final accounts created", num_final_accounts);
 
-    let (refresh_context_sender, refresh_context_receiver) = async_channel::bounded(40);
+    let (refresh_context_sender, refresh_context_receiver) = async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
     let accounts_refresher_handle =
         tokio::spawn(accounts_refresher(refresh_context_receiver, client.clone()));
 
-    let (accounts_ready_sender, accounts_ready_receiver) = async_channel::bounded(40);
-    let (accounts_completed_sender, accounts_completed_receiver) = async_channel::bounded(40);
+    let (generate_rand_pairings_sender, generate_rand_pairings_receiver) = async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
+    let (accounts_completed_sender, accounts_completed_receiver) = async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
     let tx_gen_rand_pairings_handle = tokio::spawn(generate_uniform_rand_pairings(
-        accounts_ready_receiver,
+        generate_rand_pairings_receiver,
         accounts_completed_sender,
         txn_batch_sender.clone(),
     ));
 
-    let mut accounts_batches = Vec::new();
-    let num_slices = 10;
-    let num_accounts_per_slices = num_final_accounts / num_slices;
-    for i in 1..num_slices {
-        accounts_batches.push(final_accounts.split_off(num_final_accounts - (i * num_accounts_per_slices)))
-    }
-    accounts_batches.push(final_accounts);
+    let num_accounts_batches = 10;
+    let accounts_batches = split_final_accounts_into_batches(final_accounts, num_accounts_batches);
 
     for accounts in accounts_batches {
         refresh_context_sender
-        .send(AccountsRefreshContext {
-            accounts_to_refresh: accounts,
-            ready_sender: accounts_ready_sender.clone(),
-        })
-        .await
-        .unwrap();
+            .send(AccountsRefreshContext {
+                accounts_to_refresh: accounts,
+                ready_sender: generate_rand_pairings_sender.clone(),
+            })
+            .await
+            .unwrap();
     }
 
-    let _completed_batches = join_all((0..num_slices).map(|_| async {
+    let _completed_batches = join_all((0..num_accounts_batches).map(|_| async {
         let received_batch = accounts_completed_receiver.recv().await;
         println!("received completed batch");
         received_batch
-    })).await;
+    }))
+    .await;
 
     assert!(refresh_context_sender.close());
-    assert!(accounts_ready_sender.close());
+    assert!(generate_rand_pairings_sender.close());
 
     println!("closed refresher and ready channel");
 
@@ -787,10 +771,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client = Client::new(args.rpc_url);
 
     let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
-    let expected_tps = (NUM_RPC_SENDERS * BATCH_SIZE) as f64 / rpc_sender_interval.as_secs_f64();
+    let expected_tps = (NUM_RPC_SENDERS * TXN_BATCH_SIZE) as f64 / rpc_sender_interval.as_secs_f64();
     println!(
         "num rpc senders: {}. batch size: {}. expected TPS ~ {}",
-        NUM_RPC_SENDERS, BATCH_SIZE, expected_tps
+        NUM_RPC_SENDERS, TXN_BATCH_SIZE, expected_tps
     );
 
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
@@ -808,14 +792,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let root_account = Account::new(args.root_private_key);
     let num_final_accounts = args.num_final_accounts as usize;
-    let root_account_split_handle = tokio::spawn(start_random_tx_gen_two_slices(
+    let start_tx_gen_handle = tokio::spawn(start_random_tx_gen_two_slices(
         root_account,
         num_final_accounts,
         client.clone(),
         txn_batch_sender.clone(),
     ));
 
-    let _ = join!(join_all(rpc_sender_handles), root_account_split_handle);
+    let _ = join!(join_all(rpc_sender_handles), start_tx_gen_handle);
 
     let stop = Instant::now();
     let time = stop.duration_since(start).as_millis();
