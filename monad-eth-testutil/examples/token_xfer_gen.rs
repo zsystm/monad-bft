@@ -270,12 +270,17 @@ async fn accounts_refresher(
     client: Client,
 ) {
     println!("starting account refresher");
+    let mut num_refreshes = 0;
     loop {
         // receive a refresh context
         // if err, tx gen has completed and no more accounts to refresh. end loop
         match refresh_context_receiver.recv().await {
             Ok(mut refresh_context) => {
                 // received some accounts to refresh
+
+                num_refreshes += 1;
+                println!("accounts refresher: received accounts to refresh. batch {}", num_refreshes);
+
                 // wait for execution delay before refreshing
                 tokio::time::sleep(EXECUTION_DELAY_WAIT_TIME).await;
 
@@ -291,9 +296,11 @@ async fn accounts_refresher(
                     .send(refresh_context.accounts_to_refresh)
                     .await
                     .expect("ready sender error");
+
+                println!("accounts refresher: sent refreshed accounts. batch {}", num_refreshes);
             }
             Err(err) => {
-                println!("accounts refresher receiver channel err: {}", err);
+                println!("accounts refresher receiver channel: {}", err);
                 break;
             }
         }
@@ -417,9 +424,14 @@ async fn generate_uniform_rand_pairings<'a>(
     txn_batch_sender: Sender<Vec<Bytes>>,
     client: Client,
 ) {
+    let mut num_ready_batches = 0;
     loop {
         match accounts_ready_receiver.recv().await {
             Ok(mut accounts_slice) => {
+                // received accounts slice to generate transactions with
+                num_ready_batches += 1;
+                println!("generate uniform rand pairings: received refreshed accounts. batch {}", num_ready_batches);
+
                 let num_accounts_in_slice = accounts_slice.len();
                 let (slice_1, slice_2) = accounts_slice.split_at_mut(num_accounts_in_slice / 2);
                 let transfer_value = 10;
@@ -437,10 +449,12 @@ async fn generate_uniform_rand_pairings<'a>(
                 )
                 .await;
 
-                accounts_completed_sender.send(accounts_slice).await;
+                let _ = accounts_completed_sender.send(accounts_slice).await;
+                println!("generate uniform rand pairings: sent completed accounts. batch {}", num_ready_batches);
             }
             Err(err) => {
-                // channel is closed and no more txns exist
+                // channel is closed and no more accounts exist
+                println!("generate uniform rand pairings channel: {}", err);
                 break;
             }
         }
@@ -716,10 +730,14 @@ async fn start_random_tx_gen_two_slices(
     }).await.unwrap();
 
     let _accounts_slice_1 = accounts_completed_receiver.recv().await.unwrap();
+    println!("received accounts slice 1 back");
     let _accounts_slice_2 = accounts_completed_receiver.recv().await.unwrap();
+    println!("received accounts slice 2 back");
 
     assert!(refresh_context_sender.close());
     assert!(accounts_ready_sender.close());
+
+    println!("closed refresher and ready channel");
 
     let (refresher_result, tx_gen_result) = join!(accounts_refresher_handle, tx_gen_rand_pairings_handle);
     assert!(refresher_result.is_ok());
