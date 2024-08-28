@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     marker::PhantomData,
     net::SocketAddr,
-    num::NonZero,
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -11,19 +10,17 @@ use std::{
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use lru::LruCache;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::event_loop::{Dataplane, UnicastMsg};
+use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
-use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
 
 pub mod udp;
 pub mod util;
-use util::{compute_hash, BuildTarget, EpochValidators, Validator};
+use util::{BuildTarget, EpochValidators, Validator};
 
 pub struct RaptorCastConfig<ST>
 where
@@ -40,11 +37,6 @@ where
     pub local_addr: String,
 }
 
-pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
-
-pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
-pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
-
 pub struct RaptorCast<ST, M, OM>
 where
     ST: CertificateSignatureRecoverable,
@@ -59,18 +51,7 @@ where
 
     current_epoch: Epoch,
 
-    // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
-    // can't be induced by spamming broadcast chunks to any given node
-    // TODO we also need to cap the max number chunks that are decoded - because an adversary could
-    // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
-    // TODO strong bound on max amount of memory used per decoder?
-    // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
-    pending_message_cache:
-        LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, ManagedDecoder>,
-    signature_cache:
-        LruCache<[u8; udp::HEADER_LEN as usize - 65 + 20], NodeId<CertificateSignaturePubKey<ST>>>,
-    /// Value in this map represents the # of excess chunks received for a successfully decoded msg
-    recently_decoded_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, usize>,
+    udp_state: udp::UdpState<ST>,
 
     dataplane: Dataplane,
     pending_events: VecDeque<M::Event>,
@@ -87,6 +68,7 @@ where
     OM: Serializable<Bytes> + Into<M> + Clone,
 {
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
+        let self_id = NodeId::new(config.key.pubkey());
         let dataplane = Dataplane::new(&config.local_addr);
         Self {
             epoch_validators: Default::default(),
@@ -97,9 +79,7 @@ where
 
             current_epoch: Epoch(0),
 
-            pending_message_cache: LruCache::unbounded(),
-            signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
-            recently_decoded_cache: LruCache::new(RECENTLY_DECODED_CACHE_SIZE),
+            udp_state: udp::UdpState::new(self_id),
 
             dataplane,
             pending_events: Default::default(),
@@ -109,17 +89,6 @@ where
             _phantom: PhantomData,
         }
     }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct MessageCacheKey<PT>
-where
-    PT: PubKey,
-{
-    unix_ts_ms: u64,
-    author: NodeId<PT>,
-    app_message_hash: [u8; 20],
-    app_message_len: usize,
 }
 
 impl<ST, M, OM> Executor for RaptorCast<ST, M, OM>
@@ -306,134 +275,29 @@ where
             return Poll::Ready(Some(event));
         }
 
-        while this.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.into() {
-            let (key, decoder) = this.pending_message_cache.pop_lru().expect("nonempty");
-            tracing::warn!(
-                num_source_symbols = decoder.num_source_symbols(),
-                num_encoded_symbols_received = decoder.num_encoded_symbols_received(),
-                inactivation_symbol_threshold = decoder.inactivation_symbol_threshold(),
-                ?key,
-                "dropped unfinished ManagedDecoder"
-            )
-        }
-
-        let self_id = NodeId::new(this.key.pubkey());
-
         while let Poll::Ready(Some(message)) = this.dataplane.poll_next_unpin(cx) {
-            let mut broadcast_batcher =
-                udp::BroadcastBatcher::new(&mut this.dataplane, &message.payload);
-
-            for payload_start_idx in (0..message.payload.len()).step_by(message.stride) {
-                let mut batch_guard = broadcast_batcher.create_flush_guard();
-
-                let payload_end_idx = payload_start_idx + message.stride.min(message.payload.len());
-                let payload = message.payload.slice(payload_start_idx..payload_end_idx);
-                let parsed_message =
-                    match udp::parse_message::<ST>(&mut this.signature_cache, payload) {
-                        Ok(message) => message,
-                        Err(err) => {
-                            tracing::warn!(?err, "unable to parse message");
-                            continue;
-                        }
-                    };
-
-                let self_hash = compute_hash(&self_id);
-                if parsed_message.broadcast {
-                    let Some(epoch_validators) =
-                        this.epoch_validators.get_mut(&Epoch(parsed_message.epoch))
-                    else {
-                        tracing::error!(
-                            epoch =? parsed_message.epoch,
-                            "don't have epoch validators populated",
-                        );
-                        continue;
-                    };
-                    if !epoch_validators
-                        .validators
-                        .contains_key(&parsed_message.author)
-                    {
-                        tracing::error!(
-                            author =? parsed_message.author,
-                            "not in validator set"
-                        );
-                        continue;
-                    }
-                    if self_hash == parsed_message.recipient_hash {
-                        let targets =
-                            epoch_validators.view_without(vec![&parsed_message.author, &self_id]);
-                        batch_guard.queue_broadcast(
-                            payload_start_idx,
-                            payload_end_idx,
-                            &parsed_message.author,
-                            || {
-                                targets
-                                    .view()
-                                    .keys()
-                                    .filter_map(|validator| {
-                                        this.known_addresses.get(validator).copied()
-                                    })
-                                    .collect()
-                            },
-                        )
-                    }
-                } else if self_hash != parsed_message.recipient_hash {
-                    tracing::error!("dropping spoofed message");
-                    continue;
-                }
-
-                let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
-                let key = MessageCacheKey {
-                    unix_ts_ms: parsed_message.unix_ts_ms,
-                    author: parsed_message.author,
-                    app_message_hash: parsed_message.app_message_hash,
-                    app_message_len,
-                };
-
-                if let Some(excess_chunk_count) = this.recently_decoded_cache.get_mut(&key) {
-                    // already decoded
-                    *excess_chunk_count += 1;
-                    continue;
-                }
-
-                let decoder = this.pending_message_cache.get_or_insert_mut(key, || {
-                    let symbol_len = parsed_message.chunk.len();
-
-                    // data_size is always greater than zero, so this division is safe
-                    let num_source_symbols =
-                        app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
-
-                    // TODO: verify unwrap
-                    ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
-                });
-
-                // can we assert!(!decoder.decoding_done()) ?
-
-                decoder
-                    .received_encoded_symbol(&parsed_message.chunk, parsed_message.chunk_id.into());
-
-                if decoder.try_decode() {
-                    let Some(mut decoded) = decoder.reconstruct_source_data() else {
-                        tracing::error!("failed to reconstruct source data");
-                        continue;
-                    };
-
-                    if app_message_len > 10_000 {
-                        tracing::debug!(app_message_len, "reconstructed large message");
-                    }
-
-                    decoded.truncate(app_message_len);
-                    // successfully decoded, so pop out from pending_messages
-                    this.pending_message_cache.pop(&key);
-                    this.recently_decoded_cache.push(key, 0);
-
-                    let Ok(message) = M::deserialize(&Bytes::from(decoded)) else {
+            let decoded_app_messages = this.udp_state.handle_message(
+                &mut this.epoch_validators,
+                |targets, payload| {
+                    // this is the callback used for rebroadcasting
+                    let targets = targets
+                        .into_iter()
+                        .filter_map(|validator| this.known_addresses.get(&validator).copied())
+                        .collect();
+                    this.dataplane.broadcast(BroadcastMsg { targets, payload })
+                },
+                message,
+            );
+            let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
+                |(from, decoded)| match M::deserialize(&decoded) {
+                    Ok(app_message) => Some(app_message.event(from)),
+                    Err(_) => {
                         tracing::error!("failed to deserialize message");
-                        continue;
-                    };
-                    this.pending_events
-                        .push_back(message.event(parsed_message.author));
-                }
-            }
+                        None
+                    }
+                },
+            );
+            this.pending_events.extend(deserialized_app_messages);
             if let Some(event) = this.pending_events.pop_front() {
                 return Poll::Ready(Some(event));
             }

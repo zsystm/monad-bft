@@ -1,4 +1,9 @@
-use std::{collections::HashMap, net::SocketAddr, ops::Range};
+use std::{
+    collections::{BTreeMap, HashMap},
+    net::SocketAddr,
+    num::NonZero,
+    ops::Range,
+};
 
 use bytes::{Bytes, BytesMut};
 use itertools::Itertools;
@@ -7,12 +12,180 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     hasher::{Hasher, HasherType},
 };
-use monad_dataplane::event_loop::{BroadcastMsg, Dataplane};
+use monad_dataplane::event_loop::RecvMsg;
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
-use monad_raptor::SOURCE_SYMBOLS_MIN;
-use monad_types::NodeId;
+use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
+use monad_types::{Epoch, NodeId};
 
-use crate::util::{compute_hash, BuildTarget};
+use crate::util::{compute_hash, BuildTarget, EpochValidators};
+
+pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
+
+pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
+pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
+
+pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
+    self_id: NodeId<CertificateSignaturePubKey<ST>>,
+
+    // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
+    // can't be induced by spamming broadcast chunks to any given node
+    // TODO we also need to cap the max number chunks that are decoded - because an adversary could
+    // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
+    // TODO strong bound on max amount of memory used per decoder?
+    // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
+    pending_message_cache:
+        LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, ManagedDecoder>,
+    signature_cache:
+        LruCache<[u8; HEADER_LEN as usize - 65 + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+    /// Value in this map represents the # of excess chunks received for a successfully decoded msg
+    recently_decoded_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, usize>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+struct MessageCacheKey<PT>
+where
+    PT: PubKey,
+{
+    unix_ts_ms: u64,
+    author: NodeId<PT>,
+    app_message_hash: [u8; 20],
+    app_message_len: usize,
+}
+
+impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
+    pub fn new(self_id: NodeId<CertificateSignaturePubKey<ST>>) -> Self {
+        Self {
+            self_id,
+
+            pending_message_cache: LruCache::unbounded(),
+            signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
+            recently_decoded_cache: LruCache::new(RECENTLY_DECODED_CACHE_SIZE),
+        }
+    }
+
+    /// Given a RecvMsg, emits all decoded messages while rebroadcasting as necessary
+    pub fn handle_message(
+        &mut self,
+        epoch_validators: &mut BTreeMap<Epoch, EpochValidators<ST>>,
+        rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes),
+        message: RecvMsg,
+    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+        let self_id = self.self_id;
+        let self_hash = compute_hash(&self_id);
+
+        let mut broadcast_batcher = BroadcastBatcher::new(rebroadcast, &message.payload);
+
+        let mut messages = Vec::new();
+
+        for payload_start_idx in (0..message.payload.len()).step_by(message.stride) {
+            let mut batch_guard = broadcast_batcher.create_flush_guard();
+
+            let payload_end_idx = payload_start_idx + message.stride.min(message.payload.len());
+            let payload = message.payload.slice(payload_start_idx..payload_end_idx);
+            let parsed_message = match parse_message::<ST>(&mut self.signature_cache, payload) {
+                Ok(message) => message,
+                Err(err) => {
+                    tracing::warn!(?err, "unable to parse message");
+                    continue;
+                }
+            };
+
+            if parsed_message.broadcast {
+                let Some(epoch_validators) = epoch_validators.get_mut(&Epoch(parsed_message.epoch))
+                else {
+                    tracing::error!(
+                        epoch =? parsed_message.epoch,
+                        "don't have epoch validators populated",
+                    );
+                    continue;
+                };
+                if !epoch_validators
+                    .validators
+                    .contains_key(&parsed_message.author)
+                {
+                    tracing::error!(
+                        author =? parsed_message.author,
+                        "not in validator set"
+                    );
+                    continue;
+                }
+                if self_hash == parsed_message.recipient_hash {
+                    let targets =
+                        epoch_validators.view_without(vec![&parsed_message.author, &self_id]);
+                    batch_guard.queue_broadcast(
+                        payload_start_idx,
+                        payload_end_idx,
+                        &parsed_message.author,
+                        || targets.view().keys().copied().collect(),
+                    )
+                }
+            } else if self_hash != parsed_message.recipient_hash {
+                tracing::error!("dropping spoofed message");
+                continue;
+            }
+
+            let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
+            let key = MessageCacheKey {
+                unix_ts_ms: parsed_message.unix_ts_ms,
+                author: parsed_message.author,
+                app_message_hash: parsed_message.app_message_hash,
+                app_message_len,
+            };
+
+            if let Some(excess_chunk_count) = self.recently_decoded_cache.get_mut(&key) {
+                // already decoded
+                *excess_chunk_count += 1;
+                continue;
+            }
+
+            let decoder = self.pending_message_cache.get_or_insert_mut(key, || {
+                let symbol_len = parsed_message.chunk.len();
+
+                // data_size is always greater than zero, so this division is safe
+                let num_source_symbols =
+                    app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
+
+                // TODO: verify unwrap
+                ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
+            });
+
+            // can we assert!(!decoder.decoding_done()) ?
+
+            decoder.received_encoded_symbol(&parsed_message.chunk, parsed_message.chunk_id.into());
+
+            if decoder.try_decode() {
+                let Some(mut decoded) = decoder.reconstruct_source_data() else {
+                    tracing::error!("failed to reconstruct source data");
+                    continue;
+                };
+
+                if app_message_len > 10_000 {
+                    tracing::debug!(app_message_len, "reconstructed large message");
+                }
+
+                decoded.truncate(app_message_len);
+                // successfully decoded, so pop out from pending_messages
+                self.pending_message_cache.pop(&key);
+                self.recently_decoded_cache.push(key, 0);
+
+                messages.push((parsed_message.author, Bytes::from(decoded)));
+            }
+        }
+
+        while self.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.into() {
+            let (key, decoder) = self.pending_message_cache.pop_lru().expect("nonempty");
+            tracing::warn!(
+                num_source_symbols = decoder.num_source_symbols(),
+                num_encoded_symbols_received = decoder.num_encoded_symbols_received(),
+                inactivation_symbol_threshold = decoder.inactivation_symbol_threshold(),
+                ?key,
+                "dropped unfinished ManagedDecoder"
+            )
+        }
+
+        messages
+    }
+}
 
 /// Stuff to include:
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
@@ -518,32 +691,44 @@ where
 
 struct BroadcastBatch<PT: PubKey> {
     author: NodeId<PT>,
-    targets: Vec<SocketAddr>,
+    targets: Vec<NodeId<PT>>,
 
     start_idx: usize,
     end_idx: usize,
 }
-pub struct BroadcastBatcher<'a, PT: PubKey> {
-    dataplane: &'a mut Dataplane,
+pub struct BroadcastBatcher<'a, F, PT>
+where
+    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    PT: PubKey,
+{
+    rebroadcast: F,
     message: &'a Bytes,
 
     batch: Option<BroadcastBatch<PT>>,
 }
-impl<'a, PT: PubKey> Drop for BroadcastBatcher<'a, PT> {
+impl<'a, F, PT> Drop for BroadcastBatcher<'a, F, PT>
+where
+    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    PT: PubKey,
+{
     fn drop(&mut self) {
         self.flush()
     }
 }
-impl<'a, PT: PubKey> BroadcastBatcher<'a, PT> {
-    pub fn new(dataplane: &'a mut Dataplane, message: &'a Bytes) -> Self {
+impl<'a, F, PT> BroadcastBatcher<'a, F, PT>
+where
+    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    PT: PubKey,
+{
+    pub fn new(rebroadcast: F, message: &'a Bytes) -> Self {
         Self {
-            dataplane,
+            rebroadcast,
             message,
             batch: None,
         }
     }
 
-    pub fn create_flush_guard<'g>(&'g mut self) -> BatcherGuard<'a, 'g, PT>
+    pub fn create_flush_guard<'g>(&'g mut self) -> BatcherGuard<'a, 'g, F, PT>
     where
         'a: 'g,
     {
@@ -561,24 +746,34 @@ impl<'a, PT: PubKey> BroadcastBatcher<'a, PT> {
                 num_bytes = batch.end_idx - batch.start_idx,
                 "rebroadcasting chunks"
             );
-            self.dataplane.broadcast(BroadcastMsg {
-                targets: batch.targets,
-                payload: self.message.slice(batch.start_idx..batch.end_idx),
-            })
+            (self.rebroadcast)(
+                batch.targets,
+                self.message.slice(batch.start_idx..batch.end_idx),
+            );
         }
     }
 }
-pub struct BatcherGuard<'a: 'g, 'g, PT: PubKey> {
-    batcher: &'g mut BroadcastBatcher<'a, PT>,
+pub struct BatcherGuard<'a, 'g, F, PT>
+where
+    'a: 'g,
+    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    PT: PubKey,
+{
+    batcher: &'g mut BroadcastBatcher<'a, F, PT>,
     flush_batch: bool,
 }
-impl<'a: 'g, 'g, PT: PubKey> BatcherGuard<'a, 'g, PT> {
+impl<'a, 'g, F, PT> BatcherGuard<'a, 'g, F, PT>
+where
+    'a: 'g,
+    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    PT: PubKey,
+{
     pub fn queue_broadcast(
         &mut self,
         payload_start_idx: usize,
         payload_end_idx: usize,
         author: &NodeId<PT>,
-        targets: impl FnOnce() -> Vec<SocketAddr>,
+        targets: impl FnOnce() -> Vec<NodeId<PT>>,
     ) {
         self.flush_batch = false;
         if self
@@ -602,7 +797,12 @@ impl<'a: 'g, 'g, PT: PubKey> BatcherGuard<'a, 'g, PT> {
         }
     }
 }
-impl<'a: 'g, 'g, PT: PubKey> Drop for BatcherGuard<'a, 'g, PT> {
+impl<'a, 'g, F, PT> Drop for BatcherGuard<'a, 'g, F, PT>
+where
+    'a: 'g,
+    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    PT: PubKey,
+{
     fn drop(&mut self) {
         if self.flush_batch {
             self.batcher.flush();
@@ -622,9 +822,8 @@ mod tests {
     use monad_types::{NodeId, Stake};
 
     use crate::{
-        udp::{build_messages, parse_message, GSO_SIZE},
+        udp::{build_messages, parse_message, GSO_SIZE, SIGNATURE_CACHE_SIZE},
         util::{BuildTarget, EpochValidators, Validator},
-        SIGNATURE_CACHE_SIZE,
     };
 
     #[test]
