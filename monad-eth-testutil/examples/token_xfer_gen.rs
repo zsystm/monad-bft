@@ -259,7 +259,7 @@ async fn update_accounts(accounts: &mut [Account], client: Client) {
         .map(|(id, acc)| {
             json!({
                     "jsonrpc": "2.0",
-                    "method": "eth_getTransactionCount",
+                    "method": "eth_getBalance",
                     "params": [acc.address, "latest"],
                     "id": id,
             })
