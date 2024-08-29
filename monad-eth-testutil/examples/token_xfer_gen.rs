@@ -834,6 +834,68 @@ async fn start_random_tx_gen(
     assert!(txn_batch_sender.close());
 }
 
+async fn start_random_tx_gen_unbounded(
+    root_account: Account,
+    num_final_accounts: usize,
+    priv_keys_file_path: Option<String>,
+    client: Client,
+    txn_batch_sender: Sender<Vec<Bytes>>,
+) {
+    let final_accounts = make_final_accounts(
+        root_account,
+        num_final_accounts,
+        priv_keys_file_path,
+        client.clone(),
+        txn_batch_sender.clone(),
+    )
+    .await;
+    let num_final_accounts = final_accounts.len();
+    println!("{} final accounts created", num_final_accounts);
+
+    let (refresh_context_sender, refresh_context_receiver) =
+        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
+    let accounts_refresher_handle =
+        tokio::spawn(accounts_refresher(refresh_context_receiver, client.clone()));
+
+    let (generate_rand_pairings_sender, generate_rand_pairings_receiver) =
+        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
+    let (accounts_completed_sender, accounts_completed_receiver) =
+        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
+
+    let tx_gen_rand_pairings_handle = tokio::spawn(generate_uniform_rand_pairings(
+        generate_rand_pairings_receiver,
+        accounts_completed_sender,
+        NUM_TXN_BATCHES_PER_ACCOUNTS_BATCH,
+        txn_batch_sender.clone(),
+    ));
+
+    let accounts_batches =
+        split_final_accounts_into_batches(final_accounts, NUM_ACCOUNTS_PER_BATCH);
+
+    // start the pipeline
+    for accounts in accounts_batches {
+        refresh_context_sender
+            .send(AccountsRefreshContext {
+                accounts_to_refresh: accounts,
+                ready_sender: generate_rand_pairings_sender.clone(),
+            })
+            .await
+            .unwrap();
+    }
+
+    // receive a completed batch and reinsert it into the pipeline.
+    loop {
+        let completed_batch = accounts_completed_receiver.recv().await.expect("completed batch channel must not close");
+        refresh_context_sender
+            .send(AccountsRefreshContext {
+                accounts_to_refresh: completed_batch,
+                ready_sender: generate_rand_pairings_sender.clone(),
+            })
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let start = Instant::now();
@@ -865,7 +927,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let root_account = Account::new(args.root_private_key);
     let num_final_accounts = args.num_final_accounts as usize;
-    let start_tx_gen_handle = tokio::spawn(start_random_tx_gen(
+    let start_tx_gen_handle = tokio::spawn(start_random_tx_gen_unbounded(
         root_account,
         num_final_accounts,
         args.priv_keys_file,
