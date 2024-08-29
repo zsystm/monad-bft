@@ -66,10 +66,17 @@ message ProtoStateSyncRequest {
   uint64 old_target = 6;
 }
 
+enum ProtoStateSyncUpsertType {
+  CODE = 0;
+  ACCOUNT = 1;
+  STORAGE = 2;
+  ACCOUNT_DELETE = 3;
+  STORAGE_DELETE = 4;
+}
+
 message ProtoStateSyncUpsert {
-  bool code = 1;
-  bytes key = 2;
-  bytes value = 3;
+  ProtoStateSyncUpsertType type = 1;
+  bytes data = 2;
 }
 
 message ProtoStateSyncResponse {

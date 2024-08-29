@@ -9,7 +9,7 @@ use std::{
 
 use futures::{FutureExt, Stream};
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncResponse};
+use monad_executor_glue::{StateSyncRequest, StateSyncResponse, StateSyncUpsertType};
 use monad_types::{NodeId, SeqNum};
 use rand::seq::SliceRandom;
 
@@ -137,14 +137,28 @@ impl<PT: PubKey> StateSync<PT> {
         if self.outbound_requests.handle_response(&response) {
             // valid request
             unsafe {
-                for (code, key, value) in response.response {
+                for (upsert_type, upsert_data) in response.response {
                     bindings::monad_statesync_client_handle_upsert(
                         self.execution_ctx,
-                        key.as_ptr(),
-                        key.len() as u64,
-                        value.as_ptr(),
-                        value.len() as u64,
-                        code,
+                        match upsert_type {
+                            StateSyncUpsertType::Code => {
+                                bindings::monad_sync_type_SyncTypeUpsertCode
+                            }
+                            StateSyncUpsertType::Account => {
+                                bindings::monad_sync_type_SyncTypeUpsertAccount
+                            }
+                            StateSyncUpsertType::Storage => {
+                                bindings::monad_sync_type_SyncTypeUpsertStorage
+                            }
+                            StateSyncUpsertType::AccountDelete => {
+                                bindings::monad_sync_type_SyncTypeUpsertAccountDelete
+                            }
+                            StateSyncUpsertType::StorageDelete => {
+                                bindings::monad_sync_type_SyncTypeUpsertStorageDelete
+                            }
+                        },
+                        upsert_data.as_ptr(),
+                        upsert_data.len() as u64,
                     )
                 }
                 bindings::monad_statesync_client_handle_done(

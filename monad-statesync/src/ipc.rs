@@ -2,7 +2,7 @@ use std::{pin::pin, time::Instant};
 
 use futures::FutureExt;
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncResponse};
+use monad_executor_glue::{StateSyncRequest, StateSyncResponse, StateSyncUpsertType};
 use monad_types::NodeId;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -38,7 +38,7 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
 pub enum ExecutionMessage {
     SyncTarget(bindings::monad_sync_target),
     SyncRequest(bindings::monad_sync_request),
-    SyncUpsert(bindings::monad_sync_upsert_header, Vec<u8>, Vec<u8>),
+    SyncUpsert(StateSyncUpsertType, Vec<u8>),
     SyncDone(bindings::monad_sync_done),
 }
 
@@ -153,14 +153,12 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             ExecutionMessage::SyncRequest(_request) => {
                 panic!("live-mode execution shouldn't send SyncRequest")
             }
-            ExecutionMessage::SyncUpsert(upsert, key, value) => {
-                assert_eq!(upsert.key_size, key.len() as u64);
-                assert_eq!(upsert.value_size, value.len() as u64);
+            ExecutionMessage::SyncUpsert(upsert_type, data) => {
                 let (_, inbound_request, _) = self
                     .inbound_request
                     .as_mut()
                     .expect("SyncUpsert with no pending request");
-                inbound_request.response.push((upsert.code, key, value));
+                inbound_request.response.push((upsert_type, data));
             }
             ExecutionMessage::SyncDone(done) => {
                 // only one request can be handled at once - because no way of identifying which
@@ -198,16 +196,14 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             tracing::debug!("dropping state-sync request, already servicing one");
             return Ok(());
         }
-        self.write_execution_message(ExecutionMessage::SyncRequest(
-            bindings::monad_sync_request {
-                prefix: request.prefix,
-                prefix_bytes: request.prefix_bytes,
-                target: request.target,
-                from: request.from,
-                until: request.until,
-                old_target: request.old_target,
-            },
-        ))
+        self.write_execution_request(bindings::monad_sync_request {
+            prefix: request.prefix,
+            prefix_bytes: request.prefix_bytes,
+            target: request.target,
+            from: request.from,
+            until: request.until,
+            old_target: request.old_target,
+        })
         .await?;
 
         self.inbound_request = Some((
@@ -245,18 +241,35 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     std::mem::transmute(buf)
                 })
             }
-            bindings::monad_sync_type_SyncTypeUpsertHeader => {
-                let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_upsert_header>()];
-                self.stream.read_exact(&mut buf).await?;
-                let upsert_header: bindings::monad_sync_upsert_header = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(buf)
-                };
-                let mut key = vec![0_u8; upsert_header.key_size as usize];
-                self.stream.read_exact(&mut key).await?;
-                let mut value = vec![0_u8; upsert_header.value_size as usize];
-                self.stream.read_exact(&mut value).await?;
-                ExecutionMessage::SyncUpsert(upsert_header, key, value)
+            bindings::monad_sync_type_SyncTypeUpsertCode => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Code, data)
+            }
+            bindings::monad_sync_type_SyncTypeUpsertAccount => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Account, data)
+            }
+            bindings::monad_sync_type_SyncTypeUpsertStorage => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Storage, data)
+            }
+            bindings::monad_sync_type_SyncTypeUpsertAccountDelete => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::AccountDelete, data)
+            }
+            bindings::monad_sync_type_SyncTypeUpsertStorageDelete => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::StorageDelete, data)
             }
             bindings::monad_sync_type_SyncTypeDone => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_done>()];
@@ -271,54 +284,18 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         Ok(execution_msg)
     }
 
-    async fn write_execution_message(
+    async fn write_execution_request(
         &mut self,
-        message: ExecutionMessage,
+        request: bindings::monad_sync_request,
     ) -> Result<(), tokio::io::Error> {
-        match message {
-            ExecutionMessage::SyncTarget(target) => {
-                self.stream
-                    .write_u8(bindings::monad_sync_type_SyncTypeTarget)
-                    .await?;
-                let target: [u8; std::mem::size_of::<bindings::monad_sync_target>()] = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(target)
-                };
-                self.stream.write_all(&target).await?;
-            }
-            ExecutionMessage::SyncRequest(request) => {
-                self.stream
-                    .write_u8(bindings::monad_sync_type_SyncTypeRequest)
-                    .await?;
-                let request: [u8; std::mem::size_of::<bindings::monad_sync_request>()] = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(request)
-                };
-                self.stream.write_all(&request).await?;
-            }
-            ExecutionMessage::SyncUpsert(header, key, value) => {
-                self.stream
-                    .write_u8(bindings::monad_sync_type_SyncTypeUpsertHeader)
-                    .await?;
-                let upsert_header: [u8; std::mem::size_of::<bindings::monad_sync_upsert_header>()] = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(header)
-                };
-                self.stream.write_all(&upsert_header).await?;
-                self.stream.write_all(&key).await?;
-                self.stream.write_all(&value).await?;
-            }
-            ExecutionMessage::SyncDone(done) => {
-                self.stream
-                    .write_u8(bindings::monad_sync_type_SyncTypeDone)
-                    .await?;
-                let done: [u8; std::mem::size_of::<bindings::monad_sync_done>()] = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(done)
-                };
-                self.stream.write_all(&done).await?;
-            }
+        self.stream
+            .write_u8(bindings::monad_sync_type_SyncTypeRequest)
+            .await?;
+        let request: [u8; std::mem::size_of::<bindings::monad_sync_request>()] = unsafe {
+            #[allow(clippy::missing_transmute_annotations)]
+            std::mem::transmute(request)
         };
+        self.stream.write_all(&request).await?;
         Ok(())
     }
 

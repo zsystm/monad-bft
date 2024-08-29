@@ -390,11 +390,21 @@ pub struct StateSyncRequest {
     pub until: u64,
     pub old_target: u64,
 }
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum StateSyncUpsertType {
+    Code,
+    Account,
+    Storage,
+    AccountDelete,
+    StorageDelete,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct StateSyncResponse {
     pub request: StateSyncRequest,
     // consensus state must validate that this sender is "trusted"
-    pub response: Vec<(bool, Vec<u8>, Vec<u8>)>,
+    pub response: Vec<(StateSyncUpsertType, Vec<u8>)>,
     pub response_n: u64,
 }
 

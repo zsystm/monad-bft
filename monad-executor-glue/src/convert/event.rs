@@ -6,7 +6,7 @@ use monad_proto::{error::ProtoError, proto::event::*};
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ControlPanelEvent, MempoolEvent,
     MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    ValidatorEvent,
+    StateSyncUpsertType, ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -459,7 +459,7 @@ where
 
 impl From<&StateSyncRequest> for monad_proto::proto::message::ProtoStateSyncRequest {
     fn from(request: &StateSyncRequest) -> Self {
-        monad_proto::proto::message::ProtoStateSyncRequest {
+        Self {
             prefix: request.prefix,
             prefix_bytes: request.prefix_bytes.into(),
             target: request.target,
@@ -470,18 +470,42 @@ impl From<&StateSyncRequest> for monad_proto::proto::message::ProtoStateSyncRequ
     }
 }
 
+impl From<&StateSyncUpsertType> for monad_proto::proto::message::ProtoStateSyncUpsertType {
+    fn from(upsert_type: &StateSyncUpsertType) -> Self {
+        match upsert_type {
+            StateSyncUpsertType::Code => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::Code
+            }
+            StateSyncUpsertType::Account => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::Account
+            }
+            StateSyncUpsertType::Storage => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::Storage
+            }
+            StateSyncUpsertType::AccountDelete => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::AccountDelete
+            }
+            StateSyncUpsertType::StorageDelete => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::StorageDelete
+            }
+        }
+    }
+}
+
 impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncResponse {
     fn from(response: &StateSyncResponse) -> Self {
-        monad_proto::proto::message::ProtoStateSyncResponse {
+        Self {
             request: Some((&response.request).into()),
             upserts: response
                 .response
                 .iter()
                 .map(
-                    |(code, key, value)| monad_proto::proto::message::ProtoStateSyncUpsert {
-                        code: *code,
-                        key: Bytes::copy_from_slice(key),
-                        value: Bytes::copy_from_slice(value),
+                    |(upsert_type, data)| monad_proto::proto::message::ProtoStateSyncUpsert {
+                        r#type: monad_proto::proto::message::ProtoStateSyncUpsertType::from(
+                            upsert_type,
+                        )
+                        .into(),
+                        data: Bytes::copy_from_slice(data),
                     },
                 )
                 .collect(),
@@ -563,6 +587,28 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncRequest> for StateSyncRe
     }
 }
 
+impl From<monad_proto::proto::message::ProtoStateSyncUpsertType> for StateSyncUpsertType {
+    fn from(upsert_type: monad_proto::proto::message::ProtoStateSyncUpsertType) -> Self {
+        match upsert_type {
+            monad_proto::proto::message::ProtoStateSyncUpsertType::Code => {
+                StateSyncUpsertType::Code
+            }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::Account => {
+                StateSyncUpsertType::Account
+            }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::Storage => {
+                StateSyncUpsertType::Storage
+            }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::AccountDelete => {
+                StateSyncUpsertType::AccountDelete
+            }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::StorageDelete => {
+                StateSyncUpsertType::StorageDelete
+            }
+        }
+    }
+}
+
 impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
     for StateSyncNetworkMessage
 {
@@ -589,8 +635,18 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                     response: response
                         .upserts
                         .into_iter()
-                        .map(|upsert| (upsert.code, upsert.key.into(), upsert.value.into()))
-                        .collect(),
+                        .map(|upsert| {
+                            let upsert_type =
+                                monad_proto::proto::message::ProtoStateSyncUpsertType::try_from(
+                                    upsert.r#type,
+                                )
+                                .map_err(|_| {
+                                    ProtoError::DeserializeError("unknown upsert type".to_owned())
+                                })?
+                                .into();
+                            Ok((upsert_type, Vec::from(upsert.data)))
+                        })
+                        .collect::<Result<_, ProtoError>>()?,
                     response_n: response.n,
                 }))
             }
