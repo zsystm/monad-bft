@@ -67,6 +67,30 @@ impl<const N: usize> EpollFd<N> {
         }
     }
 
+    pub fn register_pollout(&self, token: EpollToken, fd: RawFd) -> std::io::Result<()> {
+        let mut ev = libc::epoll_event {
+            events: libc::EPOLLOUT as u32,
+            u64: token.0,
+        };
+
+        let ret = unsafe { libc::epoll_ctl(self.fd, libc::EPOLL_CTL_ADD, fd.0, &mut ev) };
+        if ret == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn unregister(&self, fd: RawFd) -> std::io::Result<()> {
+        let ret =
+            unsafe { libc::epoll_ctl(self.fd, libc::EPOLL_CTL_DEL, fd.0, std::ptr::null_mut()) };
+        if ret == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
     // don't use timeouts here, expect users to register timerfd if timeouts are desired
     pub fn wait(&mut self) -> std::io::Result<Vec<EpollEvent>> {
         let nfds = unsafe {

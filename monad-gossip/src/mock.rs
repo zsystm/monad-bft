@@ -90,7 +90,7 @@ impl<PT: PubKey> Gossip for MockGossip<PT> {
                     }
                 }
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 if to == self.config.me {
                     self.events.push(
                         GossipEvent::Emit(self.config.me, message)

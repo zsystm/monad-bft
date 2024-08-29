@@ -123,7 +123,7 @@ impl<PT: PubKey> Gossip for UnsafeGossipsub<PT> {
                 },
                 message,
             ),
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 if to == self.config.me {
                     self.events.push_back(GossipEvent::Emit(to, message));
                 } else {

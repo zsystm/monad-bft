@@ -3656,6 +3656,7 @@ dependencies = [
  "rtrb",
  "socket2 0.5.7",
  "tracing",
+ "zerocopy 0.6.5",
 ]
 
 [[package]]

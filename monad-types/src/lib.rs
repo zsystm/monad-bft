@@ -375,6 +375,7 @@ pub enum RouterTarget<P: PubKey> {
     Broadcast(Epoch),
     Raptorcast(Epoch), // sharded raptor-aware broadcast
     PointToPoint(NodeId<P>),
+    TcpPointToPoint(NodeId<P>),
 }
 
 // FIXME-4: move to monad-executor-glue after spaghetti fixed

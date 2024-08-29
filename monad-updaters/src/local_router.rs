@@ -125,7 +125,7 @@ where
                             tx.send((now, self.me, message.clone())).unwrap();
                         }
                     }
-                    RouterTarget::PointToPoint(peer) => {
+                    RouterTarget::PointToPoint(peer) | RouterTarget::TcpPointToPoint(peer) => {
                         self.txs
                             .get(&peer)
                             .unwrap()

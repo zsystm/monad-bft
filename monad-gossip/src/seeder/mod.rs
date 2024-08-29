@@ -297,7 +297,7 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
                 // same AppMessage.
                 self.insert_chunker(chunker);
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 if to == self.me {
                     self.events.push_back(GossipEvent::Emit(self.me, message))
                 } else {

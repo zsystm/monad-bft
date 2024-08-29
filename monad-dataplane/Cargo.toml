@@ -20,3 +20,4 @@ rand = { workspace = true }
 rtrb = { workspace = true }
 socket2 = { workspace = true }
 tracing = { workspace = true }
+zerocopy = { workspace = true }

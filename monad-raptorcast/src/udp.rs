@@ -17,7 +17,10 @@ use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
 
-use crate::util::{compute_hash, BuildTarget, EpochValidators};
+use crate::{
+    util::{compute_hash, BuildTarget, EpochValidators},
+    SIGNATURE_SIZE,
+};
 
 pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
 
@@ -35,8 +38,10 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
     pending_message_cache:
         LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, ManagedDecoder>,
-    signature_cache:
-        LruCache<[u8; HEADER_LEN as usize - 65 + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+    signature_cache: LruCache<
+        [u8; HEADER_LEN as usize - SIGNATURE_SIZE + 20],
+        NodeId<CertificateSignaturePubKey<ST>>,
+    >,
     /// Value in this map represents the # of excess chunks received for a successfully decoded msg
     recently_decoded_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, usize>,
 }
@@ -236,7 +241,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 //
 //     data: Bytes,
 // }
-pub const HEADER_LEN: u16 = 65  // Sender signature
+pub const HEADER_LEN: u16 = SIGNATURE_SIZE as u16 // Sender signature
             + 2  // Version
             + 1  // Broadcast bit, 7 bits for Merkle Tree Depth
             + 8  // Epoch #
@@ -323,7 +328,7 @@ where
     match build_target {
         BuildTarget::PointToPoint(to) => {
             let Some(addr) = known_addresses.get(to) else {
-                tracing::warn!("not sending to {:?}, address unknown", to);
+                tracing::warn!(?to, "not sending message, address unknown");
                 return Vec::new();
             };
             outbound_gso_idx.push((*addr, 0..GSO_SIZE as usize * num_packets as usize));
@@ -352,7 +357,7 @@ where
                         start_idx * GSO_SIZE as usize..end_idx * GSO_SIZE as usize,
                     ));
                 } else {
-                    tracing::warn!("not sending to {:?}, address unknown", node_id)
+                    tracing::warn!(?node_id, "not sending message, address unknown")
                 }
                 for chunk_data in &mut chunk_datas[start_idx..end_idx] {
                     // populate chunk_recipient
@@ -383,7 +388,7 @@ where
                         start_idx * GSO_SIZE as usize..end_idx * GSO_SIZE as usize,
                     ));
                 } else {
-                    tracing::warn!("not sending to {:?}, address unknown", node_id)
+                    tracing::warn!(?node_id, "not sending message, address unknown")
                 }
                 for chunk_data in &mut chunk_datas[start_idx..end_idx] {
                     // populate chunk_recipient
@@ -452,7 +457,7 @@ where
             let mut header_with_root = {
                 let mut data = [0_u8; HEADER_LEN as usize + 20];
                 let cursor = &mut data;
-                let (cursor_signature, cursor) = cursor.split_at_mut(65);
+                let (cursor_signature, cursor) = cursor.split_at_mut(SIGNATURE_SIZE);
                 let (cursor_version, cursor) = cursor.split_at_mut(2);
                 cursor_version.copy_from_slice(&version.to_le_bytes());
                 let (cursor_broadcast_merkle_depth, cursor) = cursor.split_at_mut(1);
@@ -479,9 +484,9 @@ where
 
                 data
             };
-            let signature = ST::sign(&header_with_root[65..], key).serialize();
-            assert_eq!(signature.len(), 65);
-            header_with_root[..65].copy_from_slice(&signature);
+            let signature = ST::sign(&header_with_root[SIGNATURE_SIZE..], key).serialize();
+            assert_eq!(signature.len(), SIGNATURE_SIZE);
+            header_with_root[..SIGNATURE_SIZE].copy_from_slice(&signature);
             let header = &header_with_root[..HEADER_LEN as usize];
             for (leaf_idx, chunk) in merkle_batch.into_iter().enumerate() {
                 chunk[..HEADER_LEN as usize].copy_from_slice(header);
