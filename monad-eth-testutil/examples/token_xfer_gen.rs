@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{
     join,
-    time::{Duration, Instant},
+    time::{Duration, Instant, MissedTickBehavior},
 };
 
 const CARRIAGE_COST: usize = 21000 * 1000;
@@ -457,6 +457,7 @@ async fn send_between_rand_pairings(
 async fn generate_uniform_rand_pairings(
     accounts_ready_receiver: Receiver<Vec<Account>>,
     accounts_completed_sender: Sender<Vec<Account>>,
+    num_txns_batches: usize,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) {
     let mut num_ready_batches = 0;
@@ -473,8 +474,6 @@ async fn generate_uniform_rand_pairings(
                 let num_accounts_in_slice = accounts_slice.len();
                 let (slice_1, slice_2) = accounts_slice.split_at_mut(num_accounts_in_slice / 2);
                 let transfer_value = 10;
-                // 1,000,000 txns = 2,000 batches
-                let num_batches = 2000;
                 send_between_rand_pairings(
                     slice_1,
                     slice_2,
@@ -482,7 +481,7 @@ async fn generate_uniform_rand_pairings(
                     uniform_account_selector,
                     uniform_account_selector,
                     txn_batch_sender.clone(),
-                    num_batches,
+                    num_txns_batches,
                 )
                 .await;
 
@@ -573,6 +572,8 @@ async fn rpc_sender(
 
     // interval, not sleep
     let mut interval = tokio::time::interval(rpc_sender_interval);
+    // to ensure TPS doesn't spike if there is a gap between tx gen
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
 
@@ -685,22 +686,22 @@ async fn create_final_accounts_from_root(
 /// 10 batches 1,000,000 accounts would return a vec of 100,000 accounts per batch
 fn split_final_accounts_into_batches(
     mut final_accounts: Vec<Account>,
-    num_batches: usize,
+    num_accounts_per_batch: usize,
 ) -> Vec<Vec<Account>> {
     let num_final_accounts = final_accounts.len();
 
     let mut accounts_batches = Vec::new();
-    let num_accounts_per_slices = num_final_accounts / num_batches;
+    let num_batches = num_final_accounts / num_accounts_per_batch;
     for i in 1..num_batches {
         accounts_batches
-            .push(final_accounts.split_off(num_final_accounts - (i * num_accounts_per_slices)))
+            .push(final_accounts.split_off(num_final_accounts - (i * num_accounts_per_batch)))
     }
     accounts_batches.push(final_accounts);
 
     accounts_batches
 }
 
-async fn start_random_tx_gen_two_slices(
+async fn start_random_tx_gen(
     root_account: Account,
     num_final_accounts: usize,
     client: Client,
@@ -722,14 +723,19 @@ async fn start_random_tx_gen_two_slices(
 
     let (generate_rand_pairings_sender, generate_rand_pairings_receiver) = async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
     let (accounts_completed_sender, accounts_completed_receiver) = async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
+
+    // 2,000,000 txns = 4,000 batches
+    let num_txn_batches_per_accounts_batch = 4_000;
     let tx_gen_rand_pairings_handle = tokio::spawn(generate_uniform_rand_pairings(
         generate_rand_pairings_receiver,
         accounts_completed_sender,
+        num_txn_batches_per_accounts_batch,
         txn_batch_sender.clone(),
     ));
 
-    let num_accounts_batches = 10;
-    let accounts_batches = split_final_accounts_into_batches(final_accounts, num_accounts_batches);
+    let num_accounts_per_batch = 500_000;
+    let accounts_batches = split_final_accounts_into_batches(final_accounts, num_accounts_per_batch);
+    let num_batches = accounts_batches.len();
 
     for accounts in accounts_batches {
         refresh_context_sender
@@ -741,10 +747,8 @@ async fn start_random_tx_gen_two_slices(
             .unwrap();
     }
 
-    let _completed_batches = join_all((0..num_accounts_batches).map(|_| async {
-        let received_batch = accounts_completed_receiver.recv().await;
-        println!("received completed batch");
-        received_batch
+    let _completed_batches = join_all((0..num_batches).map(|_| async {
+        accounts_completed_receiver.recv().await.expect("completed batches channel error")
     }))
     .await;
 
@@ -792,7 +796,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let root_account = Account::new(args.root_private_key);
     let num_final_accounts = args.num_final_accounts as usize;
-    let start_tx_gen_handle = tokio::spawn(start_random_tx_gen_two_slices(
+    let start_tx_gen_handle = tokio::spawn(start_random_tx_gen(
         root_account,
         num_final_accounts,
         client.clone(),
