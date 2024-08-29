@@ -2,6 +2,9 @@ use core::num;
 use std::{
     borrow::BorrowMut,
     error::Error,
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, LineWriter, Read, Write},
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -43,8 +46,18 @@ const NUM_RPC_SENDERS: usize = 16;
 
 // number of batches of transactions allowed in the txn batches channel
 const TX_BATCHES_CHANNEL_BUFFER: usize = 40;
+
 // number of batches of accounts allowed in the pipeline
 const ACCOUNTS_BATCHES_CHANNEL_BUFFER: usize = 40;
+
+// number of accounts to be created per accounts batch
+// each accounts batch is sent into the pipeline
+const NUM_ACCOUNTS_PER_BATCH: usize = 500_000;
+// number of txn batches to generate per accounts batch
+// 4,000 batches = 2,000,000 txns per accounts batch in pipeline
+const NUM_TXN_BATCHES_PER_ACCOUNTS_BATCH: usize = 4_000;
+// e.g. with 10,000,000 final accounts, there will be 20 accounts batches
+// if each batch sends 2,000,000 txns, total txns count is 40,000,000 txns
 
 #[derive(Parser)]
 struct Args {
@@ -57,6 +70,11 @@ struct Args {
         default_value = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
     )]
     root_private_key: String,
+
+    /// if provided, private keys will be extracted from this file and used as final accounts
+    /// private keys
+    #[arg(long)]
+    priv_keys_file: Option<String>,
 
     /// Initial splitting of root account balance occurs in batches. Balance of root account
     /// is split into multiple accounts and balance of newly created accounts are split further.
@@ -323,7 +341,10 @@ async fn accounts_refresher(
                 tokio::time::sleep(EXECUTION_DELAY_WAIT_TIME).await;
 
                 // refresh nonce and balance of every account
-                for accounts in refresh_context.accounts_to_refresh.chunks_mut(TXN_BATCH_SIZE) {
+                for accounts in refresh_context
+                    .accounts_to_refresh
+                    .chunks_mut(TXN_BATCH_SIZE)
+                {
                     batch_refresh_accounts(accounts, client.clone()).await;
                 }
 
@@ -701,15 +722,60 @@ fn split_final_accounts_into_batches(
     accounts_batches
 }
 
+async fn make_final_accounts(
+    root_account: Account,
+    num_final_accounts: usize,
+    priv_keys_file_path: Option<String>,
+    client: Client,
+    txn_batch_sender: Sender<Vec<Bytes>>,
+) -> Vec<Account> {
+    let final_accounts = if let Some(priv_keys_file_path) = priv_keys_file_path {
+        println!("loading private keys from {}", priv_keys_file_path);
+
+        let mut final_accounts = Vec::new();
+
+        let file = File::open(priv_keys_file_path).expect("private keys file should exist");
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let pk = line.expect("each line should be a private key");
+            final_accounts.push(Account::new(pk));
+        }
+
+        final_accounts
+    } else {
+        let final_accounts = create_final_accounts_from_root(
+            root_account,
+            num_final_accounts,
+            client.clone(),
+            txn_batch_sender.clone(),
+        )
+        .await;
+
+        let mut file = BufWriter::new(File::create("priv_keys.txt").expect("no error"));
+        for account in final_accounts.iter() {
+            file.write(account.priv_key.to_string().as_bytes()).unwrap();
+            file.write(b"\n").unwrap();
+        }
+        file.flush().unwrap();
+
+        final_accounts
+    };
+
+    final_accounts
+}
+
 async fn start_random_tx_gen(
     root_account: Account,
     num_final_accounts: usize,
+    priv_keys_file_path: Option<String>,
     client: Client,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) {
-    let final_accounts = create_final_accounts_from_root(
+    let final_accounts = make_final_accounts(
         root_account,
         num_final_accounts,
+        priv_keys_file_path,
         client.clone(),
         txn_batch_sender.clone(),
     )
@@ -717,24 +783,25 @@ async fn start_random_tx_gen(
     let num_final_accounts = final_accounts.len();
     println!("{} final accounts created", num_final_accounts);
 
-    let (refresh_context_sender, refresh_context_receiver) = async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
+    let (refresh_context_sender, refresh_context_receiver) =
+        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
     let accounts_refresher_handle =
         tokio::spawn(accounts_refresher(refresh_context_receiver, client.clone()));
 
-    let (generate_rand_pairings_sender, generate_rand_pairings_receiver) = async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
-    let (accounts_completed_sender, accounts_completed_receiver) = async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
+    let (generate_rand_pairings_sender, generate_rand_pairings_receiver) =
+        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
+    let (accounts_completed_sender, accounts_completed_receiver) =
+        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
 
-    // 2,000,000 txns = 4,000 batches
-    let num_txn_batches_per_accounts_batch = 4_000;
     let tx_gen_rand_pairings_handle = tokio::spawn(generate_uniform_rand_pairings(
         generate_rand_pairings_receiver,
         accounts_completed_sender,
-        num_txn_batches_per_accounts_batch,
+        NUM_TXN_BATCHES_PER_ACCOUNTS_BATCH,
         txn_batch_sender.clone(),
     ));
 
-    let num_accounts_per_batch = 500_000;
-    let accounts_batches = split_final_accounts_into_batches(final_accounts, num_accounts_per_batch);
+    let accounts_batches =
+        split_final_accounts_into_batches(final_accounts, NUM_ACCOUNTS_PER_BATCH);
     let num_batches = accounts_batches.len();
 
     for accounts in accounts_batches {
@@ -748,7 +815,10 @@ async fn start_random_tx_gen(
     }
 
     let _completed_batches = join_all((0..num_batches).map(|_| async {
-        accounts_completed_receiver.recv().await.expect("completed batches channel error")
+        accounts_completed_receiver
+            .recv()
+            .await
+            .expect("completed batches channel error")
     }))
     .await;
 
@@ -775,7 +845,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client = Client::new(args.rpc_url);
 
     let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
-    let expected_tps = (NUM_RPC_SENDERS * TXN_BATCH_SIZE) as f64 / rpc_sender_interval.as_secs_f64();
+    let expected_tps =
+        (NUM_RPC_SENDERS * TXN_BATCH_SIZE) as f64 / rpc_sender_interval.as_secs_f64();
     println!(
         "num rpc senders: {}. batch size: {}. expected TPS ~ {}",
         NUM_RPC_SENDERS, TXN_BATCH_SIZE, expected_tps
@@ -799,6 +870,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let start_tx_gen_handle = tokio::spawn(start_random_tx_gen(
         root_account,
         num_final_accounts,
+        args.priv_keys_file,
         client.clone(),
         txn_batch_sender.clone(),
     ));
