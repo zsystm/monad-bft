@@ -71,16 +71,16 @@ struct Args {
     )]
     root_private_key: String,
 
-    /// if provided, private keys will be extracted from this file and used as final accounts
-    /// private keys
-    #[arg(long)]
-    priv_keys_file: Option<String>,
-
     /// Initial splitting of root account balance occurs in batches. Balance of root account
     /// is split into multiple accounts and balance of newly created accounts are split further.
     /// May create more accounts than num_final_accounts if not exactly divisible by BATCH_SIZE
     #[arg(long, default_value_t = 1_000_000)]
     num_final_accounts: u64,
+
+    /// if provided, private keys will be extracted from this file and used as final accounts
+    /// private keys
+    #[arg(long)]
+    priv_keys_file: Option<String>,
 
     /// interval at which each RPC sender sends a batch of transaction to RPC (in milliseconds)
     #[arg(long, default_value_t = 1000)]
@@ -729,7 +729,7 @@ async fn make_final_accounts(
     client: Client,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) -> Vec<Account> {
-    let final_accounts = if let Some(priv_keys_file_path) = priv_keys_file_path {
+    if let Some(priv_keys_file_path) = priv_keys_file_path {
         println!("loading private keys from {}", priv_keys_file_path);
 
         let mut final_accounts = Vec::new();
@@ -760,9 +760,7 @@ async fn make_final_accounts(
         file.flush().unwrap();
 
         final_accounts
-    };
-
-    final_accounts
+    }
 }
 
 async fn start_random_tx_gen(
