@@ -130,17 +130,6 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
             .field("id", &self.id)
             .field("payload_id", &self.payload_id)
             .field("block_kind", &self.block_kind)
-            /*
-            .field(
-                "txn_payload_len",
-                &match &self.payload.txns {
-                    TransactionPayload::List(txns) => {
-                        format!("{:?}", txns.bytes().len())
-                    }
-                    TransactionPayload::Null => "null".to_owned(),
-                },
-            )
-            */
             .field("seq_num", &self.execution.seq_num)
             .field("execution_state_root", &self.execution.state_root)
             .finish_non_exhaustive()

@@ -152,9 +152,24 @@ impl Hashable for TransactionPayload {
 
 /// Contents of a proposal that are part of the Monad protocol
 /// but not in the core bft consensus protocol
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
     pub txns: TransactionPayload,
+}
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Payload")
+            .field(
+                "txn_payload_len",
+                &match &self.txns {
+                    TransactionPayload::List(txns) => {
+                        format!("{:?}", txns.bytes().len())
+                    }
+                    TransactionPayload::Null => "null".to_owned(),
+                },
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl Payload {
