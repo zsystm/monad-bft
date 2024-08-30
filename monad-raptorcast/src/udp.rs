@@ -85,7 +85,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let parsed_message = match parse_message::<ST>(&mut self.signature_cache, payload) {
                 Ok(message) => message,
                 Err(err) => {
-                    tracing::warn!(?err, "unable to parse message");
+                    tracing::debug!(?err, "unable to parse message");
                     continue;
                 }
             };
@@ -93,7 +93,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             if parsed_message.broadcast {
                 let Some(epoch_validators) = epoch_validators.get_mut(&Epoch(parsed_message.epoch))
                 else {
-                    tracing::error!(
+                    tracing::debug!(
                         epoch =? parsed_message.epoch,
                         "don't have epoch validators populated",
                     );
@@ -103,7 +103,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     .validators
                     .contains_key(&parsed_message.author)
                 {
-                    tracing::error!(
+                    tracing::debug!(
                         author =? parsed_message.author,
                         "not in validator set"
                     );
@@ -120,7 +120,11 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     )
                 }
             } else if self_hash != parsed_message.recipient_hash {
-                tracing::error!("dropping spoofed message");
+                tracing::debug!(
+                    ?self_hash,
+                    recipient_hash =? parsed_message.recipient_hash,
+                    "dropping spoofed message"
+                );
                 continue;
             }
 
@@ -174,7 +178,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
         while self.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.into() {
             let (key, decoder) = self.pending_message_cache.pop_lru().expect("nonempty");
-            tracing::warn!(
+            tracing::debug!(
                 num_source_symbols = decoder.num_source_symbols(),
                 num_encoded_symbols_received = decoder.num_encoded_symbols_received(),
                 inactivation_symbol_threshold = decoder.inactivation_symbol_threshold(),

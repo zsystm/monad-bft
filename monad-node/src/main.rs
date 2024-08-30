@@ -100,12 +100,13 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
             .expect("failed to build otel monad-node")
     });
 
-    let maybe_telemetry = if let Some(provider) = &maybe_provider {
-        use opentelemetry::trace::TracerProvider;
-        let tracer = provider.tracer("opentelemetry");
-        Some(tracing_opentelemetry::layer().with_tracer(tracer))
-    } else {
-        None
+    let maybe_telemetry = match (node_state.record_otel_traces, &maybe_provider) {
+        (true, Some(provider)) => {
+            use opentelemetry::trace::TracerProvider;
+            let tracer = provider.tracer("opentelemetry");
+            Some(tracing_opentelemetry::layer().with_tracer(tracer))
+        }
+        _ => None,
     };
 
     let subscriber = Registry::default()
