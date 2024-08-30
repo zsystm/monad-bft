@@ -18,4 +18,4 @@ WORKDIR /usr/src/monad-bft
 COPY --from=builder /usr/src/monad-bft/token_xfer_gen /usr/local/bin/monad-txn-gen
 
 ENV RUST_LOG=info
-CMD monad-txn-gen
+ENTRYPOINT ["monad-txn-gen"]
