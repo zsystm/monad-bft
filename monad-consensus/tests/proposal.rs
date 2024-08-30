@@ -67,7 +67,11 @@ fn setup_block(
     let qcinfo = QcInfo {
         vote: Vote {
             vote_info: vi,
-            ledger_commit_info: CommitResult::Commit,
+            ledger_commit_info: if qc_parent_round + Round(1) == qc_round {
+                CommitResult::Commit
+            } else {
+                CommitResult::NoCommit
+            },
         },
     };
 

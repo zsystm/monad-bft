@@ -227,7 +227,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     let qcinfo = QcInfo {
         vote: Vote {
             vote_info: vi,
-            ledger_commit_info: CommitResult::NoCommit,
+            ledger_commit_info: CommitResult::Commit,
         },
     };
 
