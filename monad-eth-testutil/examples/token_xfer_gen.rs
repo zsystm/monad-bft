@@ -1,10 +1,8 @@
-use core::num;
 use std::{
     borrow::BorrowMut,
     error::Error,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, LineWriter, Read, Write},
-    path::{Path, PathBuf},
+    io::{BufRead, BufReader, BufWriter, Write},
     str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering},
