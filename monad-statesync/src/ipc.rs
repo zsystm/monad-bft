@@ -193,7 +193,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     ) -> Result<(), tokio::io::Error> {
         if self.inbound_request.is_some() {
             // we already are servicing a pending request, so ignore
-            tracing::debug!("dropping state-sync request, already servicing one");
+            tracing::debug!("dropping statesync request, already servicing one");
             return Ok(());
         }
         self.write_execution_request(bindings::monad_sync_request {

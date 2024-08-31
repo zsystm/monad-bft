@@ -475,7 +475,7 @@ where
     ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
     TimestampUpdateEvent(u64),
-    /// Events to state sync
+    /// Events to statesync
     StateSyncEvent(StateSyncEvent<SCT>),
 }
 

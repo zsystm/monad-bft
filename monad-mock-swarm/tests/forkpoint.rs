@@ -341,7 +341,7 @@ fn forkpoint_restart_f(
 
         // Assert the restarting node is caught up with others ledger
         //
-        // If it's failing because of triggering state sync, and the recovery
+        // If it's failing because of triggering statesync, and the recovery
         // time is close to 100 blocks, it's fine. The exact number of blocks to
         // block sync depends on the leader schedule and when the node fails. So
         // we can be a little lenient on that

@@ -4235,7 +4235,7 @@ mod test {
         );
         let mut blocks = vec![];
 
-        // Sequence number of the block after which state sync should be triggered
+        // Sequence number of the block after which statesync should be triggered
         let state_sync_threshold_block = ctx[0].consensus_config.state_sync_threshold;
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let state_sync_threshold_round = Round(state_sync_threshold_block.0);
@@ -4259,7 +4259,7 @@ mod test {
         let (author, _, verified_message) = cp.destructure();
         let _cmds = n1.handle_proposal_message(author, verified_message);
 
-        // Should trigger state sync (only metric assertion for now)
+        // Should trigger statesync (only metric assertion for now)
         assert_eq!(n1.metrics.consensus_events.trigger_state_sync, 1);
     }
 

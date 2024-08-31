@@ -113,7 +113,7 @@ where
                     let Some(state_sync) = &mut self.state_sync else {
                         tracing::trace!(
                             ?from,
-                            "dropping state sync response, already done sync'ing"
+                            "dropping statesync response, already done sync'ing"
                         );
                         continue;
                     };
@@ -174,7 +174,7 @@ where
                     )));
                 }
                 Poll::Ready(None) => {
-                    // done state-sync
+                    // done statesync
                     let target = state_sync.target();
                     this.state_sync = None;
                     self.metrics[GAUGE_STATESYNC_PROGRESS_ESTIMATE] = target.0;
