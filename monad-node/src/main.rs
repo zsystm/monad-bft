@@ -242,8 +242,9 @@ async fn run(
                 .map(|validator| validator.node_id)
                 .filter(|node_id| node_id != &NodeId::new(node_state.secp256k1_identity.pubkey()))
                 .collect(),
-            3,                      // max num concurrent requests TODO configurable
-            Duration::from_secs(2), // statesync request timeout TODO configurable
+            5,                      // max num concurrent requests TODO configurable
+            Duration::from_secs(5), // statesync request_timeout TODO configurable
+            Duration::from_secs(5), // statesync incoming_request_timeout TODO configurable
             node_state
                 .statesync_ipc_path
                 .to_str()

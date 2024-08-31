@@ -38,6 +38,7 @@ where
     state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     max_parallel_requests: usize,
     request_timeout: Duration,
+    incoming_request_timeout: Duration,
     uds_path: String,
 
     state_sync: Option<ffi::StateSync<CertificateSignaturePubKey<ST>>>,
@@ -60,6 +61,7 @@ where
         state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         max_parallel_requests: usize,
         request_timeout: Duration,
+        incoming_request_timeout: Duration,
         uds_path: String,
     ) -> Self {
         Self {
@@ -68,6 +70,7 @@ where
             state_sync_peers,
             max_parallel_requests,
             request_timeout,
+            incoming_request_timeout,
             uds_path,
 
             state_sync: None,
@@ -133,7 +136,10 @@ where
                 }
                 StateSyncCommand::StartExecution => {
                     assert!(self.execution_ipc.is_none());
-                    self.execution_ipc = Some(StateSyncIpc::new(&self.uds_path));
+                    self.execution_ipc = Some(StateSyncIpc::new(
+                        &self.uds_path,
+                        self.incoming_request_timeout,
+                    ));
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
                     }
