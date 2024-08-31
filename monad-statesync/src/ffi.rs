@@ -42,7 +42,15 @@ pub(crate) struct StateSync<PT: PubKey> {
     /// called
     _request_ctx: Box<Box<dyn FnMut(bindings::monad_sync_request)>>,
 
+    progress: Option<Progress>,
+
     waker: Option<Waker>,
+}
+
+struct Progress {
+    current_progress: u64,
+    total_progress: u64,
+    num_prefixes: u64,
 }
 
 pub(crate) struct Target {
@@ -113,6 +121,8 @@ impl<PT: PubKey> StateSync<PT> {
 
             _request_ctx: request_ctx,
 
+            progress: None,
+
             waker: None,
         }
     }
@@ -171,10 +181,39 @@ impl<PT: PubKey> StateSync<PT> {
                 )
             }
             self.prefix_peers.insert(response.request.prefix, from);
+            self.update_progress(&response.request);
+
             if let Some(waker) = self.waker.take() {
                 waker.wake()
             }
         }
+    }
+
+    fn update_progress(&mut self, done_request: &StateSyncRequest) {
+        let num_prefixes = 2_usize.pow(8).pow(done_request.prefix_bytes.into()) as u64;
+        let total_progress = (done_request.target - done_request.old_target) * num_prefixes;
+        let response_progress = done_request.until - done_request.from;
+        let old_progress = self
+            .progress
+            .as_ref()
+            .map_or(done_request.old_target * num_prefixes, |progress| {
+                progress.current_progress
+            });
+        self.progress = Some(Progress {
+            current_progress: old_progress + response_progress,
+            total_progress,
+            num_prefixes,
+        });
+    }
+
+    /// An estimate of current sync progress in `Target` units
+    pub fn progress_estimate(&self) -> Option<SeqNum> {
+        // current_progress / num_prefixes can be used as a progress target estimate
+        let progress = self.progress.as_ref()?;
+        if progress.num_prefixes == 0 {
+            return None;
+        }
+        Some(SeqNum(progress.current_progress / progress.num_prefixes))
     }
 
     fn has_reached_target(&self) -> bool {

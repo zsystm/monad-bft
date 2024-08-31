@@ -89,7 +89,7 @@ where
                         target: state_root_hash.seq_num.0,
                         from: 0,
                         prefix: 0,
-                        prefix_bytes: 0,
+                        prefix_bytes: 1,
                         until: 0,
                         old_target: 0,
                     };

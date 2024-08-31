@@ -26,6 +26,9 @@ mod ffi;
 mod ipc;
 mod outbound_requests;
 
+const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
+const GAUGE_STATESYNC_LAST_TARGET: &str = "monad.statesync.last_target";
+
 pub struct StateSync<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -101,6 +104,7 @@ where
                             state_root: state_root_info.state_root_hash.0 .0,
                         },
                     ));
+                    self.metrics[GAUGE_STATESYNC_LAST_TARGET] = state_root_info.seq_num.0;
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
                     }
@@ -113,7 +117,10 @@ where
                         );
                         continue;
                     };
-                    state_sync.handle_response(from, response)
+                    state_sync.handle_response(from, response);
+                    if let Some(progress) = state_sync.progress_estimate() {
+                        self.metrics[GAUGE_STATESYNC_PROGRESS_ESTIMATE] = progress.0;
+                    }
                 }
                 StateSyncCommand::Message((from, StateSyncNetworkMessage::Request(request))) => {
                     if let Some(execution_ipc) = &mut self.execution_ipc {
@@ -170,6 +177,7 @@ where
                     // done state-sync
                     let target = state_sync.target();
                     this.state_sync = None;
+                    self.metrics[GAUGE_STATESYNC_PROGRESS_ESTIMATE] = target.0;
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(
                         StateSyncEvent::DoneSync(target),
                     )));
