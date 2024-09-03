@@ -1,8 +1,10 @@
 use crate::{
-    jsonrpc::JsonRpcError, triedb,
     eth_json_types::{
-        deserialize_fixed_data, serialize_result, EthAddress, EthHash, UnformattedData,
+        deserialize_fixed_data, serialize_result, serialize_stripped_unformatted_data, EthAddress,
+        EthHash, UnformattedData,
     },
+    jsonrpc::JsonRpcError,
+    triedb,
 };
 use alloy_primitives::{
     aliases::{B256, U256, U64, U8},
@@ -12,27 +14,26 @@ use alloy_rlp::Decodable;
 use alloy_rlp::RlpDecodable;
 use monad_blockdb::EthTxKey;
 use monad_blockdb_utils::BlockDbEnv;
-use triedb::{TriedbEnv, TriedbResult};
-use reth_rpc_types::Transaction;
+use reth_rpc_types::{trace::geth::StructLog, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{cell::RefCell, rc::Rc};
 use tracing::{debug, trace};
+use triedb::{TriedbEnv, TriedbResult};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CallFrame {
-    #[serde(rename = "type")]
-    pub typ: U8,
-    pub flags: U64,
-    pub from: Address,
-    pub to: Option<Address>,
-    pub value: U256,
-    pub gas: U64,
-    pub gas_used: U64,
-    pub input: Bytes,
-    pub output: Bytes,
-    pub status: U8,
-    pub depth: U64,
+#[derive(Clone, Debug)]
+struct CallFrame {
+    typ: CallKind,
+    flags: U64,
+    from: Address,
+    to: Option<Address>,
+    value: U256,
+    gas: U64,
+    gas_used: U64,
+    input: Bytes,
+    output: Bytes,
+    status: U8,
+    depth: U64,
 }
 
 impl Decodable for CallFrame {
@@ -62,6 +63,17 @@ impl Decodable for CallFrame {
         let status: U8 = U8::decode(rlp_buf)?;
         let depth: U64 = U64::decode(rlp_buf)?;
 
+        let typ = match typ.to::<u8>() {
+            0 if flags == U64::from(1) => CallKind::StaticCall,
+            0 => CallKind::Call,
+            1 => CallKind::DelegateCall,
+            2 => CallKind::CallCode,
+            3 => CallKind::Create,
+            4 => CallKind::Create2,
+            5 => CallKind::SelfDestruct,
+            _ => return Err(alloy_rlp::Error::Custom("Invalid call kind")),
+        };
+
         Ok(Self {
             typ,
             flags,
@@ -78,7 +90,7 @@ impl Decodable for CallFrame {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, RlpDecodable)]
+#[derive(Clone, Debug, Default, RlpDecodable)]
 pub struct CallFrames(Vec<CallFrame>);
 
 #[derive(Deserialize, Debug)]
@@ -138,8 +150,10 @@ struct MonadCallFrame {
 #[serde(rename_all = "camelCase")]
 struct MonadTopLevelFrame {
     failed: bool,
-    gas: U64,
+    gas: u64,
+    #[serde(serialize_with = "serialize_stripped_unformatted_data")]
     return_value: UnformattedData,
+    struct_logs: Vec<StructLog>,
 }
 
 impl From<CallFrame> for MonadCallFrame {
@@ -161,7 +175,7 @@ impl From<CallFrame> for MonadCallFrame {
     }
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "UPPERCASE")]
 enum CallKind {
     Call,
@@ -170,20 +184,7 @@ enum CallKind {
     Create,
     Create2,
     SelfDestruct,
-}
-
-impl From<U8> for CallKind {
-    fn from(kind: U8) -> Self {
-        match kind.to::<u8>() {
-            0 => CallKind::Call,
-            1 => CallKind::DelegateCall,
-            2 => CallKind::CallCode,
-            3 => CallKind::Create,
-            4 => CallKind::Create2,
-            5 => CallKind::SelfDestruct,
-            _ => panic!("Invalid call kind"),
-        }
-    }
+    StaticCall,
 }
 
 #[allow(non_snake_case)]
@@ -217,7 +218,7 @@ pub async fn monad_debugTraceTransaction(
     let block_num = block.block.number;
 
     match triedb_env.get_call_frame(txn_index, block_num).await {
-        TriedbResult::Null => return serialize_result(None::<CallFrame>),
+        TriedbResult::Null => return serialize_result(None::<MonadCallFrame>),
         TriedbResult::CallFrame(rlp_call_frames) => {
             let call_frames = Vec::<Vec<CallFrame>>::decode(&mut rlp_call_frames.as_slice())
                 .map_err(|e| JsonRpcError::custom(format!("Rlp Decode error: {e}")))?
@@ -229,8 +230,9 @@ pub async fn monad_debugTraceTransaction(
                 TracerObject::OnlyTopCall(true) => {
                     let result = call_frames.first().map(|frame| MonadTopLevelFrame {
                         failed: false,
-                        gas: frame.gas.into(),
+                        gas: u64::from_le_bytes(frame.gas_used.to_le_bytes()),
                         return_value: frame.output.clone().into(),
+                        struct_logs: Vec::new(), // TODO: implement struct logs
                     });
                     serialize_result(result)
                 }

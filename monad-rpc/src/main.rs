@@ -36,8 +36,8 @@ use trace::{
     monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
     monad_trace_transaction,
 };
-use tracing::{debug, info};
 use trace_handlers::monad_debugTraceTransaction;
+use tracing::{debug, info};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -76,9 +76,9 @@ mod mempool_tx;
 mod metrics;
 mod receipt;
 mod trace;
+mod trace_handlers;
 mod triedb;
 mod txpool;
-mod trace_handlers;
 mod websocket;
 
 async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
