@@ -214,7 +214,10 @@ async fn rpc_select(
         "debug_traceTransaction" => {
             let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            monad_debugTraceTransaction(reader, triedb_env, params).await
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_debugTraceTransaction(reader, triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_call" => {
             let Some(reader) = &app_state.blockdb_reader else {

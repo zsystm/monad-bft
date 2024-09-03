@@ -1,9 +1,6 @@
 use crate::{
-    eth_json_types::{
-        deserialize_fixed_data, serialize_result, serialize_stripped_unformatted_data, EthAddress,
-        EthHash, UnformattedData,
-    },
-    jsonrpc::JsonRpcError,
+    eth_json_types::{deserialize_fixed_data, EthAddress, EthHash, UnformattedData},
+    jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb,
 };
 use alloy_primitives::{
@@ -14,9 +11,7 @@ use alloy_rlp::Decodable;
 use alloy_rlp::RlpDecodable;
 use monad_blockdb::EthTxKey;
 use monad_blockdb_utils::BlockDbEnv;
-use reth_rpc_types::{trace::geth::StructLog, Transaction};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{cell::RefCell, rc::Rc};
 use tracing::{debug, trace};
 use triedb::{TriedbEnv, TriedbResult};
@@ -93,18 +88,12 @@ impl Decodable for CallFrame {
 #[derive(Clone, Debug, Default, RlpDecodable)]
 pub struct CallFrames(Vec<CallFrame>);
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
-pub enum TracerObject {
-    Tracer(Tracer),
-    OnlyTopCall(bool),
-    Timeout(String),
-}
-
-impl Default for TracerObject {
-    fn default() -> Self {
-        Self::OnlyTopCall(true)
-    }
+pub struct TracerObject {
+    #[serde(default)]
+    tracer: Tracer,
+    only_top_call: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -113,11 +102,11 @@ pub enum Tracer {
     #[serde(rename = "callTracer")]
     CallTracer,
     #[serde(rename = "prestateTracer")]
-    PreStateTracer,
+    PreStateTracer, // TODO: implement prestate tracer
 }
 
 #[derive(Deserialize, Debug)]
-struct MonadDebugTraceTransactionParams {
+pub struct MonadDebugTraceTransactionParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
     #[serde(default)]
@@ -126,7 +115,7 @@ struct MonadDebugTraceTransactionParams {
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct MonadCallFrame {
+pub struct MonadCallFrame {
     #[serde(rename = "type")]
     typ: CallKind,
     from: EthAddress,
@@ -144,16 +133,6 @@ struct MonadCallFrame {
     revert_reason: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     calls: Vec<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>,
-}
-
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct MonadTopLevelFrame {
-    failed: bool,
-    gas: u64,
-    #[serde(serialize_with = "serialize_stripped_unformatted_data")]
-    return_value: UnformattedData,
-    struct_logs: Vec<StructLog>,
 }
 
 impl From<CallFrame> for MonadCallFrame {
@@ -191,23 +170,15 @@ enum CallKind {
 pub async fn monad_debugTraceTransaction(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadDebugTraceTransactionParams,
+) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
 
-    let p: MonadDebugTraceTransactionParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let tx_hash = p.tx_hash.0;
+    let tx_hash = params.tx_hash.0;
     let key = EthTxKey(B256::new(tx_hash));
     let Some(txn_value) = blockdb_env.get_txn(key).await else {
         debug!("transaction not found");
-        return serialize_result(None::<Transaction>);
+        return Ok(None);
     };
     let txn_index = txn_value.transaction_index;
     let block_key = txn_value.block_hash;
@@ -218,34 +189,29 @@ pub async fn monad_debugTraceTransaction(
     let block_num = block.block.number;
 
     match triedb_env.get_call_frame(txn_index, block_num).await {
-        TriedbResult::Null => return serialize_result(None::<MonadCallFrame>),
+        TriedbResult::Null => return Ok(None),
         TriedbResult::CallFrame(rlp_call_frames) => {
-            let call_frames = Vec::<Vec<CallFrame>>::decode(&mut rlp_call_frames.as_slice())
+            let mut call_frames = Vec::<Vec<CallFrame>>::decode(&mut rlp_call_frames.as_slice())
                 .map_err(|e| JsonRpcError::custom(format!("Rlp Decode error: {e}")))?
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
 
-            match p.tracer {
-                TracerObject::OnlyTopCall(true) => {
-                    let result = call_frames.first().map(|frame| MonadTopLevelFrame {
-                        failed: false,
-                        gas: u64::from_le_bytes(frame.gas_used.to_le_bytes()),
-                        return_value: frame.output.clone().into(),
-                        struct_logs: Vec::new(), // TODO: implement struct logs
-                    });
-                    serialize_result(result)
-                }
-                TracerObject::Tracer(tracer) => {
-                    match tracer {
-                        Tracer::CallTracer => serialize_result(build_call_tree(call_frames)),
-                        Tracer::PreStateTracer => {
-                            // TODO: implement prestate tracer
-                            serialize_result(build_call_tree(call_frames))
+            match params.tracer.tracer {
+                Tracer::CallTracer => {
+                    if let Some(true) = params.tracer.only_top_call {
+                        if call_frames.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(MonadCallFrame::from(call_frames.remove(0))))
                         }
+                    } else {
+                        Ok(build_call_tree(call_frames).and_then(|rc| {
+                            Rc::try_unwrap(rc).ok().map(|refcell| refcell.into_inner())
+                        }))
                     }
                 }
-                _ => Err(JsonRpcError::custom("Request not supported".to_string())),
+                _ => Err(JsonRpcError::method_not_supported()),
             }
         }
         _ => return Err(JsonRpcError::custom("Not matched".to_string())),

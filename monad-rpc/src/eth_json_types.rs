@@ -272,22 +272,6 @@ impl Serialize for UnformattedData {
     }
 }
 
-/// Serializes UnformattedData without the 0x prefix
-pub fn serialize_stripped_unformatted_data<S>(
-    value: &UnformattedData,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let value = hex::encode(&value.0);
-    let Some(stripped) = value.strip_prefix("0x") else {
-        return serializer.serialize_str(&value);
-    };
-
-    serializer.serialize_str(stripped)
-}
-
 pub fn deserialize_unformatted_data<'de, D>(deserializer: D) -> Result<UnformattedData, D::Error>
 where
     D: Deserializer<'de>,
