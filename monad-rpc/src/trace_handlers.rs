@@ -1,5 +1,7 @@
 use crate::{
-    eth_json_types::{deserialize_fixed_data, EthAddress, EthHash, UnformattedData},
+    eth_json_types::{
+        deserialize_fixed_data, EthAddress, EthHash, MonadU256, Quantity, UnformattedData,
+    },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb,
 };
@@ -11,6 +13,7 @@ use alloy_rlp::Decodable;
 use alloy_rlp::RlpDecodable;
 use monad_blockdb::EthTxKey;
 use monad_blockdb_utils::BlockDbEnv;
+use monad_rpc_docs::rpc;
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, rc::Rc};
 use tracing::{debug, trace};
@@ -88,7 +91,7 @@ impl Decodable for CallFrame {
 #[derive(Clone, Debug, Default, RlpDecodable)]
 pub struct CallFrames(Vec<CallFrame>);
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TracerObject {
     #[serde(default)]
@@ -96,7 +99,7 @@ pub struct TracerObject {
     only_top_call: Option<bool>,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema)]
 pub enum Tracer {
     #[default]
     #[serde(rename = "callTracer")]
@@ -105,7 +108,7 @@ pub enum Tracer {
     PreStateTracer, // TODO: implement prestate tracer
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceTransactionParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
@@ -113,16 +116,16 @@ pub struct MonadDebugTraceTransactionParams {
     tracer: TracerObject,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadCallFrame {
     #[serde(rename = "type")]
     typ: CallKind,
     from: EthAddress,
     to: Option<EthAddress>,
-    value: U256,
-    gas: U64,
-    gas_used: U64,
+    value: MonadU256,
+    gas: Quantity,
+    gas_used: Quantity,
     input: UnformattedData,
     output: UnformattedData,
     #[serde(skip)]
@@ -141,9 +144,9 @@ impl From<CallFrame> for MonadCallFrame {
             typ: value.typ.into(),
             from: value.from.into(),
             to: value.to.map(Into::into),
-            value: value.value.into(),
-            gas: value.gas.into(),
-            gas_used: value.gas_used.into(),
+            value: MonadU256(value.value),
+            gas: Quantity(u64::from_le_bytes(value.gas.to_le_bytes())),
+            gas_used: Quantity(u64::from_le_bytes(value.gas_used.to_le_bytes())),
             input: value.input.into(),
             output: value.output.into(),
             depth: value.depth.to::<usize>(),
@@ -154,7 +157,7 @@ impl From<CallFrame> for MonadCallFrame {
     }
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, schemars::JsonSchema)]
 #[serde(rename_all = "UPPERCASE")]
 enum CallKind {
     Call,
@@ -166,6 +169,7 @@ enum CallKind {
     StaticCall,
 }
 
+#[rpc(method = "debug_traceTransaction")]
 #[allow(non_snake_case)]
 pub async fn monad_debugTraceTransaction(
     blockdb_env: &BlockDbEnv,
