@@ -1756,6 +1756,7 @@ dependencies = [
  "ciborium",
  "clap 3.2.25",
  "criterion-plot",
+ "futures",
  "itertools 0.10.5",
  "lazy_static",
  "num-traits",
@@ -1767,6 +1768,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "tinytemplate",
+ "tokio",
  "walkdir",
 ]
 
@@ -4285,6 +4287,7 @@ version = "0.1.0"
 dependencies = [
  "bindgen 0.69.4",
  "cmake",
+ "criterion",
  "futures",
  "monad-consensus-types",
  "monad-crypto",
@@ -4292,6 +4295,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-types",
  "rand",
+ "tempfile",
  "tokio",
  "tracing",
 ]

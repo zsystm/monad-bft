@@ -9,7 +9,7 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{StateSyncRequest, StateSyncResponse, StateSyncUpsertType};
 use monad_types::NodeId;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
 };
 
@@ -101,7 +101,7 @@ impl<PT: PubKey> StateSyncIpc<PT> {
 struct StreamState<'a, PT: PubKey> {
     /// drop pending requests older than this
     request_timeout: Duration,
-    stream: UnixStream,
+    stream: BufReader<UnixStream>,
     request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
     response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
 
@@ -133,7 +133,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     ) -> Self {
         Self {
             request_timeout,
-            stream,
+            stream: BufReader::with_capacity(
+                1024 * 1024, // 1 MB
+                stream,
+            ),
             request_tx_reader,
             response_rx_writer,
 
