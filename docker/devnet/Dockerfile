@@ -72,8 +72,9 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=${CARGO_ROOT}/git          \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
-    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin debug-node --example wal2json && \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin monad-keystore --bin debug-node --example wal2json && \
     mv target/release/monad-node node && \
+    mv target/release/monad-keystore keystore && \
     mv target/release/debug-node debug-node && \
     mv target/release/examples/wal2json wal2json && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . && \
@@ -84,6 +85,7 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
 
 RUN apt install -y binutils && strip \
     node \
+    keystore \
     debug-node \
     wal2json \
     *.so \
@@ -95,6 +97,7 @@ WORKDIR /usr/src/monad-bft
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node
+COPY --from=builder /usr/src/monad-bft/keystore /usr/local/bin/keystore
 COPY --from=builder /usr/src/monad-bft/debug-node /usr/local/bin/debug-node
 COPY --from=builder /usr/src/monad-bft/wal2json /usr/local/bin/wal2json
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
