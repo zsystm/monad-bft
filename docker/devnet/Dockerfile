@@ -82,6 +82,13 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` .
 
+RUN apt install -y binutils && strip \
+    node \
+    debug-node \
+    wal2json \
+    *.so \
+    *.so.*
+
 # Runner
 FROM base AS runner
 WORKDIR /usr/src/monad-bft
