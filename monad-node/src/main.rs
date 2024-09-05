@@ -30,8 +30,8 @@ use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_statesync::StateSync;
-use monad_triedb::Handle as TriedbHandle;
 use monad_triedb_cache::StateBackendCache;
+use monad_triedb_utils::TriedbReader;
 use monad_types::{
     Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
@@ -55,6 +55,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
+    reload::Handle,
     EnvFilter, Registry,
 };
 
@@ -85,7 +86,7 @@ fn main() {
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
     if let Err(e) = runtime.block_on(wrapped_run(cmd)) {
-        log::error!("monad consensus node crashed: {:?}", e);
+        tracing::error!("monad consensus node crashed: {:?}", e);
     }
 }
 
@@ -100,16 +101,20 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
             .expect("failed to build otel monad-node")
     });
 
-    let maybe_telemetry = if let Some(provider) = &maybe_provider {
-        use opentelemetry::trace::TracerProvider;
-        let tracer = provider.tracer("opentelemetry");
-        Some(tracing_opentelemetry::layer().with_tracer(tracer))
-    } else {
-        None
+    let maybe_telemetry = match (node_state.record_otel_traces, &maybe_provider) {
+        (true, Some(provider)) => {
+            use opentelemetry::trace::TracerProvider;
+            let tracer = provider.tracer("opentelemetry");
+            Some(tracing_opentelemetry::layer().with_tracer(tracer))
+        }
+        _ => None,
     };
 
+    let (filter, reload_handle) =
+        tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+
     let subscriber = Registry::default()
-        .with(EnvFilter::from_default_env())
+        .with(filter)
         .with(
             FmtLayer::default()
                 .json()
@@ -129,12 +134,13 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
             .expect("failed to build otel monad-coordinator")
     });
 
-    run(maybe_coordinator_provider, node_state).await
+    run(maybe_coordinator_provider, node_state, reload_handle).await
 }
 
 async fn run(
     maybe_coordinator_provider: Option<TracerProvider>,
     node_state: NodeState,
+    reload_handle: Handle<EnvFilter, Registry>,
 ) -> Result<(), ()> {
     let router: BoxUpdater<_, _> = if node_state.forkpoint_config.validator_sets[0]
         .validators
@@ -184,7 +190,7 @@ async fn run(
 
     let validators = node_state.forkpoint_config.validator_sets[0].clone();
 
-    let val_set_update_interval = SeqNum(100_000); // TODO configurable
+    let val_set_update_interval = SeqNum(10_000); // TODO configurable
 
     let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
     let state_sync_bound: usize = 300; // TODO configurable
@@ -228,8 +234,12 @@ async fn run(
             node_state.node_config.ipc_queued_batches_watermark as usize, // queued_batches_watermark
         )
         .expect("uds bind failed"),
-        control_panel: ControlPanelIpcReceiver::new(node_state.control_panel_ipc_path, 1000)
-            .expect("uds bind failed"),
+        control_panel: ControlPanelIpcReceiver::new(
+            node_state.control_panel_ipc_path,
+            reload_handle,
+            1000,
+        )
+        .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
@@ -241,8 +251,9 @@ async fn run(
                 .map(|validator| validator.node_id)
                 .filter(|node_id| node_id != &NodeId::new(node_state.secp256k1_identity.pubkey()))
                 .collect(),
-            3,                      // max num concurrent requests TODO configurable
-            Duration::from_secs(5), // statesync request timeout TODO configurable
+            5,                      // max num concurrent requests TODO configurable
+            Duration::from_secs(5), // statesync request_timeout TODO configurable
+            Duration::from_secs(5), // statesync incoming_request_timeout TODO configurable
             node_state
                 .statesync_ipc_path
                 .to_str()
@@ -286,7 +297,7 @@ async fn run(
             node_state.node_config.chain_id,
         ),
         state_backend: StateBackendCache::new(
-            TriedbHandle::try_new(node_state.triedb_path.as_path())
+            TriedbReader::try_new(node_state.triedb_path.as_path())
                 .expect("triedb should exist in path"),
             SeqNum(node_state.node_config.consensus.execution_delay),
         ),

@@ -15,7 +15,6 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage};
 use monad_types::NodeId;
-use rand::seq::SliceRandom;
 
 use crate::ffi::Target;
 
@@ -27,6 +26,9 @@ mod ffi;
 mod ipc;
 mod outbound_requests;
 
+const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
+const GAUGE_STATESYNC_LAST_TARGET: &str = "monad.statesync.last_target";
+
 pub struct StateSync<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -36,9 +38,10 @@ where
     state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     max_parallel_requests: usize,
     request_timeout: Duration,
+    incoming_request_timeout: Duration,
     uds_path: String,
 
-    state_sync: Option<ffi::StateSync>,
+    state_sync: Option<ffi::StateSync<CertificateSignaturePubKey<ST>>>,
 
     // initialized once StartExecution command is executed
     execution_ipc: Option<StateSyncIpc<CertificateSignaturePubKey<ST>>>,
@@ -58,6 +61,7 @@ where
         state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         max_parallel_requests: usize,
         request_timeout: Duration,
+        incoming_request_timeout: Duration,
         uds_path: String,
     ) -> Self {
         Self {
@@ -66,6 +70,7 @@ where
             state_sync_peers,
             max_parallel_requests,
             request_timeout,
+            incoming_request_timeout,
             uds_path,
 
             state_sync: None,
@@ -94,6 +99,7 @@ where
                     self.state_sync = Some(ffi::StateSync::start(
                         &self.db_paths,
                         &self.genesis_path,
+                        &self.state_sync_peers,
                         self.max_parallel_requests,
                         self.request_timeout,
                         Target {
@@ -101,6 +107,7 @@ where
                             state_root: state_root_info.state_root_hash.0 .0,
                         },
                     ));
+                    self.metrics[GAUGE_STATESYNC_LAST_TARGET] = state_root_info.seq_num.0;
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
                     }
@@ -109,15 +116,14 @@ where
                     let Some(state_sync) = &mut self.state_sync else {
                         tracing::trace!(
                             ?from,
-                            "dropping state sync response, already done sync'ing"
+                            "dropping statesync response, already done sync'ing"
                         );
                         continue;
                     };
-                    if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
-                        tracing::warn!(?from, "dropping state sync response from untrusted peer",);
-                        continue;
+                    state_sync.handle_response(from, response);
+                    if let Some(progress) = state_sync.progress_estimate() {
+                        self.metrics[GAUGE_STATESYNC_PROGRESS_ESTIMATE] = progress.0;
                     }
-                    state_sync.handle_response(response)
                 }
                 StateSyncCommand::Message((from, StateSyncNetworkMessage::Request(request))) => {
                     if let Some(execution_ipc) = &mut self.execution_ipc {
@@ -130,7 +136,10 @@ where
                 }
                 StateSyncCommand::StartExecution => {
                     assert!(self.execution_ipc.is_none());
-                    self.execution_ipc = Some(StateSyncIpc::new(&self.uds_path));
+                    self.execution_ipc = Some(StateSyncIpc::new(
+                        &self.uds_path,
+                        self.incoming_request_timeout,
+                    ));
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
                     }
@@ -161,11 +170,7 @@ where
 
         if let Some(state_sync) = &mut this.state_sync {
             match state_sync.poll_next_unpin(cx) {
-                Poll::Ready(Some(request)) => {
-                    let servicer = *this
-                        .state_sync_peers
-                        .choose(&mut rand::thread_rng())
-                        .expect("unable to send state-sync request, no peers");
+                Poll::Ready(Some((servicer, request))) => {
                     tracing::debug!(?request, ?servicer, "sending request");
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(
                         StateSyncEvent::Outbound(
@@ -175,9 +180,10 @@ where
                     )));
                 }
                 Poll::Ready(None) => {
-                    // done state-sync
+                    // done statesync
                     let target = state_sync.target();
                     this.state_sync = None;
+                    self.metrics[GAUGE_STATESYNC_PROGRESS_ESTIMATE] = target.0;
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(
                         StateSyncEvent::DoneSync(target),
                     )));

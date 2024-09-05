@@ -12,9 +12,10 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, FullBlock},
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
+    payload::Payload,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHashInfo,
@@ -62,7 +63,7 @@ pub enum TimerCommand<E> {
 }
 
 pub enum LedgerCommand<SCT: SignatureCollection> {
-    LedgerCommit(Vec<Block<SCT>>),
+    LedgerCommit(Vec<FullBlock<SCT>>),
     LedgerFetch(BlockId),
 }
 
@@ -129,6 +130,7 @@ pub enum WriteCommand<SCT: SignatureCollection> {
     ))]
     UpdateValidatorSet(UpdateValidatorSet<SCT>),
     ClearMetrics(ClearMetrics),
+    UpdateLogFilter(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -228,7 +230,10 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Timeout,
     /// a block that was previously requested
     /// this is an invariant
-    BlockSync(Block<SCT>),
+    BlockSync {
+        block: Block<SCT>,
+        payload: Payload,
+    },
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
@@ -243,9 +248,11 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("msg", &unverified_message)
                 .finish(),
             ConsensusEvent::Timeout => f.debug_struct("Timeout").finish(),
-            ConsensusEvent::BlockSync(block) => {
-                f.debug_struct("BlockSync").field("block", block).finish()
-            }
+            ConsensusEvent::BlockSync { block, payload } => f
+                .debug_struct("BlockSync")
+                .field("block", block)
+                .field("payload_id", &payload.get_id())
+                .finish(),
         }
     }
 }
@@ -384,11 +391,21 @@ pub struct StateSyncRequest {
     pub until: u64,
     pub old_target: u64,
 }
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum StateSyncUpsertType {
+    Code,
+    Account,
+    Storage,
+    AccountDelete,
+    StorageDelete,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct StateSyncResponse {
     pub request: StateSyncRequest,
     // consensus state must validate that this sender is "trusted"
-    pub response: Vec<(bool, Vec<u8>, Vec<u8>)>,
+    pub response: Vec<(StateSyncUpsertType, Vec<u8>)>,
     pub response_n: u64,
 }
 
@@ -417,7 +434,7 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
     DoneSync(SeqNum),
 
     // Statesync-requested block
-    BlockSync(Block<SCT>),
+    BlockSync(FullBlock<SCT>),
 
     /// Consensus request sync
     RequestSync {
@@ -434,6 +451,7 @@ where
     GetValidatorSet,
     ClearMetricsEvent,
     UpdateValidators((ValidatorSetData<SCT>, Epoch)),
+    UpdateLogFilter(String),
 }
 
 /// MonadEvent are inputs to MonadState
@@ -459,7 +477,7 @@ where
     ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
     TimestampUpdateEvent(u64),
-    /// Events to state sync
+    /// Events to statesync
     StateSyncEvent(StateSyncEvent<SCT>),
 }
 

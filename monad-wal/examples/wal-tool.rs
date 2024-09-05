@@ -100,10 +100,11 @@ impl MainView {
     pub fn new(wal_path: PathBuf, start: usize, end: usize) -> Self {
         let logger_config: WALoggerConfig<WrappedEvent> = WALoggerConfig::new(wal_path, true);
 
-        let wal_events = match logger_config.load_read_only(start, end) {
-            Ok(a) => a,
-            Err(e) => panic!("open failed {e}"),
-        };
+        let wal_events = logger_config
+            .events()
+            .skip(start)
+            .take(end.checked_sub(start).expect("end < start"))
+            .collect_vec();
 
         let rc_wal_events = Rc::new(wal_events);
         let count_widget = EventCountsWidget::new(rc_wal_events.clone());
@@ -499,10 +500,11 @@ impl StatExtractor {
     fn new(wal_path: PathBuf, start: usize, end: usize) -> Self {
         let logger_config: WALoggerConfig<WrappedEvent> = WALoggerConfig::new(wal_path, true);
 
-        let wal_events = match logger_config.load_read_only(start, end) {
-            Ok(a) => a,
-            Err(e) => panic!("open failed {e}"),
-        };
+        let wal_events = logger_config
+            .events()
+            .skip(start)
+            .take(end.checked_sub(start).expect("end < start"))
+            .collect_vec();
         Self { events: wal_events }
     }
 

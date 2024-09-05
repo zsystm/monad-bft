@@ -38,8 +38,9 @@ impl OutboundRequests {
             .or(self.in_flight_requests.keys().next())
             .is_some_and(|old_request| old_request.target != request.target)
         {
-            self.pending_requests.clear();
-            self.in_flight_requests.clear();
+            panic!("changing targets mid-sync not supported right now (would be racey)")
+            // self.pending_requests.clear();
+            // self.in_flight_requests.clear();
         }
         let _batch_size = 256_usize.pow(request.prefix_bytes.into());
         self.pending_requests.insert(request);

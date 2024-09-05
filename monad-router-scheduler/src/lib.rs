@@ -163,14 +163,14 @@ where
                 .unwrap_or(Duration::ZERO)
         );
         match to {
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                 self.events.extend(
                     self.all_peers
                         .iter()
                         .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
                 );
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
         }
@@ -274,14 +274,14 @@ where
         );
         let message = message.serialize();
         match to {
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                 self.events.extend(
                     self.all_peers
                         .iter()
                         .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
                 );
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
         }

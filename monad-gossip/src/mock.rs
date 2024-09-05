@@ -75,7 +75,7 @@ impl<PT: PubKey> Gossip for MockGossip<PT> {
     fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         self.current_tick = time;
         match to {
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                 for to in &self.config.all_peers {
                     if to == &self.config.me {
                         self.events.push(
@@ -90,7 +90,7 @@ impl<PT: PubKey> Gossip for MockGossip<PT> {
                     }
                 }
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 if to == self.config.me {
                     self.events.push(
                         GossipEvent::Emit(self.config.me, message)

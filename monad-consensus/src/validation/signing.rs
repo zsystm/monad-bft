@@ -686,13 +686,14 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::Block,
+        block::{Block, BlockKind},
         ledger::CommitResult,
         payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        state_root_hash::StateRootHash,
         timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
         validation::Error,
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -1142,22 +1143,27 @@ mod test {
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
+        let payload = Payload {
+            txns: TransactionPayload::List(FullTransactionList::empty()),
+        };
         let block = Block::<SignatureCollectionType>::new(
             NodeId::new(author.pubkey()),
             0,
             Epoch(2), // wrong epoch: should be 1
             Round(1),
-            &Payload {
-                txns: TransactionPayload::List(FullTransactionList::empty()),
-                header: ExecutionArtifacts::zero(),
+            &ExecutionProtocol {
+                state_root: StateRootHash::default(),
                 seq_num: GENESIS_SEQ_NUM + SeqNum(1),
                 beneficiary: EthAddress::from_bytes([0x00_u8; 20]),
                 randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),
             },
+            payload.get_id(),
+            BlockKind::Executable,
             &QuorumCertificate::genesis_qc(),
         );
         let proposal = ProposalMessage {
             block,
+            payload,
             last_round_tc: None,
         };
 

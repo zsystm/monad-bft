@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
-    hasher::{Hash, Hashable, Hasher},
+    hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_types::{DontCare, EnumDiscriminant, Round, SeqNum};
+use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
 use crate::state_root_hash::StateRootHash;
@@ -43,37 +44,31 @@ impl AsRef<[u8]> for Gas {
 /// A subset of Ethereum block header fields that are included in consensus
 /// proposals. The values are populated from the results of executing the
 /// previous block
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExecutionArtifacts {
-    pub parent_hash: StateRootHash,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionProtocol {
     pub state_root: StateRootHash,
-    pub transactions_root: Hash,
-    pub receipts_root: Hash,
-    pub logs_bloom: Bloom,
-    pub gas_used: Gas,
+    pub seq_num: SeqNum,
+    pub beneficiary: EthAddress,
+    pub randao_reveal: RandaoReveal,
 }
 
-impl ExecutionArtifacts {
-    pub fn zero() -> Self {
-        ExecutionArtifacts {
-            parent_hash: Default::default(),
+impl DontCare for ExecutionProtocol {
+    fn dont_care() -> Self {
+        ExecutionProtocol {
             state_root: Default::default(),
-            transactions_root: Default::default(),
-            receipts_root: Default::default(),
-            logs_bloom: Bloom::zero(),
-            gas_used: Gas(0),
+            seq_num: SeqNum(1),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         }
     }
 }
 
-impl Hashable for ExecutionArtifacts {
+impl Hashable for ExecutionProtocol {
     fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.parent_hash);
         state.update(self.state_root);
-        state.update(self.transactions_root);
-        state.update(self.receipts_root);
-        state.update(self.logs_bloom);
-        state.update(self.gas_used);
+        state.update(self.seq_num);
+        state.update(self.beneficiary);
+        state.update(&self.randao_reveal);
     }
 }
 
@@ -110,7 +105,7 @@ impl AsRef<[u8]> for FullTransactionList {
 }
 
 /// randao_reveal uses a proposer's public key to contribute randomness
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RandaoReveal(pub Vec<u8>);
 
 impl RandaoReveal {
@@ -138,7 +133,7 @@ impl AsRef<[u8]> for RandaoReveal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionPayload {
     List(FullTransactionList),
-    Empty,
+    Null,
 }
 
 impl Hashable for TransactionPayload {
@@ -148,7 +143,7 @@ impl Hashable for TransactionPayload {
                 EnumDiscriminant(1).hash(state);
                 state.update(txns);
             }
-            TransactionPayload::Empty => {
+            TransactionPayload::Null => {
                 EnumDiscriminant(2).hash(state);
             }
         }
@@ -160,19 +155,33 @@ impl Hashable for TransactionPayload {
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
     pub txns: TransactionPayload,
-    pub header: ExecutionArtifacts,
-    pub seq_num: SeqNum,
-    pub beneficiary: EthAddress,
-    pub randao_reveal: RandaoReveal,
+}
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Payload")
+            .field(
+                "txn_payload_len",
+                &match &self.txns {
+                    TransactionPayload::List(txns) => {
+                        format!("{:?}", txns.bytes().len())
+                    }
+                    TransactionPayload::Null => "null".to_owned(),
+                },
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl Payload {
+    pub fn get_id(&self) -> PayloadId {
+        let hash = HasherType::hash_object(self);
+        PayloadId(hash)
+    }
 }
 
 impl Hashable for Payload {
     fn hash(&self, state: &mut impl Hasher) {
         self.txns.hash(state);
-        self.header.hash(state);
-        state.update(self.seq_num);
-        state.update(self.beneficiary);
-        state.update(&self.randao_reveal);
     }
 }
 
@@ -180,11 +189,21 @@ impl DontCare for Payload {
     fn dont_care() -> Self {
         Self {
             txns: TransactionPayload::List(FullTransactionList::empty()),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
         }
+    }
+}
+
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PayloadId(pub Hash);
+
+impl std::fmt::Debug for PayloadId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:>02x}{:>02x}..{:>02x}{:>02x}",
+            self.0[0], self.0[1], self.0[30], self.0[31]
+        )
     }
 }
 
@@ -372,7 +391,9 @@ impl StateRootValidator for MissingNextStateRoot {
     }
 
     fn get_delay(&self) -> SeqNum {
-        SeqNum(4)
+        // Note: Zero delay means that this node never requests state root
+        // updates
+        SeqNum(0)
     }
 }
 

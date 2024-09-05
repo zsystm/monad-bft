@@ -926,7 +926,7 @@ where
                 }
                 StateSyncEvent::Outbound(to, message) => {
                     vec![Command::RouterCommand(RouterCommand::Publish {
-                        target: RouterTarget::PointToPoint(to),
+                        target: RouterTarget::TcpPointToPoint(to),
                         message: VerifiedMonadMessage::StateSyncMessage(message),
                     })]
                 }
@@ -999,7 +999,7 @@ where
 
                     self.maybe_start_consensus()
                 }
-                StateSyncEvent::BlockSync(block) => {
+                StateSyncEvent::BlockSync(full_block) => {
                     let ConsensusMode::Sync {
                         root,
                         root_parent_chain,
@@ -1014,19 +1014,19 @@ where
                         .last()
                         .map(|block| block.get_parent_id())
                         .unwrap_or(root.block_id)
-                        == block.get_id()
+                        == full_block.get_id()
                     {
                         // FIXME forkpoint validator doesn't assert that these epochs exist
                         let author_pubkey = self
                             .val_epoch_map
-                            .get_cert_pubkeys(&block.get_epoch())
+                            .get_cert_pubkeys(&full_block.get_epoch())
                             .expect("statesync sync'd block epoch should exist in mapping")
                             .map
-                            .get(&block.author)
+                            .get(&full_block.get_author())
                             .expect("committed block author should exist in epoch mapping");
                         let block = self
                             .block_validator
-                            .validate(block, author_pubkey)
+                            .validate(full_block.block, full_block.payload, author_pubkey)
                             .expect("majority committed invalid block");
                         let block_seq_num = block.get_seq_num();
                         let block_is_empty = block.is_empty_block();
@@ -1034,7 +1034,7 @@ where
                         root_parent_chain.push(block);
                         let delay = self.state_root_validator.get_delay();
                         if block_parent_id != GENESIS_BLOCK_ID
-                            && (block_is_empty ||// if block is empty, keep requesting until we hit non-empty
+                            && (block_is_empty || // if block is empty, keep requesting until we hit non-empty
                             block_seq_num
                                 > root_seq_num.max(delay + NUM_BLOCK_HASH) - delay - NUM_BLOCK_HASH)
                         {
@@ -1096,6 +1096,11 @@ where
                     vec![Command::StateRootHashCommand(
                         StateRootHashCommand::UpdateValidators((validators, epoch)),
                     )]
+                }
+                ControlPanelEvent::UpdateLogFilter(filter) => {
+                    vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
+                        WriteCommand::UpdateLogFilter(filter),
+                    ))]
                 }
             },
             MonadEvent::TimestampUpdateEvent(t) => {
@@ -1169,7 +1174,7 @@ where
         commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
             blocks_to_commit
                 .into_iter()
-                .map(|block| block.get_unvalidated_block())
+                .map(|block| block.get_full_block())
                 .collect(),
         )));
 
