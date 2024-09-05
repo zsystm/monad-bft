@@ -109,8 +109,8 @@ impl InMemoryStateInner {
         }))
     }
 
-    // new_account_states is the changeset of account states from a given block.
-    // if account A's last tx nonce in a block is N, then account A in new_account_states
+    // new_account_nonces is the changeset of account nonces from a given block.
+    // if account A's last tx nonce in a block is N, then account A in new_account_nonces
     // should include nonce=N+1 this is because N+1 is the next valid nonce for A
     pub fn ledger_commit(
         &mut self,
