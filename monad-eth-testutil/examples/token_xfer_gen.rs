@@ -27,7 +27,13 @@ use tokio::{
     time::{Duration, Instant, MissedTickBehavior},
 };
 
-const CARRIAGE_COST: usize = 21000 * 1000;
+// max reserve balance is hardcoded in execution to be 10^17 right now
+const MAX_RESERVE_BALANCE_PER_ACCOUNT: usize = 100_000_000_000_000_000;
+
+const TXN_CARRIAGE_COST: usize = 21000 * 1000;
+const TXN_INTRINSIC_GAS_FEE: usize = 32000 * 1000;
+const TXN_GAS_FEES: usize = TXN_CARRIAGE_COST + TXN_INTRINSIC_GAS_FEE;
+
 // This is the expected wait time after sending transactions before
 // trying to refresh nonce and balance so that it is up to date
 // NOTE: This is completely arbitrary, the time may vary depending on
@@ -408,7 +414,7 @@ async fn send_one_to_many(
     let starting_balance = src_account.balance;
     let num_receiver_accounts = dst_accounts.len().min(TXN_BATCH_SIZE);
 
-    match value.checked_mul(CARRIAGE_COST as u128) {
+    match value.checked_add(TXN_GAS_FEES as u128) {
         Some(v) => {
             let total_amount = v.checked_mul(num_receiver_accounts as u128).unwrap();
             if total_amount > starting_balance {
@@ -633,15 +639,20 @@ async fn split_account_balance(
         return Vec::new();
     }
 
-    let num_splits = num_new_accounts + 10; // leave some tokens in the root account
+    let num_splits = (num_new_accounts + 1) as u128; // leave some tokens in the root account
     let transfer_amount = account_to_split
         .balance
-        .wrapping_sub(u128::try_from(CARRIAGE_COST * num_splits).unwrap())
-        .wrapping_div(u128::try_from(num_splits).unwrap());
+        .saturating_sub(MAX_RESERVE_BALANCE_PER_ACCOUNT as u128)
+        .saturating_sub(TXN_GAS_FEES as u128 * num_splits);
+    if transfer_amount < num_splits {
+        println!("account {} doesn't have enough execution balance for splitting. balance: {}", account_to_split.address, transfer_amount);
+        return Vec::new();
+    }
+    let transfer_per_account = transfer_amount.saturating_div(num_splits);
 
     let mut new_accounts = create_rand_accounts(num_new_accounts);
     for dst_accounts in new_accounts.chunks_mut(TXN_BATCH_SIZE) {
-        let txns_batch = create_transfer_txns(&mut account_to_split, dst_accounts, transfer_amount);
+        let txns_batch = create_transfer_txns(&mut account_to_split, dst_accounts, transfer_per_account);
         let _ = txn_sender.send(txns_batch).await.unwrap();
     }
 

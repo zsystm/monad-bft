@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bullseye-slim
 WORKDIR /usr/src/monad-bft
 
-COPY --from=builder /usr/src/monad-bft/token_xfer_gen /usr/local/bin/monad-txn-gen
+COPY --from=builder /usr/src/monad-bft/token_xfer_gen /usr/local/bin/token_xfer_gen
 
 ENV RUST_LOG=info
-ENTRYPOINT ["monad-txn-gen"]
+CMD ["token_xfer_gen"]
