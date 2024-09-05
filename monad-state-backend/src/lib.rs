@@ -131,7 +131,8 @@ impl InMemoryStateInner {
                     entry.get().account_states.clone()
                 });
             for (address, account_nonce) in new_account_nonces {
-                last_account_states.insert(address, EthAccount::new(account_nonce, Balance::MAX, None));
+                last_account_states
+                    .insert(address, EthAccount::new(account_nonce, Balance::MAX, None));
             }
             let last_state = InMemoryBlockState {
                 block: seq_num,
