@@ -49,10 +49,11 @@ const TXN_BATCH_SIZE: usize = 500;
 const NUM_RPC_SENDERS: usize = 16;
 
 // number of batches of transactions allowed in the txn batches channel
-const TX_BATCHES_CHANNEL_BUFFER: usize = 40;
+const TX_BATCHES_CHANNEL_BUFFER: usize = 50;
 
 // number of batches of accounts allowed in the pipeline
-const ACCOUNTS_BATCHES_CHANNEL_BUFFER: usize = 40;
+// 600 batches of 500,000 accounts = 300,000,000 accounts
+const ACCOUNTS_BATCHES_CHANNEL_BUFFER: usize = 600;
 
 // number of accounts to be created per accounts batch
 // each accounts batch is sent into the pipeline
@@ -882,19 +883,25 @@ async fn start_random_tx_gen_unbounded(
         split_final_accounts_into_batches(final_accounts, NUM_ACCOUNTS_PER_BATCH);
 
     // start the pipeline
-    for accounts in accounts_batches {
-        refresh_context_sender
-            .send(AccountsRefreshContext {
-                accounts_to_refresh: accounts,
-                ready_sender: generate_rand_pairings_sender.clone(),
-            })
-            .await
-            .unwrap();
-    }
+    let new_refresh_context_sender = refresh_context_sender.clone();
+    let new_generate_rand_pairings_sender = generate_rand_pairings_sender.clone();
+    tokio::spawn(async move {
+        for accounts in accounts_batches {
+            new_refresh_context_sender
+                .send(AccountsRefreshContext {
+                    accounts_to_refresh: accounts,
+                    ready_sender: new_generate_rand_pairings_sender.clone(),
+                })
+                .await
+                .unwrap();
+        }
+    });
 
+    println!("unbounded tx gen: starting loop");
     // receive a completed batch and reinsert it into the pipeline.
     loop {
         let completed_batch = accounts_completed_receiver.recv().await.expect("completed batch channel must not close");
+        println!("unbounded tx gen: received completed batch");
         refresh_context_sender
             .send(AccountsRefreshContext {
                 accounts_to_refresh: completed_batch,
@@ -902,6 +909,7 @@ async fn start_random_tx_gen_unbounded(
             })
             .await
             .unwrap();
+        println!("unbounded tx gen: re-sent completed batch");
     }
 }
 
