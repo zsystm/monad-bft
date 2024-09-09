@@ -24,13 +24,14 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{
     join,
-    time::{Duration, Instant, MissedTickBehavior},
+    time::{sleep, Duration, Instant, MissedTickBehavior},
 };
 
 // max reserve balance is hardcoded in execution to be 10^17 right now
 const MAX_RESERVE_BALANCE_PER_ACCOUNT: usize = 100_000_000_000_000_000;
 
 const TXN_CARRIAGE_COST: usize = 21000 * 1000;
+// for transfer transactions only
 const TXN_INTRINSIC_GAS_FEE: usize = 32000 * 1000;
 const TXN_GAS_FEES: usize = TXN_CARRIAGE_COST + TXN_INTRINSIC_GAS_FEE;
 
@@ -153,8 +154,6 @@ struct Account {
     // NOTE: If user updates this local view of balance after sending a transaction from this
     // account, make sure to periodically refresh to ensure exact gas fees are accounted for.
     balance: u128,
-
-    num_txns_sent: u64,
 }
 
 impl Account {
@@ -178,7 +177,6 @@ impl Account {
             address,
             nonce: 0,
             balance: 0,
-            num_txns_sent: 0,
         }
     }
 
@@ -205,7 +203,6 @@ impl Account {
         let raw_tx = signed_transaction.envelope_encoded();
 
         self.nonce += 1;
-        self.num_txns_sent += 1;
         // TODO: Also update the expected balance of the receiver account
 
         raw_tx
@@ -262,9 +259,43 @@ impl Account {
     }
 }
 
+// ------------------- Helper functions -------------------
+
+fn private_key_to_addr(mut pk: B256) -> Address {
+    let kp = KeyPair::from_bytes(pk.as_mut_slice()).unwrap();
+    let pubkey_bytes = kp.pubkey().bytes();
+    assert!(pubkey_bytes.len() == 65);
+    let hash = keccak256(&pubkey_bytes[1..]);
+    Address::from_slice(&hash[12..])
+}
+
+/// create a list of random accounts
+fn create_rand_accounts(num_accounts: usize) -> Vec<Account> {
+    (0..num_accounts)
+        .into_iter()
+        .map(|_| Account::new_random())
+        .collect()
+}
+
+fn create_transfer_txns(
+    root_account: &mut Account,
+    dst_accounts: &mut [Account],
+    transfer_amount: u128,
+) -> Vec<Bytes> {
+    let raw_txns = dst_accounts
+        .into_iter()
+        .map(|dst| root_account.create_raw_xfer_transaction(dst.address, transfer_amount))
+        .collect::<Vec<_>>();
+
+    raw_txns
+}
+
+// ------------------- Refresher functions -------------------
+
 async fn batch_refresh_accounts(accounts: &mut [Account], client: Client) {
     assert!(accounts.len() == TXN_BATCH_SIZE);
 
+    // TODO: implement eth_getAccount in RPC and make this a sinlge call ?
     // create BATCH_SIZE requests for nonce updates
     let json_values = accounts
         .iter()
@@ -298,21 +329,38 @@ async fn batch_refresh_accounts(accounts: &mut [Account], client: Client) {
     let balances_res_future = client.rpc(batch_req);
     let (nonces_res, balances_res) = join!(nonces_res_future, balances_res_future);
 
-    let nonces_res = nonces_res
-        .expect("rpc not responding")
-        .json::<Vec<JsonResponse>>()
-        .await
-        .expect("json deser of response must not fail");
-    let balances_res = balances_res
-        .expect("rpc not responding")
-        .json::<Vec<JsonResponse>>()
-        .await
-        .expect("json deser of response must not fail");
+    let latest_nonces = match nonces_res {
+        Ok(nonces_res) => match nonces_res.json::<Vec<JsonResponse>>().await {
+            Ok(latest_nonces) => latest_nonces,
+            Err(err) => {
+                println!("nonces refresh response, json deser error: {}", err);
+                return;
+            }
+        },
+        Err(err) => {
+            println!("rpc not responding for nonces refresh: {}", err);
+            return;
+        }
+    };
 
-    for single_res in nonces_res {
+    let latest_balances = match balances_res {
+        Ok(balances_res) => match balances_res.json::<Vec<JsonResponse>>().await {
+            Ok(latest_balances) => latest_balances,
+            Err(err) => {
+                println!("balances refresh response, json deser error: {}", err);
+                return;
+            }
+        },
+        Err(err) => {
+            println!("rpc not responding for balances refresh: {}", err);
+            return;
+        }
+    };
+
+    for single_res in latest_nonces {
         accounts[single_res.id].nonce = single_res.get_result_u128() as u64;
     }
-    for single_res in balances_res {
+    for single_res in latest_balances {
         accounts[single_res.id].balance = single_res.get_result_u128();
     }
 }
@@ -322,6 +370,8 @@ pub struct AccountsRefreshContext {
     ready_sender: Sender<Vec<Account>>,
 }
 
+/// Waits for a AccountsRefreshContext, updates the accounts' nonces and balances,
+/// and sends the refreshed accounts through the channel in the AccountsRefreshContext
 async fn accounts_refresher(
     refresh_context_receiver: Receiver<AccountsRefreshContext>,
     client: Client,
@@ -375,37 +425,17 @@ async fn accounts_refresher(
     println!("stopped account refresher");
 }
 
-fn private_key_to_addr(mut pk: B256) -> Address {
-    let kp = KeyPair::from_bytes(pk.as_mut_slice()).unwrap();
-    let pubkey_bytes = kp.pubkey().bytes();
-    assert!(pubkey_bytes.len() == 65);
-    let hash = keccak256(&pubkey_bytes[1..]);
-    Address::from_slice(&hash[12..])
+// ------------------- Account selector functions -------------------
+
+fn uniform_account_selector(accounts: &mut [Account]) -> &mut Account {
+    let acc_index = rand::random::<usize>() % accounts.len();
+    accounts[acc_index].borrow_mut()
 }
 
-/// create a list of random accounts
-fn create_rand_accounts(num_accounts: usize) -> Vec<Account> {
-    (0..num_accounts)
-        .into_iter()
-        .map(|_| Account::new_random())
-        .collect()
-}
+// ------------------- Transaction generator functions -------------------
 
-fn create_transfer_txns(
-    root_account: &mut Account,
-    dst_accounts: &mut [Account],
-    transfer_amount: u128,
-) -> Vec<Bytes> {
-    let raw_txns = dst_accounts
-        .into_iter()
-        .map(|dst| root_account.create_raw_xfer_transaction(dst.address, transfer_amount))
-        .collect::<Vec<_>>();
-
-    raw_txns
-}
-
-// src account will transfer tokens to dst_accounts.
-// number of dst_accounts capped at BATCH_SIZE
+/// src account will transfer tokens to dst_accounts.
+/// number of dst_accounts capped at BATCH_SIZE
 async fn send_one_to_many(
     src_account: &mut Account,
     dst_accounts: &mut [Account],
@@ -438,8 +468,8 @@ async fn send_one_to_many(
     // TODO should we check how many txns actually went through?
 }
 
-// each src account will to all dst accounts
-// number of dst_accounts capped at BATCH_SIZE
+/// each src account will to all dst accounts
+/// number of dst_accounts capped at BATCH_SIZE
 async fn send_many_to_many(
     src_accounts: &mut [Account],
     dst_accounts: &mut [Account],
@@ -451,13 +481,8 @@ async fn send_many_to_many(
     }
 }
 
-fn uniform_account_selector(accounts: &mut [Account]) -> &mut Account {
-    let acc_index = rand::random::<usize>() % accounts.len();
-    accounts[acc_index].borrow_mut()
-}
-
-// creates batches of transactions that send between pairs of accounts
-// pairs are chosen according to the passed in selection functions
+/// creates batches of transactions that send between pairs of accounts
+/// pairs are chosen according to the passed in selection functions
 async fn send_between_rand_pairings(
     src_accounts: &mut [Account],
     dst_accounts: &mut [Account],
@@ -480,6 +505,9 @@ async fn send_between_rand_pairings(
     }
 }
 
+/// Waits for a batch of refreshed accounts, generates num_txns_batches batches of 
+/// transactions from those accounts with uniform account selector.
+/// Sends the accounts through the completed channel after the transaction generation
 async fn generate_uniform_rand_pairings(
     accounts_ready_receiver: Receiver<Vec<Account>>,
     accounts_completed_sender: Sender<Vec<Account>>,
@@ -525,6 +553,8 @@ async fn generate_uniform_rand_pairings(
         }
     }
 }
+
+// ------------------- RPC functions -------------------
 
 async fn send_raw_txn(raw_txn: Bytes, client: Client) -> usize {
     let req = json!(
@@ -577,12 +607,19 @@ async fn send_batch_raw_txns(raw_txns: Vec<Bytes>, client: Client) -> Vec<usize>
             return Vec::new();
         }
     };
-    res.json::<Vec<JsonResponse>>()
-        .await
-        .expect("json deser of response must not fail")
-        .iter()
-        .filter_map(|resp| resp.result.as_ref().map(|_| resp.id))
-        .collect()
+
+    let res_ids = match res.json::<Vec<JsonResponse>>().await {
+        Ok(res_ids) => res_ids
+            .iter()
+            .filter_map(|resp| resp.result.as_ref().map(|_| resp.id))
+            .collect(),
+        Err(err) => {
+            println!("balances refresh response, json deser error: {}", err);
+            Vec::new()
+        }
+    };
+
+    res_ids
 }
 
 // single RPC sender worker.
@@ -618,6 +655,8 @@ async fn rpc_sender(
     }
 }
 
+// ------------------- Final accounts functions -------------------
+
 async fn split_account_balance(
     mut account_to_split: Account,
     num_new_accounts: usize,
@@ -646,14 +685,18 @@ async fn split_account_balance(
         .saturating_sub(MAX_RESERVE_BALANCE_PER_ACCOUNT as u128)
         .saturating_sub(TXN_GAS_FEES as u128 * num_splits);
     if transfer_amount < num_splits {
-        println!("account {} doesn't have enough execution balance for splitting. balance: {}", account_to_split.address, transfer_amount);
+        println!(
+            "account {} doesn't have enough execution balance for splitting. balance: {}",
+            account_to_split.address, transfer_amount
+        );
         return Vec::new();
     }
     let transfer_per_account = transfer_amount.saturating_div(num_splits);
 
     let mut new_accounts = create_rand_accounts(num_new_accounts);
     for dst_accounts in new_accounts.chunks_mut(TXN_BATCH_SIZE) {
-        let txns_batch = create_transfer_txns(&mut account_to_split, dst_accounts, transfer_per_account);
+        let txns_batch =
+            create_transfer_txns(&mut account_to_split, dst_accounts, transfer_per_account);
         let _ = txn_sender.send(txns_batch).await.unwrap();
     }
 
@@ -666,8 +709,6 @@ async fn create_final_accounts_from_root(
     client: Client,
     txn_sender: Sender<Vec<Bytes>>,
 ) -> Vec<Account> {
-    let mut execution_delay_interval = tokio::time::interval(EXECUTION_DELAY_WAIT_TIME);
-
     // Calculates the number of splits based on BATCH_SIZE.
     // e.g. For 1,000,000 final accounts and BATCH_SIZE = 500, root accounts will be split into 4
     // accounts, followed by 500 per account, followed by 500 per account.
@@ -682,9 +723,9 @@ async fn create_final_accounts_from_root(
 
     let mut accounts_to_split = vec![root_account];
     for (split_level, num_new_accounts_per_split) in split_levels.iter().rev().enumerate() {
-        // This interval tick is to wait for execution to catch up so that
+        // This sleep is to wait for execution to catch up so that
         // nonce and balance are up to date when refreshed before splitting further
-        execution_delay_interval.tick().await;
+        sleep(EXECUTION_DELAY_WAIT_TIME).await;
 
         let expected_num_new_accounts = accounts_to_split.len() * num_new_accounts_per_split;
         println!(
@@ -773,76 +814,7 @@ async fn make_final_accounts(
     }
 }
 
-async fn start_random_tx_gen(
-    root_account: Account,
-    num_final_accounts: usize,
-    priv_keys_file_path: Option<String>,
-    client: Client,
-    txn_batch_sender: Sender<Vec<Bytes>>,
-) {
-    let final_accounts = make_final_accounts(
-        root_account,
-        num_final_accounts,
-        priv_keys_file_path,
-        client.clone(),
-        txn_batch_sender.clone(),
-    )
-    .await;
-    let num_final_accounts = final_accounts.len();
-    println!("{} final accounts created", num_final_accounts);
-
-    let (refresh_context_sender, refresh_context_receiver) =
-        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
-    let accounts_refresher_handle =
-        tokio::spawn(accounts_refresher(refresh_context_receiver, client.clone()));
-
-    let (generate_rand_pairings_sender, generate_rand_pairings_receiver) =
-        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
-    let (accounts_completed_sender, accounts_completed_receiver) =
-        async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
-
-    let tx_gen_rand_pairings_handle = tokio::spawn(generate_uniform_rand_pairings(
-        generate_rand_pairings_receiver,
-        accounts_completed_sender,
-        NUM_TXN_BATCHES_PER_ACCOUNTS_BATCH,
-        txn_batch_sender.clone(),
-    ));
-
-    let accounts_batches =
-        split_final_accounts_into_batches(final_accounts, NUM_ACCOUNTS_PER_BATCH);
-    let num_batches = accounts_batches.len();
-
-    for accounts in accounts_batches {
-        refresh_context_sender
-            .send(AccountsRefreshContext {
-                accounts_to_refresh: accounts,
-                ready_sender: generate_rand_pairings_sender.clone(),
-            })
-            .await
-            .unwrap();
-    }
-
-    let _completed_batches = join_all((0..num_batches).map(|_| async {
-        accounts_completed_receiver
-            .recv()
-            .await
-            .expect("completed batches channel error")
-    }))
-    .await;
-
-    assert!(refresh_context_sender.close());
-    assert!(generate_rand_pairings_sender.close());
-
-    println!("closed refresher and ready channel");
-
-    let refresher_result = accounts_refresher_handle.await;
-    assert!(refresher_result.is_ok());
-
-    let tx_gen_result = tx_gen_rand_pairings_handle.await;
-    assert!(tx_gen_result.is_ok());
-
-    assert!(txn_batch_sender.close());
-}
+// ------------------- Pipeline creation functions -------------------
 
 async fn start_random_tx_gen_unbounded(
     root_account: Account,
@@ -897,11 +869,15 @@ async fn start_random_tx_gen_unbounded(
         }
     });
 
+    let mut completed_batch_num = 0;
     println!("unbounded tx gen: starting loop");
     // receive a completed batch and reinsert it into the pipeline.
     loop {
-        let completed_batch = accounts_completed_receiver.recv().await.expect("completed batch channel must not close");
-        println!("unbounded tx gen: received completed batch");
+        let completed_batch = accounts_completed_receiver
+            .recv()
+            .await
+            .expect("completed batch channel must not close");
+        println!("unbounded tx gen: received completed batch {}", completed_batch_num);
         refresh_context_sender
             .send(AccountsRefreshContext {
                 accounts_to_refresh: completed_batch,
@@ -909,7 +885,8 @@ async fn start_random_tx_gen_unbounded(
             })
             .await
             .unwrap();
-        println!("unbounded tx gen: re-sent completed batch");
+        println!("unbounded tx gen: re-sent completed batch {}", completed_batch_num);
+        completed_batch_num += 1;
     }
 }
 
