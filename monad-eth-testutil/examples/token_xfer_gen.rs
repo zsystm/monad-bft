@@ -91,6 +91,10 @@ struct Args {
     /// interval at which each RPC sender sends a batch of transaction to RPC (in milliseconds)
     #[arg(long, default_value_t = 1000)]
     rpc_sender_interval_ms: u64,
+
+    /// only generates the final accounts, doesn't generate transactions with those
+    #[arg(long)]
+    final_accs_only: bool,   
 }
 
 #[derive(Clone)]
@@ -817,23 +821,10 @@ async fn make_final_accounts(
 // ------------------- Pipeline creation functions -------------------
 
 async fn start_random_tx_gen_unbounded(
-    root_account: Account,
-    num_final_accounts: usize,
-    priv_keys_file_path: Option<String>,
+    mut final_accounts: Vec<Account>,
     client: Client,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) {
-    let final_accounts = make_final_accounts(
-        root_account,
-        num_final_accounts,
-        priv_keys_file_path,
-        client.clone(),
-        txn_batch_sender.clone(),
-    )
-    .await;
-    let num_final_accounts = final_accounts.len();
-    println!("{} final accounts created", num_final_accounts);
-
     let (refresh_context_sender, refresh_context_receiver) =
         async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
     let accounts_refresher_handle =
@@ -921,20 +912,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let root_account = Account::new(args.root_private_key);
     let num_final_accounts = args.num_final_accounts as usize;
-    let start_tx_gen_handle = tokio::spawn(start_random_tx_gen_unbounded(
+
+    let final_accounts = make_final_accounts(
         root_account,
         num_final_accounts,
         args.priv_keys_file,
         client.clone(),
         txn_batch_sender.clone(),
-    ));
+    ).await;
+    let num_final_accounts = final_accounts.len();
+    println!("{} final accounts created", num_final_accounts);
 
-    let _ = join!(join_all(rpc_sender_handles), start_tx_gen_handle);
+    if !args.final_accs_only {
+        start_random_tx_gen_unbounded(
+            final_accounts,
+            client.clone(),
+            txn_batch_sender.clone(),
+        ).await;
+    }
+
+    txn_batch_sender.close();
+    let _rpc_sender_results = join_all(rpc_sender_handles).await;
 
     let stop = Instant::now();
     let time = stop.duration_since(start).as_millis();
 
-    println!("ran for {}. num txns: {:?}.", time, tx_counter,);
+    println!("ran for {}. num txns: {:?}.", time, tx_counter);
 
     Ok(())
 }
