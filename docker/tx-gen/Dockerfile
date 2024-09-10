@@ -8,14 +8,14 @@ RUN apt install -y clang
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/src/monad-bft/target \
-    cargo build --release --example token_xfer_gen && \
-    mv target/release/examples/token_xfer_gen token_xfer_gen
+    cargo build --release --example tx_generator && \
+    mv target/release/examples/tx_generator tx_generator
 
 # Runner
 FROM debian:bullseye-slim as runner
 WORKDIR /usr/src/monad-bft
 
-COPY --from=builder /usr/src/monad-bft/token_xfer_gen /usr/local/bin/token_xfer_gen
+COPY --from=builder /usr/src/monad-bft/tx_generator /usr/local/bin/tx_generator
 
 ENV RUST_LOG=info
-CMD token_xfer_gen
+CMD tx_generator
