@@ -83,18 +83,22 @@ struct Args {
     #[arg(long, default_value_t = 1_000_000)]
     num_final_accounts: u64,
 
-    /// if provided, private keys will be extracted from this file and used as final accounts
-    /// private keys
+    /// if true, only generates the final accounts (useful for creating DB snapshots and priv keys file)
+    #[arg(long)]
+    final_accs_only: bool,
+
+    /// if true, loads the private keys from the "priv_keys_file"
+    #[arg(long)]
+    load_final_accs: bool,
+
+    /// if provided and load_final_accs is true, will load from this file
+    /// if provided and load_final_accs is false, will store newly created priv keys in this file
     #[arg(long)]
     priv_keys_file: Option<String>,
 
     /// interval at which each RPC sender sends a batch of transaction to RPC (in milliseconds)
     #[arg(long, default_value_t = 1000)]
     rpc_sender_interval_ms: u64,
-
-    /// only generates the final accounts, doesn't generate transactions with those
-    #[arg(long)]
-    final_accs_only: bool,   
 }
 
 #[derive(Clone)]
@@ -780,11 +784,15 @@ fn split_final_accounts_into_batches(
 async fn make_final_accounts(
     root_account: Account,
     num_final_accounts: usize,
-    priv_keys_file_path: Option<String>,
+    load_final_accs: bool,
+    priv_keys_file: Option<String>,
     client: Client,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) -> Vec<Account> {
-    if let Some(priv_keys_file_path) = priv_keys_file_path {
+    if load_final_accs {
+        let Some(priv_keys_file_path) = priv_keys_file else {
+            panic!("private keys file not provided");
+        };
         println!("loading private keys from {}", priv_keys_file_path);
 
         let mut final_accounts = Vec::new();
@@ -807,12 +815,14 @@ async fn make_final_accounts(
         )
         .await;
 
-        let mut file = BufWriter::new(File::create("priv_keys.txt").expect("no error"));
-        for account in final_accounts.iter() {
-            file.write(account.priv_key.to_string().as_bytes()).unwrap();
-            file.write(b"\n").unwrap();
-        }
-        file.flush().unwrap();
+        if let Some(priv_keys_file_path) = priv_keys_file {
+            let mut file = BufWriter::new(File::create(priv_keys_file_path).expect("no error"));
+            for account in final_accounts.iter() {
+                file.write(account.priv_key.to_string().as_bytes()).unwrap();
+                file.write(b"\n").unwrap();
+            }
+            file.flush().unwrap();
+        };
 
         final_accounts
     }
@@ -821,7 +831,7 @@ async fn make_final_accounts(
 // ------------------- Pipeline creation functions -------------------
 
 async fn start_random_tx_gen_unbounded(
-    mut final_accounts: Vec<Account>,
+    final_accounts: Vec<Account>,
     client: Client,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) {
@@ -868,7 +878,10 @@ async fn start_random_tx_gen_unbounded(
             .recv()
             .await
             .expect("completed batch channel must not close");
+
+        completed_batch_num += 1;
         println!("unbounded tx gen: received completed batch {}", completed_batch_num);
+
         refresh_context_sender
             .send(AccountsRefreshContext {
                 accounts_to_refresh: completed_batch,
@@ -876,8 +889,8 @@ async fn start_random_tx_gen_unbounded(
             })
             .await
             .unwrap();
+        
         println!("unbounded tx gen: re-sent completed batch {}", completed_batch_num);
-        completed_batch_num += 1;
     }
 }
 
@@ -900,15 +913,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
     let tx_counter = Arc::new(AtomicUsize::new(0));
 
-    let rpc_sender_handles = (0..NUM_RPC_SENDERS).map(|id| {
-        tokio::spawn(rpc_sender(
-            id,
-            rpc_sender_interval,
-            txn_batch_receiver.clone(),
-            client.clone(),
-            tx_counter.clone(),
-        ))
-    });
+    let rpc_sender_handles = {
+        let mut rpc_sender_handles = Vec::new();
+        for id in 0..NUM_RPC_SENDERS {
+            rpc_sender_handles.push(
+                tokio::spawn(rpc_sender(
+                    id,
+                    rpc_sender_interval,
+                    txn_batch_receiver.clone(),
+                    client.clone(),
+                    tx_counter.clone(),
+                ))
+            )
+        }
+
+        rpc_sender_handles
+    };
 
     let root_account = Account::new(args.root_private_key);
     let num_final_accounts = args.num_final_accounts as usize;
@@ -916,6 +936,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let final_accounts = make_final_accounts(
         root_account,
         num_final_accounts,
+        args.load_final_accs,
         args.priv_keys_file,
         client.clone(),
         txn_batch_sender.clone(),
