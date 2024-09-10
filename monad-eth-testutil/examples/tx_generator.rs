@@ -87,7 +87,7 @@ struct Args {
     #[arg(long)]
     final_accs_only: bool,
 
-    /// if true, loads the private keys from the "priv_keys_file"
+    /// if true, loads the private keys from the "priv_keys_file". panics if true and file not provided
     #[arg(long)]
     load_final_accs: bool,
 
