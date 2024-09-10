@@ -231,6 +231,12 @@ impl schemars::JsonSchema for EthHash {
 #[derive(Debug, PartialEq, Eq)]
 pub struct UnformattedData(pub Vec<u8>);
 
+impl UnformattedData {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 impl schemars::JsonSchema for UnformattedData {
     fn schema_name() -> String {
         "UnformattedData".to_string()
@@ -332,6 +338,12 @@ where
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct FixedData<const N: usize>(pub [u8; N]);
+
+impl<const N: usize> std::fmt::Display for FixedData<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "0x{}", hex::encode(&self.0))
+    }
+}
 
 impl<const N: usize> FromStr for FixedData<N> {
     type Err = DecodeHexError;
