@@ -127,16 +127,6 @@ pub async fn monad_debug_traceBlockByHash(
     Err(JsonRpcError::method_not_supported())
 }
 
-#[rpc(method = "debug_traceBlockByNumber")]
-#[allow(non_snake_case)]
-/// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
-pub async fn monad_debug_traceBlockByNumber(
-    blockdb_env: &BlockDbEnv,
-    params: MonadU256,
-) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
-}
-
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct DebugTraceCallParams {
     pub call: Vec<TraceCallObject>,

@@ -19,7 +19,7 @@ use clap::Parser;
 use cli::Cli;
 use debug::{
     monad_debug_getRawHeader, monad_debug_getRawReceipts, monad_debug_getRawTransaction,
-    monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceCall,
+    monad_debug_traceBlockByHash, monad_debug_traceCall,
 };
 use eth_json_types::serialize_result;
 use eth_txn_handlers::{
@@ -36,7 +36,7 @@ use trace::{
     monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
     monad_trace_transaction,
 };
-use trace_handlers::monad_debugTraceTransaction;
+use trace_handlers::{monad_debugTraceBlockByNumber, monad_debugTraceTransaction};
 use tracing::{debug, info};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -199,8 +199,9 @@ async fn rpc_select(
         }
         "debug_traceBlockByNumber" => {
             let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByNumber(reader, params)
+            monad_debugTraceBlockByNumber(reader, triedb_env, params)
                 .await
                 .map(serialize_result)?
         }

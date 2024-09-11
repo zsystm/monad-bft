@@ -381,6 +381,12 @@ impl<const N: usize> Serialize for FixedData<N> {
     }
 }
 
+impl From<FixedBytes<32>> for FixedData<32> {
+    fn from(bytes: FixedBytes<32>) -> Self {
+        Self(bytes.0)
+    }
+}
+
 impl From<U256> for FixedData<32> {
     fn from(u: U256) -> Self {
         let bytes: [u8; 32] = u.to_be_bytes();

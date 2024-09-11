@@ -107,7 +107,6 @@ pub enum Tracer {
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceTransactionParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
     #[serde(default)]
     tracer: TracerObject,
@@ -175,8 +174,68 @@ enum CallKind {
     StaticCall,
 }
 
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadDebugTraceBlockByNumberParams {
+    block_number: Quantity,
+    #[serde(default)]
+    tracer: TracerObject,
+}
+
+#[derive(Serialize, Debug, schemars::JsonSchema)]
+pub struct MonadDebugTraceBlockByNumberResult {
+    tx_hash: EthHash,
+    trace: MonadCallFrame,
+}
+
+#[rpc(method = "debug_traceBlockByNumber")]
+#[allow(non_snake_case)]
+/// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
+pub async fn monad_debugTraceBlockByNumber(
+    blockdb_env: &BlockDbEnv,
+    triedb_env: &TriedbEnv,
+    params: MonadDebugTraceBlockByNumberParams,
+) -> JsonRpcResult<Vec<MonadDebugTraceBlockByNumberResult>> {
+    trace!("monad_debugTraceBlockByNumber: {params:?}");
+
+    let Some(block) = blockdb_env
+        .get_block_by_tag(monad_blockdb_utils::BlockTags::Number(
+            params.block_number.0,
+        ))
+        .await
+    else {
+        debug!("block not found");
+        return Err(JsonRpcError::internal_error());
+    };
+
+    let block_num = block.block.number;
+    let tx_ids = block
+        .block
+        .body
+        .iter()
+        .enumerate()
+        .map(|(idx, tx)| (idx, tx.hash()))
+        .collect::<Vec<_>>();
+
+    let mut resp = Vec::new();
+    for (idx, tx_hash) in tx_ids {
+        let Some(traces) =
+            fetch_trace_for_tx(&triedb_env, idx as u64, block_num, &params.tracer).await?
+        else {
+            return Err(JsonRpcError::internal_error());
+        };
+
+        resp.push(MonadDebugTraceBlockByNumberResult {
+            tx_hash: tx_hash.into(),
+            trace: traces,
+        });
+    }
+
+    return Ok(resp);
+}
+
 #[rpc(method = "debug_traceTransaction")]
 #[allow(non_snake_case)]
+/// Returns all traces of a given transaction.
 pub async fn monad_debugTraceTransaction(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
@@ -198,6 +257,15 @@ pub async fn monad_debugTraceTransaction(
     };
     let block_num = block.block.number;
 
+    fetch_trace_for_tx(&triedb_env, txn_index, block_num, &params.tracer).await
+}
+
+async fn fetch_trace_for_tx(
+    triedb_env: &TriedbEnv,
+    txn_index: u64,
+    block_num: u64,
+    tracer: &TracerObject,
+) -> JsonRpcResult<Option<MonadCallFrame>> {
     match triedb_env.get_call_frame(txn_index, block_num).await {
         TriedbResult::Null => return Ok(None),
         TriedbResult::CallFrame(rlp_call_frames) => {
@@ -207,9 +275,9 @@ pub async fn monad_debugTraceTransaction(
                 .flatten()
                 .collect::<Vec<_>>();
 
-            match params.tracer.tracer {
+            match tracer.tracer {
                 Tracer::CallTracer => {
-                    if let Some(true) = params.tracer.only_top_call {
+                    if let Some(true) = tracer.only_top_call {
                         if call_frames.is_empty() {
                             Ok(None)
                         } else {
