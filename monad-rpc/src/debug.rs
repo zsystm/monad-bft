@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::{
-    eth_json_types::{deserialize_fixed_data, BlockTags, EthHash, MonadU256},
+    eth_json_types::{deserialize_fixed_data, BlockTags, EthHash},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult, JsonRpcResultExt},
     trace::{TraceCallObject, TracerObject},
@@ -115,16 +115,6 @@ pub async fn monad_debug_getRawTransaction(
     let mut buf = Vec::default();
     transaction.encode_enveloped(&mut buf);
     Ok(hex::encode(&buf))
-}
-
-#[rpc(method = "debug_traceBlockByHash")]
-#[allow(non_snake_case)]
-/// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
-pub async fn monad_debug_traceBlockByHash(
-    blockdb_env: &BlockDbEnv,
-    params: EthHash,
-) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

@@ -1,11 +1,5 @@
-use crate::{
-    eth_json_types::{
-        deserialize_fixed_data, EthAddress, EthHash, FixedData, MonadU256, Quantity,
-        UnformattedData,
-    },
-    jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb,
-};
+use std::{cell::RefCell, rc::Rc};
+
 use alloy_primitives::{
     aliases::{B256, U256, U64, U8},
     Address, Bytes,
@@ -15,9 +9,16 @@ use monad_blockdb::EthTxKey;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, rc::Rc};
 use tracing::{debug, error, trace};
 use triedb::{TriedbEnv, TriedbResult};
+
+use crate::{
+    eth_json_types::{
+        deserialize_quantity, EthAddress, EthHash, FixedData, MonadU256, Quantity, UnformattedData,
+    },
+    jsonrpc::{JsonRpcError, JsonRpcResult},
+    triedb,
+};
 
 #[derive(Clone, Debug)]
 struct CallFrame {
@@ -42,7 +43,7 @@ impl Decodable for CallFrame {
 
         // Decode the `to` field, handling the case where it's `None`.
         let to: Option<Address> = {
-            let first_byte = rlp_buf.get(0).ok_or(alloy_rlp::Error::InputTooShort)?;
+            let first_byte = rlp_buf.first().ok_or(alloy_rlp::Error::InputTooShort)?;
             if *first_byte == 0x80 {
                 // If the first byte is 0x80, it represents an empty value (None for the Address).
                 *rlp_buf = &rlp_buf[1..]; // Advance the buffer
@@ -146,7 +147,7 @@ impl From<CallFrame> for MonadCallFrame {
         };
 
         Self {
-            typ: value.typ.into(),
+            typ: value.typ,
             from: value.from.into(),
             to: value.to.map(Into::into),
             value: frame_value,
@@ -175,14 +176,66 @@ enum CallKind {
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadDebugTraceBlockByHashParams {
+    block_hash: EthHash,
+    #[serde(default)]
+    tracer: TracerObject,
+}
+
+#[rpc(method = "debug_traceBlockByHash")]
+#[allow(non_snake_case)]
+/// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
+pub async fn monad_debugTraceBlockByHash(
+    blockdb_env: &BlockDbEnv,
+    triedb_env: &TriedbEnv,
+    params: MonadDebugTraceBlockByHashParams,
+) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
+    trace!("monad_debugTraceBlockByHash: {params:?}");
+
+    let Some(block) = blockdb_env
+        .get_block_by_hash(params.block_hash.into())
+        .await
+    else {
+        debug!("block not found");
+        return Err(JsonRpcError::internal_error());
+    };
+
+    let block_num = block.block.number;
+    let tx_ids = block
+        .block
+        .body
+        .iter()
+        .enumerate()
+        .map(|(idx, tx)| (idx, tx.hash()))
+        .collect::<Vec<_>>();
+
+    let mut resp = Vec::new();
+    for (idx, tx_hash) in tx_ids {
+        let Some(traces) =
+            fetch_trace_for_tx(triedb_env, idx as u64, block_num, &params.tracer).await?
+        else {
+            return Err(JsonRpcError::internal_error());
+        };
+
+        resp.push(MonadDebugTraceBlockResult {
+            tx_hash: tx_hash.into(),
+            trace: traces,
+        });
+    }
+
+    Ok(resp)
+}
+
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByNumberParams {
+    #[serde(deserialize_with = "deserialize_quantity")]
     block_number: Quantity,
     #[serde(default)]
     tracer: TracerObject,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
-pub struct MonadDebugTraceBlockByNumberResult {
+pub struct MonadDebugTraceBlockResult {
     tx_hash: EthHash,
     trace: MonadCallFrame,
 }
@@ -194,7 +247,7 @@ pub async fn monad_debugTraceBlockByNumber(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
     params: MonadDebugTraceBlockByNumberParams,
-) -> JsonRpcResult<Vec<MonadDebugTraceBlockByNumberResult>> {
+) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByNumber: {params:?}");
 
     let Some(block) = blockdb_env
@@ -219,18 +272,18 @@ pub async fn monad_debugTraceBlockByNumber(
     let mut resp = Vec::new();
     for (idx, tx_hash) in tx_ids {
         let Some(traces) =
-            fetch_trace_for_tx(&triedb_env, idx as u64, block_num, &params.tracer).await?
+            fetch_trace_for_tx(triedb_env, idx as u64, block_num, &params.tracer).await?
         else {
             return Err(JsonRpcError::internal_error());
         };
 
-        resp.push(MonadDebugTraceBlockByNumberResult {
+        resp.push(MonadDebugTraceBlockResult {
             tx_hash: tx_hash.into(),
             trace: traces,
         });
     }
 
-    return Ok(resp);
+    Ok(resp)
 }
 
 #[rpc(method = "debug_traceTransaction")]
@@ -257,7 +310,7 @@ pub async fn monad_debugTraceTransaction(
     };
     let block_num = block.block.number;
 
-    fetch_trace_for_tx(&triedb_env, txn_index, block_num, &params.tracer).await
+    fetch_trace_for_tx(triedb_env, txn_index, block_num, &params.tracer).await
 }
 
 async fn fetch_trace_for_tx(
@@ -267,7 +320,7 @@ async fn fetch_trace_for_tx(
     tracer: &TracerObject,
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     match triedb_env.get_call_frame(txn_index, block_num).await {
-        TriedbResult::Null => return Ok(None),
+        TriedbResult::Null => Ok(None),
         TriedbResult::CallFrame(rlp_call_frames) => {
             let mut call_frames = Vec::<Vec<CallFrame>>::decode(&mut rlp_call_frames.as_slice())
                 .map_err(|e| JsonRpcError::custom(format!("Rlp Decode error: {e}")))?
@@ -290,7 +343,7 @@ async fn fetch_trace_for_tx(
                             call_frames
                                 .into_iter()
                                 .map(|mut frame| async move {
-                                    include_code_output(&mut frame, &triedb_env, block_num).await?;
+                                    include_code_output(&mut frame, triedb_env, block_num).await?;
                                     Ok::<_, JsonRpcError>(frame)
                                 })
                                 .collect::<Vec<_>>(),
@@ -307,7 +360,7 @@ async fn fetch_trace_for_tx(
                 _ => Err(JsonRpcError::method_not_supported()),
             }
         }
-        _ => return Err(JsonRpcError::custom("Not matched".to_string())),
+        _ => Err(JsonRpcError::custom("Not matched".to_string())),
     }
 }
 
