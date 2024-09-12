@@ -313,7 +313,7 @@ where
 
     let mut chunk_datas = message
         .chunks_mut(gso_size.into())
-        .map(|chunk| &mut chunk[(HEADER_LEN + proof_size).into()..])
+        .map(|chunk| (None, &mut chunk[(HEADER_LEN + proof_size).into()..]))
         .collect_vec();
     assert_eq!(chunk_datas.len(), num_packets as usize);
 
@@ -327,9 +327,10 @@ where
                 return Vec::new();
             };
             outbound_gso_idx.push((*addr, 0..gso_size as usize * num_packets as usize));
-            for chunk_data in &mut chunk_datas {
+            for (chunk_idx, (chunk_symbol_id, chunk_data)) in chunk_datas.iter_mut().enumerate() {
                 // populate chunk_recipient
                 chunk_data[0..20].copy_from_slice(&compute_hash(to));
+                *chunk_symbol_id = Some(chunk_idx as u16);
             }
         }
         BuildTarget::Broadcast(epoch_validators) => {
@@ -354,9 +355,12 @@ where
                 } else {
                     tracing::warn!(?node_id, "not sending message, address unknown")
                 }
-                for chunk_data in &mut chunk_datas[start_idx..end_idx] {
+                for (chunk_idx, (chunk_symbol_id, chunk_data)) in
+                    chunk_datas[start_idx..end_idx].iter_mut().enumerate()
+                {
                     // populate chunk_recipient
                     chunk_data[0..20].copy_from_slice(&compute_hash(node_id));
+                    *chunk_symbol_id = Some(chunk_idx as u16);
                 }
             }
         }
@@ -369,6 +373,7 @@ where
                 .map(|validator| validator.stake.0)
                 .sum();
             let mut running_stake = 0;
+            let mut chunk_idx = 0_u16;
             for (node_id, validator) in epoch_validators.view().iter() {
                 let start_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
                 running_stake += validator.stake.0;
@@ -385,9 +390,11 @@ where
                 } else {
                     tracing::warn!(?node_id, "not sending message, address unknown")
                 }
-                for chunk_data in &mut chunk_datas[start_idx..end_idx] {
+                for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut() {
                     // populate chunk_recipient
                     chunk_data[0..20].copy_from_slice(&compute_hash(node_id));
+                    *chunk_symbol_id = Some(chunk_idx);
+                    chunk_idx += 1;
                 }
             }
         }
@@ -405,17 +412,24 @@ where
     // populates the following chunk-specific stuff
     // - chunk_id: u16
     // - chunk_payload
-    for (chunk_id, mut chunk_data) in chunk_datas.iter_mut().enumerate() {
-        let chunk_id = chunk_id as u16;
+    for (maybe_chunk_id, chunk_data) in chunk_datas.iter_mut() {
+        let chunk_id = maybe_chunk_id.expect("generated chunk was not assigned an id");
         let chunk_len: u16 = data_size;
 
-        let cursor = &mut chunk_data;
+        let cursor = chunk_data;
         let (_cursor_chunk_recipient, cursor) = cursor.split_at_mut(20);
         let (_cursor_chunk_merkle_leaf_idx, cursor) = cursor.split_at_mut(1);
         let (_cursor_chunk_reserved, cursor) = cursor.split_at_mut(1);
         let (cursor_chunk_id, cursor) = cursor.split_at_mut(2);
         cursor_chunk_id.copy_from_slice(&chunk_id.to_le_bytes());
         let (cursor_chunk_payload, _cursor) = cursor.split_at_mut(chunk_len.into());
+
+        // for BuildTarget::Broadcast, we will be encoding each chunk_id once per recipient
+        //
+        // we could cache these as an optimization, but probably doesn't make a big difference in
+        // practice, because we're generally using BuildTarget::Broadcast for small messages.
+        //
+        // can revisit this later
         encoder.encode_symbol(
             &mut cursor_chunk_payload[..chunk_len.into()],
             chunk_id.into(),
@@ -815,13 +829,19 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::{
+        collections::{HashMap, HashSet},
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+    };
 
     use bytes::{Bytes, BytesMut};
     use itertools::Itertools;
     use lru::LruCache;
-    use monad_crypto::hasher::{Hasher, HasherType};
-    use monad_secp::SecpSignature;
+    use monad_crypto::{
+        certificate_signature::CertificateSignaturePubKey,
+        hasher::{Hasher, HasherType},
+    };
+    use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{NodeId, Stake};
 
     use crate::{
@@ -829,34 +849,54 @@ mod tests {
         util::{BuildTarget, EpochValidators, Validator},
     };
 
-    #[test]
-    fn test_roundtrip() {
-        let keys = (0_u8..100_u8)
+    type SignatureType = SecpSignature;
+    type KeyPairType = KeyPair;
+
+    fn validator_set() -> (
+        KeyPairType,
+        EpochValidators<SignatureType>,
+        HashMap<NodeId<CertificateSignaturePubKey<SignatureType>>, SocketAddr>,
+    ) {
+        const NUM_KEYS: u8 = 100;
+        let mut keys = (0_u8..NUM_KEYS)
             .map(|n| {
                 let mut hasher = HasherType::new();
                 hasher.update(n.to_le_bytes());
                 let mut hash = hasher.hash();
-                monad_secp::KeyPair::from_bytes(&mut hash.0).unwrap()
+                KeyPairType::from_bytes(&mut hash.0).unwrap()
             })
             .collect_vec();
 
-        let mut validators = EpochValidators {
+        let validators = EpochValidators {
             validators: keys
                 .iter()
                 .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
                 .collect(),
         };
-        let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
 
         let known_addresses = keys
             .iter()
-            .map(|key| {
+            .skip(NUM_KEYS as usize / 10) // test some missing known_addresses
+            .enumerate()
+            .map(|(idx, key)| {
                 (
                     NodeId::new(key.pubkey()),
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), idx as u16),
                 )
             })
             .collect();
+
+        (keys.pop().unwrap(), validators, known_addresses)
+    }
+
+    const GSO_SIZE: u16 = 1500;
+    const EPOCH: u64 = 5;
+    const UNIX_TS_MS: u64 = 5;
+
+    #[test]
+    fn test_roundtrip() {
+        let (key, mut validators, known_addresses) = validator_set();
+        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let app_message_hash = {
@@ -865,11 +905,8 @@ mod tests {
             hasher.hash()
         };
 
-        const EPOCH: u64 = 5;
-        const UNIX_TS_MS: u64 = 5;
-        const GSO_SIZE: u16 = 1500;
-        let messages = build_messages::<SecpSignature>(
-            &keys[0],
+        let messages = build_messages::<SignatureType>(
+            &key,
             GSO_SIZE, // gso_size
             app_message.clone(),
             2,     // redundancy,
@@ -885,54 +922,27 @@ mod tests {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(GSO_SIZE.into());
                 let parsed_message =
-                    parse_message::<SecpSignature>(&mut signature_cache, message.clone())
+                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
                         .expect("valid message");
                 assert_eq!(parsed_message.message, message);
                 assert_eq!(parsed_message.app_message_hash, app_message_hash.0[..20]);
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
                 assert!(parsed_message.broadcast);
                 assert_eq!(parsed_message.app_message_len, app_message.len() as u32);
-                assert_eq!(parsed_message.author, NodeId::new(keys[0].pubkey()));
+                assert_eq!(parsed_message.author, NodeId::new(key.pubkey()));
             }
         }
     }
 
     #[test]
     fn test_bit_flip_parse_failure() {
-        let keys = (0_u8..100_u8)
-            .map(|n| {
-                let mut hasher = HasherType::new();
-                hasher.update(n.to_le_bytes());
-                let mut hash = hasher.hash();
-                monad_secp::KeyPair::from_bytes(&mut hash.0).unwrap()
-            })
-            .collect_vec();
-
-        let mut validators = EpochValidators {
-            validators: keys
-                .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
-                .collect(),
-        };
-        let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
-
-        let known_addresses = keys
-            .iter()
-            .map(|key| {
-                (
-                    NodeId::new(key.pubkey()),
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-                )
-            })
-            .collect();
+        let (key, mut validators, known_addresses) = validator_set();
+        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024 * 2].into();
 
-        const EPOCH: u64 = 5;
-        const UNIX_TS_MS: u64 = 5;
-        const GSO_SIZE: u16 = 1500;
-        let messages = build_messages::<SecpSignature>(
-            &keys[0],
+        let messages = build_messages::<SignatureType>(
+            &key,
             GSO_SIZE, // gso_size
             app_message,
             2,     // redundancy,
@@ -953,7 +963,7 @@ mod tests {
                     let old_byte = message[bit_idx / 8];
                     // flip bit
                     message[bit_idx / 8] = old_byte ^ (1 << (bit_idx % 8));
-                    let maybe_parsed = parse_message::<SecpSignature>(
+                    let maybe_parsed = parse_message::<SignatureType>(
                         &mut signature_cache,
                         message.clone().into(),
                     );
@@ -961,7 +971,7 @@ mod tests {
                     // check that decoding fails
                     assert!(
                         maybe_parsed.is_err()
-                            || maybe_parsed.unwrap().author != NodeId::new(keys[0].pubkey())
+                            || maybe_parsed.unwrap().author != NodeId::new(key.pubkey())
                     );
 
                     // reset bit
@@ -969,5 +979,82 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_raptorcast_chunk_ids() {
+        let (key, mut validators, known_addresses) = validator_set();
+        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
+
+        let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
+
+        let messages = build_messages::<SignatureType>(
+            &key,
+            GSO_SIZE, // gso_size
+            app_message,
+            2,     // redundancy,
+            EPOCH, // epoch_no
+            UNIX_TS_MS,
+            BuildTarget::Raptorcast(epoch_validators),
+            &known_addresses,
+        );
+
+        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+
+        let mut used_ids = HashSet::new();
+
+        for (to, mut aggregate_message) in messages {
+            while !aggregate_message.is_empty() {
+                let message = aggregate_message.split_to(GSO_SIZE.into());
+                let parsed_message =
+                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
+                        .expect("valid message");
+                let newly_inserted = used_ids.insert(parsed_message.chunk_id);
+                assert!(newly_inserted);
+            }
+        }
+    }
+
+    #[test]
+    fn test_broadcast_chunk_ids() {
+        let (key, mut validators, known_addresses) = validator_set();
+        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
+
+        let app_message: Bytes = vec![1_u8; 1024 * 8].into();
+
+        let messages = build_messages::<SignatureType>(
+            &key,
+            GSO_SIZE, // gso_size
+            app_message,
+            2,     // redundancy,
+            EPOCH, // epoch_no
+            UNIX_TS_MS,
+            BuildTarget::Broadcast(epoch_validators),
+            &known_addresses,
+        );
+
+        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+
+        let mut used_ids: HashMap<SocketAddr, HashSet<_>> = HashMap::new();
+
+        let messages_len = messages.len();
+        for (to, mut aggregate_message) in messages {
+            while !aggregate_message.is_empty() {
+                let message = aggregate_message.split_to(GSO_SIZE.into());
+                let parsed_message =
+                    parse_message::<SignatureType>(&mut signature_cache, message.clone())
+                        .expect("valid message");
+                let newly_inserted = used_ids
+                    .entry(to)
+                    .or_default()
+                    .insert(parsed_message.chunk_id);
+                assert!(newly_inserted);
+            }
+        }
+
+        assert_eq!(used_ids.len(), messages_len);
+        let ids = used_ids.values().next().unwrap().clone();
+        assert!(used_ids.values().all(|x| x == &ids)); // check that all recipients are sent same ids
+        assert!(ids.contains(&0)); // check that starts from idx 0
     }
 }
