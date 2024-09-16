@@ -39,7 +39,7 @@ const TXN_GAS_FEES: usize = TXN_CARRIAGE_COST + TXN_INTRINSIC_GAS_FEE;
 // trying to refresh nonce and balance so that it is up to date
 // NOTE: This is completely arbitrary, the time may vary depending on
 // how fast execution runs on a specific node and network conditions
-const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(5);
+const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(10);
 
 // Payload size with batch = 868 raw txns: 262144
 // Payload size with batch = 869 raw txns: 262408 -> payload reached size limit
