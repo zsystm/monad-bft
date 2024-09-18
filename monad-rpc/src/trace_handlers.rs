@@ -192,10 +192,10 @@ pub async fn monad_debugTraceTransaction(
     };
     let txn_index = txn_value.transaction_index;
     let block_key = txn_value.block_hash;
-    let block = blockdb_env
-        .get_block_by_hash(block_key)
-        .await
-        .expect("txn was found so its block should exist");
+    let Some(block) = blockdb_env.get_block_by_hash(block_key).await else {
+        error!("txn was found so its block should exist");
+        return Err(JsonRpcError::internal_error());
+    };
     let block_num = block.block.number;
 
     match triedb_env.get_call_frame(txn_index, block_num).await {

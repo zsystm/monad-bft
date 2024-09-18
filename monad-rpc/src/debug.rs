@@ -4,6 +4,7 @@ use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
 use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 use crate::{
     eth_json_types::{deserialize_fixed_data, BlockTags, EthHash, MonadU256},
@@ -101,16 +102,15 @@ pub async fn monad_debug_getRawTransaction(
     let result = blockdb_env.get_txn(key).await.block_not_found()?;
 
     let block_key = result.block_hash;
-    let block = blockdb_env
-        .get_block_by_hash(block_key)
-        .await
-        .expect("txn was found so its block should exist");
+    let Some(block) = blockdb_env.get_block_by_hash(block_key).await else {
+        error!("txn was found so its block should exist");
+        return Err(JsonRpcError::internal_error());
+    };
 
-    let transaction = block
-        .block
-        .body
-        .get(result.transaction_index as usize)
-        .expect("txn and block found so its index should be correct");
+    let Some(transaction) = block.block.body.get(result.transaction_index as usize) else {
+        error!("txn and block found so its index should be correct");
+        return Err(JsonRpcError::internal_error());
+    };
 
     let mut buf = Vec::default();
     transaction.encode_enveloped(&mut buf);

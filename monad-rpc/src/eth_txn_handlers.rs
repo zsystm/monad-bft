@@ -12,7 +12,7 @@ use reth_rpc_types::{
     AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     block_handlers::block_receipts,
@@ -482,16 +482,15 @@ pub async fn monad_eth_getTransactionByHash(
     };
 
     let block_key = result.block_hash;
-    let block = blockdb_env
-        .get_block_by_hash(block_key)
-        .await
-        .expect("txn was found so its block should exist");
+    let Some(block) = blockdb_env.get_block_by_hash(block_key).await else {
+        error!("txn was found so its block should exist");
+        return Err(JsonRpcError::internal_error());
+    };
 
-    let transaction = block
-        .block
-        .body
-        .get(result.transaction_index as usize)
-        .expect("txn and block found so its index should be correct");
+    let Some(transaction) = block.block.body.get(result.transaction_index as usize) else {
+        error!("txn and block found so its index should be correct");
+        return Err(JsonRpcError::internal_error());
+    };
 
     let retval =
         parse_tx_content(&block, transaction, result.transaction_index).map(MonadTransaction);
