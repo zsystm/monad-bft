@@ -51,8 +51,8 @@ use opentelemetry::{
 };
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::TracerProvider;
-use tokio::signal;
-use tracing::{event, warn, Instrument, Level};
+use tokio::signal::unix::{signal, SignalKind};
+use tracing::{event, info, warn, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -370,11 +370,19 @@ async fn run(
                 timer
             });
 
-    let mut ctrlc = Box::pin(signal::ctrl_c()).into_stream();
+    let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
+    let mut sigint = signal(SignalKind::interrupt()).expect("in tokio rt");
 
     loop {
         tokio::select! {
-            _ = ctrlc.next() => {
+            biased; // events are in order of priority
+
+            result = sigterm.recv() => {
+                info!(?result, "received SIGTERM, exiting...");
+                break;
+            }
+            result = sigint.recv() => {
+                info!(?result, "received SIGINT, exiting...");
                 break;
             }
             _ = match &mut maybe_metrics_ticker {
