@@ -5,6 +5,7 @@ on:
     branches:
       - 'release*'
       - 'staging*'
+      - 'devnet-prime'
 
 env:
   REGISTRY: ghcr.io
