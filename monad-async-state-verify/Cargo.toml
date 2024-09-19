@@ -22,4 +22,3 @@ zerocopy = { workspace = true }
 [dev-dependencies]
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-testutil = { path = "../monad-testutil" }
-tracing-subscriber = "0.3.18"

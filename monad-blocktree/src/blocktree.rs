@@ -12,7 +12,6 @@ use monad_consensus_types::{
     state_root_hash::StateRootHash,
 };
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, SeqNum};
 use tracing::trace;
 
@@ -249,8 +248,6 @@ where
             children_blocks: new_root_entry.children_blocks,
         };
 
-        inc_count!(blocktree.prune.success);
-
         commit.reverse();
         commit
     }
@@ -264,7 +261,6 @@ where
         state_backend: &SBT,
     ) -> Result<()> {
         if !self.is_valid_to_insert(&block) {
-            inc_count!(blocktree.add.duplicate);
             return Ok(());
         }
 
@@ -322,8 +318,6 @@ where
                 state_backend,
             )?
         }
-
-        inc_count!(blocktree.add.success);
 
         Ok(())
     }

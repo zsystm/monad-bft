@@ -14,7 +14,6 @@ alloy-primitives = { workspace = true }
 
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-state-backend = { path = "../monad-state-backend" }
-monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 
 bytes = { workspace = true }

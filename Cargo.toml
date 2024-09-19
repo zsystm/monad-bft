@@ -47,7 +47,6 @@ members = [
     "monad-statesync",
     "monad-testground",
     "monad-testutil",
-    "monad-tracing-counter",
     "monad-transformer",
     "monad-triedb-utils",
     "monad-twins",

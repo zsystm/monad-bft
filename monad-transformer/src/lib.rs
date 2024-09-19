@@ -9,7 +9,6 @@ use std::{
 use auto_impl::auto_impl;
 use bytes::{Buf, Bytes};
 use monad_crypto::certificate_signature::PubKey;
-use monad_tracing_counter::inc_count;
 use monad_types::NodeId;
 use rand::{prelude::SliceRandom, Rng};
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
@@ -455,7 +454,6 @@ impl<PT: PubKey> Transformer<Bytes> for BwTransformer<PT> {
         if self.window.try_push(self.burst_size, &message) {
             TransformerStream::Continue(vec![(Duration::ZERO, message)])
         } else {
-            inc_count!(bwtransformer_dropped_msg);
             TransformerStream::Complete(vec![])
         }
     }

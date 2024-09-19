@@ -50,7 +50,6 @@ monad-gossip = { path = "../monad-gossip" }
 monad-quic = { path = "../monad-quic" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
-monad-tracing-counter = { path = "../monad-tracing-counter" }
 
 alloy-rlp = { workspace = true }
 criterion = { workspace = true }
