@@ -28,6 +28,12 @@ jobs:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
       - run: rustup toolchain install nightly-2024-07-21 --profile minimal --component rustfmt
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-shear
+        run: cargo binstall --no-confirm cargo-shear
+      - name: Lint unused dependencies
+        run: cargo shear
       - name: Format
         run: cargo +nightly-2024-07-21 fmt --all --check
       - uses: Swatinem/rust-cache@v2
@@ -63,6 +69,3 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - name: Check WASM
         run: cargo check --target wasm32-unknown-unknown -p monad-debugger
-      - run: cargo install cargo-udeps --locked
-      - name: Lint unused deps
-        run: cargo +nightly-2024-07-21 udeps --all-targets --all-features

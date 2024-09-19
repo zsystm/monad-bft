@@ -15,7 +15,6 @@ monad-types = { path = "../monad-types" }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
-rayon = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 
 [dev-dependencies]

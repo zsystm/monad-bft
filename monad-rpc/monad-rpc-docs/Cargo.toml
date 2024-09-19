@@ -9,7 +9,6 @@ bench = false
 [dependencies]
 inventory.workspace = true
 once_cell = "1.19.0"
-serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 schemars = "0.8.21"
 monad-rpc-docs-derive = { path = "./monad-rpc-docs-derive" }

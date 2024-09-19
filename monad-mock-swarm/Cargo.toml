@@ -13,7 +13,6 @@ bench = false
 [dependencies]
 monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-consensus = { path = "../monad-consensus" }
-monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-state-backend = { path = "../monad-state-backend" }
@@ -35,7 +34,6 @@ priority-queue = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
-sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
@@ -53,11 +51,9 @@ monad-testutil = { path = "../monad-testutil" }
 
 alloy-rlp = { workspace = true }
 criterion = { workspace = true }
-rcgen = { workspace = true }
 reth-primitives = { workspace = true }
 test-case = { workspace = true }
 tracing = { workspace = true }
-tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]
