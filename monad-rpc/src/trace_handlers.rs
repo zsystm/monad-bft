@@ -219,7 +219,7 @@ pub async fn monad_debugTraceBlockByHash(
 
         resp.push(MonadDebugTraceBlockResult {
             tx_hash: tx_hash.into(),
-            trace: traces,
+            result: traces,
         });
     }
 
@@ -235,9 +235,10 @@ pub struct MonadDebugTraceBlockByNumberParams {
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct MonadDebugTraceBlockResult {
     tx_hash: EthHash,
-    trace: MonadCallFrame,
+    result: MonadCallFrame,
 }
 
 #[rpc(method = "debug_traceBlockByNumber")]
@@ -279,7 +280,7 @@ pub async fn monad_debugTraceBlockByNumber(
 
         resp.push(MonadDebugTraceBlockResult {
             tx_hash: tx_hash.into(),
-            trace: traces,
+            result: traces,
         });
     }
 
