@@ -319,7 +319,7 @@ async fn run(
         consensus_config: ConsensusConfig {
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
-            delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
+            delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
             state_sync_threshold: SeqNum(statesync_threshold as u64),
             timestamp_latency_estimate_ms: 20,
         },
