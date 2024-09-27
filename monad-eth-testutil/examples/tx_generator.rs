@@ -690,7 +690,7 @@ async fn split_account_balance(
     let num_splits = (num_new_accounts + 1) as u128; // leave some tokens in the root account
     let transfer_amount = account_to_split
         .balance
-        .saturating_sub(MAX_RESERVE_BALANCE_PER_ACCOUNT as u128)
+        // .saturating_sub(MAX_RESERVE_BALANCE_PER_ACCOUNT as u128)
         .saturating_sub(TXN_GAS_FEES as u128 * num_splits);
     if transfer_amount < num_splits {
         println!(
