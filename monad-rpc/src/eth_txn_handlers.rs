@@ -296,14 +296,31 @@ pub async fn monad_eth_getLogs(
 
         match req.topics {
             ValueOrArray::Single(topics) => {
-                for topic in topics {
-                    filter = filter.event_signature(FixedBytes::<32>::from(&topic.0));
-                }
+                let topics = topics
+                    .into_iter()
+                    .map(|topic| FixedBytes::<32>::from(&topic.0))
+                    .collect::<Vec<_>>();
+
+                filter = filter.event_signature(topics);
             }
             ValueOrArray::Array(topics) => {
-                let topics = topics.into_iter().flatten().collect::<Vec<_>>();
-                for topic in topics {
-                    filter = filter.event_signature(FixedBytes::<32>::from(&topic.0));
+                let topics = topics
+                    .into_iter()
+                    .map(|inner| {
+                        inner
+                            .into_iter()
+                            .map(|topic| FixedBytes::<32>::from(&topic.0))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                for (idx, topic) in topics.into_iter().enumerate() {
+                    match idx {
+                        0 => filter = filter.event_signature(topic),
+                        1 => filter = filter.topic1(topic),
+                        2 => filter = filter.topic2(topic),
+                        3 => filter = filter.topic3(topic),
+                        _ => return Err(JsonRpcError::eth_filter_error("too many topics".into())),
+                    }
                 }
             }
             ValueOrArray::None => {}
@@ -344,8 +361,6 @@ pub async fn monad_eth_getLogs(
         }
 
         let filtered_params = FilteredParams::new(Some(filter.clone()));
-        let address_filter = FilteredParams::address_filter(&filter.address);
-        let topics_filter = FilteredParams::topics_filter(&filter.topics);
 
         for block_num in from_block..=to_block {
             let block = blockdb_env
@@ -353,29 +368,30 @@ pub async fn monad_eth_getLogs(
                 .await
                 .ok_or(JsonRpcError::internal_error())?;
 
-            let header_logs_bloom = block.block.header.logs_bloom;
+            // TODO: check block's log_bloom against the filter
+            let block_receipts = block_receipts(triedb_env, block).await?;
+            let mut receipt_logs: Vec<Log> = block_receipts
+                .into_iter()
+                .flat_map(|receipt| {
+                    let logs: Vec<Log> = receipt
+                        .logs
+                        .into_iter()
+                        .filter(|log: &Log| {
+                            if filtered_params.filter.is_some()
+                                && (!filtered_params.filter_address(log)
+                                    || !filtered_params.filter_topics(log))
+                            {
+                                false
+                            } else {
+                                true
+                            }
+                        })
+                        .collect();
+                    logs
+                })
+                .collect();
 
-            if FilteredParams::matches_address(header_logs_bloom, &address_filter)
-                || FilteredParams::matches_topics(header_logs_bloom, &topics_filter)
-            {
-                let block_receipts = block_receipts(triedb_env, block).await?;
-                let mut receipt_logs: Vec<Log> = block_receipts
-                    .into_iter()
-                    .flat_map(|receipt| {
-                        let logs: Vec<Log> = receipt
-                            .logs
-                            .into_iter()
-                            .filter(|log| {
-                                filtered_params.filter_address(log)
-                                    && filtered_params.filter_topics(log)
-                            })
-                            .collect();
-                        logs
-                    })
-                    .collect();
-
-                logs.append(&mut receipt_logs);
-            }
+            logs.append(&mut receipt_logs);
         }
     }
 
