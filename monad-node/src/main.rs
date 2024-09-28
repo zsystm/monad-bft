@@ -143,7 +143,20 @@ async fn run(
     node_state: NodeState,
     reload_handle: Handle<EnvFilter, Registry>,
 ) -> Result<(), ()> {
-    let router: BoxUpdater<_, _> = if node_state.forkpoint_config.validator_sets[0]
+    let checkpoint_validators_first = node_state
+        .forkpoint_config
+        .validator_sets
+        .first()
+        .expect("no validator sets")
+        .clone();
+    let checkpoint_validators_last = node_state
+        .forkpoint_config
+        .validator_sets
+        .last()
+        .expect("no validator sets")
+        .clone();
+
+    let router: BoxUpdater<_, _> = if checkpoint_validators_first
         .validators
         .0
         .iter()
@@ -164,7 +177,7 @@ async fn run(
         )
     } else {
         let gossip = MockGossipConfig {
-            all_peers: node_state.forkpoint_config.validator_sets[0]
+            all_peers: checkpoint_validators_first
                 .validators
                 .0
                 .iter()
@@ -190,8 +203,6 @@ async fn run(
             .await,
         )
     };
-
-    let validators = node_state.forkpoint_config.validator_sets[0].clone();
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
 
@@ -226,7 +237,11 @@ async fn run(
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
             &node_state.triedb_path,
-            validators.validators.clone(),
+            // Use the more recent of the 2 checkpoint validator sets for seeding the default e+2
+            // validator set. This allows us to manually change validator set e+1 without it
+            // getting rolled back in e+2.
+            // FIXME this should be deleted post staking module
+            checkpoint_validators_last.validators,
             val_set_update_interval,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
@@ -247,7 +262,7 @@ async fn run(
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.genesis_path.to_string_lossy().to_string(),
-            validators
+            checkpoint_validators_first
                 .validators
                 .0
                 .iter()
