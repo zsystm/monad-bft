@@ -962,7 +962,7 @@ where
                     let latest_block = self.state_backend.raw_read_latest_block();
                     assert!(
                         latest_block <= root_seq_num,
-                        "{latest_block:?} <= {root_seq_num:?}"
+                        "tried to statesync backwards: {latest_block:?} <= {root_seq_num:?}"
                     );
 
                     // we do a <= check instead of < because latest_block currently returns 0 even
