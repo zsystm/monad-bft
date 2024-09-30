@@ -274,10 +274,7 @@ pub struct MonadEthGetBlockReceiptsParams {
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
-pub struct MonadEthGetBlockReceiptsResult {
-    #[serde(flatten)]
-    receipts: Vec<MonadTransactionReceipt>,
-}
+pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 
 #[rpc(method = "eth_getBlockReceipts")]
 #[allow(non_snake_case)]
@@ -294,10 +291,7 @@ pub async fn monad_eth_getBlockReceipts(
     };
 
     let block_receipts = block_receipts(triedb_env, block).await?;
-    Ok(Some(MonadEthGetBlockReceiptsResult {
-        receipts: block_receipts
-            .into_iter()
-            .map(MonadTransactionReceipt)
-            .collect(),
-    }))
+    Ok(Some(MonadEthGetBlockReceiptsResult(
+        block_receipts.into_iter().map(MonadTransactionReceipt).collect(),
+    )))
 }
