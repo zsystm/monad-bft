@@ -59,7 +59,7 @@ pub struct RecvCtrl<'a> {
     pub name: [MaybeUninit<libc::sockaddr_storage>; NUM_RX_MSGHDR],
     pub cmsg: [AlignedCmsg; NUM_RX_MSGHDR],
     pub timeout: libc::timespec,
-    pub buf_refs: Vec<IoSliceMut<'a>>,
+    pub buf_refs: [IoSliceMut<'a>; NUM_RX_MSGHDR],
 }
 
 pub struct SendCtrl {
@@ -126,12 +126,8 @@ impl<'a> NetworkSocket<'a> {
         unsafe {
             BUF_PTR = Box::into_raw(Box::new([[0; BUF_SIZE]; NUM_RX_MSGHDR]));
         }
-        let buf_refs = unsafe {
-            (*BUF_PTR)
-                .iter_mut()
-                .map(|c| IoSliceMut::new(c.as_mut_slice()))
-                .collect::<Vec<_>>()
-        };
+        let buf_refs: [IoSliceMut<'static>; NUM_RX_MSGHDR] =
+            std::array::from_fn(|idx| IoSliceMut::new(unsafe { (*BUF_PTR)[idx].as_mut_slice() }));
 
         let recv_msgs = unsafe { std::mem::zeroed::<[libc::mmsghdr; NUM_RX_MSGHDR]>() };
         let recv_name = [MaybeUninit::<libc::sockaddr_storage>::uninit(); NUM_RX_MSGHDR];
