@@ -97,7 +97,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         for payload_start_idx in (0..message.payload.len()).step_by(message.stride) {
             let mut batch_guard = broadcast_batcher.create_flush_guard();
 
-            let payload_end_idx = payload_start_idx + message.stride.min(message.payload.len());
+            let payload_end_idx = (payload_start_idx + message.stride).min(message.payload.len());
             let payload = message.payload.slice(payload_start_idx..payload_end_idx);
             let parsed_message = match parse_message::<ST>(&mut self.signature_cache, payload) {
                 Ok(message) => message,
@@ -910,7 +910,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeMap, HashMap, HashSet},
         net::{IpAddr, Ipv4Addr, SocketAddr},
     };
 
@@ -921,9 +921,11 @@ mod tests {
         certificate_signature::CertificateSignaturePubKey,
         hasher::{Hasher, HasherType},
     };
+    use monad_dataplane::event_loop::RecvMsg;
     use monad_secp::{KeyPair, SecpSignature};
-    use monad_types::{NodeId, Stake};
+    use monad_types::{Epoch, NodeId, Stake};
 
+    use super::UdpState;
     use crate::{
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
         util::{BuildTarget, EpochValidators, Validator},
@@ -1136,5 +1138,24 @@ mod tests {
         let ids = used_ids.values().next().unwrap().clone();
         assert!(used_ids.values().all(|x| x == &ids)); // check that all recipients are sent same ids
         assert!(ids.contains(&0)); // check that starts from idx 0
+    }
+
+    #[test]
+    fn test_handle_message_stride_slice() {
+        let (key, validators, _known_addresses) = validator_set();
+        let mut epoch_validators: BTreeMap<Epoch, EpochValidators<SignatureType>> =
+            vec![(Epoch(1), validators)].into_iter().collect();
+
+        let mut udp_state = UdpState::<SignatureType>::new(NodeId::new(key.pubkey()));
+
+        // payload will fail to parse but shouldn't panic on index error
+        let payload: Bytes = vec![1_u8; 1024 * 8 + 1].into();
+        let recv_msg = RecvMsg {
+            src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000),
+            payload,
+            stride: 1024,
+        };
+
+        udp_state.handle_message(&mut epoch_validators, |_targets, _payload| {}, recv_msg);
     }
 }
