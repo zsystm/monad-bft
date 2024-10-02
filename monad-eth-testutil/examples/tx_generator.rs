@@ -41,14 +41,6 @@ const TXN_GAS_FEES: usize = TXN_CARRIAGE_COST + TXN_INTRINSIC_GAS_FEE;
 // how fast execution runs on a specific node and network conditions
 const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(20);
 
-// Payload size with batch = 868 raw txns: 262144
-// Payload size with batch = 869 raw txns: 262408 -> payload reached size limit
-// IPC batch size limit = 500
-const TXN_BATCH_SIZE: usize = 500;
-
-// each rpc sender will send 1 batch of BATCH_SIZE transactions every RPC_SENDER_INTERVAL
-const NUM_RPC_SENDERS: usize = 16;
-
 // number of batches of transactions allowed in the txn batches channel
 const TX_BATCHES_CHANNEL_BUFFER: usize = 50;
 
@@ -95,6 +87,16 @@ struct Args {
     /// if provided and load_final_accs is false, will store newly created priv keys in this file
     #[arg(long)]
     priv_keys_file: Option<String>,
+
+    // Payload size with batch = 868 raw txns: 262144
+    // Payload size with batch = 869 raw txns: 262408 -> payload reached size limit
+    // IPC batch size limit = 500
+    #[arg(long, default_value_t = 500)]
+    txn_batch_size: u64,
+
+    // each rpc sender will send 1 batch of txn_batch_size transactions every rpc_sender_interval_ms
+    #[arg(long, default_value_t = 16)]
+    num_rpc_senders: u64,
 
     /// interval at which each RPC sender sends a batch of transaction to RPC (in milliseconds)
     #[arg(long, default_value_t = 1000)]
@@ -300,8 +302,8 @@ fn create_transfer_txns(
 
 // ------------------- Refresher functions -------------------
 
-async fn batch_refresh_accounts(accounts: &mut [Account], client: Client) {
-    assert!(accounts.len() == TXN_BATCH_SIZE);
+async fn batch_refresh_accounts(accounts: &mut [Account], client: Client, txn_batch_size: usize) {
+    assert!(accounts.len() == txn_batch_size);
 
     // TODO: implement eth_getAccount in RPC and make this a sinlge call ?
     // create BATCH_SIZE requests for nonce updates
@@ -382,6 +384,7 @@ pub struct AccountsRefreshContext {
 /// and sends the refreshed accounts through the channel in the AccountsRefreshContext
 async fn accounts_refresher(
     refresh_context_receiver: Receiver<AccountsRefreshContext>,
+    txn_batch_size: usize,
     client: Client,
 ) {
     println!("starting account refresher");
@@ -406,9 +409,9 @@ async fn accounts_refresher(
                 // refresh nonce and balance of every account
                 for accounts in refresh_context
                     .accounts_to_refresh
-                    .chunks_mut(TXN_BATCH_SIZE)
+                    .chunks_mut(txn_batch_size)
                 {
-                    batch_refresh_accounts(accounts, client.clone()).await;
+                    batch_refresh_accounts(accounts, client.clone(), txn_batch_size).await;
                 }
 
                 // send the refreshed accounts through the ready sender
@@ -448,10 +451,11 @@ async fn send_one_to_many(
     src_account: &mut Account,
     dst_accounts: &mut [Account],
     value: u128,
+    txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
 ) {
     let starting_balance = src_account.balance;
-    let num_receiver_accounts = dst_accounts.len().min(TXN_BATCH_SIZE);
+    let num_receiver_accounts = dst_accounts.len().min(txn_batch_size);
 
     match value.checked_add(TXN_GAS_FEES as u128) {
         Some(v) => {
@@ -482,10 +486,11 @@ async fn send_many_to_many(
     src_accounts: &mut [Account],
     dst_accounts: &mut [Account],
     value: u128,
+    txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
 ) {
     for src_account in src_accounts {
-        send_one_to_many(src_account, dst_accounts, value, txn_sender.clone()).await;
+        send_one_to_many(src_account, dst_accounts, value, txn_batch_size, txn_sender.clone()).await;
     }
 }
 
@@ -497,12 +502,13 @@ async fn send_between_rand_pairings(
     value: u128,
     src_selection: impl Fn(&mut [Account]) -> &mut Account,
     dst_selection: impl Fn(&mut [Account]) -> &mut Account,
+    txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
     num_batches: usize,
 ) {
     for _ in 0..num_batches {
         let mut raw_txns = Vec::new();
-        for _ in 0..TXN_BATCH_SIZE {
+        for _ in 0..txn_batch_size {
             let src_account = src_selection(src_accounts);
             let dst_account = dst_selection(dst_accounts);
 
@@ -520,6 +526,7 @@ async fn generate_uniform_rand_pairings(
     accounts_ready_receiver: Receiver<Vec<Account>>,
     accounts_completed_sender: Sender<Vec<Account>>,
     num_txns_batches: usize,
+    txn_batch_size: usize,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) {
     let mut num_ready_batches = 0;
@@ -542,6 +549,7 @@ async fn generate_uniform_rand_pairings(
                     transfer_value,
                     uniform_account_selector,
                     uniform_account_selector,
+                    txn_batch_size,
                     txn_batch_sender.clone(),
                     num_txns_batches,
                 )
@@ -636,6 +644,7 @@ async fn rpc_sender(
     rpc_sender_id: usize,
     rpc_sender_interval: Duration,
     txn_batch_receiver: Receiver<Vec<Bytes>>,
+    txn_batch_size: usize,
     client: Client,
     tx_counter: Arc<AtomicUsize>,
 ) {
@@ -652,7 +661,7 @@ async fn rpc_sender(
             Ok(next_batch) => {
                 // TODO: Use the response to update nonces
                 send_batch_raw_txns(next_batch, client.clone()).await;
-                tx_counter.fetch_add(TXN_BATCH_SIZE, Ordering::SeqCst);
+                tx_counter.fetch_add(txn_batch_size, Ordering::SeqCst);
             }
             Err(err) => {
                 // channel is closed and no more txns exist
@@ -669,6 +678,7 @@ async fn split_account_balance(
     mut account_to_split: Account,
     num_new_accounts: usize,
     client: Client,
+    txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
 ) -> Vec<Account> {
     account_to_split.refresh_nonce(client.clone()).await;
@@ -702,7 +712,7 @@ async fn split_account_balance(
     let transfer_per_account = transfer_amount.saturating_div(num_splits);
 
     let mut new_accounts = create_rand_accounts(num_new_accounts);
-    for dst_accounts in new_accounts.chunks_mut(TXN_BATCH_SIZE) {
+    for dst_accounts in new_accounts.chunks_mut(txn_batch_size) {
         let txns_batch =
             create_transfer_txns(&mut account_to_split, dst_accounts, transfer_per_account);
         let _ = txn_sender.send(txns_batch).await.unwrap();
@@ -715,6 +725,7 @@ async fn create_final_accounts_from_root(
     root_account: Account,
     mut num_final_accounts: usize,
     client: Client,
+    txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
 ) -> Vec<Account> {
     // Calculates the number of splits based on BATCH_SIZE.
@@ -722,10 +733,10 @@ async fn create_final_accounts_from_root(
     // accounts, followed by 500 per account, followed by 500 per account.
     // Total accounts created = 4 * 500 * 500 = 1,000,000
     let mut split_levels = Vec::new();
-    while num_final_accounts > TXN_BATCH_SIZE {
-        split_levels.push(TXN_BATCH_SIZE);
+    while num_final_accounts > txn_batch_size {
+        split_levels.push(txn_batch_size);
         // This may create more accounts than num_final_accounts
-        num_final_accounts = num_final_accounts.div_ceil(TXN_BATCH_SIZE);
+        num_final_accounts = num_final_accounts.div_ceil(txn_batch_size);
     }
     split_levels.push(num_final_accounts);
 
@@ -749,6 +760,7 @@ async fn create_final_accounts_from_root(
                 account,
                 *num_new_accounts_per_split,
                 client.clone(),
+                txn_batch_size,
                 txn_sender.clone(),
             )
             .await;
@@ -787,6 +799,7 @@ async fn make_final_accounts(
     load_final_accs: bool,
     priv_keys_file: Option<String>,
     client: Client,
+    txn_batch_size: usize,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) -> Vec<Account> {
     if load_final_accs {
@@ -811,6 +824,7 @@ async fn make_final_accounts(
             root_account,
             num_final_accounts,
             client.clone(),
+            txn_batch_size,
             txn_batch_sender.clone(),
         )
         .await;
@@ -833,12 +847,13 @@ async fn make_final_accounts(
 async fn start_random_tx_gen_unbounded(
     final_accounts: Vec<Account>,
     client: Client,
+    txn_batch_size: usize,
     txn_batch_sender: Sender<Vec<Bytes>>,
 ) {
     let (refresh_context_sender, refresh_context_receiver) =
         async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
     let accounts_refresher_handle =
-        tokio::spawn(accounts_refresher(refresh_context_receiver, client.clone()));
+        tokio::spawn(accounts_refresher(refresh_context_receiver, txn_batch_size, client.clone()));
 
     let (generate_rand_pairings_sender, generate_rand_pairings_receiver) =
         async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
@@ -849,6 +864,7 @@ async fn start_random_tx_gen_unbounded(
         generate_rand_pairings_receiver,
         accounts_completed_sender,
         NUM_TXN_BATCHES_PER_ACCOUNTS_BATCH,
+        txn_batch_size,
         txn_batch_sender.clone(),
     ));
 
@@ -902,12 +918,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let client = Client::new(args.rpc_url);
 
+    let num_rpc_senders = args.num_rpc_senders as usize;
+    let txn_batch_size = args.txn_batch_size as usize;
+
+    // let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
     let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
     let expected_tps =
-        (NUM_RPC_SENDERS * TXN_BATCH_SIZE) as f64 / rpc_sender_interval.as_secs_f64();
+        (args.num_rpc_senders * args.txn_batch_size) as f64 / rpc_sender_interval.as_secs_f64();
     println!(
         "num rpc senders: {}. batch size: {}. expected TPS ~ {}",
-        NUM_RPC_SENDERS, TXN_BATCH_SIZE, expected_tps
+        args.num_rpc_senders, args.txn_batch_size, expected_tps
     );
 
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
@@ -915,12 +935,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let rpc_sender_handles = {
         let mut rpc_sender_handles = Vec::new();
-        for id in 0..NUM_RPC_SENDERS {
+        for id in 0..num_rpc_senders {
             rpc_sender_handles.push(
                 tokio::spawn(rpc_sender(
                     id,
                     rpc_sender_interval,
                     txn_batch_receiver.clone(),
+                    txn_batch_size,
                     client.clone(),
                     tx_counter.clone(),
                 ))
@@ -939,6 +960,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.load_final_accs,
         args.priv_keys_file,
         client.clone(),
+        txn_batch_size,
         txn_batch_sender.clone(),
     ).await;
     let num_final_accounts = final_accounts.len();
@@ -948,6 +970,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         start_random_tx_gen_unbounded(
             final_accounts,
             client.clone(),
+            txn_batch_size,
             txn_batch_sender.clone(),
         ).await;
     }
