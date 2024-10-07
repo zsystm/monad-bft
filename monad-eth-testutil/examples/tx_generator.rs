@@ -38,7 +38,7 @@ const TXN_GAS_FEES: usize = TXN_CARRIAGE_COST + TXN_INTRINSIC_GAS_FEE;
 // trying to refresh nonce and balance so that it is up to date
 // NOTE: This is completely arbitrary, the time may vary depending on
 // how fast execution runs on a specific node and network conditions
-const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(20);
+const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(10);
 
 // number of batches of transactions allowed in the txn batches channel
 const TX_BATCHES_CHANNEL_BUFFER: usize = 50;
@@ -973,30 +973,27 @@ async fn start_random_tx_gen_unbounded(
     }
 }
 
-async fn tps_logging(tx_batch_counter: Arc<AtomicUsize>, txn_batch_size: usize) {
+async fn tps_logging(tx_counter: Arc<AtomicUsize>) {
     let mut interval = tokio::time::interval(Duration::from_secs(10));
-    let mut last_batch_count = tx_batch_counter.load(Ordering::SeqCst);
+    let mut last_tx_count = tx_counter.load(Ordering::SeqCst);
     let mut last_instant = Instant::now();
 
     loop {
         let instant = interval.tick().await;
-        let new_batch_count = (&tx_batch_counter).load(Ordering::SeqCst);
-        let batches = new_batch_count - last_batch_count;
+        let new_tx_count = (&tx_counter).load(Ordering::SeqCst);
+        let txns = new_tx_count - last_tx_count;
 
         let secs = (instant - last_instant).as_secs_f64();
-        let tps = (txn_batch_size * batches) as f64 / secs;
-        println!(
-            "Sent {} batches in {} seconds at {} tps",
-            batches, secs, tps
-        );
-        last_batch_count = new_batch_count;
+        let tps = txns as f64 / secs;
+        println!("Sent {} txns in {} seconds at {} tps", txns, secs, tps);
+        last_tx_count = new_tx_count;
         last_instant = instant;
     }
 }
 
-fn spawn_tps_logging(tx_batch_counter: Arc<AtomicUsize>, txn_batch_size: usize) {
+fn spawn_tps_logging(tx_batch_counter: Arc<AtomicUsize>) {
     tokio::spawn(async move {
-        tps_logging(tx_batch_counter, txn_batch_size).await;
+        tps_logging(tx_batch_counter).await;
     });
 }
 
@@ -1022,7 +1019,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
     let tx_batch_counter = Arc::new(AtomicUsize::new(0));
-    spawn_tps_logging(tx_batch_counter.clone(), txn_batch_size);
+    spawn_tps_logging(tx_batch_counter.clone());
 
     let rpc_sender_handles = {
         let mut rpc_sender_handles = Vec::new();
