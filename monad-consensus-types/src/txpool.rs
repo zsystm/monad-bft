@@ -55,6 +55,10 @@ where
         state_backend: &SBT,
     ) -> Result<FullTransactionList, StateBackendError>;
 
+    /// Optional callback on block commit
+    /// Can be used for clearing of stale txs from txpool
+    fn update_committed_block(&mut self, committed_block: &BPT::ValidatedBlock);
+
     /// Reclaims memory used by internal TxPool datastructures
     fn clear(&mut self);
 }
@@ -113,4 +117,10 @@ where
     }
 
     fn clear(&mut self) {}
+
+    fn update_committed_block(
+        &mut self,
+        _committed_block: &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
+    ) {
+    }
 }

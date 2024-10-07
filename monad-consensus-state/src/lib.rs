@@ -788,6 +788,7 @@ where
                     // epoch manager records
                     self.metrics.consensus_events.commit_block += 1;
                     self.block_policy.update_committed_block(block);
+                    self.tx_pool.update_committed_block(block);
                     if !block.is_empty_block() {
                         self.epoch_manager
                             .schedule_epoch_start(block.get_seq_num(), block.get_round());

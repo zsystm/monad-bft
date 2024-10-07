@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use monad_eth_block_policy::compute_txn_carriage_cost;
+use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_eth_block_policy::{compute_txn_carriage_cost, EthValidatedBlock};
 use monad_eth_tx::EthTransaction;
 use monad_eth_types::{EthAddress, Nonce};
 use monad_types::SeqNum;
@@ -167,5 +168,20 @@ impl Pool {
 
         // TODO: garbage collect
         self.txs.retain(|_, tx_group| !tx_group.is_empty());
+    }
+
+    pub fn remove_stale_txs<SCT>(&mut self, block: &EthValidatedBlock<SCT>)
+    where
+        SCT: SignatureCollection,
+    {
+        let block_nonces = block.get_nonces();
+        for (address, highest_nonce) in block_nonces {
+            if let Some(tx_group) = self.txs.get_mut(address) {
+                tx_group.transactions = tx_group.transactions.split_off(&(highest_nonce + 1));
+                if tx_group.transactions.is_empty() {
+                    self.txs.remove(address);
+                }
+            }
+        }
     }
 }

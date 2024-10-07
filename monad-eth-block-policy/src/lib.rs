@@ -123,6 +123,7 @@ impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
         self.validated_txns.iter().map(|t| t.hash()).collect()
     }
 
+    /// Returns the highest tx nonce per account in the block
     pub fn get_nonces(&self) -> &BTreeMap<EthAddress, u64> {
         &self.nonces
     }

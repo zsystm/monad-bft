@@ -28,7 +28,7 @@ mod pool;
 mod transaction;
 mod utils;
 
-const MAX_TXPOOL_SIZE: usize = 1024 * 32;
+const MAX_TXPOOL_SIZE: usize = 11_000;
 
 #[derive(Clone, Debug, Default)]
 pub struct EthTxPool {
@@ -219,6 +219,13 @@ where
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
     ) -> Result<FullTransactionList, StateBackendError> {
+        for extending_block in &extending_blocks {
+            // note that this is a destructive operation
+            // it's a bit weird that this is done based on extending_blocks (which aren't committed)
+            //
+            // however, we anyway are emptying the txpool at the end of this function
+            self.pool.remove_stale_txs(extending_block)
+        }
         if let Err(err) = self.validate_nonces_and_carriage_fee(
             proposed_seq_num,
             block_policy,
@@ -327,6 +334,10 @@ where
         self.garbage.push(old_pool);
 
         Ok(FullTransactionList::new(full_tx_list))
+    }
+
+    fn update_committed_block(&mut self, committed_block: &EthValidatedBlock<SCT>) {
+        self.pool.remove_stale_txs(committed_block);
     }
 
     fn clear(&mut self) {
