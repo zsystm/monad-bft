@@ -1,5 +1,3 @@
-use std::ops::Div;
-
 use alloy_primitives::aliases::{U256, U64};
 use monad_blockdb::BlockValue;
 use monad_blockdb_utils::BlockDbEnv;
@@ -35,9 +33,7 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
         gas_limit: U256::from(value.block.header.gas_limit),
         extra_data: value.block.header.clone().extra_data,
         logs_bloom: value.block.header.logs_bloom,
-        // timestamp in block header is in Unix milliseconds but we parse it
-        // to be in Unix seconds here for integration compatability
-        timestamp: U256::from(value.block.header.timestamp.div(1000)),
+        timestamp: U256::from(value.block.header.timestamp),
         difficulty: value.block.header.difficulty,
         mix_hash: Some(value.block.header.mix_hash),
         nonce: Some(value.block.header.nonce.to_be_bytes().into()),
