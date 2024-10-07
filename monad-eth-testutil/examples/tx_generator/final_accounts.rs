@@ -1,23 +1,13 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
-    str::FromStr,
-    sync::{atomic::AtomicUsize, Arc},
-    time::Duration,
 };
 
-use async_channel::{Receiver, Sender};
-use rand::RngCore;
-use reqwest::Url;
-use reth_primitives::{
-    keccak256, sign_message, AccessList, Address, Bytes, Transaction, TransactionKind,
-    TransactionSigned, TxEip1559, B256,
-};
-use serde::Deserialize;
-use serde_json::{json, Value};
-use tokio::time::{sleep, MissedTickBehavior};
+use async_channel::Sender;
+use reth_primitives::Bytes;
+use tokio::time::sleep;
 
-use crate::{Account, Client, JsonResponse, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES};
+use crate::{Account, Client, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES};
 
 // ------------------- Final accounts functions -------------------
 

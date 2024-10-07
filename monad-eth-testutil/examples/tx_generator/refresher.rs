@@ -1,20 +1,8 @@
-use std::{
-    str::FromStr,
-    sync::{atomic::AtomicUsize, Arc},
-    time::Duration,
-};
 
 use async_channel::{Receiver, Sender};
-use rand::RngCore;
-use reqwest::Url;
-use reth_primitives::{
-    keccak256, sign_message, AccessList, Address, Bytes, Transaction, TransactionKind,
-    TransactionSigned, TxEip1559, B256,
-};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{
-    join, time::{Instant, MissedTickBehavior}
+    join, time::Instant
 };
 
 use crate::{Account, Client, JsonResponse, EXECUTION_DELAY_WAIT_TIME};

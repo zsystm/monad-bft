@@ -1,14 +1,9 @@
-#![allow(unused_imports)]
-
 mod final_accounts;
 mod refresher;
 mod rpc;
 
 use std::{
     error::Error,
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -19,22 +14,13 @@ use final_accounts::*;
 use refresher::*;
 use rpc::*;
 
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::Bytes;
 use async_channel::{Receiver, Sender};
 use clap::{Parser, ValueEnum};
 use futures::future::join_all;
-use monad_secp::KeyPair;
-use rand::{rngs::SmallRng, Rng, RngCore, SeedableRng};
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use reqwest::Url;
-use reth_primitives::{
-    keccak256, sign_message, AccessList, Transaction, TransactionKind, TransactionSigned, TxEip1559,
-};
-use serde::Deserialize;
-use serde_json::{json, Value};
-use tokio::{
-    join,
-    time::{sleep, Duration, Instant, MissedTickBehavior},
-};
+use tokio::time::{Duration, Instant};
 
 // max reserve balance is hardcoded in execution to be 10^17 right now
 // const MAX_RESERVE_BALANCE_PER_ACCOUNT: usize = 100_000_000_000_000_000;
