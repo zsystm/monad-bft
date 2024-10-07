@@ -257,7 +257,7 @@ pub async fn block_receipts(
         .collect();
 
     if block_receipts.len() != block.block.body.len() {
-        return Err(JsonRpcError::internal_error());
+        return Err(JsonRpcError::custom("internal error: some receipts are not available".into()));
     }
 
     Ok(block_receipts)
