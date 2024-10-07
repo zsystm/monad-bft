@@ -1,5 +1,4 @@
 use std::{
-    borrow::BorrowMut,
     error::Error,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
@@ -12,10 +11,10 @@ use std::{
 
 use alloy_primitives::{Address, Bytes, B256};
 use async_channel::{Receiver, Sender};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use futures::future::join_all;
 use monad_secp::KeyPair;
-use rand::RngCore;
+use rand::{rngs::SmallRng, Rng, RngCore, SeedableRng};
 use reqwest::Url;
 use reth_primitives::{
     keccak256, sign_message, AccessList, Transaction, TransactionKind, TransactionSigned, TxEip1559,
@@ -28,7 +27,7 @@ use tokio::{
 };
 
 // max reserve balance is hardcoded in execution to be 10^17 right now
-const MAX_RESERVE_BALANCE_PER_ACCOUNT: usize = 100_000_000_000_000_000;
+// const MAX_RESERVE_BALANCE_PER_ACCOUNT: usize = 100_000_000_000_000_000;
 
 const TXN_CARRIAGE_COST: usize = 21000 * 1000;
 // for transfer transactions only
@@ -101,6 +100,29 @@ struct Args {
     /// interval at which each RPC sender sends a batch of transaction to RPC (in milliseconds)
     #[arg(long, default_value_t = 1000)]
     rpc_sender_interval_ms: u64,
+
+    #[arg(value_enum, long, default_value_t = TxgenStrategy::UniformManyToMany)]
+    txgen_strategy: TxgenStrategy,
+}
+
+#[derive(ValueEnum, Clone, Copy)]
+enum TxgenStrategy {
+    UniformManyToMany,
+    ManyToOne,
+    OneToMany,
+    HotCold,
+}
+
+impl ToString for TxgenStrategy {
+    fn to_string(&self) -> String {
+        match self {
+            TxgenStrategy::UniformManyToMany => "uniform-many-to-many",
+            TxgenStrategy::ManyToOne => "many-to-one",
+            TxgenStrategy::OneToMany => "one-to-many",
+            TxgenStrategy::HotCold => "hot-cold",
+        }
+        .into()
+    }
 }
 
 #[derive(Clone)]
@@ -131,9 +153,7 @@ impl Client {
 
 #[derive(Debug, Deserialize)]
 struct JsonResponse {
-    pub jsonrpc: String,
     pub result: Option<Value>,
-    pub error: Option<Value>,
     pub id: usize,
 }
 
@@ -436,18 +456,11 @@ async fn accounts_refresher(
     println!("stopped account refresher");
 }
 
-// ------------------- Account selector functions -------------------
-
-fn uniform_account_selector(accounts: &mut [Account]) -> &mut Account {
-    let acc_index = rand::random::<usize>() % accounts.len();
-    accounts[acc_index].borrow_mut()
-}
-
 // ------------------- Transaction generator functions -------------------
 
 /// src account will transfer tokens to dst_accounts.
 /// number of dst_accounts capped at BATCH_SIZE
-async fn send_one_to_many(
+async fn _send_one_to_many(
     src_account: &mut Account,
     dst_accounts: &mut [Account],
     value: u128,
@@ -482,7 +495,7 @@ async fn send_one_to_many(
 
 /// each src account will to all dst accounts
 /// number of dst_accounts capped at BATCH_SIZE
-async fn send_many_to_many(
+async fn _send_many_to_many(
     src_accounts: &mut [Account],
     dst_accounts: &mut [Account],
     value: u128,
@@ -490,44 +503,87 @@ async fn send_many_to_many(
     txn_sender: Sender<Vec<Bytes>>,
 ) {
     for src_account in src_accounts {
-        send_one_to_many(src_account, dst_accounts, value, txn_batch_size, txn_sender.clone()).await;
+        _send_one_to_many(
+            src_account,
+            dst_accounts,
+            value,
+            txn_batch_size,
+            txn_sender.clone(),
+        )
+        .await;
     }
 }
 
 /// creates batches of transactions that send between pairs of accounts
 /// pairs are chosen according to the passed in selection functions
 async fn send_between_rand_pairings(
-    src_accounts: &mut [Account],
-    dst_accounts: &mut [Account],
+    accounts: &mut [Account],
+    strat: TxgenStrategy,
     value: u128,
-    src_selection: impl Fn(&mut [Account]) -> &mut Account,
-    dst_selection: impl Fn(&mut [Account]) -> &mut Account,
     txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
     num_batches: usize,
 ) {
+    let mut rng = rand::rngs::SmallRng::from_entropy();
+    let idx = rng.gen_range(0..accounts.len());
+
     for _ in 0..num_batches {
         let mut raw_txns = Vec::new();
         for _ in 0..txn_batch_size {
-            let src_account = src_selection(src_accounts);
-            let dst_account = dst_selection(dst_accounts);
+            let uniform = |len, rng: &mut SmallRng| {
+                let first = rng.gen_range(0..len);
+                let mut second;
+                loop {
+                    second = rng.gen_range(0..len);
+                    if second != first {
+                        return (first, second);
+                    }
+                }
+            };
+            let choose_other = |idx: usize, len, rng: &mut SmallRng| {
+                let mut other_idx;
+                loop {
+                    other_idx = rng.gen_range(0..len);
+                    if other_idx != idx {
+                        return (idx, other_idx);
+                    }
+                }
+            };
+            let (src, dst) = match strat {
+                TxgenStrategy::UniformManyToMany => uniform(accounts.len(), &mut rng),
+                TxgenStrategy::ManyToOne => {
+                    let (dst, src) = choose_other(idx, accounts.len(), &mut rng);
+                    (src, dst)
+                }
+                TxgenStrategy::OneToMany => choose_other(idx, accounts.len(), &mut rng),
+                TxgenStrategy::HotCold => {
+                    if rng.gen_bool(0.2) {
+                        uniform(accounts.len(), &mut rng)
+                    } else {
+                        choose_other(idx, accounts.len(), &mut rng)
+                    }
+                }
+            };
+            let dst_addr = accounts[dst].address;
+            let src_acct = &mut accounts[src];
 
-            raw_txns.push(src_account.create_raw_xfer_transaction(dst_account.address, value));
+            raw_txns.push(src_acct.create_raw_xfer_transaction(dst_addr, value));
         }
 
         let _ = txn_sender.send(raw_txns).await.unwrap();
     }
 }
 
-/// Waits for a batch of refreshed accounts, generates num_txns_batches batches of 
-/// transactions from those accounts with uniform account selector.
+/// Waits for a batch of refreshed accounts, generates num_txns_batches batches of
+/// transactions from those accounts with account selector based off TxgenStrategy.
 /// Sends the accounts through the completed channel after the transaction generation
-async fn generate_uniform_rand_pairings(
+async fn generate_pairings(
     accounts_ready_receiver: Receiver<Vec<Account>>,
     accounts_completed_sender: Sender<Vec<Account>>,
     num_txns_batches: usize,
     txn_batch_size: usize,
     txn_batch_sender: Sender<Vec<Bytes>>,
+    strat: TxgenStrategy,
 ) {
     let mut num_ready_batches = 0;
     loop {
@@ -540,15 +596,11 @@ async fn generate_uniform_rand_pairings(
                     num_ready_batches
                 );
 
-                let num_accounts_in_slice = accounts_slice.len();
-                let (slice_1, slice_2) = accounts_slice.split_at_mut(num_accounts_in_slice / 2);
                 let transfer_value = 10;
                 send_between_rand_pairings(
-                    slice_1,
-                    slice_2,
+                    &mut accounts_slice,
+                    strat,
                     transfer_value,
-                    uniform_account_selector,
-                    uniform_account_selector,
                     txn_batch_size,
                     txn_batch_sender.clone(),
                     num_txns_batches,
@@ -572,7 +624,7 @@ async fn generate_uniform_rand_pairings(
 
 // ------------------- RPC functions -------------------
 
-async fn send_raw_txn(raw_txn: Bytes, client: Client) -> usize {
+async fn _send_raw_txn(raw_txn: Bytes, client: Client) -> usize {
     let req = json!(
         {
             "jsonrpc": "2.0",
@@ -849,23 +901,28 @@ async fn start_random_tx_gen_unbounded(
     client: Client,
     txn_batch_size: usize,
     txn_batch_sender: Sender<Vec<Bytes>>,
+    strat: TxgenStrategy,
 ) {
     let (refresh_context_sender, refresh_context_receiver) =
         async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
-    let accounts_refresher_handle =
-        tokio::spawn(accounts_refresher(refresh_context_receiver, txn_batch_size, client.clone()));
+    tokio::spawn(accounts_refresher(
+        refresh_context_receiver,
+        txn_batch_size,
+        client.clone(),
+    ));
 
     let (generate_rand_pairings_sender, generate_rand_pairings_receiver) =
         async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
     let (accounts_completed_sender, accounts_completed_receiver) =
         async_channel::bounded(ACCOUNTS_BATCHES_CHANNEL_BUFFER);
 
-    let tx_gen_rand_pairings_handle = tokio::spawn(generate_uniform_rand_pairings(
+    tokio::spawn(generate_pairings(
         generate_rand_pairings_receiver,
         accounts_completed_sender,
         NUM_TXN_BATCHES_PER_ACCOUNTS_BATCH,
         txn_batch_size,
         txn_batch_sender.clone(),
+        strat,
     ));
 
     let accounts_batches =
@@ -896,7 +953,10 @@ async fn start_random_tx_gen_unbounded(
             .expect("completed batch channel must not close");
 
         completed_batch_num += 1;
-        println!("unbounded tx gen: received completed batch {}", completed_batch_num);
+        println!(
+            "unbounded tx gen: received completed batch {}",
+            completed_batch_num
+        );
 
         refresh_context_sender
             .send(AccountsRefreshContext {
@@ -905,9 +965,39 @@ async fn start_random_tx_gen_unbounded(
             })
             .await
             .unwrap();
-        
-        println!("unbounded tx gen: re-sent completed batch {}", completed_batch_num);
+
+        println!(
+            "unbounded tx gen: re-sent completed batch {}",
+            completed_batch_num
+        );
     }
+}
+
+async fn tps_logging(tx_batch_counter: Arc<AtomicUsize>, txn_batch_size: usize) {
+    let mut interval = tokio::time::interval(Duration::from_secs(10));
+    let mut last_batch_count = tx_batch_counter.load(Ordering::SeqCst);
+    let mut last_instant = Instant::now();
+
+    loop {
+        let instant = interval.tick().await;
+        let new_batch_count = (&tx_batch_counter).load(Ordering::SeqCst);
+        let batches = new_batch_count - last_batch_count;
+
+        let secs = (instant - last_instant).as_secs_f64();
+        let tps = (txn_batch_size * batches) as f64 / secs;
+        println!(
+            "Sent {} batches in {} seconds at {} tps",
+            batches, secs, tps
+        );
+        last_batch_count = new_batch_count;
+        last_instant = instant;
+    }
+}
+
+fn spawn_tps_logging(tx_batch_counter: Arc<AtomicUsize>, txn_batch_size: usize) {
+    tokio::spawn(async move {
+        tps_logging(tx_batch_counter, txn_batch_size).await;
+    });
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -931,21 +1021,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
-    let tx_counter = Arc::new(AtomicUsize::new(0));
+    let tx_batch_counter = Arc::new(AtomicUsize::new(0));
+    spawn_tps_logging(tx_batch_counter.clone(), txn_batch_size);
 
     let rpc_sender_handles = {
         let mut rpc_sender_handles = Vec::new();
         for id in 0..num_rpc_senders {
-            rpc_sender_handles.push(
-                tokio::spawn(rpc_sender(
-                    id,
-                    rpc_sender_interval,
-                    txn_batch_receiver.clone(),
-                    txn_batch_size,
-                    client.clone(),
-                    tx_counter.clone(),
-                ))
-            )
+            rpc_sender_handles.push(tokio::spawn(rpc_sender(
+                id,
+                rpc_sender_interval,
+                txn_batch_receiver.clone(),
+                txn_batch_size,
+                client.clone(),
+                tx_batch_counter.clone(),
+            )))
         }
 
         rpc_sender_handles
@@ -962,7 +1051,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         client.clone(),
         txn_batch_size,
         txn_batch_sender.clone(),
-    ).await;
+    )
+    .await;
     let num_final_accounts = final_accounts.len();
     println!("{} final accounts created", num_final_accounts);
 
@@ -972,7 +1062,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             client.clone(),
             txn_batch_size,
             txn_batch_sender.clone(),
-        ).await;
+            args.txgen_strategy,
+        )
+        .await;
     }
 
     txn_batch_sender.close();
@@ -981,7 +1073,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let stop = Instant::now();
     let time = stop.duration_since(start).as_millis();
 
-    println!("ran for {}. num txns: {:?}.", time, tx_counter);
+    println!("ran for {}. num txns: {:?}.", time, tx_batch_counter);
 
     Ok(())
 }
