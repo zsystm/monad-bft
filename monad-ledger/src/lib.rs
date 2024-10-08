@@ -44,7 +44,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     eth_block_path: PathBuf,
-    bft_block_persist: FileBlockPersist,
+    bft_block_persist: FileBlockPersist<ST, SCT>,
     header_param: EthHeaderParam,
 
     metrics: ExecutorMetrics,
@@ -187,16 +187,13 @@ where
     fn write_bft_blocks(&self, full_blocks: &Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)>) {
         // unwrap because failure to persist a finalized block is fatal error
         for (_, _, bft_full_block) in full_blocks {
-            <FileBlockPersist as BlockPersist<ST, SCT>>::write_bft_block(
-                &self.bft_block_persist,
-                &bft_full_block.block,
-            )
-            .unwrap();
-            <FileBlockPersist as BlockPersist<ST, SCT>>::write_bft_payload(
-                &self.bft_block_persist,
-                &bft_full_block.payload,
-            )
-            .unwrap();
+            // write payload first so that header always points to payload that exists
+            self.bft_block_persist
+                .write_bft_payload(&bft_full_block.payload)
+                .unwrap();
+            self.bft_block_persist
+                .write_bft_block(&bft_full_block.block)
+                .unwrap();
         }
     }
 
@@ -223,21 +220,17 @@ where
     }
 
     fn get_ledger_fetch_response(&self, block_id: BlockId) -> BlockSyncResponseMessage<SCT> {
-        let maybe_response = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_block(
-            &self.bft_block_persist,
-            &block_id,
-        )
-        .and_then(|block| {
-            let payload_id = block.payload_id;
-            let maybe_payload = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_payload(
-                &self.bft_block_persist,
-                &payload_id,
-            );
-            match maybe_payload {
-                Ok(payload) => Ok(MonadBlock { block, payload }),
-                Err(e) => Err(e),
-            }
-        });
+        let maybe_response = self
+            .bft_block_persist
+            .read_bft_block(&block_id)
+            .and_then(|block| {
+                let payload_id = block.payload_id;
+                let maybe_payload = self.bft_block_persist.read_bft_payload(&payload_id);
+                match maybe_payload {
+                    Ok(payload) => Ok(MonadBlock { block, payload }),
+                    Err(e) => Err(e),
+                }
+            });
 
         match maybe_response {
             Ok(full_block) => BlockSyncResponseMessage::BlockFound(full_block),
