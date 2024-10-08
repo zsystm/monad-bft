@@ -1,18 +1,15 @@
-
 use async_channel::{Receiver, Sender};
 use serde_json::{json, Value};
-use tokio::{
-    join, time::Instant
-};
+use tokio::{join, time::Instant};
 
 use crate::{Account, Client, JsonResponse, EXECUTION_DELAY_WAIT_TIME};
 
 // ------------------- Refresher functions -------------------
 
-async fn batch_refresh_accounts(accounts: &mut [Account], client: Client, txn_batch_size: usize) {
-    assert!(accounts.len() == txn_batch_size);
+pub async fn batch_refresh_accounts(accounts: &mut [Account], client: Client, txn_batch_size: usize) {
+    assert!(accounts.len() <= txn_batch_size);
 
-    // TODO: implement eth_getAccount in RPC and make this a sinlge call ?
+    // TODO: implement eth_getAccount in RPC and make this a single call ?
     // create BATCH_SIZE requests for nonce updates
     let json_values = accounts
         .iter()

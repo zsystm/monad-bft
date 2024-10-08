@@ -1,10 +1,16 @@
 use std::{
+    ops::{Add, AddAssign},
+    rc::Rc,
     str::FromStr,
-    sync::{atomic::{AtomicUsize, Ordering}, Arc},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
-use async_channel::Receiver;
+use async_channel::{Receiver, Sender};
+use futures::future::join_all;
 use monad_secp::KeyPair;
 use rand::RngCore;
 use reqwest::Url;
@@ -14,7 +20,9 @@ use reth_primitives::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::time::MissedTickBehavior;
+use tokio::{select, time::MissedTickBehavior};
+
+use crate::batch_refresh_accounts;
 
 #[derive(Clone)]
 pub struct Client {
@@ -42,6 +50,116 @@ impl Client {
     }
 }
 
+#[derive(Default)]
+pub struct Rpcs {
+    pub txns: Vec<Bytes>,
+    pub accts: Vec<Account>,
+}
+
+impl Rpcs {
+    fn push(&mut self, mut rhs: Self) {
+        self.txns.append(&mut rhs.txns);
+        self.accts.append(&mut rhs.accts);
+    }
+}
+
+pub struct RpcSender {
+    pub sender: Sender<Rpcs>,
+    rx: Receiver<Vec<Account>>,
+}
+
+impl RpcSender {
+    pub fn send(&self, txns: Vec<Bytes>, accts: Vec<Account>) {
+        self.sender.send(Rpcs { txns, accts });
+    }
+
+    pub fn send_one(&self, tx: Bytes, acct: Account) {
+        self.send(vec![tx], vec![acct]);
+    }
+
+    pub fn gather_accts(&self, sink: &mut Vec<Account>) {
+        while let Ok(mut accts) = self.rx.try_recv() {
+            sink.append(&mut accts);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RpcManager {
+    client: Client,
+    tx_counter: Arc<AtomicUsize>,
+    batch_size: usize,
+    rx: Receiver<Rpcs>,
+    sender: Sender<Vec<Account>>,
+}
+
+impl RpcManager {
+    pub fn spawn(client: Client, batch_size: usize) -> RpcSender {
+        let (rpc_sender, rx) = async_channel::bounded(10000);
+        let (sender, acct_rx) = async_channel::bounded(100);
+
+        let manager = Arc::new(RpcManager {
+            client,
+            tx_counter: Arc::new(Default::default()),
+            batch_size,
+            rx,
+            sender,
+        });
+
+        tokio::spawn(manager.run());
+        RpcSender {
+            sender: rpc_sender,
+            rx: acct_rx,
+        }
+    }
+
+    pub async fn run(self: Arc<Self>) {
+        let mut interval = tokio::time::interval(Duration::from_millis(20));
+        let mut curr_batch = Rpcs::default();
+
+        loop {
+            select! {
+                _ = interval.tick() => {
+                    if curr_batch.txns.len() > 0 {
+                        self.handle_rpcs(curr_batch);
+                        curr_batch = Default::default();
+                    }
+                },
+                Ok(rpcs) = self.rx.recv() => {
+                    curr_batch.push(rpcs);
+                    if curr_batch.txns.len() >= self.batch_size {
+                        self.handle_rpcs(curr_batch);
+                        curr_batch = Default::default();
+                    }
+                }
+            };
+        }
+    }
+    async fn handle_rpcs(self: &Arc<Self>, rpcs: Rpcs) {
+        let this = Arc::clone(&self);
+        tokio::spawn(async move {
+            let reqs = rpcs
+                .txns
+                .chunks(this.batch_size)
+                .map(|batch| send_batch_raw_txns(batch, this.client.clone()));
+
+            // wait for all reqs to respond or timeout
+            select! {
+                _ = join_all(reqs) => {
+
+                },
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            };
+
+            let mut accts = rpcs.accts;
+            for accounts in accts.chunks_mut(this.batch_size) {
+                batch_refresh_accounts(accounts, this.client.clone(), this.batch_size).await;
+            }
+            this.sender.send(accts).await;
+        });
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct JsonResponse {
     pub result: Option<Value>,
@@ -58,6 +176,10 @@ impl JsonResponse {
 
         u128::from_str_radix(s, 16).unwrap()
     }
+}
+
+pub struct TxBatch {
+    pub raw_txs: Vec<Bytes>,
 }
 
 /// Represents an EOA and contains the private key for signing transactions.
@@ -183,32 +305,31 @@ impl Account {
 // ------------------- RPC functions -------------------
 
 async fn _send_raw_txn(raw_txn: Bytes, client: Client) -> usize {
-    let req = json!(
-        {
-            "jsonrpc": "2.0",
-            "method": "eth_sendRawTransaction",
-            "params": [raw_txn],
-            "id": 1,
-        }
-    );
-
-    let res = client.rpc(req).await.expect("rpc not responding");
-    let res = res
+    client
+        .rpc(json!(
+            {
+                "jsonrpc": "2.0",
+                "method": "eth_sendRawTransaction",
+                "params": [raw_txn],
+                "id": 1,
+            }
+        ))
+        .await
+        .expect("rpc not responding")
         .json::<JsonResponse>()
         .await
-        .expect("json deser of response must not fail");
-
-    res.id
+        .expect("json deser of response must not fail")
+        .id
 }
 
 // sends the requests in a batch list in the order of the raw_txns input vector. The index of each
 // request is used as the id field in the batch list. The return value is a vector of the indices
 // that returned success
-async fn send_batch_raw_txns(raw_txns: Vec<Bytes>, client: Client) -> Vec<usize> {
+async fn send_batch_raw_txns(batch: &[Bytes], client: Client) -> Vec<usize> {
     // TODO, not sure if there a batch size limit so may need to make multiple batches
     // enumerate the batch calls with id so that we can match with the array of responses that the
     // server returns. The list of responses
-    let json_values = raw_txns
+    let json_values = batch
         .iter()
         .enumerate()
         .map(|(id, txn)| {
@@ -234,18 +355,16 @@ async fn send_batch_raw_txns(raw_txns: Vec<Bytes>, client: Client) -> Vec<usize>
         }
     };
 
-    let res_ids = match res.json::<Vec<JsonResponse>>().await {
+    match res.json::<Vec<JsonResponse>>().await {
         Ok(res_ids) => res_ids
             .iter()
             .filter_map(|resp| resp.result.as_ref().map(|_| resp.id))
             .collect(),
         Err(err) => {
-            println!("balances refresh response, json deser error: {}", err);
+            println!("send batch resp, json deser error: {}", err);
             Vec::new()
         }
-    };
-
-    res_ids
+    }
 }
 
 fn private_key_to_addr(mut pk: B256) -> Address {
@@ -261,8 +380,7 @@ fn private_key_to_addr(mut pk: B256) -> Address {
 pub async fn rpc_sender(
     rpc_sender_id: usize,
     rpc_sender_interval: Duration,
-    txn_batch_receiver: Receiver<Vec<Bytes>>,
-    txn_batch_size: usize,
+    txn_batch_receiver: Receiver<TxBatch>,
     client: Client,
     tx_counter: Arc<AtomicUsize>,
 ) {
@@ -277,9 +395,9 @@ pub async fn rpc_sender(
 
         match txn_batch_receiver.recv().await {
             Ok(next_batch) => {
+                tx_counter.fetch_add(next_batch.raw_txs.len(), Ordering::SeqCst);
                 // TODO: Use the response to update nonces
-                send_batch_raw_txns(next_batch, client.clone()).await;
-                tx_counter.fetch_add(txn_batch_size, Ordering::SeqCst);
+                send_batch_raw_txns(&next_batch.raw_txs, client.clone()).await;
             }
             Err(err) => {
                 // channel is closed and no more txns exist

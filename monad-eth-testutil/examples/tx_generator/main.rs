@@ -34,7 +34,9 @@ pub const TXN_GAS_FEES: usize = TXN_CARRIAGE_COST + TXN_INTRINSIC_GAS_FEE;
 // trying to refresh nonce and balance so that it is up to date
 // NOTE: This is completely arbitrary, the time may vary depending on
 // how fast execution runs on a specific node and network conditions
-pub const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(10);
+//
+// Reasoning for 4s: 1s per block * 2 blocks for commit, 1s for execution, 1s buffer for network delays
+pub const EXECUTION_DELAY_WAIT_TIME: Duration = Duration::from_secs(4);
 
 // number of batches of transactions allowed in the txn batches channel
 pub const TX_BATCHES_CHANNEL_BUFFER: usize = 50;
@@ -342,37 +344,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let client = Client::new(args.rpc_url);
 
-    let num_rpc_senders = args.num_rpc_senders as usize;
-    let txn_batch_size = args.txn_batch_size as usize;
-
-    // let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
-    let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
-    let expected_tps =
-        (args.num_rpc_senders * args.txn_batch_size) as f64 / rpc_sender_interval.as_secs_f64();
-    println!(
-        "num rpc senders: {}. batch size: {}. expected TPS ~ {}",
-        args.num_rpc_senders, args.txn_batch_size, expected_tps
-    );
-
-    let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
-    let tx_batch_counter = Arc::new(AtomicUsize::new(0));
-    spawn_tps_logging(tx_batch_counter.clone());
-
-    let rpc_sender_handles = {
-        let mut rpc_sender_handles = Vec::new();
-        for id in 0..num_rpc_senders {
-            rpc_sender_handles.push(tokio::spawn(rpc_sender(
-                id,
-                rpc_sender_interval,
-                txn_batch_receiver.clone(),
-                txn_batch_size,
-                client.clone(),
-                tx_batch_counter.clone(),
-            )))
-        }
-
-        rpc_sender_handles
-    };
+    let rpc = RpcManager::spawn(client.clone(), args.txn_batch_size as usize);
 
     let root_account = Account::new(args.root_private_key);
     let num_final_accounts = args.num_final_accounts as usize;
@@ -383,8 +355,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.load_final_accs,
         args.priv_keys_file,
         client.clone(),
-        txn_batch_size,
-        txn_batch_sender.clone(),
+        rpc
     )
     .await;
     let num_final_accounts = final_accounts.len();
