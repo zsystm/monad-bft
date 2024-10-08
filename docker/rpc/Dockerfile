@@ -107,4 +107,5 @@ CMD monad-rpc \
     --ipc-path /monad/mempool.sock \
     --blockdb-path /monad/blockdb \
     --execution-ledger-path /monad/ledger \
-    --triedb-path /monad/triedb
+    --triedb-path /monad/triedb \
+    --allow-unprotected-txs

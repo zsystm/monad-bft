@@ -414,11 +414,19 @@ pub struct MonadEthSendRawTransactionParams {
 pub async fn monad_eth_sendRawTransaction(
     ipc: flume::Sender<TransactionSigned>,
     params: MonadEthSendRawTransactionParams,
+    allow_unprotected_txs: bool,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
     match TransactionSigned::decode_enveloped(&mut &params.hex_tx.0[..]) {
         Ok(txn) => {
+            // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
+            if !allow_unprotected_txs && txn.chain_id().is_none() {
+                return Err(JsonRpcError::custom(
+                    "Unprotected transactions are not allowed".to_string(),
+                ));
+            }
+
             let hash = txn.hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 

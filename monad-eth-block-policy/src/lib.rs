@@ -81,9 +81,12 @@ pub fn static_validate_transaction(
     chain_id: u64,
 ) -> Result<(), TransactionError> {
     // EIP-155
-    tx.chain_id()
-        .and_then(|cid| (cid == chain_id).then_some(()))
-        .ok_or(TransactionError::InvalidChainId)?;
+    // We allow legacy transactions without chain_id specified to pass through
+    if let Some(tx_chain_id) = tx.chain_id() {
+        if tx_chain_id != chain_id {
+            return Err(TransactionError::InvalidChainId);
+        }
+    }
 
     // EIP-1559
     if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
