@@ -62,7 +62,7 @@ where
 
         let filename = block.get_id().0.to_string();
         let mut file_path = PathBuf::from(&self.block_dir_path);
-        file_path.push(format!("{}", filename));
+        file_path.push(format!("{}.header", filename));
 
         let mut f = File::create(file_path).unwrap();
         f.write_all(&encoded).unwrap();
@@ -76,7 +76,7 @@ where
 
         let filename = payload.get_id().0.to_string();
         let mut file_path = PathBuf::from(&self.payload_dir_path);
-        file_path.push(format!("{}", filename));
+        file_path.push(format!("{}.payload", filename));
 
         let mut f = File::create(file_path).unwrap();
         f.write_all(&encoded).unwrap();
@@ -87,7 +87,7 @@ where
     fn read_bft_block(&self, block_id: &BlockId) -> std::io::Result<Block<SCT>> {
         let filename = block_id.0.to_string();
         let mut file_path = PathBuf::from(&self.block_dir_path);
-        file_path.push(format!("{}", filename));
+        file_path.push(format!("{}.header", filename));
         let mut file = File::open(file_path)?;
 
         let size = file.metadata()?.len();
@@ -106,7 +106,7 @@ where
     fn read_bft_payload(&self, payload_id: &PayloadId) -> std::io::Result<Payload> {
         let filename = payload_id.0.to_string();
         let mut file_path = PathBuf::from(&self.payload_dir_path);
-        file_path.push(format!("{}", filename));
+        file_path.push(format!("{}.payload", filename));
         let mut file = File::open(file_path)?;
 
         let size = file.metadata()?.len();
@@ -123,23 +123,8 @@ where
         Ok(payload)
     }
 
-    fn read_bft_block_by_num(&self, block_num: u64) -> std::io::Result<Block<SCT>> {
-        let filename = block_num.to_string();
-        let mut file_path = PathBuf::from(&self.block_dir_path);
-        file_path.push(format!("{}", filename));
-        let mut file = File::open(file_path)?;
-
-        let size = file.metadata()?.len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf)?;
-
-        // TODO maybe expect is too strict
-        let proto_block = ProtoBlock::decode(buf.as_slice()).expect("local protoblock decode");
-        let block: Block<SCT> = proto_block
-            .try_into()
-            .expect("proto_block to block should not be invalid");
-
-        Ok(block)
+    fn read_bft_block_by_num(&self, _block_num: u64) -> std::io::Result<Block<SCT>> {
+        unimplemented!()
     }
 
     fn read_encoded_eth_block(&self, block_num: u64) -> std::io::Result<Vec<u8>> {
