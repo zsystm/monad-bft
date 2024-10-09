@@ -1232,7 +1232,11 @@ where
         tracing::info!(?root, ?high_qc, "done syncing, initializing consensus");
         self.consensus = ConsensusMode::Live(consensus);
         commands.extend(self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
-        for (sender, proposal) in cached_proposals {
+        for (sender, proposal) in cached_proposals.into_iter().rev() {
+            // handle proposals in reverse order because later blocks are more likely to pass
+            // timestamp validation
+            //
+            // earlier proposals will then get short-circuited via blocksync codepath if certified
             let mut consensus = ConsensusChildState::new(self);
             commands.extend(
                 consensus

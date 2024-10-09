@@ -335,6 +335,21 @@ where
         info!(round = ?p.block.get_round(), "Received Proposal");
         debug!(proposal = ?p, "Proposal Message");
         self.metrics.consensus_events.handle_proposal += 1;
+
+        if self
+            .consensus
+            .block_sync_requests
+            .contains_key(&p.block.get_id())
+        {
+            // we can short-circuit to handle_block_sync in order to avoid doing some validation
+            // notably, we can skip timestamp validation, which is helpful if replaying proposals
+            debug!(
+                proposal = ?p,
+                "short-circuiting handle_proposal_message, blocksync'd prior"
+            );
+            return self.handle_block_sync(p.block, p.payload);
+        }
+
         let mut cmds = Vec::new();
 
         let epoch = self
@@ -626,10 +641,7 @@ where
         if self.consensus.pending_block_tree.is_valid_to_insert(&block) {
             let removed = self.consensus.block_sync_requests.remove(&block.get_id());
             if removed.is_none() {
-                warn!(
-                    ?block,
-                    "invariant broken, received blocksync'd block that wasn't requested"
-                );
+                // this can happen if corresponding proposal is received before blocksync response
                 return cmds;
             }
             assert_eq!(removed, Some(block.get_round()));
