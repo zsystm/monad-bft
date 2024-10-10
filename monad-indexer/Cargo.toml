@@ -1,0 +1,26 @@
+[package]
+name = "monad-indexer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "monad-indexer"
+bench = false
+
+[dependencies]
+alloy-rlp = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+diesel = { workspace = true, features = ["postgres"] }
+futures = { workspace = true }
+inotify = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+monad-block-persist = { path = "../monad-block-persist" }
+monad-bls = { path = "../monad-bls" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-eth-tx = { path = "../monad-eth-tx" }
+monad-secp = { path = "../monad-secp" }
+monad-types = { path = "../monad-types" }
