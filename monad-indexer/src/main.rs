@@ -8,6 +8,7 @@ use std::{
 
 use clap::Parser;
 use diesel::{Connection, PgConnection, RunQueryDsl};
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use futures::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};
 use models::{BlockHeader, BlockPayload};
@@ -17,6 +18,8 @@ use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_secp::SecpSignature;
 use tracing::{debug, error, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 pub mod models;
 pub mod schema;
@@ -138,6 +141,12 @@ async fn main() {
         .init();
 
     let cmd = Cli::parse();
+
+    {
+        let mut conn = create_db_connection();
+        conn.run_pending_migrations(MIGRATIONS)
+            .expect("failed to run migrations");
+    }
 
     let (block_header_tx, block_header_rx) = std::sync::mpsc::sync_channel(10);
     std::thread::spawn(move || {
