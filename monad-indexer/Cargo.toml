@@ -11,6 +11,7 @@ bench = false
 alloy-rlp = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 diesel = { workspace = true, features = ["postgres"] }
+diesel_migrations = { workspace = true }
 futures = { workspace = true }
 inotify = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
