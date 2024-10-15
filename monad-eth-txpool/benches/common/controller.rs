@@ -78,7 +78,7 @@ impl<'a> BenchController<'a> {
         state_backend: &InMemoryState,
         txs: &[EthSignedTransaction],
     ) -> EthTxPool {
-        let mut pool = EthTxPool::default();
+        let mut pool = EthTxPool::new(true);
 
         assert!(
             !TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::insert_tx(
