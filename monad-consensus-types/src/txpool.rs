@@ -16,6 +16,7 @@ pub enum TxPoolInsertionError {
     FeeTooLow,
     InsufficientBalance,
     PoolFull,
+    ExistingHigherPriority,
 }
 
 /// This trait represents the storage of transactions that
@@ -61,6 +62,8 @@ where
 
     /// Reclaims memory used by internal TxPool datastructures
     fn clear(&mut self);
+
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&BPT::ValidatedBlock>);
 }
 
 use rand::RngCore;
@@ -121,6 +124,14 @@ where
     fn update_committed_block(
         &mut self,
         _committed_block: &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
+    ) {
+    }
+
+    fn reset(
+        &mut self,
+        _last_delay_committed_blocks: Vec<
+            &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
+        >,
     ) {
     }
 }
