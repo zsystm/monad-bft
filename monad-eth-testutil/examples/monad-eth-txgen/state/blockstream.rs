@@ -12,6 +12,7 @@ use futures::{stream::FusedStream, FutureExt, Stream};
 use reth_rpc_types::Block;
 use thiserror::Error;
 use tokio::time::Interval;
+use tracing::debug;
 
 #[derive(Debug, Error)]
 pub enum BlockStreamError {
@@ -117,7 +118,7 @@ impl Stream for BlockStream {
                         panic!("block number not u64???");
                     };
 
-                    println!("received block {block_number}");
+                    debug!("received block {block_number}");
 
                     self.next_block_number = block_number
                         .checked_add(1)

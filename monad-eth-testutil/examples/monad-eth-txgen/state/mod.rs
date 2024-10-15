@@ -4,6 +4,7 @@ use alloy_rpc_client::ReqwestClient;
 use reth_primitives::{revm_primitives::HashSet, Address};
 use ruint::Uint;
 use tokio::sync::{RwLock, RwLockReadGuard};
+use tracing::warn;
 
 use self::manager::{ChainStateManager, ChainStateManagerHandle};
 
@@ -66,12 +67,17 @@ impl ChainStateView {
         let mut chain_state = self.state.write().await;
 
         if chain_state.accounts.contains_key(&address) {
-            panic!(
+            warn!(
                 "attempted to add new account with address {address:?} when entry already existed"
             );
+            return;
         }
 
         chain_state.new_accounts.insert(address);
+    }
+
+    pub async fn read(&self) -> RwLockReadGuard<'_, ChainState> {
+        self.state.read().await
     }
 
     pub async fn with_ro(&self, mut f: impl FnMut(RwLockReadGuard<'_, ChainState>)) {

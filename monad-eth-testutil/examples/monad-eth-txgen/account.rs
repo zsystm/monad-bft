@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use eyre::{Context, Result};
 use monad_secp::KeyPair;
 use rand::RngCore;
 use reth_primitives::{keccak256, sign_message, Address, Signature, Transaction, B256};
@@ -11,7 +12,7 @@ pub struct PrivateKey {
 
 impl PrivateKey {
     pub fn new(private_key: String) -> (Address, Self) {
-        Self::new_with_pk(B256::from_str(&private_key).unwrap())
+        Self::new_with_pk(B256::from_str(&private_key).expect("Private key string malformed"))
     }
 
     pub fn new_with_random(random: &mut impl RngCore) -> (Address, Self) {
@@ -23,19 +24,19 @@ impl PrivateKey {
     }
 
     pub fn new_with_pk(pk: B256) -> (Address, Self) {
-        let kp = KeyPair::from_bytes(pk.clone().as_mut_slice()).expect("valid pk");
-
-        let pubkey_bytes = kp.pubkey().bytes();
-        assert!(pubkey_bytes.len() == 65);
-
-        let hash = keccak256(&pubkey_bytes[1..]);
-
-        let address = Address::from_slice(&hash[12..]);
-
-        (address, Self { priv_key: pk })
+        let this = Self { priv_key: pk };
+        (this.expensive_pubkey(), this)
     }
 
-    pub fn sign_transaction(&self, transaction: &Transaction) -> Signature {
-        sign_message(self.priv_key, transaction.signature_hash()).expect("signature works")
+    pub fn sign_transaction(&self, transaction: &Transaction) -> Result<Signature> {
+        sign_message(self.priv_key, transaction.signature_hash()).context("signature works")
+    }
+
+    pub fn expensive_pubkey(&self) -> Address {
+        let kp = KeyPair::from_bytes(self.priv_key.clone().as_mut_slice()).expect("valid pk");
+        let pubkey_bytes = kp.pubkey().bytes();
+        assert!(pubkey_bytes.len() == 65);
+        let hash = keccak256(&pubkey_bytes[1..]);
+        Address::from_slice(&hash[12..])
     }
 }

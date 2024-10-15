@@ -1,7 +1,13 @@
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    ops::{Deref, DerefMut},
+    time::Duration,
+};
 
-use reth_primitives::{Signature, Transaction};
+use eyre::Result;
+use reth_primitives::{Address, Signature, Transaction};
 use tokio::time::Instant;
+use tracing::warn;
 
 use crate::{account::PrivateKey, state::ChainAccountState};
 
@@ -21,7 +27,7 @@ impl EthAccount {
         }
     }
 
-    pub fn sign_transaction(&self, transaction: &Transaction) -> Signature {
+    pub fn sign_transaction(&self, transaction: &Transaction) -> Result<Signature> {
         self.key.sign_transaction(transaction)
     }
 
@@ -60,6 +66,7 @@ impl EthAccount {
             }
         }
 
+        // todo: why is this here? can we make this not a panic?
         assert!(
             tx_nonces.len() <= MAX_NONCES,
             "tx nonces length cannot exceed max nonces"
@@ -118,7 +125,7 @@ impl EthAccount {
         *existing_tx_retries += 1;
 
         if *existing_tx_retries >= 5 {
-            panic!("retried nonce at least five times :(");
+            warn!("retried nonce at least five times :(");
         }
 
         Some(tx_nonce)

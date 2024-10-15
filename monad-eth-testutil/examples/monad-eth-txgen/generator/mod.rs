@@ -1,15 +1,20 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use config::EthTxActivityType;
+use eyre::Result;
 use reth_primitives::{
     AccessList, Address, Transaction, TransactionKind, TransactionSigned, TxEip1559, U256,
 };
 use ruint::Uint;
 use tokio::time::Instant;
+use tracing::error;
 
 pub use self::config::EthTxGeneratorConfig;
 use self::{account::EthAccount, account_pool::AccountPool, config::EthTxAddressConfig};
-use crate::{account::PrivateKey, state::ChainStateView};
+use crate::{
+    account::PrivateKey,
+    state::{ChainAccountState, ChainState, ChainStateView},
+};
 
 mod account;
 mod account_pool;
@@ -44,104 +49,30 @@ impl EthTxGenerator {
     }
 
     pub async fn generate(&mut self) -> (Vec<TransactionSigned>, Instant) {
-        let mut txs = Vec::default();
+        let tx_limit = 500;
+        let mut txs = Vec::with_capacity(tx_limit);
 
         match &self.activity {
             EthTxActivityType::NativeTokenTransfer { quantity } => {
-                let () = self
-                    .chain_state
-                    .with_ro(|chain_state| {
-                        self.account_pool.iter_random(
-                            0xFFFF,
-                            |from_address, from_account, to_address| {
-                                if txs.len() >= 512 {
-                                    return false;
-                                }
+                let chain_state = self.chain_state.read().await;
+                let (iter, accts) = self.account_pool.iter_random(tx_limit);
 
-                                let Some(from_account_state) =
-                                    chain_state.get_account(&from_address)
-                                else {
-                                    return true;
-                                };
+                for (from_address, to_address) in iter {
+                    let Some(tx) = EthTxGenerator::generate_native_tx(
+                        &mut self.root_account,
+                        quantity.clone(),
+                        &chain_state,
+                        accts,
+                        from_address,
+                        to_address,
+                    ) else {
+                        continue;
+                    };
 
-                                if from_account_state
-                                    .get_balance()
-                                    .le(&Uint::from(1_000_000_000u64))
-                                {
-                                    let Some(root_account_state) =
-                                        chain_state.get_account(&self.root_account.0)
-                                    else {
-                                        return true;
-                                    };
-
-                                    let Some(nonce) = self
-                                        .root_account
-                                        .1
-                                        .get_available_nonce(root_account_state, 512)
-                                    else {
-                                        return true;
-                                    };
-
-                                    let transaction = Transaction::Eip1559(TxEip1559 {
-                                        chain_id: 41454,
-                                        nonce,
-                                        gas_limit: 21_000,
-                                        max_fee_per_gas: 1_000,
-                                        max_priority_fee_per_gas: 0,
-                                        to: TransactionKind::Call(to_address),
-                                        value: U256::from(1_000_000_000_000u128).into(),
-                                        access_list: AccessList::default(),
-                                        input: Vec::default().into(),
-                                    });
-
-                                    let signature =
-                                        self.root_account.1.sign_transaction(&transaction);
-
-                                    let signed_transaction =
-                                        TransactionSigned::from_transaction_and_signature(
-                                            transaction,
-                                            signature,
-                                        );
-
-                                    txs.push(signed_transaction);
-                                    return true;
-                                }
-
-                                let Some(nonce) =
-                                    from_account.get_available_nonce(from_account_state, 6)
-                                else {
-                                    return true;
-                                };
-
-                                let transaction = Transaction::Eip1559(TxEip1559 {
-                                    chain_id: 41454,
-                                    nonce,
-                                    gas_limit: 21_000,
-                                    max_fee_per_gas: 1_000,
-                                    max_priority_fee_per_gas: 0,
-                                    to: TransactionKind::Call(to_address),
-                                    value: quantity.to_owned().into(),
-                                    access_list: AccessList::default(),
-                                    input: Vec::default().into(),
-                                });
-
-                                let signature = from_account.sign_transaction(&transaction);
-
-                                let signed_transaction =
-                                    TransactionSigned::from_transaction_and_signature(
-                                        transaction,
-                                        signature,
-                                    );
-
-                                txs.push(signed_transaction);
-
-                                true
-                            },
-                        )
-                    })
-                    .await;
+                    txs.push(tx);
+                }
             }
-            EthTxActivityType::Erc20TokenTransfer { contract, quantity } => unimplemented!(),
+            EthTxActivityType::Erc20TokenTransfer { .. } => unimplemented!(),
         }
 
         (
@@ -151,4 +82,79 @@ impl EthTxGenerator {
                 .unwrap(),
         )
     }
+
+    fn generate_native_tx(
+        root_account: &mut (Address, EthAccount),
+        quantity: U256,
+        chain_state: &ChainState,
+        accts: &mut HashMap<Address, EthAccount>,
+        from_address: Address,
+        to_address: Address,
+    ) -> Option<TransactionSigned> {
+        let from_account = accts.get_mut(&from_address).unwrap();
+        let from_account_state = chain_state.get_account(&from_address)?;
+
+        let insufficient_balance = from_account_state
+            .get_balance()
+            .le(&Uint::from(1_000_000_000u64));
+
+        if insufficient_balance {
+            // let root_accout = &mut self.root_account;
+            native_transfer_tx(
+                root_account.0,
+                &mut root_account.1,
+                from_address,
+                &chain_state,
+                quantity.clone(),
+            )
+        } else {
+            native_transfer_tx(
+                from_address,
+                from_account,
+                to_address,
+                &chain_state,
+                quantity.clone(),
+            )
+        }
+    }
+}
+
+fn native_transfer_tx(
+    from: Address,
+    from_acct: &mut EthAccount,
+    to: Address,
+    chain_state: &ChainState,
+    quantity: U256,
+) -> Option<TransactionSigned> {
+    chain_state.get_account(&from)?;
+
+    let nonce = from_acct.get_available_nonce(chain_state.get_account(&from)?, 512)?;
+
+    let transaction = Transaction::Eip1559(TxEip1559 {
+        chain_id: 41454,
+        nonce,
+        gas_limit: 21_000,
+        max_fee_per_gas: 1_000,
+        max_priority_fee_per_gas: 0,
+        to: TransactionKind::Call(to),
+        value: quantity.into(),
+        access_list: AccessList::default(),
+        input: Vec::default().into(),
+    });
+
+    let signature = match from_acct.sign_transaction(&transaction) {
+        Ok(s) => s,
+        Err(e) => {
+            error!(
+                signer_pub_key = from.to_string(),
+                "Error signing transaction during generation: {e}"
+            );
+            return None;
+        }
+    };
+
+    let signed_transaction =
+        TransactionSigned::from_transaction_and_signature(transaction, signature);
+
+    return Some(signed_transaction);
 }

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use rand::{
-    rngs::{StdRng, ThreadRng},
-    Rng, SeedableRng,
+    rngs::{SmallRng, StdRng},
+    seq::SliceRandom,
+    SeedableRng,
 };
 use reth_primitives::Address;
 
@@ -62,52 +63,48 @@ impl AccountPool {
         }
     }
 
-    pub fn iter_random(
-        &mut self,
+    pub fn iter_random<'a>(
+        &'a mut self,
         limit: usize,
-        mut f: impl FnMut(Address, &mut EthAccount, Address) -> bool,
-    ) {
-        let mut from_generator = Self::generator(&self.from);
-        let mut to_generator = Self::generator(&self.to);
+    ) -> (RandomAccountIter<'a>, &'a mut HashMap<Address, EthAccount>) {
+        let mut to_idxs: Vec<_> = (0..self.to.len()).collect();
+        let mut from_idxs: Vec<_> = (0..self.from.len()).collect();
+        let mut rng = SmallRng::from_entropy();
+        to_idxs.shuffle(&mut rng);
+        from_idxs.shuffle(&mut rng);
 
-        for _ in 0..limit {
-            let Some(from) = from_generator() else {
-                return;
-            };
-
-            let Some(to) = to_generator() else {
-                return;
-            };
-
-            let from_account = self.accounts.get_mut(&from).expect("from account exists");
-
-            if !f(from, from_account, to) {
-                break;
-            }
-        }
+        (
+            RandomAccountIter {
+                to_idxs: to_idxs.into_iter(),
+                from_idxs: from_idxs.into_iter(),
+                to: &self.to,
+                from: &self.from,
+                limit,
+                // accounts: &mut self.accounts,
+            },
+            &mut self.accounts,
+        )
     }
+}
 
-    fn generator<'a>(list: &'a [Address]) -> Box<dyn FnMut() -> Option<Address> + 'a> {
-        let mut rng = ThreadRng::default();
-        let mut idxs = (0..list.len()).collect::<Vec<_>>();
+pub struct RandomAccountIter<'a> {
+    to_idxs: std::vec::IntoIter<usize>,
+    from_idxs: std::vec::IntoIter<usize>,
+    to: &'a [Address],
+    from: &'a [Address],
+    limit: usize,
+}
 
-        Box::new(move || {
-            if list.len() == 1 {
-                return Some(list[0]);
-            }
+impl<'a> Iterator for RandomAccountIter<'a> {
+    type Item = (Address, Address);
 
-            if idxs.is_empty() {
-                return None;
-            }
-
-            let idx_idx = rng.gen_range(0..idxs.len());
-            let last_idx_idx = idxs.len() - 1;
-
-            idxs.swap(idx_idx, last_idx_idx);
-
-            let idx = idxs.pop().expect("last element exists");
-
-            Some(list[idx])
-        })
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.limit == 0 {
+            return None;
+        }
+        self.limit -= 1;
+        let to = self.to[self.to_idxs.next()?];
+        let from = self.from[self.from_idxs.next()?];
+        Some((from, to))
     }
 }

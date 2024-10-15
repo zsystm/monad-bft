@@ -4,12 +4,14 @@ use alloy_json_rpc::RpcError;
 use alloy_primitives::FixedBytes;
 use alloy_rpc_client::ReqwestClient;
 use alloy_transport::TransportErrorKind;
+use eyre::{Context, ContextCompat};
 use futures::{FutureExt, StreamExt};
 use reth_primitives::U256;
 use reth_rpc_types::{Block, BlockTransactions};
 use ruint::Uint;
 use thiserror::Error;
 use tokio::{sync::RwLock, task::JoinHandle, time::interval};
+use tracing::{debug, error, info, warn};
 
 use super::{
     blockstream::{BlockStream, BlockStreamError},
@@ -20,6 +22,9 @@ pub struct ChainStateManager {
     client: ReqwestClient,
     blockstream: BlockStream,
     chain_state: SharedChainState,
+
+    blocks_counter: usize,
+    txs_counter: usize,
 }
 
 impl ChainStateManager {
@@ -33,6 +38,8 @@ impl ChainStateManager {
                 client,
                 blockstream,
                 chain_state: chain_state.clone(),
+                blocks_counter: 0,
+                txs_counter: 0,
             },
             ChainStateView::new(chain_state),
         )
@@ -43,6 +50,7 @@ impl ChainStateManager {
     }
 
     async fn run(mut self) -> Result<(), ChainStateManagerError> {
+        info!("Chain state manager started");
         let mut fetch_new_accounts_timer = interval(Duration::from_millis(500));
 
         loop {
@@ -50,10 +58,17 @@ impl ChainStateManager {
                 biased;
 
                 result = self.blockstream.select_next_some() => {
-                    let () = self.process_new_block(result?).await?;
+                    match result {
+                        Ok(block) => if let Err(e) = self.process_new_block(block).await {
+                            error!("Error processing new block: {e}");
+                        },
+                        Err(e) => error!("Blockstream returned error: {e}"),
+                    }
                 }
                 _ = fetch_new_accounts_timer.tick() => {
-                    let () = self.fetch_new_accounts().await?;
+                    if let Err(e) = self.fetch_new_accounts().await  {
+                        error!("Fetching new accounts failed: {e}");
+                    }
                 }
             }
         }
@@ -64,16 +79,17 @@ impl ChainStateManager {
             BlockTransactions::Full(transactions) => transactions,
             BlockTransactions::Hashes(_) | BlockTransactions::Uncle => {
                 if block.header.nonce != Some(FixedBytes::new([0u8; 8])) {
-                    panic!("got uncle for non-genesis block");
+                    error!("got uncle for non-genesis block");
                 }
-
                 return Ok(());
             }
         };
 
         let mut chain_state = self.chain_state.write().await;
 
-        println!("got block with {} transactions", transactions.len());
+        debug!(num_txs = transactions.len(), "Processed block");
+        self.blocks_counter += 1;
+        self.txs_counter += transactions.len();
 
         for transaction in transactions {
             if let Some(from_account_state) = chain_state.accounts.get_mut(&transaction.from) {
@@ -85,10 +101,10 @@ impl ChainStateManager {
                     .checked_mul(Uint::<256, 4>::from_limbs_slice(
                         &transaction
                             .gas_price
-                            .expect("transaction has gas price")
+                            .context("transaction has gas price")?
                             .into_limbs(),
                     ))
-                    .expect("gas cost does not overflow");
+                    .context("gas cost does not overflow")?;
 
                 from_account_state.balance = from_account_state
                     .balance
@@ -100,7 +116,7 @@ impl ChainStateManager {
                         )
                     })
                     .checked_sub(gas_cost)
-                    .expect("balance does not underflow from gas cost");
+                    .context("balance does not underflow from gas cost")?;
 
                 from_account_state.nonce = nonce.checked_add(1).expect("nonce does not overflow");
             }
@@ -112,17 +128,18 @@ impl ChainStateManager {
                 to_account_state.balance = to_account_state
                     .balance
                     .checked_add(transaction.value)
-                    .expect("balanced does not overflow")
+                    .context("balanced does not overflow")?
             }
         }
 
-        Ok(())
+        return Ok(());
     }
 
     async fn fetch_new_accounts(&mut self) -> Result<(), ChainStateManagerError> {
         let Some(current_block_number) = self.blockstream.get_current_block_number() else {
             return Ok(());
         };
+        debug!("Fetching new accounts");
 
         let new_accounts = {
             let chain_state = self.chain_state.read().await;
@@ -130,7 +147,7 @@ impl ChainStateManager {
             chain_state
                 .new_accounts
                 .iter()
-                .take(256)
+                .take(500)
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -153,38 +170,35 @@ impl ChainStateManager {
             })
             .collect::<Result<Vec<_>, ChainStateManagerError>>()?;
 
-        batch.send().await.expect("batch succeeds");
+        batch.send().await?;
 
         let mut chain_state = self.chain_state.write().await;
 
         for (address, balance_waiter, nonce_waiter) in calls {
-            let balance_str: String = balance_waiter.await?;
-            let balance = U256::from_str_radix(
-                balance_str
-                    .strip_prefix("0x")
-                    .expect("balance string always has 0x prefix"),
-                16,
-            )
-            .expect("balance string is valid U256");
+            let balance = {
+                let balance_str: String = balance_waiter.await?;
+                let balance_str = balance_str.strip_prefix("0x").unwrap_or(&balance_str);
+                U256::from_str_radix(&balance_str, 16).context("balance string is valid U256")?
+            };
 
             let nonce_str: String = nonce_waiter.await?;
             let nonce = u64::from_str_radix(
                 nonce_str
                     .strip_prefix("0x")
-                    .expect("nonce string always has 0x prefix"),
+                    .context("nonce string always has 0x prefix")?,
                 16,
             )
-            .expect("nonce string is valid u64");
+            .context("nonce string is valid u64")?;
 
             if !chain_state.new_accounts.remove(&address) {
-                panic!("synced new account {address:?} when not requested!");
+                warn!("synced new account {address:?} when not requested!");
             }
 
             if let Some(existing) = chain_state
                 .accounts
                 .insert(address, ChainAccountState::new(balance, nonce))
             {
-                panic!("added address {address:?} when already existing: {existing:#?}");
+                warn!("added address {address:?} when already existing: {existing:#?}");
             }
         }
 
@@ -202,6 +216,9 @@ pub enum ChainStateManagerError {
 
     #[error(transparent)]
     BlockStreamError(#[from] BlockStreamError),
+
+    #[error("RpcResponseError(0)")]
+    Expect(#[from] eyre::Error),
 }
 
 pub struct ChainStateManagerHandle(JoinHandle<Result<(), ChainStateManagerError>>);
