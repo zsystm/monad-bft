@@ -1,11 +1,7 @@
-use std::{
-    collections::VecDeque,
-    ops::{Deref, DerefMut},
-    time::Duration,
-};
+use std::{collections::VecDeque, time::Duration};
 
 use eyre::Result;
-use reth_primitives::{Address, Signature, Transaction};
+use reth_primitives::{Signature, Transaction};
 use tokio::time::Instant;
 use tracing::warn;
 
@@ -47,7 +43,7 @@ impl EthAccount {
         None
     }
 
-    pub fn get_available_nonces<const MAX_NONCES: usize>(
+    pub fn _get_available_nonces<const MAX_NONCES: usize>(
         &mut self,
         account_state: &ChainAccountState,
         max_inflight: usize,

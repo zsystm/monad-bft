@@ -35,5 +35,5 @@ pub enum EthTxAddressPoolConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EthTxActivityType {
     NativeTokenTransfer { quantity: U256 },
-    Erc20TokenTransfer { contract: String, quantity: U256 },
+    Erc20TokenTransfer { _contract: String, _quantity: U256 },
 }

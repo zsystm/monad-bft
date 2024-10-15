@@ -1,7 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
 use config::EthTxActivityType;
-use eyre::Result;
 use reth_primitives::{
     AccessList, Address, Transaction, TransactionKind, TransactionSigned, TxEip1559, U256,
 };
@@ -13,7 +12,7 @@ pub use self::config::EthTxGeneratorConfig;
 use self::{account::EthAccount, account_pool::AccountPool, config::EthTxAddressConfig};
 use crate::{
     account::PrivateKey,
-    state::{ChainAccountState, ChainState, ChainStateView},
+    state::{ChainState, ChainStateView},
 };
 
 mod account;

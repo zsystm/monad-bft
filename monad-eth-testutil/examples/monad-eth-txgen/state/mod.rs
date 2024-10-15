@@ -79,10 +79,4 @@ impl ChainStateView {
     pub async fn read(&self) -> RwLockReadGuard<'_, ChainState> {
         self.state.read().await
     }
-
-    pub async fn with_ro(&self, mut f: impl FnMut(RwLockReadGuard<'_, ChainState>)) {
-        let chain_state = self.state.read().await;
-
-        f(chain_state)
-    }
 }
