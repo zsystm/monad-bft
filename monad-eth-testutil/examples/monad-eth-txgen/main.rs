@@ -4,6 +4,7 @@ use eyre::{bail, Result};
 use futures::{stream::FuturesUnordered, StreamExt};
 use reth_primitives::TransactionSigned;
 use std::{fs::File, path::PathBuf};
+use tokio::time::{sleep_until, Instant};
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 use url::Url;
@@ -64,11 +65,13 @@ async fn run(client: ReqwestClient, tx_generator_config: EthTxGeneratorConfig) -
 
     let mut tx_generator = EthTxGenerator::new(tx_generator_config, chain_state.clone()).await;
     let mut batch_futs = FuturesUnordered::new();
+    let mut next_batch_time = Instant::now();
 
     loop {
         tokio::select! {
-            _ = tx_generator.tick() => {
-                let tx_batch = tx_generator.generate().await;
+            _ = sleep_until(next_batch_time) => {
+                let (tx_batch, instant) = tx_generator.generate().await;
+                next_batch_time = instant;
                 send_batch(&client, &mut batch_futs, tx_batch);
             }
             result = batch_futs.select_next_some(), if !batch_futs.is_empty() => {

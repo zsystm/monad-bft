@@ -4,12 +4,12 @@
   "addresses": {
     "from": {
       "type": "random_seeded",
-      "seed": 10,
+      "seed": 22,
       "count": 1000
     },
     "to": {
       "type": "random_seeded",
-      "seed": 12,
+      "seed": 11,
       "count": 20000
     }
   },
