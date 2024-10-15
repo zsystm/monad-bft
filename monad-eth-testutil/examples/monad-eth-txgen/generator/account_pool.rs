@@ -10,6 +10,7 @@ use reth_primitives::Address;
 use super::{account::EthAccount, config::EthTxAddressPoolConfig};
 use crate::{account::PrivateKey, state::ChainStateView};
 
+#[derive(Debug)]
 pub struct AccountPool {
     accounts: HashMap<Address, EthAccount>,
     from: Vec<Address>,

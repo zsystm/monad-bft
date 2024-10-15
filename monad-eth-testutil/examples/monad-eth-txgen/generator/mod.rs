@@ -5,8 +5,8 @@ use reth_primitives::{
     AccessList, Address, Transaction, TransactionKind, TransactionSigned, TxEip1559, U256,
 };
 use ruint::Uint;
-use tokio::time::Instant;
-use tracing::error;
+use tokio::time::{Instant, Interval};
+use tracing::{error, info, instrument, span, trace, Level};
 
 pub use self::config::EthTxGeneratorConfig;
 use self::{account::EthAccount, account_pool::AccountPool, config::EthTxAddressConfig};
@@ -19,11 +19,21 @@ mod account;
 mod account_pool;
 mod config;
 
+const TX_LIMIT: usize = 500;
+
+#[derive(Debug)]
 pub struct EthTxGenerator {
     root_account: (Address, EthAccount),
     account_pool: AccountPool,
     chain_state: ChainStateView,
     activity: EthTxActivityType,
+    interval: Interval,
+
+    // metrics
+    txs_sent: usize,
+    seed_txs_sent: usize,
+    txs_sent_at_reported: usize,
+    last_called_time: Instant,
 }
 
 impl EthTxGenerator {
@@ -32,29 +42,50 @@ impl EthTxGenerator {
             root_private_key,
             addresses: EthTxAddressConfig { from, to },
             activity,
+            target_tps,
         } = config;
 
         let (root_account_address, root_account) = PrivateKey::new(root_private_key);
         chain_state.add_new_account(root_account_address).await;
 
         let account_pool = AccountPool::new_with_config(from, to, &chain_state).await;
+        let interval =
+            tokio::time::interval(Duration::from_secs_f64(TX_LIMIT as f64 / target_tps as f64));
+
+        info!(
+            "Interval set to {} ms with {} batch size to target {} tps",
+            interval.period().as_millis(),
+            TX_LIMIT,
+            target_tps
+        );
 
         Self {
             root_account: (root_account_address, EthAccount::new(root_account)),
             account_pool,
             chain_state,
             activity,
+            interval,
+            // metrics
+            txs_sent: 0,
+            seed_txs_sent: 0,
+            last_called_time: Instant::now(),
+            txs_sent_at_reported: 0,
         }
     }
 
-    pub async fn generate(&mut self) -> (Vec<TransactionSigned>, Instant) {
-        let tx_limit = 500;
-        let mut txs = Vec::with_capacity(tx_limit);
+    pub async fn tick(&mut self) {
+        self.interval.tick().await;
+        // tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    pub async fn generate(&mut self) -> Vec<TransactionSigned> {
+        let mut txs = Vec::with_capacity(TX_LIMIT);
+        trace!("Starting generate");
 
         match &self.activity {
             EthTxActivityType::NativeTokenTransfer { quantity } => {
                 let chain_state = self.chain_state.read().await;
-                let (iter, accts) = self.account_pool.iter_random(tx_limit);
+                let (iter, accts) = self.account_pool.iter_random(0xFFFF);
 
                 for (from_address, to_address) in iter {
                     let Some(tx) = EthTxGenerator::generate_native_tx(
@@ -64,6 +95,7 @@ impl EthTxGenerator {
                         accts,
                         from_address,
                         to_address,
+                        &mut self.seed_txs_sent,
                     ) else {
                         continue;
                     };
@@ -74,12 +106,25 @@ impl EthTxGenerator {
             EthTxActivityType::Erc20TokenTransfer { .. } => unimplemented!(),
         }
 
-        (
-            txs,
-            Instant::now()
-                .checked_add(Duration::from_millis(1))
-                .unwrap(),
-        )
+        // metrics
+        self.txs_sent += txs.len();
+        let now = Instant::now();
+        let elapsed = (now - self.last_called_time).as_millis();
+        if elapsed > 1000 {
+            let recent_txs = self.txs_sent - self.txs_sent_at_reported;
+            let tps = recent_txs as u128 * 1000 / elapsed;
+
+            info!(
+                "Sent {:.5} txs in {elapsed:.5} ms for tps of {:.5}. Total seed txs {:.5}",
+                recent_txs, tps, self.seed_txs_sent
+            );
+
+            self.txs_sent_at_reported = self.txs_sent;
+            self.last_called_time = now;
+        }
+
+        trace!("End generate");
+        txs
     }
 
     fn generate_native_tx(
@@ -89,6 +134,7 @@ impl EthTxGenerator {
         accts: &mut HashMap<Address, EthAccount>,
         from_address: Address,
         to_address: Address,
+        seed_txs_sent: &mut usize,
     ) -> Option<TransactionSigned> {
         let from_account = accts.get_mut(&from_address).unwrap();
         let from_account_state = chain_state.get_account(&from_address)?;
@@ -98,14 +144,18 @@ impl EthTxGenerator {
             .le(&Uint::from(1_000_000_000u64));
 
         if insufficient_balance {
-            // let root_accout = &mut self.root_account;
-            native_transfer_tx(
+            // seed account from root
+            let tx = native_transfer_tx(
                 root_account.0,
                 &mut root_account.1,
                 from_address,
                 &chain_state,
-                quantity.clone(),
-            )
+                quantity.clone() * Uint::from(10000),
+            );
+            if tx.is_some() {
+                *seed_txs_sent += 1; // can we avoid this ugliness?
+            }
+            tx
         } else {
             native_transfer_tx(
                 from_address,

@@ -10,7 +10,11 @@ use reth_primitives::U256;
 use reth_rpc_types::{Block, BlockTransactions};
 use ruint::Uint;
 use thiserror::Error;
-use tokio::{sync::RwLock, task::JoinHandle, time::interval};
+use tokio::{
+    sync::RwLock,
+    task::JoinHandle,
+    time::{interval, Instant},
+};
 use tracing::{debug, error, info, warn};
 
 use super::{
@@ -53,10 +57,36 @@ impl ChainStateManager {
         info!("Chain state manager started");
         let mut fetch_new_accounts_timer = interval(Duration::from_millis(500));
 
+        let mut last_blocks_count = 0;
+        let mut last_txs_count = 0;
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut last_time = Instant::now();
+
         loop {
             tokio::select! {
                 biased;
 
+                now = interval.tick() => {
+                    let new_blocks = self.blocks_counter - last_blocks_count;
+                    let elapsed = (now - last_time).as_millis();
+                    let new_txs = self.txs_counter - last_txs_count;
+                    let block_time = elapsed / new_blocks.max(1) as u128;
+                    let tps = new_txs as u128 * 1000 / elapsed.max(1);
+
+                    last_blocks_count = self.blocks_counter;
+                    last_txs_count = self.txs_counter;
+                    last_time = now;
+                    let seeded_accounts = self.chain_state
+                        .read()
+                        .await
+                        .accounts
+                        .iter()
+                        .filter(|a| a.1.balance.gt(&Uint::from(0)))
+                        .count();
+
+
+                    info!(elapsed, new_blocks, new_txs, block_time, tps, seeded_accounts, "Chain metrics");
+                }
                 result = self.blockstream.select_next_some() => {
                     match result {
                         Ok(block) => if let Err(e) = self.process_new_block(block).await {

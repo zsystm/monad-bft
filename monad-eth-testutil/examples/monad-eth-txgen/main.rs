@@ -3,9 +3,9 @@ use clap::Parser;
 use eyre::{bail, Result};
 use futures::{stream::FuturesUnordered, StreamExt};
 use reth_primitives::TransactionSigned;
-use std::path::PathBuf;
-use tokio::time::Instant;
-use tracing::{debug, error, trace, warn};
+use std::{fs::File, path::PathBuf};
+use tracing::{debug, error, info, trace, warn};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 use url::Url;
 
 use crate::{
@@ -28,10 +28,24 @@ pub struct EthTxGenCli {
 }
 
 fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(File::create("logs.txt").unwrap())
+                .with_filter(EnvFilter::new("monad_eth_txgen=trace")),
+        )
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stdout)
+                .with_filter(EnvFilter::new("monad_eth_txgen=info")),
+        )
+        .init();
+
     let args = EthTxGenCli::parse();
     let config = EthTxGeneratorConfig::new_from_file(args.config).expect("Failed to load config");
     let client: ReqwestClient = ClientBuilder::default().http(args.rpc_url);
+
+    info!("Config: {config:?}");
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -49,25 +63,20 @@ async fn run(client: ReqwestClient, tx_generator_config: EthTxGeneratorConfig) -
         ChainState::new_with_manager(client.clone()).await;
 
     let mut tx_generator = EthTxGenerator::new(tx_generator_config, chain_state.clone()).await;
-    let mut next_batch_time = Instant::now();
     let mut batch_futs = FuturesUnordered::new();
 
     loop {
         tokio::select! {
-            () = tokio::time::sleep_until(next_batch_time) => {
-                let (tx_batch, _next_batch_time) = tx_generator.generate().await;
-                next_batch_time = _next_batch_time;
-
+            _ = tx_generator.tick() => {
+                let tx_batch = tx_generator.generate().await;
                 send_batch(&client, &mut batch_futs, tx_batch);
             }
-
             result = batch_futs.select_next_some(), if !batch_futs.is_empty() => {
                 if let Err(err) = result {
                     warn!("expected tx fut to resolve to valid tx hash, e: {}", err);
                 }
                 // do smt with tx_hash
             }
-
             error = &mut chain_state_manager_handle => {
                 bail!(error);
             }

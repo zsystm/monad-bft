@@ -1,19 +1,20 @@
 {
   "root_private_key": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+  "target_tps": 5000,
   "addresses": {
     "from": {
       "type": "random_seeded",
-      "seed": 12,
-      "count": 10000
+      "seed": 10,
+      "count": 1000
     },
     "to": {
       "type": "random_seeded",
       "seed": 12,
-      "count": 10000
+      "count": 20000
     }
   },
   "activity": {
     "type": "native_token_transfer",
-    "quantity": 1000000
+    "quantity": 10000
   }
 }

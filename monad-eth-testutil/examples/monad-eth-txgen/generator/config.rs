@@ -3,9 +3,10 @@ use std::error::Error;
 use ruint::aliases::U256;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct EthTxGeneratorConfig {
     pub(super) root_private_key: String,
+    pub(super) target_tps: usize,
     pub(super) addresses: EthTxAddressConfig,
     pub(super) activity: EthTxActivityType,
 }
@@ -18,20 +19,20 @@ impl EthTxGeneratorConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct EthTxAddressConfig {
     pub(super) from: EthTxAddressPoolConfig,
     pub(super) to: EthTxAddressPoolConfig,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EthTxAddressPoolConfig {
     Single { private_key: String },
     RandomSeeded { seed: u64, count: usize },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EthTxActivityType {
     NativeTokenTransfer { quantity: U256 },
