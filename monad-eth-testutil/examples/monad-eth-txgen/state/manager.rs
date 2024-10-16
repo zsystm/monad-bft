@@ -15,7 +15,7 @@ use tokio::{
     task::JoinHandle,
     time::{interval, Instant},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::{
     blockstream::{BlockStream, BlockStreamError},
@@ -88,6 +88,7 @@ impl ChainStateManager {
                     info!(elapsed, new_blocks, new_txs, block_time, tps, seeded_accounts, "Chain metrics");
                 }
                 result = self.blockstream.select_next_some() => {
+                    debug!("Processing new block");
                     match result {
                         Ok(block) => if let Err(e) = self.process_new_block(block).await {
                             error!("Error processing new block: {e}");
@@ -148,7 +149,8 @@ impl ChainStateManager {
                     .checked_sub(gas_cost)
                     .context("balance does not underflow from gas cost")?;
 
-                from_account_state.nonce = nonce.checked_add(1).expect("nonce does not overflow");
+                from_account_state.next_nonce =
+                    nonce.checked_add(1).expect("nonce does not overflow");
             }
 
             if let Some(to_account_state) = transaction
@@ -169,7 +171,6 @@ impl ChainStateManager {
         let Some(current_block_number) = self.blockstream.get_current_block_number() else {
             return Ok(());
         };
-        debug!("Fetching new accounts");
 
         let new_accounts = {
             let chain_state = self.chain_state.read().await;
@@ -185,6 +186,10 @@ impl ChainStateManager {
         if new_accounts.is_empty() {
             return Ok(());
         }
+        debug!(
+            new_accounts_len = new_accounts.len(),
+            "Fetching new accounts"
+        );
 
         let mut batch = self.client.new_batch();
 
@@ -224,6 +229,7 @@ impl ChainStateManager {
                 warn!("synced new account {address:?} when not requested!");
             }
 
+            trace!("Inserting new account");
             if let Some(existing) = chain_state
                 .accounts
                 .insert(address, ChainAccountState::new(balance, nonce))

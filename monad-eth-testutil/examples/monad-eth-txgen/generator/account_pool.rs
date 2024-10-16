@@ -11,7 +11,7 @@ use crate::{account::PrivateKey, state::ChainStateView};
 #[derive(Debug)]
 pub struct AccountPool {
     accounts: HashMap<Address, EthAccount>,
-    from: Vec<Address>,
+    pub from: Vec<Address>,
     to: Vec<Address>,
 }
 

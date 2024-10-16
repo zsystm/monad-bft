@@ -3,7 +3,7 @@ use std::{collections::VecDeque, time::Duration};
 use eyre::Result;
 use reth_primitives::{Signature, Transaction};
 use tokio::time::Instant;
-use tracing::warn;
+use tracing::{trace, warn};
 
 use crate::{account::PrivateKey, state::ChainAccountState};
 
@@ -72,7 +72,8 @@ impl EthAccount {
     }
 
     fn update_nonce(&mut self, account_state: &ChainAccountState) {
-        let nonce = account_state.get_nonce();
+        let nonce = account_state.get_next_nonce();
+        trace!(chain_state_nonce = nonce, generator_nonce = self.next_nonce, "update nonce");
 
         while self.next_nonce < nonce {
             self.next_nonce = self

@@ -6,6 +6,7 @@ use reth_primitives::{
 };
 use ruint::Uint;
 use tokio::time::Instant;
+use tracing::{error, trace};
 
 pub use self::config::EthTxGeneratorConfig;
 use self::{account::EthAccount, account_pool::AccountPool, config::EthTxAddressConfig};
@@ -17,7 +18,7 @@ mod config;
 
 pub struct EthTxGenerator {
     root_account: (Address, EthAccount),
-    account_pool: AccountPool,
+    pub account_pool: AccountPool,
     chain_state: ChainStateView,
     activity: EthTxActivityType,
 }
@@ -58,6 +59,7 @@ impl EthTxGenerator {
 
                         let Some(from_account_state) = chain_state.get_account(&from_address)
                         else {
+                            trace!("Skipping from acct, not in chain state");
                             return true;
                         };
 
@@ -65,9 +67,21 @@ impl EthTxGenerator {
                             .get_balance()
                             .le(&Uint::from(1_000_000_000u64))
                         {
+                            // from.to_string().
+                            {
+                                let mut from = from_address.to_string();
+                                from.truncate(8);
+                                trace!(
+                                    bal = from_account_state.get_balance().to_string(),
+                                    from,
+                                    "Seeding acct from root bc balance is too low"
+                                );
+                            }
+
                             let Some(root_account_state) =
                                 chain_state.get_account(&self.root_account.0)
                             else {
+                                error!("Root account state not found");
                                 return true;
                             };
 
@@ -76,6 +90,7 @@ impl EthTxGenerator {
                                 .1
                                 .get_available_nonce(root_account_state, 512)
                             else {
+                                trace!("Skipping seeding from root bc root nonce not available");
                                 return true;
                             };
 
@@ -85,13 +100,14 @@ impl EthTxGenerator {
                                 gas_limit: 21_000,
                                 max_fee_per_gas: 1_000,
                                 max_priority_fee_per_gas: 0,
-                                to: TransactionKind::Call(to_address),
-                                value: U256::from(1_000_000_000_000u128).into(),
+                                to: TransactionKind::Call(from_address),
+                                value: U256::from(1_000_000_000_000_000u128).into(),
                                 access_list: AccessList::default(),
                                 input: Vec::default().into(),
                             });
 
-                            let signature = self.root_account.1.sign_transaction(&transaction).unwrap();
+                            let signature =
+                                self.root_account.1.sign_transaction(&transaction).unwrap();
 
                             let signed_transaction =
                                 TransactionSigned::from_transaction_and_signature(
@@ -99,12 +115,14 @@ impl EthTxGenerator {
                                     signature,
                                 );
 
+                            trace!("pushing seed tx");
                             txs.push(signed_transaction);
                             return true;
                         }
 
                         let Some(nonce) = from_account.get_available_nonce(from_account_state, 6)
                         else {
+                            trace!("Skipping bc from account has no available nonce");
                             return true;
                         };
 
@@ -127,6 +145,7 @@ impl EthTxGenerator {
                             signature,
                         );
 
+                        trace!("pushing normal transfer tx");
                         txs.push(signed_transaction);
 
                         true

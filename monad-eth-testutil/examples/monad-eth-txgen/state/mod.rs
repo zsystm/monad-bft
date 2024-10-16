@@ -34,20 +34,23 @@ impl ChainState {
 #[derive(Debug)]
 pub struct ChainAccountState {
     balance: Uint<256, 4>,
-    nonce: u64,
+    next_nonce: u64,
 }
 
 impl ChainAccountState {
-    pub fn new(balance: Uint<256, 4>, nonce: u64) -> Self {
-        Self { balance, nonce }
+    pub fn new(balance: Uint<256, 4>, next_nonce: u64) -> Self {
+        Self {
+            balance,
+            next_nonce,
+        }
     }
 
     pub fn get_balance(&self) -> Uint<256, 4> {
         self.balance
     }
 
-    pub fn get_nonce(&self) -> u64 {
-        self.nonce
+    pub fn get_next_nonce(&self) -> u64 {
+        self.next_nonce
     }
 }
 
