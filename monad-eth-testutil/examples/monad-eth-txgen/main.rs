@@ -12,7 +12,13 @@ use std::{
 };
 use tokio::time::{sleep_until, Instant};
 use tracing::{debug, error, info, trace, warn};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::{
+    fmt::{self, MakeWriter},
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+    EnvFilter, Layer,
+};
 use url::Url;
 
 use crate::{
@@ -35,18 +41,7 @@ pub struct EthTxGenCli {
 }
 
 fn main() {
-    tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_writer(File::create("logs.txt").unwrap())
-                .with_filter(EnvFilter::new("monad_eth_txgen=trace")),
-        )
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stdout)
-                .with_filter(EnvFilter::new("monad_eth_txgen=info")),
-        )
-        .init();
+    setup_logging();
 
     let args = EthTxGenCli::parse();
     let config = EthTxGeneratorConfig::new_from_file(args.config).expect("Failed to load config");
@@ -142,4 +137,42 @@ async fn send_batch(
         }
         trace!(num_txs, "Txs sent");
     });
+}
+
+fn setup_logging() {
+    // trace log volume is *very* high, so we rotate and drop these aggressively
+    let trace_layer = fmt::layer()
+        .with_writer(
+            RollingFileAppender::builder()
+                .max_log_files(30)
+                .filename_prefix("trace")
+                .rotation(Rotation::MINUTELY)
+                .build("./")
+                .unwrap(),
+        )
+        .with_filter(EnvFilter::new("monad_eth_txgen=trace"));
+
+    // retain debug logs for longer
+    let debug_layer = fmt::layer()
+        .with_writer(
+            RollingFileAppender::builder()
+                .max_log_files(5)
+                .filename_prefix("debug")
+                .rotation(Rotation::HOURLY)
+                .build("./")
+                .unwrap(),
+        )
+        .with_filter(EnvFilter::new("monad_eth_txgen=debug"));
+
+    // log high signal aggregations to stdio
+    let stdio_layer = fmt::layer()
+        .with_writer(std::io::stdout)
+        .with_filter(EnvFilter::new("monad_eth_txgen=info"));
+
+    // set up subscriber with all layers
+    tracing_subscriber::registry()
+        .with(trace_layer)
+        .with(debug_layer)
+        .with(stdio_layer)
+        .init();
 }

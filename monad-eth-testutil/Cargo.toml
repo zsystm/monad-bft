@@ -35,5 +35,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tracing = { workspace = true, features = ["log", "std"] }
+tracing-appender = "0.2.3"
 tracing-subscriber = { workspace = true, features = ["env-filter", "std"] }
 url = { workspace = true }

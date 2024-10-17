@@ -74,7 +74,7 @@ impl EthTxGenerator {
                         }
                         self.counter += 1;
 
-                        let should_trace = self.counter % 2000 == 0;
+                        let should_trace = self.counter % 24_391 == 0;
                         if should_trace {
                             trace!("Top of generate closure in iter random");
                             trace!("from: {}: {}", format_addr(&from_address), from_account);
