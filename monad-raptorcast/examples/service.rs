@@ -114,6 +114,7 @@ fn service(
                     known_addresses,
                     redundancy: 2,
                     local_addr: server_address.to_string(),
+                    up_bandwidth_mbps: 1_000,
                 };
 
                 let mut service =

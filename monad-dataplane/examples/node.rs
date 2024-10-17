@@ -91,7 +91,7 @@ struct Node {
 impl Node {
     pub fn new(addr: &str, target_addr: &str) -> Self {
         Self {
-            network: Dataplane::new(addr),
+            network: Dataplane::new(addr, 1_000),
             target: target_addr.parse().unwrap(),
         }
     }

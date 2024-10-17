@@ -534,6 +534,7 @@ where
             network_config.bind_address_port,
         ))
         .to_string(),
+        up_bandwidth_mbps: network_config.max_mbps.into(),
     })
 }
 

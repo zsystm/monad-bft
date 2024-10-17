@@ -37,6 +37,9 @@ where
     pub redundancy: u8,
 
     pub local_addr: String,
+
+    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
+    pub up_bandwidth_mbps: u64,
 }
 
 pub struct RaptorCast<ST, M, OM>
@@ -71,7 +74,7 @@ where
 {
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
-        let dataplane = Dataplane::new(&config.local_addr);
+        let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
         Self {
             epoch_validators: Default::default(),
             known_addresses: config.known_addresses,

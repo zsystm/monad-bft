@@ -303,7 +303,7 @@ where
         };
         cmds.into_iter()
             .map(|command| WrappedBlockSyncCommand {
-                request_timeout: *self.delta * 3,
+                request_timeout: *self.delta * 5,
                 command,
             })
             .collect()
@@ -345,7 +345,7 @@ where
             }
             BlockSyncCommand::SendResponse { to, response } => {
                 vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::PointToPoint(to),
+                    target: RouterTarget::TcpPointToPoint(to),
                     message: VerifiedMonadMessage::BlockSyncResponse(response),
                 })]
             }

@@ -51,6 +51,8 @@ pub struct NetworkSocket<'a> {
     pub recv_ctrl: RecvCtrl<'a>,
     pub send_ctrl: SendCtrl,
 
+    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
+    pub up_bandwidth_mbps: u64,
     pub next_transmit: std::time::Instant,
 }
 
@@ -91,7 +93,8 @@ pub struct RecvmmsgResult {
 static mut BUF_PTR: *mut [[u8; BUF_SIZE]; NUM_RX_MSGHDR] = std::ptr::null_mut();
 
 impl<'a> NetworkSocket<'a> {
-    pub fn new(sock_addr: &str) -> Self {
+    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
+    pub fn new(sock_addr: &str, up_bandwidth_mbps: u64) -> Self {
         let socket = std::net::UdpSocket::bind(sock_addr).unwrap();
         let r = unsafe {
             const GSO_SIZE: libc::c_int = MONAD_GSO_SIZE as i32;
@@ -163,6 +166,7 @@ impl<'a> NetworkSocket<'a> {
                 bufs: send_bufs,
                 iovecs,
             },
+            up_bandwidth_mbps,
             next_transmit: std::time::Instant::now(),
         }
     }
@@ -406,7 +410,7 @@ impl<'a> NetworkSocket<'a> {
                 }
 
                 let sleep = std::time::Duration::from_micros(
-                    (self.send_ctrl.msgs[i].msg_len as u64) * 8 / 1000,
+                    (self.send_ctrl.msgs[i].msg_len as u64) * 8 / self.up_bandwidth_mbps,
                 );
                 self.next_transmit = std::time::Instant::now() + sleep;
             }

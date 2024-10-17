@@ -198,7 +198,8 @@ fn make_producer_consumer<T>(size: usize) -> (WakeableProducer<T>, WakeableConsu
 }
 
 impl Dataplane {
-    pub fn new(local_addr: &str) -> Self {
+    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
+    pub fn new(local_addr: &str, up_bandwidth_mbps: u64) -> Self {
         let (udp_ing_producer, udp_ing_consumer) = make_producer_consumer(12_800);
         let (tcp_ing_producer, tcp_ing_consumer) = make_producer_consumer(32);
 
@@ -226,7 +227,7 @@ impl Dataplane {
             egress_bcast_receiver: egr_bcast_recv,
             egress_ucast_receiver: egr_ucast_recv,
             egress_tcp_receiver: egr_tcp_recv,
-            udp_socket: NetworkSocket::new(local_addr),
+            udp_socket: NetworkSocket::new(local_addr, up_bandwidth_mbps),
 
             tcp_listening_socket,
             tcp_incoming_connections: [const { None }; TCP_INCOMING_MAX_CONNECTIONS],

@@ -347,6 +347,7 @@ where
                             known_addresses: known_addresses.clone(),
                             redundancy: 3,
                             local_addr: address.parse::<SocketAddr>().unwrap().to_string(),
+                            up_bandwidth_mbps: 1_000,
                         }),
                     },
                     ledger_config: match args.ledger {

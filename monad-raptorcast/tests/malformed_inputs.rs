@@ -284,6 +284,7 @@ pub fn set_up_test(
                 known_addresses,
                 redundancy: 2,
                 local_addr: rx_addr,
+                up_bandwidth_mbps: 1_000,
             };
 
             let mut service =
