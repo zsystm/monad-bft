@@ -1,18 +1,25 @@
 use std::collections::HashMap;
 
 use rand::{
-    rngs::{SmallRng, StdRng, ThreadRng}, seq::SliceRandom, Rng, SeedableRng
+    rngs::{SmallRng, StdRng, ThreadRng},
+    seq::SliceRandom,
+    Rng, SeedableRng,
 };
 use reth_primitives::Address;
+use tokio::sync::mpsc::{self, Receiver};
+use tracing::{debug, info, trace, warn};
 
 use super::{account::EthAccount, config::EthTxAddressPoolConfig};
-use crate::{account::PrivateKey, state::ChainStateView};
+use crate::{account::PrivateKey, generator::format_addr, state::ChainStateView};
 
 #[derive(Debug)]
 pub struct AccountPool {
     accounts: HashMap<Address, EthAccount>,
     pub from: Vec<Address>,
     to: Vec<Address>,
+
+    async_from_registration_rx: Receiver<Vec<(Address, PrivateKey)>>,
+    async_to_registration_rx: Receiver<Vec<(Address, PrivateKey)>>,
 }
 
 impl AccountPool {
@@ -23,41 +30,117 @@ impl AccountPool {
     ) -> Self {
         let mut accounts = HashMap::default();
 
-        let mut from = Vec::default();
-        let mut to = Vec::default();
+        let (from, async_from_registration_rx) =
+            Self::register_accounts(chain_state, &mut accounts, from_config).await;
+        let (to, async_to_registration_rx) =
+            Self::register_accounts(chain_state, &mut accounts, to_config).await;
 
-        Self::register_accounts(chain_state, &mut accounts, &mut from, from_config).await;
-        Self::register_accounts(chain_state, &mut accounts, &mut to, to_config).await;
-
-        Self { accounts, from, to }
+        Self {
+            accounts,
+            from,
+            to,
+            async_from_registration_rx,
+            async_to_registration_rx,
+        }
     }
 
     async fn register_accounts(
         chain_state: &ChainStateView,
         accounts: &mut HashMap<Address, EthAccount>,
-        addresses: &mut Vec<Address>,
         config: EthTxAddressPoolConfig,
-    ) {
-        let list = match config {
+    ) -> (Vec<Address>, mpsc::Receiver<Vec<(Address, PrivateKey)>>) {
+        info!("Registering accounts in EthTxAddressPoolConfig...");
+        let mut addresses;
+        let mut list: Box<dyn Iterator<Item = (Address, PrivateKey)> + Send> = match config {
             EthTxAddressPoolConfig::Single { private_key } => {
-                let (address, account) = PrivateKey::new(private_key);
+                // let (address, account) = PrivateKey::new(private_key);
 
-                vec![(address, account)]
+                // vec![(address, account)]
+                // Box::new((0..1)
+                //     .map(|_| PrivateKey::new(private_key)))
+                addresses = Vec::with_capacity(1);
+                Box::new([PrivateKey::new(private_key)].into_iter())
             }
             EthTxAddressPoolConfig::RandomSeeded { seed, count } => {
-                let mut rng = StdRng::seed_from_u64(seed);
-
-                (0..count)
-                    .map(|_| PrivateKey::new_with_random(&mut rng))
-                    .collect()
+                let mut rng = SmallRng::seed_from_u64(seed);
+                addresses = Vec::with_capacity(count);
+                Box::new((0..count).map(move |_| PrivateKey::new_with_random(&mut rng)))
             }
         };
 
-        for (address, account) in list {
+        for (address, account) in list.by_ref().take(100_000) {
             addresses.push(address);
-
             if accounts.insert(address, EthAccount::new(account)).is_none() {
+                trace!(
+                    addr = format_addr(&address),
+                    "Registering account with chain state and inserting in AccountPool"
+                );
                 chain_state.add_new_account(address).await;
+            } else {
+                warn!("Detected duplicate address (this is expected if to and from seeds are the same)");
+            }
+        }
+
+        let mut list = list.peekable();
+        let (async_registration_sender, async_registration_rx) = mpsc::channel(100);
+        if list.peek().is_some() {
+            info!("Too many accounts in EthTxAddressPoolConfig... moving to async");
+            tokio::task::spawn_blocking(move || {
+                info!("Spawned async registration worker...");
+                loop {
+                    let mut results = Vec::with_capacity(100_000);
+                    results.extend(list.by_ref().take(100_000));
+
+                    info!(
+                        batch_size = results.len(),
+                        "Async registration batch finished"
+                    );
+
+                    // we don't care if channel is closed
+                    let _ = async_registration_sender.blocking_send(results);
+
+                    if list.peek().is_none() {
+                        info!("Done registering accounts in EthTxAddressPoolConfig...");
+                        break;
+                    }
+                }
+            });
+        } else {
+            info!("Done registering accounts in EthTxAddressPoolConfig...");
+        }
+
+        (addresses, async_registration_rx)
+    }
+
+    pub(super) async fn process_async_registrations(&mut self, chain_state: &ChainStateView) {
+        // to
+        if let Ok(new) = self.async_to_registration_rx.try_recv() {
+            info!(
+                num_to_accts = new.len(),
+                "Processing batch of async registrations.."
+            );
+            for (address, account) in new {
+                self.to.push(address);
+                let insert_opt = self.accounts.insert(address, EthAccount::new(account));
+                match insert_opt {
+                    Some(_) => warn!("Detected duplicate address (this is expected if to and from seeds are the same)"),
+                    None =>chain_state.add_new_account(address).await, 
+                }
+            }
+        }
+        // from
+        if let Ok(new) = self.async_from_registration_rx.try_recv() {
+            info!(
+                num_from_accts = new.len(),
+                "Processing batch of async registrations.."
+            );
+            for (address, account) in new {
+                self.from.push(address);
+                let insert_opt = self.accounts.insert(address, EthAccount::new(account));
+                match insert_opt {
+                    Some(_) => warn!("Detected duplicate address (this is expected if to and from seeds are the same)"),
+                    None =>chain_state.add_new_account(address).await, 
+                }
             }
         }
     }
@@ -67,8 +150,8 @@ impl AccountPool {
         limit: usize,
         mut f: impl FnMut(Address, &mut EthAccount, Address) -> bool,
     ) {
-        let mut from_generator = Self::generator(&self.from);
-        let mut to_generator = Self::generator(&self.to);
+        let mut from_generator = Self::generator(&self.from, limit);
+        let mut to_generator = Self::generator(&self.to, limit);
 
         for _ in 0..limit {
             let Some(from) = from_generator() else {
@@ -87,27 +170,38 @@ impl AccountPool {
         }
     }
 
-    fn generator<'a>(list: &'a [Address]) -> Box<dyn FnMut() -> Option<Address> + 'a> {
+    fn generator<'a>(
+        list: &'a [Address],
+        limit: usize,
+    ) -> Box<dyn FnMut() -> Option<Address> + 'a> {
         let mut rng = ThreadRng::default();
-        let mut idxs = (0..list.len()).collect::<Vec<_>>();
+        // let mut idxs = (0..list.len()).collect::<Vec<_>>();
+        let mut elems: _ = list.choose_multiple(&mut rng, list.len().min(limit).min(10000));
 
         Box::new(move || {
-            if list.len() == 1 {
-                return Some(list[0]);
+            // trace!("generator top");
+            match elems.next() {
+                Some(e) => Some(e.clone()),
+                None => {
+                    // trace!("None branch");
+                    elems = list.choose_multiple(&mut rng, list.len().min(10000));
+                    elems.next().cloned()
+                }
             }
+            // if list.len() == 1 {
+            //     return Some(list[0]);
+            // }
 
-            if idxs.is_empty() {
-                return None;
-            }
+            // if idxs.is_empty() {
+            //     return None;
+            // }
 
-            let idx_idx = rng.gen_range(0..idxs.len());
-            let last_idx_idx = idxs.len() - 1;
+            // let idx_idx = rng.gen_range(0..idxs.len());
+            // let last_idx_idx = idxs.len() - 1;
 
-            idxs.swap(idx_idx, last_idx_idx);
+            // idxs.swap(idx_idx, last_idx_idx);
 
-            let idx = idxs.pop().expect("last element exists");
-
-            Some(list[idx])
+            // let idx = idxs.pop().expect("last element exists");
         })
     }
 

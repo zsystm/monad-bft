@@ -6,7 +6,7 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 pub struct EthTxGeneratorConfig {
     pub(super) root_private_key: String,
-    pub(super) target_tps: usize,
+    pub(super) target_tps: f64,
     pub(super) addresses: EthTxAddressConfig,
     pub(super) activity: EthTxActivityType,
 }

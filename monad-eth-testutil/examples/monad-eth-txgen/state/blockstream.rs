@@ -12,7 +12,7 @@ use futures::{stream::FusedStream, FutureExt, Stream};
 use reth_rpc_types::Block;
 use thiserror::Error;
 use tokio::time::Interval;
-use tracing::debug;
+use tracing::{debug, trace};
 
 #[derive(Debug, Error)]
 pub enum BlockStreamError {
@@ -30,6 +30,7 @@ pub struct BlockStream {
 
 impl BlockStream {
     pub async fn new(client: ReqwestClient, interval: Duration) -> Self {
+        trace!("Requesting initial block number");
         let next_block_number_str: String = client
             .request("eth_blockNumber", ())
             .await

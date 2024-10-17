@@ -14,6 +14,16 @@ pub struct EthAccount {
     pending_tx_timestamp_retries: VecDeque<(Instant, usize)>,
 }
 
+impl std::fmt::Display for EthAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EthAccount{{ nonce: {}, pending:", self.next_nonce)?;
+        for (t, nonce) in &self.pending_tx_timestamp_retries {
+            write!(f, " {}: {},", nonce, t.elapsed().as_millis())?;
+        }
+        write!(f, "}}")
+    }
+}
+
 impl EthAccount {
     pub fn new(key: PrivateKey) -> Self {
         Self {
@@ -31,8 +41,9 @@ impl EthAccount {
         &mut self,
         account_state: &ChainAccountState,
         max_inflight: usize,
+        trace: bool,
     ) -> Option<u64> {
-        self.update_nonce(account_state);
+        self.update_nonce(account_state, trace);
 
         for nonce_idx in 0..max_inflight {
             if let Some(nonce) = self.get_available_nonce_at_idx(nonce_idx) {
@@ -43,37 +54,15 @@ impl EthAccount {
         None
     }
 
-    pub fn _get_available_nonces<const MAX_NONCES: usize>(
-        &mut self,
-        account_state: &ChainAccountState,
-        max_inflight: usize,
-    ) -> Vec<u64> {
-        self.update_nonce(account_state);
-
-        let mut tx_nonces = Vec::default();
-
-        for nonce_idx in 0..max_inflight {
-            if tx_nonces.len() == MAX_NONCES {
-                break;
-            }
-
-            if let Some(tx_nonce) = self.get_available_nonce_at_idx(nonce_idx) {
-                tx_nonces.push(tx_nonce);
-            }
-        }
-
-        // todo: why is this here? can we make this not a panic?
-        assert!(
-            tx_nonces.len() <= MAX_NONCES,
-            "tx nonces length cannot exceed max nonces"
-        );
-
-        tx_nonces
-    }
-
-    fn update_nonce(&mut self, account_state: &ChainAccountState) {
+    fn update_nonce(&mut self, account_state: &ChainAccountState, trace: bool) {
         let nonce = account_state.get_next_nonce();
-        trace!(chain_state_nonce = nonce, generator_nonce = self.next_nonce, "update nonce");
+        if trace {
+            trace!(
+                chain_state_nonce = nonce,
+                generator_nonce = self.next_nonce,
+                "update nonce"
+            );
+        }
 
         while self.next_nonce < nonce {
             self.next_nonce = self
@@ -112,7 +101,7 @@ impl EthAccount {
 
         if now
             < existing_tx_timesstamp
-                .checked_add(Duration::from_secs(10))
+                .checked_add(Duration::from_secs(1))
                 .expect("now does not overflow")
         {
             return None;
@@ -124,6 +113,10 @@ impl EthAccount {
         if *existing_tx_retries >= 5 {
             warn!("retried nonce at least five times :(");
         }
+
+        // clear later nonces
+        trace!("Truncating nonces");
+        self.pending_tx_timestamp_retries.truncate(nonce_idx);
 
         Some(tx_nonce)
     }

@@ -1,7 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use alloy_rpc_client::ReqwestClient;
-use reth_primitives::{revm_primitives::HashSet, Address};
+use reth_primitives::{revm_primitives::HashSet, Address, U256};
 use ruint::Uint;
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tracing::warn;
@@ -10,6 +10,7 @@ use self::manager::{ChainStateManager, ChainStateManagerHandle};
 
 mod blockstream;
 mod manager;
+pub mod monitors;
 
 #[derive(Debug, Default)]
 pub struct ChainState {

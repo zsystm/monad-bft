@@ -21,15 +21,21 @@ pub struct EthTxGenerator {
     pub account_pool: AccountPool,
     chain_state: ChainStateView,
     activity: EthTxActivityType,
+
+    // throttle logs
+    counter: usize,
 }
 
 impl EthTxGenerator {
-    pub async fn new(config: EthTxGeneratorConfig, chain_state: ChainStateView) -> Self {
+    pub async fn new(
+        config: EthTxGeneratorConfig,
+        chain_state: ChainStateView,
+    ) -> (Self, tokio::time::Interval) {
         let EthTxGeneratorConfig {
             root_private_key,
             addresses: EthTxAddressConfig { from, to },
             activity,
-            ..
+            target_tps,
         } = config;
 
         let (root_account_address, root_account) = PrivateKey::new(root_private_key);
@@ -37,29 +43,49 @@ impl EthTxGenerator {
 
         let account_pool = AccountPool::new_with_config(from, to, &chain_state).await;
 
-        Self {
-            root_account: (root_account_address, EthAccount::new(root_account)),
-            account_pool,
-            chain_state,
-            activity,
-        }
+        (
+            Self {
+                root_account: (root_account_address, EthAccount::new(root_account)),
+                account_pool,
+                chain_state,
+                activity,
+                // throttle logs
+                counter: 0,
+            },
+            tokio::time::interval(Duration::from_secs_f64(500. / target_tps)),
+        )
     }
 
-    pub async fn generate(&mut self) -> (Vec<TransactionSigned>, Instant) {
+    pub async fn generate(&mut self) -> Vec<TransactionSigned> {
+        self.account_pool
+            .process_async_registrations(&self.chain_state)
+            .await;
+
         let mut txs = Vec::default();
 
         match &self.activity {
             EthTxActivityType::NativeTokenTransfer { quantity } => {
                 let chain_state = self.chain_state.read().await;
+                // trace!("Calling iter random");
                 self.account_pool
-                    .iter_random(0xFFFF, |from_address, from_account, to_address| {
-                        if txs.len() >= 512 {
+                    .iter_random(20_000, |from_address, from_account, to_address| {
+                        if txs.len() >= 500 {
                             return false;
+                        }
+                        self.counter += 1;
+
+                        let should_trace = self.counter % 2000 == 0;
+                        if should_trace {
+                            trace!("Top of generate closure in iter random");
+                            trace!("from: {}: {}", format_addr(&from_address), from_account);
+                            trace!("To: {}", format_addr(&to_address));
                         }
 
                         let Some(from_account_state) = chain_state.get_account(&from_address)
                         else {
-                            trace!("Skipping from acct, not in chain state");
+                            if should_trace {
+                                trace!("Skipping from acct, not in chain state");
+                            }
                             return true;
                         };
 
@@ -67,13 +93,15 @@ impl EthTxGenerator {
                             .get_balance()
                             .le(&Uint::from(1_000_000_000u64))
                         {
-                            // from.to_string().
-                            {
-                                let mut from = from_address.to_string();
-                                from.truncate(8);
+                            if should_trace {
+                                trace!(
+                                    "root: {}: {}",
+                                    format_addr(&self.root_account.0),
+                                    self.root_account.1
+                                );
                                 trace!(
                                     bal = from_account_state.get_balance().to_string(),
-                                    from,
+                                    from = format_addr(&from_address),
                                     "Seeding acct from root bc balance is too low"
                                 );
                             }
@@ -85,12 +113,16 @@ impl EthTxGenerator {
                                 return true;
                             };
 
-                            let Some(nonce) = self
-                                .root_account
-                                .1
-                                .get_available_nonce(root_account_state, 512)
-                            else {
-                                trace!("Skipping seeding from root bc root nonce not available");
+                            let Some(nonce) = self.root_account.1.get_available_nonce(
+                                root_account_state,
+                                512,
+                                should_trace,
+                            ) else {
+                                if should_trace {
+                                    trace!(
+                                        "Skipping seeding from root bc root nonce not available"
+                                    );
+                                }
                                 return true;
                             };
 
@@ -115,14 +147,19 @@ impl EthTxGenerator {
                                     signature,
                                 );
 
-                            trace!("pushing seed tx");
+                            if should_trace {
+                                trace!("pushing seed tx");
+                            }
                             txs.push(signed_transaction);
                             return true;
                         }
 
-                        let Some(nonce) = from_account.get_available_nonce(from_account_state, 6)
+                        let Some(nonce) =
+                            from_account.get_available_nonce(from_account_state, 6, should_trace)
                         else {
-                            trace!("Skipping bc from account has no available nonce");
+                            if should_trace {
+                                trace!("Skipping bc from account has no available nonce");
+                            }
                             return true;
                         };
 
@@ -144,8 +181,9 @@ impl EthTxGenerator {
                             transaction,
                             signature,
                         );
-
-                        trace!("pushing normal transfer tx");
+                        if should_trace {
+                            trace!("pushing normal transfer tx");
+                        }
                         txs.push(signed_transaction);
 
                         true
@@ -154,11 +192,12 @@ impl EthTxGenerator {
             EthTxActivityType::Erc20TokenTransfer { .. } => unimplemented!(),
         }
 
-        (
-            txs,
-            Instant::now()
-                .checked_add(Duration::from_millis(1))
-                .unwrap(),
-        )
+        txs
     }
+}
+
+pub fn format_addr(addr: &Address) -> String {
+    let mut s = addr.to_string();
+    s.truncate(8);
+    s
 }

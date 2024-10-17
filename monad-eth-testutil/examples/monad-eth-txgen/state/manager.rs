@@ -17,9 +17,11 @@ use tokio::{
 };
 use tracing::{debug, error, info, trace, warn};
 
+use crate::generator::format_addr;
+
 use super::{
     blockstream::{BlockStream, BlockStreamError},
-    ChainAccountState, ChainState, ChainStateView, SharedChainState,
+    monitors, ChainAccountState, ChainState, ChainStateView, SharedChainState,
 };
 
 pub struct ChainStateManager {
@@ -50,16 +52,24 @@ impl ChainStateManager {
     }
 
     pub fn start(self) -> ChainStateManagerHandle {
-        ChainStateManagerHandle(tokio::spawn(self.run()))
+        // spawn monitors
+        trace!("start of chain state manager");
+        let chain_state_view = ChainStateView::new(Arc::clone(&self.chain_state));
+        tokio::spawn(monitors::monitor_non_zero_accts(chain_state_view));
+        trace!("spawn monitors done");
+
+        let x = ChainStateManagerHandle(tokio::spawn(self.run()));
+        trace!("spawned chain state manager");
+        x
     }
 
     async fn run(mut self) -> Result<(), ChainStateManagerError> {
         info!("Chain state manager started");
-        let mut fetch_new_accounts_timer = interval(Duration::from_millis(500));
+        let mut fetch_new_accounts_timer = interval(Duration::from_millis(10));
 
         let mut last_blocks_count = 0;
         let mut last_txs_count = 0;
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
         let mut last_time = Instant::now();
 
         loop {
@@ -88,13 +98,14 @@ impl ChainStateManager {
                     info!(elapsed, new_blocks, new_txs, block_time, tps, seeded_accounts, "Chain metrics");
                 }
                 result = self.blockstream.select_next_some() => {
-                    debug!("Processing new block");
+                    debug!("Start Processing new block");
                     match result {
                         Ok(block) => if let Err(e) = self.process_new_block(block).await {
                             error!("Error processing new block: {e}");
                         },
                         Err(e) => error!("Blockstream returned error: {e}"),
                     }
+                    debug!("End Processing new block");
                 }
                 _ = fetch_new_accounts_timer.tick() => {
                     if let Err(e) = self.fetch_new_accounts().await  {
@@ -140,17 +151,17 @@ impl ChainStateManager {
                 from_account_state.balance = from_account_state
                     .balance
                     .checked_sub(transaction.value)
-                    .unwrap_or_else(|| {
-                        panic!(
+                    .wrap_err_with(|| {
+                        format!(
                             "balance underflows value for account {:?}",
                             transaction.from
                         )
-                    })
+                    })?
                     .checked_sub(gas_cost)
                     .context("balance does not underflow from gas cost")?;
 
                 from_account_state.next_nonce =
-                    nonce.checked_add(1).expect("nonce does not overflow");
+                    nonce.checked_add(1).context("nonce does not overflow")?;
             }
 
             if let Some(to_account_state) = transaction
@@ -168,6 +179,7 @@ impl ChainStateManager {
     }
 
     async fn fetch_new_accounts(&mut self) -> Result<(), ChainStateManagerError> {
+        trace!("Start fetch");
         let Some(current_block_number) = self.blockstream.get_current_block_number() else {
             return Ok(());
         };
@@ -175,21 +187,24 @@ impl ChainStateManager {
         let new_accounts = {
             let chain_state = self.chain_state.read().await;
 
+            if chain_state.new_accounts.is_empty() {
+                return Ok(());
+            }
+
+            const FETCH_LIMIT: usize = 500;
+
+            debug!(
+                total_new_accts = chain_state.new_accounts.len(),
+                FETCH_LIMIT, "Fetching new accounts"
+            );
+
             chain_state
                 .new_accounts
                 .iter()
-                .take(500)
+                .take(FETCH_LIMIT)
                 .cloned()
                 .collect::<Vec<_>>()
         };
-
-        if new_accounts.is_empty() {
-            return Ok(());
-        }
-        debug!(
-            new_accounts_len = new_accounts.len(),
-            "Fetching new accounts"
-        );
 
         let mut batch = self.client.new_batch();
 
@@ -209,7 +224,10 @@ impl ChainStateManager {
 
         let mut chain_state = self.chain_state.write().await;
 
+        let mut count_not_inserted = 0;
         for (address, balance_waiter, nonce_waiter) in calls {
+            trace!(addr = format_addr(&address), "Inserting new account");
+
             let balance = {
                 let balance_str: String = balance_waiter.await?;
                 let balance_str = balance_str.strip_prefix("0x").unwrap_or(&balance_str);
@@ -225,11 +243,15 @@ impl ChainStateManager {
             )
             .context("nonce string is valid u64")?;
 
+            trace!(
+                addr = format_addr(&address),
+                "Removing from new_accounts set"
+            );
             if !chain_state.new_accounts.remove(&address) {
                 warn!("synced new account {address:?} when not requested!");
             }
 
-            trace!("Inserting new account");
+            trace!(addr = format_addr(&address), "Inserting new account");
             if let Some(existing) = chain_state
                 .accounts
                 .insert(address, ChainAccountState::new(balance, nonce))
@@ -238,6 +260,7 @@ impl ChainStateManager {
             }
         }
 
+        trace!("Done fetch");
         Ok(())
     }
 }
