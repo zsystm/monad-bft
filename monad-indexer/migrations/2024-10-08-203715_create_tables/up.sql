@@ -31,6 +31,8 @@ CREATE TABLE block_header (
 	---- END QC
 );
 
+CREATE INDEX ix_block_header_timestamp ON block_header(timestamp);
+
 CREATE TABLE block_payload (
 	-- unique hash used to identify the payload
 	payload_id bytes32 PRIMARY KEY NOT NULL,

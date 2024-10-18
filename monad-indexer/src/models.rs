@@ -18,10 +18,18 @@ use monad_consensus_types::{
 use monad_crypto::{certificate_signature::PubKey, hasher::Hash};
 use monad_eth_tx::EthSignedTransaction;
 use monad_types::BlockId;
+use serde::{Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq, AsExpression, FromSqlRow)]
 #[diesel(sql_type = Bytea)]
 pub struct Bytes32(pub [u8; 32]);
+
+impl Serialize for Bytes32 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let hex = hex::encode(self.0);
+        serializer.serialize_str(&format!("0x{hex}"))
+    }
+}
 
 impl From<&BlockId> for Bytes32 {
     fn from(block_id: &BlockId) -> Self {
@@ -90,21 +98,43 @@ impl ToSql<Bytea, Pg> for Bytes32 {
     }
 }
 
-#[derive(Insertable, Queryable, Selectable)]
+#[derive(Insertable, Queryable, Selectable, Serialize)]
 #[diesel(table_name = crate::schema::block_header)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct BlockHeader {
     block_id: Bytes32,
+    #[serde(serialize_with = "serialize_timestamp")]
     timestamp: SystemTime,
+    #[serde(serialize_with = "serialize_hex")]
     author: Vec<u8>,
     epoch: i64,
     round: i64,
     state_root: Bytes32,
     seq_num: i64,
+    #[serde(serialize_with = "serialize_hex")]
     beneficiary: Vec<u8>,
+    #[serde(serialize_with = "serialize_hex")]
     randao_reveal: Vec<u8>,
     payload_id: Option<Bytes32>,
     parent_block_id: Bytes32,
+}
+
+fn serialize_hex<S: Serializer>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error> {
+    let hex = hex::encode(bytes);
+    serializer.serialize_str(&format!("0x{hex}"))
+}
+
+fn serialize_timestamp<S: Serializer>(
+    timestamp: &SystemTime,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let millis_since_epoch: i64 = timestamp
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .try_into()
+        .unwrap();
+    serializer.serialize_i64(millis_since_epoch)
 }
 
 impl<SCT: SignatureCollection> From<&Block<SCT>> for BlockHeader {
