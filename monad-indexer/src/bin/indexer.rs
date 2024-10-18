@@ -7,22 +7,22 @@ use std::{
 };
 
 use clap::Parser;
-use diesel::{Connection, PgConnection, RunQueryDsl};
+use diesel::RunQueryDsl;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use futures::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};
-use models::{BlockHeader, BlockPayload};
 use monad_block_persist::{is_valid_bft_block_header_path, BlockPersist, FileBlockPersist};
 use monad_bls::BlsSignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_indexer::{
+    create_db_connection,
+    models::{BlockHeader, BlockPayload},
+};
 use monad_secp::SecpSignature;
 use tracing::{debug, error, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
-
-pub mod models;
-pub mod schema;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-indexer", about, long_about = None)]
@@ -82,12 +82,6 @@ fn new_block_headers(bft_block_header_path: &Path) -> impl Stream<Item = OsStrin
     })
 }
 
-fn create_db_connection() -> PgConnection {
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL not set");
-    PgConnection::establish(&database_url)
-        .unwrap_or_else(|_| panic!("error connecting to {}", database_url))
-}
-
 fn block_header_writer(
     block_header_rx: std::sync::mpsc::Receiver<BlockHeader>,
 ) -> Result<(), Box<dyn Error>> {
@@ -101,10 +95,11 @@ fn block_header_writer(
             .chain(block_header_rx.try_iter())
             .collect();
 
-        let num_writes = diesel::insert_into(schema::block_header::dsl::block_header)
-            .values(&block_headers)
-            .on_conflict_do_nothing()
-            .execute(&mut conn)?;
+        let num_writes =
+            diesel::insert_into(monad_indexer::schema::block_header::dsl::block_header)
+                .values(&block_headers)
+                .on_conflict_do_nothing()
+                .execute(&mut conn)?;
         debug!(?num_writes, "successfully wrote block headers");
     }
 }
@@ -122,10 +117,11 @@ fn block_payload_writer(
             .chain(block_payload_rx.try_iter())
             .collect();
 
-        let num_writes = diesel::insert_into(schema::block_payload::dsl::block_payload)
-            .values(&block_payloads)
-            .on_conflict_do_nothing()
-            .execute(&mut conn)?;
+        let num_writes =
+            diesel::insert_into(monad_indexer::schema::block_payload::dsl::block_payload)
+                .values(&block_payloads)
+                .on_conflict_do_nothing()
+                .execute(&mut conn)?;
         debug!(?num_writes, "successfully wrote block payloads");
     }
 }

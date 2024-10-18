@@ -3,10 +3,6 @@ name = "monad-indexer"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "monad-indexer"
-bench = false
-
 [dependencies]
 alloy-rlp = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
