@@ -4,12 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+actix-web = { workspace = true }
 alloy-rlp = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 diesel = { workspace = true, features = ["postgres"] }
+diesel-async = { workspace = true, features = ["bb8", "postgres"] }
 diesel_migrations = { workspace = true }
 futures = { workspace = true }
+hex = { workspace = true }
 inotify = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
