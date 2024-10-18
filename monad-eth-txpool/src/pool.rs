@@ -184,4 +184,9 @@ impl Pool {
             }
         }
     }
+
+    pub fn pop_last(&mut self) -> Option<usize> {
+        let (_, tx_group) = self.txs.pop_last()?;
+        Some(tx_group.len())
+    }
 }

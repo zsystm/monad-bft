@@ -28,7 +28,8 @@ mod pool;
 mod transaction;
 mod utils;
 
-const MAX_TXPOOL_SIZE: usize = 11_000;
+const MAX_TXPOOL_SIZE: usize = 30_000;
+const MAX_PROPOSAL_CHECKED_TXS: usize = 10_000;
 
 #[derive(Clone, Debug, Default)]
 pub struct EthTxPool {
@@ -234,6 +235,11 @@ where
             // however, we anyway are emptying the txpool at the end of this function
             self.pool.remove_stale_txs(extending_block)
         }
+        let mut pool_len = self.pool.num_txs();
+        while pool_len > MAX_PROPOSAL_CHECKED_TXS {
+            pool_len -= self.pool.pop_last().expect("pool is not empty");
+        }
+
         if let Err(err) = self.validate_nonces_and_carriage_fee(
             proposed_seq_num,
             block_policy,
