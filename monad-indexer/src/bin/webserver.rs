@@ -44,8 +44,12 @@ async fn main() -> std::io::Result<()> {
 
     let app_state = web::Data::new(AppState { pool });
 
-    HttpServer::new(move || App::new().app_data(app_state.clone()).service(blocks))
-        .bind(("127.0.0.1", 8080))?
-        .run()
-        .await
+    HttpServer::new(move || {
+        App::new()
+            .app_data(app_state.clone())
+            .service(web::scope("/api/v1").service(blocks))
+    })
+    .bind(("127.0.0.1", 8000))?
+    .run()
+    .await
 }
