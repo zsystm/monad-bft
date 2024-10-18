@@ -1,4 +1,4 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, str::FromStr, sync::Arc, time::Duration};
 
 use alloy_json_rpc::RpcError;
 use alloy_primitives::FixedBytes;
@@ -6,7 +6,10 @@ use alloy_rpc_client::ReqwestClient;
 use alloy_transport::TransportErrorKind;
 use eyre::{Context, ContextCompat};
 use futures::{FutureExt, StreamExt};
-use reth_primitives::U256;
+use reth_primitives::{
+    hex::{encode, ToHex},
+    Address, TxHash, U256,
+};
 use reth_rpc_types::{Block, BlockTransactions};
 use ruint::Uint;
 use thiserror::Error;
@@ -117,7 +120,7 @@ impl ChainStateManager {
     }
 
     async fn process_new_block(&mut self, block: Block) -> Result<(), ChainStateManagerError> {
-        let transactions = match block.transactions {
+        let txs = match block.transactions {
             BlockTransactions::Full(transactions) => transactions,
             BlockTransactions::Hashes(_) | BlockTransactions::Uncle => {
                 if block.header.nonce != Some(FixedBytes::new([0u8; 8])) {
@@ -129,20 +132,19 @@ impl ChainStateManager {
 
         let mut chain_state = self.chain_state.write().await;
 
-        debug!(num_txs = transactions.len(), "Processed block");
+        debug!(num_txs = txs.len(), "Processed block");
         self.blocks_counter += 1;
-        self.txs_counter += transactions.len();
+        self.txs_counter += txs.len();
 
-        for transaction in transactions {
-            if let Some(from_account_state) = chain_state.accounts.get_mut(&transaction.from) {
-                let [nonce] = transaction.nonce.into_limbs();
+        for tx in txs {
+            if let Some(from_account_state) = chain_state.accounts.get_mut(&tx.from) {
+                let [nonce] = tx.nonce.into_limbs();
 
                 // TODO(abenedito): Verify balance computation
-                let gas_cost = transaction
+                let gas_cost = tx
                     .gas
                     .checked_mul(Uint::<256, 4>::from_limbs_slice(
-                        &transaction
-                            .gas_price
+                        &tx.gas_price
                             .context("transaction has gas price")?
                             .into_limbs(),
                     ))
@@ -150,12 +152,9 @@ impl ChainStateManager {
 
                 from_account_state.balance = from_account_state
                     .balance
-                    .checked_sub(transaction.value)
+                    .checked_sub(tx.value)
                     .wrap_err_with(|| {
-                        format!(
-                            "balance underflows value for account {:?}",
-                            transaction.from
-                        )
+                        format!("balance underflows value for account {:?}", tx.from)
                     })?
                     .checked_sub(gas_cost)
                     .context("balance does not underflow from gas cost")?;
@@ -164,13 +163,10 @@ impl ChainStateManager {
                     nonce.checked_add(1).context("nonce does not overflow")?;
             }
 
-            if let Some(to_account_state) = transaction
-                .to
-                .and_then(|to| chain_state.accounts.get_mut(&to))
-            {
+            if let Some(to_account_state) = tx.to.and_then(|to| chain_state.accounts.get_mut(&to)) {
                 to_account_state.balance = to_account_state
                     .balance
-                    .checked_add(transaction.value)
+                    .checked_add(tx.value)
                     .context("balanced does not overflow")?
             }
         }

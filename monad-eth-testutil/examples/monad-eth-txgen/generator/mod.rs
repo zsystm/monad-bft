@@ -1,6 +1,8 @@
 use std::time::Duration;
 
+use alloy_rpc_client::ReqwestClient;
 use config::EthTxActivityType;
+use eyre::Result;
 use reth_primitives::{
     AccessList, Address, Transaction, TransactionKind, TransactionSigned, TxEip1559, U256,
 };
@@ -10,11 +12,11 @@ use tracing::{error, trace};
 
 pub use self::config::EthTxGeneratorConfig;
 use self::{account::EthAccount, account_pool::AccountPool, config::EthTxAddressConfig};
-use crate::{account::PrivateKey, state::ChainStateView};
+use crate::{account::PrivateKey, erc20::ERC20, state::ChainStateView};
 
-mod account;
+pub mod account;
 mod account_pool;
-mod config;
+pub mod config;
 
 pub struct EthTxGenerator {
     root_account: (Address, EthAccount),
@@ -30,20 +32,35 @@ impl EthTxGenerator {
     pub async fn new(
         config: EthTxGeneratorConfig,
         chain_state: ChainStateView,
-    ) -> (Self, tokio::time::Interval) {
+        client: ReqwestClient,
+    ) -> Result<(Self, tokio::time::Interval)> {
         let EthTxGeneratorConfig {
             root_private_key,
             addresses: EthTxAddressConfig { from, to },
-            activity,
+            mut activity,
             target_tps,
         } = config;
 
+        // create root
         let (root_account_address, root_account) = PrivateKey::new(root_private_key);
         chain_state.add_new_account(root_account_address).await;
 
+        // deploy erc20
+        if let EthTxActivityType::Erc20TokenTransfer {
+            contract: None,
+            quantity,
+        } = activity
+        {
+            let contract = ERC20::deploy((root_account_address, &root_account), client).await?;
+            activity = EthTxActivityType::Erc20TokenTransfer {
+                contract: Some(contract),
+                quantity,
+            };
+        }
+
         let account_pool = AccountPool::new_with_config(from, to, &chain_state).await;
 
-        (
+        Ok((
             Self {
                 root_account: (root_account_address, EthAccount::new(root_account)),
                 account_pool,
@@ -53,7 +70,7 @@ impl EthTxGenerator {
                 counter: 0,
             },
             tokio::time::interval(Duration::from_secs_f64(500. / target_tps)),
-        )
+        ))
     }
 
     pub async fn generate(&mut self) -> Vec<TransactionSigned> {
@@ -189,7 +206,33 @@ impl EthTxGenerator {
                         true
                     })
             }
-            EthTxActivityType::Erc20TokenTransfer { .. } => unimplemented!(),
+            EthTxActivityType::Erc20TokenTransfer {
+                contract: Some(erc20),
+                quantity,
+            } => {
+                let chain_state = self.chain_state.read().await;
+                let threshhold = U256::from(10) * quantity;
+                self.account_pool
+                    .iter_random(200, |from, from_account, to| {
+                        let from_state = chain_state.get_account(&from).unwrap();
+                        let Some(nonce) = from_account.get_available_nonce(from_state, 1, false)
+                        else {
+                            return true;
+                        };
+
+                        let tx = if from_state.get_bal_erc20() > threshhold {
+                            erc20
+                                .construct_transfer(from_account.key(), to, nonce, *quantity)
+                                .unwrap()
+                        } else {
+                            erc20.construct_mint(from_account.key(), nonce).unwrap()
+                        };
+                        txs.push(tx);
+
+                        true
+                    });
+            }
+            EthTxActivityType::Erc20TokenTransfer { contract: None, .. } => unreachable!(),
         }
 
         txs

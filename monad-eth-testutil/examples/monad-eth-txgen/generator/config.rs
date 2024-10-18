@@ -3,12 +3,14 @@ use std::error::Error;
 use ruint::aliases::U256;
 use serde::Deserialize;
 
+use crate::erc20::ERC20;
+
 #[derive(Deserialize, Debug)]
 pub struct EthTxGeneratorConfig {
-    pub(super) root_private_key: String,
-    pub(super) target_tps: f64,
-    pub(super) addresses: EthTxAddressConfig,
-    pub(super) activity: EthTxActivityType,
+    pub root_private_key: String,
+    pub target_tps: f64,
+    pub addresses: EthTxAddressConfig,
+    pub activity: EthTxActivityType,
 }
 
 impl EthTxGeneratorConfig {
@@ -35,6 +37,11 @@ pub enum EthTxAddressPoolConfig {
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EthTxActivityType {
-    NativeTokenTransfer { quantity: U256 },
-    Erc20TokenTransfer { _contract: String, _quantity: U256 },
+    NativeTokenTransfer {
+        quantity: U256,
+    },
+    Erc20TokenTransfer {
+        contract: Option<ERC20>,
+        quantity: U256,
+    },
 }

@@ -1,10 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use alloy_rpc_client::ReqwestClient;
-use reth_primitives::{revm_primitives::HashSet, Address, U256};
-use ruint::Uint;
+use reth_primitives::{revm_primitives::HashSet, Address, TxHash, U256};
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tracing::warn;
+
+use crate::erc20::ERC20;
 
 use self::manager::{ChainStateManager, ChainStateManagerHandle};
 
@@ -12,8 +13,9 @@ mod blockstream;
 mod manager;
 pub mod monitors;
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ChainState {
+    erc20_to_check: Option<ERC20>, // generalize to vec
     new_accounts: HashSet<Address>,
     accounts: HashMap<Address, ChainAccountState>,
 }
@@ -34,30 +36,36 @@ impl ChainState {
 
 #[derive(Debug)]
 pub struct ChainAccountState {
-    balance: Uint<256, 4>,
+    balance: U256,
+    erc20_bal: U256,
     next_nonce: u64,
 }
 
 impl ChainAccountState {
-    pub fn new(balance: Uint<256, 4>, next_nonce: u64) -> Self {
+    pub fn new(balance: U256, next_nonce: u64) -> Self {
         Self {
             balance,
             next_nonce,
+            erc20_bal: U256::ZERO,
         }
     }
 
-    pub fn get_balance(&self) -> Uint<256, 4> {
+    pub fn get_balance(&self) -> U256 {
         self.balance
     }
 
     pub fn get_next_nonce(&self) -> u64 {
         self.next_nonce
     }
+
+    pub fn get_bal_erc20(&self) -> U256 {
+        self.erc20_bal
+    }
 }
 
 pub type SharedChainState = Arc<RwLock<ChainState>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ChainStateView {
     state: Arc<RwLock<ChainState>>,
 }

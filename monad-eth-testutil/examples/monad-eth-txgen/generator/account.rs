@@ -33,6 +33,10 @@ impl EthAccount {
         }
     }
 
+    pub fn key(&self) -> &PrivateKey {
+        &self.key
+    }
+
     pub fn sign_transaction(&self, transaction: &Transaction) -> Result<Signature> {
         self.key.sign_transaction(transaction)
     }

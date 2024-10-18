@@ -21,11 +21,13 @@ reth-primitives = { workspace = true }
 [dev-dependencies]
 alloy-json-rpc = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = "0.3.8"
 alloy-rpc-client = { workspace = true }
 alloy-sol-macro = "0.6"
 alloy-sol-types = "0.6"
 alloy-transport = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+dashmap = "6.1.0"
 eyre = "0.6.12"
 futures = { workspace = true }
 rand = { workspace = true }

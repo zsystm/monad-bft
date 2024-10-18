@@ -1,7 +1,9 @@
 use alloy_rpc_client::{ClientBuilder, ReqwestClient, Waiter};
 use clap::Parser;
+use erc20::ERC20;
 use eyre::{bail, Context, ContextCompat, Result};
 use futures::{stream::FuturesUnordered, StreamExt};
+use generator::config::EthTxActivityType;
 use reth_primitives::{Address, TransactionSigned, U256};
 use state::ChainStateView;
 use std::{
@@ -29,6 +31,7 @@ use crate::{
 mod account;
 mod generator;
 mod state;
+mod erc20;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
