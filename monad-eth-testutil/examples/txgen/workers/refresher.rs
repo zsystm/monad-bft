@@ -1,0 +1,101 @@
+use super::*;
+
+pub struct Refresher {
+    pub rpc_rx: mpsc::Receiver<AccountsWithTime>,
+    pub gen_sender: mpsc::Sender<Accounts>,
+
+    pub client: ReqwestClient,
+    pub erc20: ERC20,
+    pub metrics: Arc<Metrics>,
+
+    pub delay: Duration,
+}
+
+impl Refresher {
+    pub async fn run(mut self) {
+        info!("Starting refresher loop");
+        while let Some(AccountsWithTime { accts, sent }) = self.rpc_rx.recv().await {
+            info!(
+                num_accts = accts.len(),
+                channel_len = self.rpc_rx.len(),
+                "Received accts from rpc sender"
+            );
+            if sent + self.delay >= Instant::now() {
+                tokio::time::sleep_until(sent + self.delay).await;
+                debug!("Refresher waited delay, refreshing batch...");
+            }
+
+            self.handle_batch(accts);
+        }
+    }
+
+    fn handle_batch(&self, mut accts: Vec<SimpleAccount>) {
+        let client = self.client.clone();
+        let erc20 = self.erc20.clone();
+        let metrics = self.metrics.clone();
+        let gen_sender = self.gen_sender.clone();
+
+        tokio::spawn(async move {
+            let mut times_sent = 0;
+            while let Err(e) = refresh_batch(&client, &erc20, &mut accts, &metrics).await {
+                if times_sent > 5 {
+                    error!("Exhausted retries refreshing account, oh well! {e}");
+                } else {
+                    times_sent += 1;
+                    warn!(
+                        times_sent,
+                        "Encountered error refreshing accts, retrying..., {e}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+
+            debug!("Completed batch refresh, sending to gen...");
+            gen_sender.send(accts).await.expect("gen rx closed");
+            debug!("Refresher sent batch to gen");
+        });
+    }
+}
+
+pub async fn refresh_batch(
+    client: &ReqwestClient,
+    _erc20: &ERC20,
+    accts: &mut [SimpleAccount],
+    metrics: &Metrics,
+) -> Result<()> {
+    trace!("Refreshing batch...");
+    let str_addrs = accts.iter().map(|a| a.addr.to_string()).collect::<Vec<_>>();
+    // let addrs = accts.iter().map(|a| a.addr).collect::<Vec<_>>();
+
+    // let (erc20_res, native_bals, nonces) = tokio::join!(
+    //     client.batch_get_erc20_balance(&addrs, *erc20),
+    //     client.batch_get_balance(&str_addrs),
+    //     client.batch_get_transaction_count(&str_addrs),
+    // );
+
+    let (native_bals, nonces) = tokio::join!(
+        client.batch_get_balance(&str_addrs),
+        client.batch_get_transaction_count(&str_addrs),
+    );
+
+    let native_bals = native_bals?;
+    let nonces = nonces?;
+    // let erc20_bals = erc20_res?;
+
+    metrics.total_rpc_calls.fetch_add(accts.len() * 2, SeqCst);
+
+    for (i, acct) in accts.iter_mut().enumerate() {
+        // if let Ok(b) = &erc20_bals[i] {
+        //     acct.erc20_bal = *b;
+        // }
+        if let Ok(b) = &native_bals[i] {
+            acct.native_bal = *b;
+        }
+        if let Ok(n) = &nonces[i] {
+            acct.nonce = *n;
+        }
+    }
+    trace!("Batch refreshed");
+
+    Ok(())
+}

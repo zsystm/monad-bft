@@ -1,8 +1,8 @@
 use alloy_rpc_client::ReqwestClient;
-use eyre::{Context, Result};
-use futures::{future::join_all, StreamExt};
+use eyre::{eyre, Result};
+use rand::Rng;
 use reth_primitives::{Address, Bytes, TransactionSigned, U256, U64};
-use serde_json::Value;
+use tracing::trace;
 
 use super::erc20::ERC20;
 
@@ -41,6 +41,7 @@ impl JsonRpc for ReqwestClient {
     }
 
     async fn batch_get_balance(&self, addrs: &[String]) -> Result<Vec<Result<U256>>> {
+        let now = std::time::Instant::now();
         let mut batch = self.new_batch();
 
         let futs: Vec<_> = addrs
@@ -57,10 +58,15 @@ impl JsonRpc for ReqwestClient {
         for fut in futs {
             output.push(fut.await.map_err(Into::into));
         }
+
+        let elapsed_ms = now.elapsed().as_millis();
+        trace!(num_addrs = addrs.len(), elapsed_ms, "batch_get_balance");
+
         Ok(output)
     }
 
     async fn batch_get_transaction_count(&self, addrs: &[String]) -> Result<Vec<Result<u64>>> {
+        let now = std::time::Instant::now();
         let mut batch = self.new_batch();
 
         let futs: Vec<_> = addrs
@@ -77,6 +83,10 @@ impl JsonRpc for ReqwestClient {
         for fut in futs {
             output.push(fut.await.map(|n| n.to()).map_err(Into::into));
         }
+
+        let elapsed_ms = now.elapsed().as_millis();
+        trace!(elapsed_ms, "batch_get_transaction_count");
+
         Ok(output)
     }
 
@@ -85,6 +95,11 @@ impl JsonRpc for ReqwestClient {
         addrs: &[Address],
         erc20: ERC20,
     ) -> Result<Vec<Result<U256>>> {
+        if rand::thread_rng().gen_bool(0.0) {
+            return Ok(addrs.iter().map(|_| Err(eyre!("whoops"))).collect());
+        }
+
+        let now = std::time::Instant::now();
         let mut batch = self.new_batch();
 
         let futs: Vec<_> = addrs
@@ -101,6 +116,13 @@ impl JsonRpc for ReqwestClient {
         for fut in futs {
             output.push(fut.await.map_err(Into::into));
         }
+
+        let elapsed_ms = now.elapsed().as_millis();
+        trace!(
+            num_addrs = addrs.len(),
+            elapsed_ms,
+            "batch_get_erc20_balance"
+        );
         Ok(output)
     }
 }

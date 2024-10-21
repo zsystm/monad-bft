@@ -1,14 +1,13 @@
 use std::time::Duration;
 
-use alloy_json_rpc::RpcReturn;
 use alloy_rlp::Encodable;
-use alloy_rpc_client::{BatchRequest, ReqwestClient};
+use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use alloy_sol_types::SolCall;
 use eyre::Result;
 use reth_primitives::{
     hex::FromHex, keccak256, AccessList, Address, Bytes, Transaction, TransactionKind,
-    TransactionSigned, TxEip1559, TxHash, U256, U64,
+    TransactionSigned, TxEip1559, U256,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};

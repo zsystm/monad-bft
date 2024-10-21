@@ -7,7 +7,7 @@ use clap::Parser;
 use prelude::*;
 use serde::Deserialize;
 use shared::erc20::ERC20;
-use simple::GenMode;
+use workers::GenMode;
 use tracing_subscriber::util::SubscriberInitExt;
 use url::Url;
 
@@ -15,7 +15,7 @@ use url::Url;
 pub mod prelude;
 pub mod run;
 pub mod shared;
-pub mod simple;
+pub mod workers;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
@@ -23,8 +23,17 @@ pub struct Cli {
     #[arg(long, default_value = "http://localhost:8080")]
     pub rpc_url: Url,
 
-    #[arg(long)]
-    pub config: PathBuf,
+    #[arg(long, default_value = "1000")]
+    pub tps: u64,
+
+    #[arg(
+        long,
+        default_value = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+    )]
+    pub root_private_key: String,
+
+    #[arg(long, default_value = "10101")]
+    pub seed: u64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -33,7 +42,7 @@ pub struct Config {
     pub seed: u64,
     pub mode: GenMode,
     pub refresh_delay_secs: f64,
-    pub target_tps: u64,
+    pub tps: u64,
     pub root_private_key: String,
 }
 
@@ -56,13 +65,12 @@ async fn main() -> Result<()> {
     let args = Cli::parse();
     // let config = EthTxGeneratorConfig::new_from_file(args.config).expect("Failed to load config");
     let config = Config {
-        num_senders: 500,
-        seed: 1,
+        tps: args.tps,
+        num_senders: 2_000,
+        seed: args.seed,
         mode: GenMode::Native,
         refresh_delay_secs: 5.,
-        target_tps: 1000,
-        root_private_key: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-            .to_string(),
+        root_private_key: args.root_private_key,
     };
     let client: ReqwestClient = ClientBuilder::default().http(args.rpc_url);
 
@@ -84,7 +92,7 @@ fn setup_logging() -> Result<()> {
     // log high signal aggregations to stdio
     let stdio_layer = fmt::layer()
         .with_writer(std::io::stdout)
-        .with_filter(EnvFilter::new("monad_eth_txgen=info"));
+        .with_filter(EnvFilter::new("txgen=info"));
 
     // set up subscriber with all layers
     tracing_subscriber::registry()
