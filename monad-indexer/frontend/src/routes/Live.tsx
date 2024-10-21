@@ -15,6 +15,9 @@ interface Block {
   randao_reveal: string,
   payload_id?: string,
   parent_block_id: string,
+
+  // extra stuff
+  calculated_block_time: number,
 }
 
 const REFRESH_INTERVAL = 5000;
@@ -30,6 +33,9 @@ const Live: Component = () => {
     skipPoll = true;
     fetch('/api/v1/blocks').then(async response => {
       const blocks = await response.json();
+      for (let i = 0; i < blocks.length - 1; i++) {
+        blocks[i].calculated_block_time = blocks[i].timestamp - blocks[i+1].timestamp;
+      }
       setBlocks(blocks)
     }).finally(() => {
       skipPoll = false;
@@ -94,7 +100,9 @@ const Live: Component = () => {
             <A href={`/block/${block.block_id}`}>
               {block.seq_num}
             </A>
-            - {(nodeNames as any)[block.author.slice(2)] ?? block.author} - {secondsAgo(block)} seconds ago
+            - {block.calculated_block_time} ms
+            - {(nodeNames as any)[block.author.slice(2)] ?? block.author}
+            - {secondsAgo(block)} seconds ago
           </div>
         }</Show>
       }</For>
