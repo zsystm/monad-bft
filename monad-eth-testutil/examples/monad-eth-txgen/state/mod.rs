@@ -75,6 +75,11 @@ impl ChainStateView {
         Self { state }
     }
 
+    pub async fn set_erc20(&self, erc20: ERC20) {
+        let mut chain_state = self.state.write().await;
+        chain_state.erc20_to_check = Some(erc20)
+    }
+
     pub async fn add_new_account(&self, address: Address) {
         let mut chain_state = self.state.write().await;
 

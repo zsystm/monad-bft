@@ -10,7 +10,7 @@ use tokio::sync::mpsc::{self, Receiver};
 use tracing::{debug, info, trace, warn};
 
 use super::{account::EthAccount, config::EthTxAddressPoolConfig};
-use crate::{account::PrivateKey, generator::format_addr, state::ChainStateView};
+use crate::{private_key::PrivateKey, generator::format_addr, state::ChainStateView};
 
 #[derive(Debug)]
 pub struct AccountPool {
@@ -50,14 +50,10 @@ impl AccountPool {
         config: EthTxAddressPoolConfig,
     ) -> (Vec<Address>, mpsc::Receiver<Vec<(Address, PrivateKey)>>) {
         info!("Registering accounts in EthTxAddressPoolConfig...");
+
         let mut addresses;
         let mut list: Box<dyn Iterator<Item = (Address, PrivateKey)> + Send> = match config {
             EthTxAddressPoolConfig::Single { private_key } => {
-                // let (address, account) = PrivateKey::new(private_key);
-
-                // vec![(address, account)]
-                // Box::new((0..1)
-                //     .map(|_| PrivateKey::new(private_key)))
                 addresses = Vec::with_capacity(1);
                 Box::new([PrivateKey::new(private_key)].into_iter())
             }
@@ -68,13 +64,15 @@ impl AccountPool {
             }
         };
 
-        for (address, account) in list.by_ref().take(100_000) {
+        for (i, (address, account)) in list.by_ref().take(100_000).enumerate() {
             addresses.push(address);
             if accounts.insert(address, EthAccount::new(account)).is_none() {
+                if i < 10 {
                 trace!(
-                    addr = format_addr(&address),
-                    "Registering account with chain state and inserting in AccountPool"
+                    addr = address.to_string(),
+                    "Registering account with chain state and inserting in AccountPool (logging first 10..)"
                 );
+                }
                 chain_state.add_new_account(address).await;
             } else {
                 warn!("Detected duplicate address (this is expected if to and from seeds are the same)");
@@ -175,11 +173,9 @@ impl AccountPool {
         limit: usize,
     ) -> Box<dyn FnMut() -> Option<Address> + 'a> {
         let mut rng = ThreadRng::default();
-        // let mut idxs = (0..list.len()).collect::<Vec<_>>();
         let mut elems: _ = list.choose_multiple(&mut rng, list.len().min(limit).min(10000));
 
         Box::new(move || {
-            // trace!("generator top");
             match elems.next() {
                 Some(e) => Some(e.clone()),
                 None => {
@@ -188,20 +184,6 @@ impl AccountPool {
                     elems.next().cloned()
                 }
             }
-            // if list.len() == 1 {
-            //     return Some(list[0]);
-            // }
-
-            // if idxs.is_empty() {
-            //     return None;
-            // }
-
-            // let idx_idx = rng.gen_range(0..idxs.len());
-            // let last_idx_idx = idxs.len() - 1;
-
-            // idxs.swap(idx_idx, last_idx_idx);
-
-            // let idx = idxs.pop().expect("last element exists");
         })
     }
 

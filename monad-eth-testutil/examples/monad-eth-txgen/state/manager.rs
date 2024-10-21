@@ -1,4 +1,4 @@
-use std::{future::Future, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashSet, future::Future, str::FromStr, sync::Arc, time::Duration};
 
 use alloy_json_rpc::RpcError;
 use alloy_primitives::FixedBytes;
@@ -8,7 +8,7 @@ use eyre::{Context, ContextCompat};
 use futures::{FutureExt, StreamExt};
 use reth_primitives::{
     hex::{encode, ToHex},
-    Address, TxHash, U256,
+    Address, TxHash, U256, U64,
 };
 use reth_rpc_types::{Block, BlockTransactions};
 use ruint::Uint;
@@ -16,11 +16,15 @@ use thiserror::Error;
 use tokio::{
     sync::RwLock,
     task::JoinHandle,
-    time::{interval, Instant},
+    time::{interval, sleep, Instant},
 };
 use tracing::{debug, error, info, trace, warn};
 
-use crate::generator::format_addr;
+use crate::{
+    erc20::{ERC20, IERC20},
+    generator::format_addr,
+    state::monitors::ChainMetrics,
+};
 
 use super::{
     blockstream::{BlockStream, BlockStreamError},
@@ -55,9 +59,10 @@ impl ChainStateManager {
     }
 
     pub fn start(self) -> ChainStateManagerHandle {
-        // spawn monitors
         trace!("start of chain state manager");
         let chain_state_view = ChainStateView::new(Arc::clone(&self.chain_state));
+
+        // spawn monitors
         tokio::spawn(monitors::monitor_non_zero_accts(chain_state_view));
         trace!("spawn monitors done");
 
@@ -70,36 +75,21 @@ impl ChainStateManager {
         info!("Chain state manager started");
         let mut fetch_new_accounts_timer = interval(Duration::from_millis(10));
 
-        let mut last_blocks_count = 0;
-        let mut last_txs_count = 0;
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        let mut last_time = Instant::now();
+        let mut chain_metrics = ChainMetrics::new();
 
         loop {
             tokio::select! {
                 biased;
 
-                now = interval.tick() => {
-                    let new_blocks = self.blocks_counter - last_blocks_count;
-                    let elapsed = (now - last_time).as_millis();
-                    let new_txs = self.txs_counter - last_txs_count;
-                    let block_time = elapsed / new_blocks.max(1) as u128;
-                    let tps = new_txs as u128 * 1000 / elapsed.max(1);
-
-                    last_blocks_count = self.blocks_counter;
-                    last_txs_count = self.txs_counter;
-                    last_time = now;
-                    let seeded_accounts = self.chain_state
-                        .read()
-                        .await
-                        .accounts
-                        .iter()
-                        .filter(|a| a.1.balance.gt(&Uint::from(0)))
-                        .count();
-
-
-                    info!(elapsed, new_blocks, new_txs, block_time, tps, seeded_accounts, "Chain metrics");
+                now = chain_metrics.interval.tick() => {
+                    chain_metrics.log(
+                        &self.chain_state,
+                        self.blocks_counter,
+                        self.txs_counter,
+                        now,
+                    ).await;
                 }
+
                 result = self.blockstream.select_next_some() => {
                     debug!("Start Processing new block");
                     match result {
@@ -110,6 +100,7 @@ impl ChainStateManager {
                     }
                     debug!("End Processing new block");
                 }
+
                 _ = fetch_new_accounts_timer.tick() => {
                     if let Err(e) = self.fetch_new_accounts().await  {
                         error!("Fetching new accounts failed: {e}");
@@ -130,25 +121,22 @@ impl ChainStateManager {
             }
         };
 
-        let mut chain_state = self.chain_state.write().await;
-
         debug!(num_txs = txs.len(), "Processed block");
         self.blocks_counter += 1;
         self.txs_counter += txs.len();
 
+        let mut touched_accts = HashSet::with_capacity(txs.len() * 2);
+        let mut chain_state = self.chain_state.write().await;
+
         for tx in txs {
             if let Some(from_account_state) = chain_state.accounts.get_mut(&tx.from) {
-                let [nonce] = tx.nonce.into_limbs();
+                touched_accts.insert(tx.from);
+
+                from_account_state.next_nonce = tx.nonce.to::<u64>() + 1;
 
                 // TODO(abenedito): Verify balance computation
-                let gas_cost = tx
-                    .gas
-                    .checked_mul(Uint::<256, 4>::from_limbs_slice(
-                        &tx.gas_price
-                            .context("transaction has gas price")?
-                            .into_limbs(),
-                    ))
-                    .context("gas cost does not overflow")?;
+                let gas_cost: U256 =
+                    tx.gas * U256::from(tx.gas_price.context("transaction has gas price")?);
 
                 from_account_state.balance = from_account_state
                     .balance
@@ -158,24 +146,38 @@ impl ChainStateManager {
                     })?
                     .checked_sub(gas_cost)
                     .context("balance does not underflow from gas cost")?;
-
-                from_account_state.next_nonce =
-                    nonce.checked_add(1).context("nonce does not overflow")?;
             }
 
             if let Some(to_account_state) = tx.to.and_then(|to| chain_state.accounts.get_mut(&to)) {
-                to_account_state.balance = to_account_state
-                    .balance
-                    .checked_add(tx.value)
-                    .context("balanced does not overflow")?
+                touched_accts.insert(tx.to.unwrap());
+                to_account_state.balance = to_account_state.balance + tx.value;
             }
+        }
+
+        if let Some(erc20) = chain_state.erc20_to_check {
+            let chain_state = self.chain_state.clone();
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let mut iter = touched_accts.into_iter().peekable();
+
+                while let Some(_) = iter.peek() {
+                    let chunk = iter.by_ref().take(500).collect();
+                    tokio::spawn(update_erc20_bals(
+                        chain_state.clone(),
+                        client.clone(),
+                        erc20,
+                        chunk,
+                    ));
+                    // don't hit rpc too hard
+                    sleep(Duration::from_millis(50)).await;
+                }
+            });
         }
 
         return Ok(());
     }
 
     async fn fetch_new_accounts(&mut self) -> Result<(), ChainStateManagerError> {
-        trace!("Start fetch");
         let Some(current_block_number) = self.blockstream.get_current_block_number() else {
             return Ok(());
         };
@@ -209,8 +211,8 @@ impl ChainStateManager {
             .map(|address| {
                 let params = [address.to_string(), format!("0x{current_block_number:x}")];
 
-                let balance_fut = batch.add_call("eth_getBalance", &params)?;
-                let nonce_fut = batch.add_call("eth_getTransactionCount", &params)?;
+                let balance_fut = batch.add_call::<_, U256>("eth_getBalance", &params)?;
+                let nonce_fut = batch.add_call::<_, U64>("eth_getTransactionCount", &params)?;
 
                 Ok((address, balance_fut, nonce_fut))
             })
@@ -220,34 +222,14 @@ impl ChainStateManager {
 
         let mut chain_state = self.chain_state.write().await;
 
-        let mut count_not_inserted = 0;
         for (address, balance_waiter, nonce_waiter) in calls {
-            trace!(addr = format_addr(&address), "Inserting new account");
+            let balance = balance_waiter.await?;
+            let nonce: u64 = nonce_waiter.await?.to();
 
-            let balance = {
-                let balance_str: String = balance_waiter.await?;
-                let balance_str = balance_str.strip_prefix("0x").unwrap_or(&balance_str);
-                U256::from_str_radix(&balance_str, 16).context("balance string is valid U256")?
-            };
-
-            let nonce_str: String = nonce_waiter.await?;
-            let nonce = u64::from_str_radix(
-                nonce_str
-                    .strip_prefix("0x")
-                    .context("nonce string always has 0x prefix")?,
-                16,
-            )
-            .context("nonce string is valid u64")?;
-
-            trace!(
-                addr = format_addr(&address),
-                "Removing from new_accounts set"
-            );
             if !chain_state.new_accounts.remove(&address) {
                 warn!("synced new account {address:?} when not requested!");
             }
 
-            trace!(addr = format_addr(&address), "Inserting new account");
             if let Some(existing) = chain_state
                 .accounts
                 .insert(address, ChainAccountState::new(balance, nonce))
@@ -256,9 +238,70 @@ impl ChainStateManager {
             }
         }
 
-        trace!("Done fetch");
+        debug!("Done fetch");
         Ok(())
     }
+}
+
+async fn update_erc20_bals(
+    chain_state: SharedChainState,
+    client: ReqwestClient,
+    erc20: ERC20,
+    touched_accts: Vec<Address>,
+) {
+    let mut batch = client.new_batch();
+    let start = Instant::now();
+
+    // add all eth_calls to batch
+    let mut results = Vec::with_capacity(touched_accts.len());
+    for addr in &touched_accts {
+        let (method, params) = erc20.balance_of(*addr);
+        let waiter = match batch.add_call::<_, U256>(method, &params) {
+            Ok(waiter) => waiter,
+            Err(_) => {
+                warn!(
+                    addr = addr.to_string(),
+                    "Failed to add eth_call balanceOf(address) to batch"
+                );
+                continue;
+            }
+        };
+        results.push(async move { (addr, waiter.await) });
+    }
+
+    // send the batched requests
+    if let Err(e) = batch.send().await {
+        error!("Fetch erc20 bals batch failed to send: {e}");
+        return;
+    }
+
+    // resolve all futures before locking state
+    let results = futures::future::join_all(results).await;
+
+    let mut num_updated = 0;
+    let mut chain_state = chain_state.write().await;
+    for (addr, bal_result) in results {
+        let bal = match bal_result {
+            Ok(bal) => bal,
+            Err(e) => {
+                error!(
+                    addr = addr.to_string(),
+                    "Failed to fetch balanceOf for erc20: {e}"
+                );
+                continue;
+            }
+        };
+        if let Some(acct) = chain_state.accounts.get_mut(addr) {
+            num_updated += 1;
+            acct.erc20_bal = bal;
+        }
+    }
+    debug!(
+        num_updated,
+        total_touched = touched_accts.len(),
+        elapsed_ms = start.elapsed().as_millis(),
+        "Finished updating erc20 bals"
+    );
 }
 
 #[derive(Debug, Error)]

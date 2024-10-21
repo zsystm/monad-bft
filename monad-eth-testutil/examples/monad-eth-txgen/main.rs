@@ -28,10 +28,11 @@ use crate::{
     state::ChainState,
 };
 
-mod account;
-mod generator;
-mod state;
 mod erc20;
+mod generator;
+mod json_rpc;
+mod private_key;
+mod state;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
@@ -64,22 +65,18 @@ fn main() {
 }
 
 async fn run(client: ReqwestClient, tx_generator_config: EthTxGeneratorConfig) -> Result<()> {
-    trace!("Spawning chain state manager");
     let (mut chain_state_manager_handle, chain_state) =
         ChainState::new_with_manager(client.clone()).await;
 
     let (mut tx_generator, mut gen_timer) =
-        EthTxGenerator::new(tx_generator_config, chain_state.clone()).await;
+        EthTxGenerator::new(tx_generator_config, chain_state.clone(), client.clone()).await?;
 
-    trace!("Before checker");
     state::monitors::AccountChecker::spawn(
         tx_generator.account_pool.from.clone(),
         chain_state.clone(),
         client.clone(),
     );
     let mut batch_futs = FuturesUnordered::new();
-
-    debug!("before main loop");
 
     let mut num_txs_sent = 0;
     let mut last_num_txs_sent = 0;
@@ -95,17 +92,20 @@ async fn run(client: ReqwestClient, tx_generator_config: EthTxGeneratorConfig) -
                 info!(sent, secs_elapsed = elapsed, tps = sent as f64 / elapsed, "Sent tps");
                 last_time_sent = now;
             }
+
             _ = gen_timer.tick() => {
                 let tx_batch = tx_generator.generate().await;
                 num_txs_sent += tx_batch.len();
                 send_batch(&client, &mut batch_futs, tx_batch).await;
             }
+
             result = batch_futs.select_next_some(), if !batch_futs.is_empty() => {
                 if let Err(err) = result {
-                    warn!("expected tx fut to resolve to valid tx hash, e: {}", err);
+                    debug!("expected tx fut to resolve to valid tx hash, e: {}", err);
                 }
                 // do smt with tx_hash
             }
+
             error = &mut chain_state_manager_handle => {
                 bail!(error);
             }
@@ -147,9 +147,10 @@ fn setup_logging() {
     let trace_layer = fmt::layer()
         .with_writer(
             RollingFileAppender::builder()
-                .max_log_files(30)
+                .max_log_files(2)
                 .filename_prefix("trace")
-                .rotation(Rotation::MINUTELY)
+                .filename_suffix("log")
+                .rotation(Rotation::HOURLY)
                 .build("./")
                 .unwrap(),
         )
@@ -159,9 +160,10 @@ fn setup_logging() {
     let debug_layer = fmt::layer()
         .with_writer(
             RollingFileAppender::builder()
-                .max_log_files(5)
+                .max_log_files(2)
                 .filename_prefix("debug")
-                .rotation(Rotation::HOURLY)
+                .filename_suffix("log")
+                .rotation(Rotation::DAILY)
                 .build("./")
                 .unwrap(),
         )

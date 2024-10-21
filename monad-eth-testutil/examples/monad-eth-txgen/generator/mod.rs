@@ -8,11 +8,15 @@ use reth_primitives::{
 };
 use ruint::Uint;
 use tokio::time::Instant;
-use tracing::{error, trace};
+use tracing::{debug, error, info, trace};
 
 pub use self::config::EthTxGeneratorConfig;
 use self::{account::EthAccount, account_pool::AccountPool, config::EthTxAddressConfig};
-use crate::{account::PrivateKey, erc20::ERC20, state::ChainStateView};
+use crate::{
+    erc20::ERC20,
+    private_key::PrivateKey,
+    state::{ChainAccountState, ChainStateView},
+};
 
 pub mod account;
 mod account_pool;
@@ -52,6 +56,7 @@ impl EthTxGenerator {
         } = activity
         {
             let contract = ERC20::deploy((root_account_address, &root_account), client).await?;
+            chain_state.set_erc20(contract).await;
             activity = EthTxActivityType::Erc20TokenTransfer {
                 contract: Some(contract),
                 quantity,
@@ -212,31 +217,117 @@ impl EthTxGenerator {
             } => {
                 let chain_state = self.chain_state.read().await;
                 let threshhold = U256::from(10) * quantity;
+                let root_state = match chain_state.get_account(&self.root_account.0) {
+                    None => {
+                        info!("Root account state not found, skipping generate");
+                        return txs;
+                    }
+                    Some(state) => state,
+                };
+
+                let mut root_account = (self.root_account.0, &mut self.root_account.1, root_state);
+
+                let mut num_seed_native = 0;
+                let mut num_mint_erc20 = 0;
+                let mut num_transfer_erc20 = 0;
+
                 self.account_pool
-                    .iter_random(200, |from, from_account, to| {
-                        let from_state = chain_state.get_account(&from).unwrap();
+                    .iter_random(2000, |from, from_account, to| {
+                        if txs.len() >= 500 {
+                            return false;
+                        }
+
+                        let Some(from_state) = chain_state.get_account(&from) else {
+                            return true;
+                        };
+
+                        if let Some(tx) = ensure_min_native_bal(
+                            (from, from_account, from_state),
+                            &mut root_account,
+                            true,
+                        ) {
+                            num_seed_native += 1;
+                            txs.push(tx);
+                            return true;
+                        }
+
                         let Some(nonce) = from_account.get_available_nonce(from_state, 1, false)
                         else {
                             return true;
                         };
 
                         let tx = if from_state.get_bal_erc20() > threshhold {
+                            num_transfer_erc20 += 1;
                             erc20
                                 .construct_transfer(from_account.key(), to, nonce, *quantity)
                                 .unwrap()
                         } else {
+                            num_mint_erc20 += 1;
                             erc20.construct_mint(from_account.key(), nonce).unwrap()
                         };
                         txs.push(tx);
 
                         true
                     });
+                debug!(num_seed_native, num_transfer_erc20, num_mint_erc20);
             }
             EthTxActivityType::Erc20TokenTransfer { contract: None, .. } => unreachable!(),
         }
 
         txs
     }
+}
+
+pub fn ensure_min_native_bal(
+    from: (Address, &mut EthAccount, &ChainAccountState),
+    root_account: &mut (Address, &mut EthAccount, &ChainAccountState),
+    should_trace: bool,
+) -> Option<TransactionSigned> {
+    if from.2.get_balance() >= Uint::from(1_000_000_000u64) {
+        // balance fine
+        return None;
+    }
+
+    if should_trace {
+        trace!("root: {}: {}", format_addr(&root_account.0), root_account.1);
+        trace!(
+            bal = from.2.get_balance().to_string(),
+            from = format_addr(&from.0),
+            "Seeding acct from root bc balance is too low"
+        );
+    }
+
+    let Some(nonce) = root_account
+        .1
+        .get_available_nonce(root_account.2, 512, should_trace)
+    else {
+        if should_trace {
+            trace!("Skipping seeding from root bc root nonce not available");
+        }
+        return None;
+    };
+
+    let transaction = Transaction::Eip1559(TxEip1559 {
+        chain_id: 41454,
+        nonce,
+        gas_limit: 21_000,
+        max_fee_per_gas: 1_000,
+        max_priority_fee_per_gas: 0,
+        to: TransactionKind::Call(from.0),
+        value: U256::from(1_000_000_000_000_000u128).into(),
+        access_list: AccessList::default(),
+        input: Vec::default().into(),
+    });
+
+    let signature = root_account.1.sign_transaction(&transaction).unwrap();
+
+    let signed_transaction =
+        TransactionSigned::from_transaction_and_signature(transaction, signature);
+
+    if should_trace {
+        trace!("pushing seed tx");
+    }
+    return Some(signed_transaction);
 }
 
 pub fn format_addr(addr: &Address) -> String {

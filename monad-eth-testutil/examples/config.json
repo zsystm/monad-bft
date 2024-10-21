@@ -1,25 +1,20 @@
 {
   "root_private_key": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-  "target_tps": 15000,
+  "target_tps": 1000,
   "addresses": {
-    "seeders": {
-      "type": "random_seeded",
-      "seed": 1,
-      "count": 10000
-    },
     "from": {
       "type": "random_seeded",
-      "seed": 20,
-      "count": 2200
+      "seed": 121,
+      "count": 1000
     },
     "to": {
       "type": "random_seeded",
-      "seed": 19,
-      "count": 2020000000
+      "seed": 2322,
+      "count": 10
     }
   },
   "activity": {
-    "type": "native_token_transfer",
-    "quantity": 100
+    "type": "erc20_token_transfer",
+    "quantity": 10
   }
 }

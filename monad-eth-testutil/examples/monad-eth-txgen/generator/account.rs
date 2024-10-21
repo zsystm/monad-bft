@@ -5,7 +5,7 @@ use reth_primitives::{Signature, Transaction};
 use tokio::time::Instant;
 use tracing::{trace, warn};
 
-use crate::{account::PrivateKey, state::ChainAccountState};
+use crate::{private_key::PrivateKey, state::ChainAccountState};
 
 #[derive(Debug)]
 pub struct EthAccount {

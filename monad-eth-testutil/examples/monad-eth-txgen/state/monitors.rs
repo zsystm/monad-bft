@@ -6,10 +6,10 @@ use std::{
 use alloy_rpc_client::{ReqwestClient, Waiter};
 use eyre::{Context, ContextCompat};
 use reth_primitives::{Address, U256};
-use tokio::time::{sleep_until, Instant};
+use tokio::time::{interval, sleep_until, Instant, Interval};
 use tracing::{error, info, trace, warn};
 
-use super::ChainStateView;
+use super::{ChainStateView, SharedChainState};
 
 pub async fn monitor_non_zero_accts(chain_state: ChainStateView) {
     let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -30,6 +30,49 @@ pub async fn monitor_non_zero_accts(chain_state: ChainStateView) {
         info!(
             num_non_zero_accts,
             "Total number of accounts with non-zero balance"
+        );
+    }
+}
+
+pub struct ChainMetrics {
+    last_blocks_count: usize,
+    last_txs_count: usize,
+    pub interval: Interval,
+    last_time: Instant,
+}
+
+impl ChainMetrics {
+    pub fn new() -> Self {
+        Self {
+            last_blocks_count: 0,
+            last_txs_count: 0,
+            interval: interval(Duration::from_secs(5)),
+            last_time: Instant::now(),
+        }
+    }
+
+    pub async fn log(
+        &mut self,
+        chain_state: &SharedChainState,
+        blocks_counter: usize,
+        txs_counter: usize,
+        now: Instant,
+    ) {
+        let new_blocks = blocks_counter - self.last_blocks_count;
+        let elapsed = (now - self.last_time).as_millis();
+        let new_txs = txs_counter - self.last_txs_count;
+        let block_time = elapsed / new_blocks.max(1) as u128;
+        let tps = new_txs as u128 * 1000 / elapsed.max(1);
+
+        self.last_blocks_count = blocks_counter;
+        self.last_txs_count = txs_counter;
+        self.last_time = now;
+        let accounts = &chain_state.read().await.accounts;
+        let seeded_accounts = accounts.iter().filter(|a| !a.1.balance.is_zero()).count();
+
+        info!(
+            elapsed,
+            new_blocks, new_txs, block_time, tps, seeded_accounts, "Chain metrics"
         );
     }
 }
