@@ -51,6 +51,12 @@ pub fn is_valid_bft_block_header_path(filepath: &OsStr) -> bool {
         .is_some_and(|filename| filename.ends_with(BLOCKDB_HEADER_EXTENSION))
 }
 
+pub fn is_valid_bft_payload_path(filepath: &OsStr) -> bool {
+    filepath
+        .to_str()
+        .is_some_and(|filename| filename.ends_with(BLOCKDB_PAYLOAD_EXTENSION))
+}
+
 impl<ST, SCT> FileBlockPersist<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -78,13 +84,24 @@ where
         let mut buf = vec![0; size as usize];
         file.read_exact(&mut buf)?;
 
-        // TODO maybe expect is too strict
-        let proto_block = ProtoBlock::decode(buf.as_slice()).expect("local protoblock decode");
-        let block: Block<SCT> = proto_block
-            .try_into()
-            .expect("proto_block to block should not be invalid");
+        let proto_block = ProtoBlock::decode(buf.as_slice()).map_err(std::io::Error::other)?;
+        let block: Block<SCT> = proto_block.try_into().map_err(std::io::Error::other)?;
 
         Ok(block)
+    }
+
+    pub fn read_bft_payload_from_filepath(&self, filepath: &OsStr) -> std::io::Result<Payload> {
+        assert!(is_valid_bft_payload_path(filepath));
+        let mut file = File::open(filepath)?;
+
+        let size = file.metadata()?.len();
+        let mut buf = vec![0; size as usize];
+        file.read_exact(&mut buf)?;
+
+        let proto_payload = ProtoPayload::decode(buf.as_slice()).map_err(std::io::Error::other)?;
+        let payload: Payload = proto_payload.try_into().map_err(std::io::Error::other)?;
+
+        Ok(payload)
     }
 }
 
@@ -135,20 +152,7 @@ where
         let filename = payload_id.0.to_string();
         let mut file_path = PathBuf::from(&self.payload_dir_path);
         file_path.push(format!("{}{}", filename, BLOCKDB_PAYLOAD_EXTENSION));
-        let mut file = File::open(file_path)?;
-
-        let size = file.metadata()?.len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf)?;
-
-        // TODO maybe expect is too strict
-        let proto_payload =
-            ProtoPayload::decode(buf.as_slice()).expect("local protopayload decode");
-        let payload: Payload = proto_payload
-            .try_into()
-            .expect("proto_payload to payload should not be invalid");
-
-        Ok(payload)
+        self.read_bft_payload_from_filepath(file_path.as_os_str())
     }
 
     fn read_bft_block_by_num(&self, _block_num: u64) -> std::io::Result<Block<SCT>> {
