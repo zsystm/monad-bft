@@ -15,6 +15,7 @@ members = [
     "monad-cxx",
     "monad-dataplane",
     "monad-debugger",
+    "monad-debug-node",
     "monad-eth-block-policy",
     "monad-eth-block-validator",
     "monad-eth-ledger",

@@ -1,3 +1,5 @@
+use std::{net::SocketAddr, str::FromStr};
+
 use bytes::Bytes;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
@@ -7,9 +9,9 @@ use monad_proto::{
 };
 
 use crate::{
-    AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
-    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, StateSyncVersion, ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, MempoolEvent,
+    MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
+    StateSyncUpsertType, StateSyncVersion, UpdateFullNodes, UpdatePeers, ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -373,6 +375,16 @@ impl<SCT: SignatureCollection> TryFrom<ProtoAsyncStateVerifyEvent> for AsyncStat
     }
 }
 
+fn socket_addr_to_proto(socket_addr: &SocketAddr) -> ProtoSockAddr {
+    let serialized = socket_addr.to_string();
+    ProtoSockAddr { addr: serialized }
+}
+
+fn proto_to_socket_addr(proto_socket_addr: ProtoSockAddr) -> Result<SocketAddr, ProtoError> {
+    SocketAddr::from_str(&proto_socket_addr.addr)
+        .map_err(|e| ProtoError::DeserializeError(format!("{}", e)))
+}
+
 impl<SCT> From<&ControlPanelEvent<SCT>> for ProtoControlPanelEvent
 where
     SCT: SignatureCollection,
@@ -411,6 +423,110 @@ where
                     },
                 )),
             },
+            ControlPanelEvent::GetPeers(get_peer_list) => match get_peer_list {
+                GetPeers::Request => ProtoControlPanelEvent {
+                    event: Some(proto_control_panel_event::Event::GetPeersEvent(
+                        ProtoGetPeersEvent {
+                            req_resp: Some(proto_get_peers_event::ReqResp::Req(
+                                ProtoGetPeersReq {},
+                            )),
+                        },
+                    )),
+                },
+                GetPeers::Response(vec) => {
+                    let records = vec
+                        .iter()
+                        .map(|(node_id, addr)| ProtoPeerRecord {
+                            node_id: Some(node_id.into()),
+                            addr: Some(socket_addr_to_proto(addr)),
+                        })
+                        .collect();
+                    ProtoControlPanelEvent {
+                        event: Some(proto_control_panel_event::Event::GetPeersEvent(
+                            ProtoGetPeersEvent {
+                                req_resp: Some(proto_get_peers_event::ReqResp::Resp(
+                                    ProtoGetPeersResp { records },
+                                )),
+                            },
+                        )),
+                    }
+                }
+            },
+            ControlPanelEvent::UpdatePeers(update_peers) => match update_peers {
+                crate::UpdatePeers::Request(vec) => {
+                    let records = vec
+                        .iter()
+                        .map(|(node_id, addr)| ProtoPeerRecord {
+                            node_id: Some(node_id.into()),
+                            addr: Some(socket_addr_to_proto(addr)),
+                        })
+                        .collect();
+                    ProtoControlPanelEvent {
+                        event: Some(proto_control_panel_event::Event::UpdatePeersEvent(
+                            ProtoUpdatePeersEvent {
+                                req_resp: Some(proto_update_peers_event::ReqResp::Req(
+                                    ProtoUpdatePeersReq { records },
+                                )),
+                            },
+                        )),
+                    }
+                }
+                crate::UpdatePeers::Response => ProtoControlPanelEvent {
+                    event: Some(proto_control_panel_event::Event::UpdatePeersEvent(
+                        ProtoUpdatePeersEvent {
+                            req_resp: Some(proto_update_peers_event::ReqResp::Resp(
+                                ProtoUpdatePeersResp {},
+                            )),
+                        },
+                    )),
+                },
+            },
+            ControlPanelEvent::GetFullNodes(get_full_nodes) => match get_full_nodes {
+                GetFullNodes::Request => ProtoControlPanelEvent {
+                    event: Some(proto_control_panel_event::Event::GetFullNodesEvent(
+                        ProtoGetFullNodesEvent {
+                            req_resp: Some(proto_get_full_nodes_event::ReqResp::Req(
+                                ProtoGetFullNodeReq {},
+                            )),
+                        },
+                    )),
+                },
+                GetFullNodes::Response(vec) => {
+                    let node_ids = vec.iter().map(Into::into).collect();
+                    ProtoControlPanelEvent {
+                        event: Some(proto_control_panel_event::Event::GetFullNodesEvent(
+                            ProtoGetFullNodesEvent {
+                                req_resp: Some(proto_get_full_nodes_event::ReqResp::Resp(
+                                    ProtoGetFullNodeResp { node_ids },
+                                )),
+                            },
+                        )),
+                    }
+                }
+            },
+            ControlPanelEvent::UpdateFullNodes(update_full_nodes) => match update_full_nodes {
+                UpdateFullNodes::Request(vec) => {
+                    let node_ids = vec.iter().map(Into::into).collect();
+                    ProtoControlPanelEvent {
+                        event: Some(proto_control_panel_event::Event::UpdateFullNodesEvent(
+                            ProtoUpdateFullNodesEvent {
+                                req_resp: Some(proto_update_full_nodes_event::ReqResp::Req(
+                                    ProtoUpdateFullNodesReq { node_ids },
+                                )),
+                            },
+                        )),
+                    }
+                }
+                UpdateFullNodes::Response => ProtoControlPanelEvent {
+                    event: Some(proto_control_panel_event::Event::UpdateFullNodesEvent(
+                        ProtoUpdateFullNodesEvent {
+                            req_resp: Some(proto_update_full_nodes_event::ReqResp::Resp(
+                                ProtoUpdateFullNodesResp {},
+                            )),
+                        },
+                    )),
+                },
+            },
         }
     }
 }
@@ -425,7 +541,7 @@ where
         Ok({
             let ProtoControlPanelEvent { event } = e;
             match event.ok_or(ProtoError::MissingRequiredField(
-                "ControlPanelEvent::GetValidatorSetEvent".to_owned(),
+                "ControlPanelEvent::event".to_owned(),
             ))? {
                 proto_control_panel_event::Event::GetValidatorSetEvent(_) => {
                     ControlPanelEvent::GetValidatorSet
@@ -452,6 +568,127 @@ where
                 }
                 proto_control_panel_event::Event::UpdateLogFilter(update_log_filter) => {
                     ControlPanelEvent::UpdateLogFilter(update_log_filter.filter)
+                }
+                proto_control_panel_event::Event::GetPeersEvent(proto_get_peers_event) => {
+                    let req_resp =
+                        proto_get_peers_event
+                            .req_resp
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ControlPanel::GetPeersEvent.req_resp".to_owned(),
+                            ))?;
+                    match req_resp {
+                        proto_get_peers_event::ReqResp::Req(_proto_get_peers_req) => {
+                            ControlPanelEvent::GetPeers(GetPeers::Request)
+                        }
+                        proto_get_peers_event::ReqResp::Resp(proto_get_peers_resp) => {
+                            let mut records =
+                                Vec::with_capacity(proto_get_peers_resp.records.len());
+                            for proto_record in proto_get_peers_resp.records.into_iter() {
+                                let record = (
+                                    proto_record
+                                        .node_id
+                                        .ok_or(ProtoError::MissingRequiredField(
+                                            "ControlPanel::GetPeersEvent.resp.record.node_id"
+                                                .to_owned(),
+                                        ))?
+                                        .try_into()?,
+                                    proto_to_socket_addr(
+                                        proto_record.addr.ok_or(
+                                            ProtoError::MissingRequiredField(
+                                                "ControlPanel::GetPeersEvent.resp.record.addr"
+                                                    .to_owned(),
+                                            ),
+                                        )?,
+                                    )?,
+                                );
+                                records.push(record);
+                            }
+
+                            ControlPanelEvent::GetPeers(GetPeers::Response(records))
+                        }
+                    }
+                }
+                proto_control_panel_event::Event::UpdatePeersEvent(proto_update_peers_event) => {
+                    let req_resp = proto_update_peers_event.req_resp.ok_or(
+                        ProtoError::MissingRequiredField(
+                            "ControlPanel::UpdatePeersEvent.req_resp".to_owned(),
+                        ),
+                    )?;
+                    match req_resp {
+                        proto_update_peers_event::ReqResp::Req(proto_update_peers_req) => {
+                            let mut records =
+                                Vec::with_capacity(proto_update_peers_req.records.len());
+                            for proto_record in proto_update_peers_req.records.into_iter() {
+                                let record = (
+                                    proto_record
+                                        .node_id
+                                        .ok_or(ProtoError::MissingRequiredField(
+                                            "ControlPanel::GetPeersEvent.resp.record.node_id"
+                                                .to_owned(),
+                                        ))?
+                                        .try_into()?,
+                                    proto_to_socket_addr(
+                                        proto_record.addr.ok_or(
+                                            ProtoError::MissingRequiredField(
+                                                "ControlPanel::GetPeersEvent.resp.record.addr"
+                                                    .to_owned(),
+                                            ),
+                                        )?,
+                                    )?,
+                                );
+                                records.push(record);
+                            }
+
+                            ControlPanelEvent::UpdatePeers(UpdatePeers::Request(records))
+                        }
+                        proto_update_peers_event::ReqResp::Resp(_proto_update_peers_resp) => {
+                            ControlPanelEvent::UpdatePeers(UpdatePeers::Response)
+                        }
+                    }
+                }
+                proto_control_panel_event::Event::GetFullNodesEvent(proto_get_full_nodes_event) => {
+                    let req_resp = proto_get_full_nodes_event.req_resp.ok_or(
+                        ProtoError::MissingRequiredField(
+                            "ControlPanel::GetFullNodesEvent.req_resp".to_owned(),
+                        ),
+                    )?;
+                    match req_resp {
+                        proto_get_full_nodes_event::ReqResp::Req(proto_get_full_node_req) => {
+                            ControlPanelEvent::GetFullNodes(GetFullNodes::Request)
+                        }
+                        proto_get_full_nodes_event::ReqResp::Resp(proto_get_full_node_resp) => {
+                            let mut node_ids =
+                                Vec::with_capacity(proto_get_full_node_resp.node_ids.len());
+                            for proto_node_id in proto_get_full_node_resp.node_ids {
+                                node_ids.push(proto_node_id.try_into()?);
+                            }
+                            ControlPanelEvent::GetFullNodes(GetFullNodes::Response(node_ids))
+                        }
+                    }
+                }
+                proto_control_panel_event::Event::UpdateFullNodesEvent(
+                    proto_update_full_nodes_event,
+                ) => {
+                    let req_resp = proto_update_full_nodes_event.req_resp.ok_or(
+                        ProtoError::MissingRequiredField(
+                            "ControlPanel::UpdateFullNodesEvent.req_resp".to_owned(),
+                        ),
+                    )?;
+                    match req_resp {
+                        proto_update_full_nodes_event::ReqResp::Req(
+                            proto_update_full_nodes_req,
+                        ) => {
+                            let mut node_ids =
+                                Vec::with_capacity(proto_update_full_nodes_req.node_ids.len());
+                            for proto_node_id in proto_update_full_nodes_req.node_ids {
+                                node_ids.push(proto_node_id.try_into()?);
+                            }
+                            ControlPanelEvent::UpdateFullNodes(UpdateFullNodes::Request(node_ids))
+                        }
+                        proto_update_full_nodes_event::ReqResp::Resp(
+                            proto_update_full_nodes_resp,
+                        ) => ControlPanelEvent::UpdateFullNodes(UpdateFullNodes::Response),
+                    }
                 }
             }
         })

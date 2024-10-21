@@ -316,6 +316,18 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 RouterCommand::UpdateCurrentRound(_, _) => {
                     // TODO
                 }
+                RouterCommand::GetPeers => {
+                    // TODO
+                }
+                RouterCommand::UpdatePeers(_) => {
+                    // TODO
+                }
+                RouterCommand::GetFullNodes => {
+                    // TODO
+                }
+                RouterCommand::UpdateFullNodes(vec) => {
+                    // TODO
+                }
             }
         }
     }

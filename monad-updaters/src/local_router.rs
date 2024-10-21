@@ -133,6 +133,10 @@ where
                             .unwrap();
                     }
                 },
+                RouterCommand::GetPeers => {}
+                RouterCommand::UpdatePeers(_) => {}
+                RouterCommand::GetFullNodes => {}
+                RouterCommand::UpdateFullNodes(vec) => {}
             }
         }
     }

@@ -136,6 +136,7 @@ where
                 ST,
                 MonadMessage<ST, SCT>,
                 VerifiedMonadMessage<ST, SCT>,
+                MonadEvent<ST, SCT>,
             >::new(config)),
         },
         timer: TokioTimer::default(),

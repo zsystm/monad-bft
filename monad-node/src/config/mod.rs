@@ -12,8 +12,7 @@ pub mod consensus;
 pub use consensus::NodeConsensusConfig;
 
 mod fullnode;
-use fullnode::FullNodeConfig;
-pub use fullnode::FullNodeIdentityConfig;
+pub use fullnode::{FullNodeConfig, FullNodeIdentityConfig};
 
 mod network;
 pub use network::NodeNetworkConfig;

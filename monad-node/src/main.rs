@@ -21,7 +21,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message};
+use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
@@ -517,7 +517,7 @@ async fn build_raptorcast_router<M, OM>(
     identity: <SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
     full_nodes: &[FullNodeIdentityConfig],
-) -> RaptorCast<SignatureType, M, OM>
+) -> RaptorCast<SignatureType, M, OM, MonadEvent<SignatureType, SignatureCollectionType>>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
         + Deserializable<Bytes>

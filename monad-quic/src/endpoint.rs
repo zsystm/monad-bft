@@ -381,6 +381,10 @@ where
                                     .entered();
                             this.gossip.send(current_time, target, message);
                         }
+                        RouterCommand::GetPeers => {}
+                        RouterCommand::UpdatePeers(_) => {}
+                        RouterCommand::GetFullNodes => {}
+                        RouterCommand::UpdateFullNodes(vec) => {}
                     }
                 }
                 continue;

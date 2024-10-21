@@ -1,4 +1,4 @@
-use std::{io::Error, path::PathBuf};
+use std::{io::Error, net::ToSocketAddrs, path::PathBuf};
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
@@ -9,10 +9,14 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetMetrics, GetValidatorSet, ReadCommand,
-    UpdateValidatorSet, WriteCommand,
+    ClearMetrics, ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
+    ReadCommand, UpdateValidatorSet, WriteCommand,
+};
+use monad_node::config::{
+    FullNodeConfig, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
 };
 use monad_secp::SecpSignature;
+use monad_types::NodeId;
 use tokio::net::{
     unix::{OwnedReadHalf, OwnedWriteHalf},
     UnixStream,
@@ -59,6 +63,22 @@ enum Commands {
     ClearMetrics,
     /// Update the logging filter
     UpdateLogFilter(UpdateLogFilter),
+    /// Display peer list
+    GetPeers,
+    /// Update peer list
+    UpdatePeers {
+        /// Path to the TOML file
+        #[arg(short, long, value_name = "FILE")]
+        path: PathBuf,
+    },
+    /// Display full node list
+    GetFullNodes,
+    /// Update full node list
+    UpdateFullNodes {
+        /// Path to the TOML file
+        #[arg(short, long, value_name = "FILE")]
+        path: PathBuf,
+    },
 }
 
 struct Read {
@@ -202,6 +222,126 @@ fn main() -> Result<(), Error> {
             rt.block_on(write.send(Command::Read(ReadCommand::GetMetrics(GetMetrics::Request))))?;
             let response = rt.block_on(read.next::<SignatureCollectionType>())?;
             println!("{}", serde_json::to_string(&response).unwrap());
+        }
+
+        Commands::GetPeers => {
+            rt.block_on(write.send(Command::Read(ReadCommand::GetPeers(GetPeers::Request))))?;
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            if let ControlPanelCommand::Read(ReadCommand::GetPeers(GetPeers::Response(peers))) =
+                response
+            {
+                // build toml config from peer list
+                let mut peer_configs = Vec::new();
+                for peer in peers {
+                    let peer_config = NodeBootstrapPeerConfig {
+                        address: peer.1.to_string(),
+                        secp256k1_pubkey: peer.0.pubkey(),
+                    };
+                    peer_configs.push(peer_config);
+                }
+                let bootstrap_config = NodeBootstrapConfig {
+                    peers: peer_configs,
+                };
+                println!("{}", toml::to_string(&bootstrap_config).unwrap());
+            } else {
+                println!(
+                    "unexpected response{}",
+                    serde_json::to_string(&response).unwrap()
+                )
+            }
+        }
+        Commands::UpdatePeers { path } => {
+            let new_peer_config =
+                toml::from_str::<NodeBootstrapConfig>(&std::fs::read_to_string(path).unwrap())
+                    .map_err(Error::other)?;
+
+            let mut new_peers = Vec::with_capacity(new_peer_config.peers.len());
+
+            for peer in new_peer_config.peers.into_iter() {
+                let node_id = NodeId::new(peer.secp256k1_pubkey);
+                let socket_addr = peer
+                    .address
+                    .to_socket_addrs()
+                    .map_err(Error::other)?
+                    .next()
+                    .ok_or(Error::other("No DNS record found"))?;
+
+                new_peers.push((node_id, socket_addr));
+            }
+
+            rt.block_on(write.send(Command::Write(WriteCommand::UpdatePeers(
+                monad_executor_glue::UpdatePeers::Request(new_peers),
+            ))))?;
+
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            if let ControlPanelCommand::Write(WriteCommand::UpdatePeers(
+                monad_executor_glue::UpdatePeers::Response,
+            )) = response
+            {
+                println!("Peer list updated");
+            } else {
+                println!(
+                    "unexpected response{}",
+                    serde_json::to_string(&response).unwrap()
+                )
+            }
+        }
+        Commands::GetFullNodes => {
+            rt.block_on(write.send(Command::Read(ReadCommand::GetFullNodes(
+                GetFullNodes::Request,
+            ))))?;
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            if let ControlPanelCommand::Read(ReadCommand::GetFullNodes(GetFullNodes::Response(
+                full_nodes,
+            ))) = response
+            {
+                // build toml config from peer list
+                let mut full_node_configs = Vec::new();
+                for node in full_nodes {
+                    let config = FullNodeIdentityConfig {
+                        secp256k1_pubkey: node.pubkey(),
+                    };
+                    full_node_configs.push(config);
+                }
+                let full_node_config = FullNodeConfig {
+                    identities: full_node_configs,
+                };
+
+                println!("{}", toml::to_string(&full_node_config).unwrap());
+            } else {
+                println!(
+                    "unexpected response{}",
+                    serde_json::to_string(&response).unwrap()
+                )
+            }
+        }
+        Commands::UpdateFullNodes { path } => {
+            let full_node_config =
+                toml::from_str::<FullNodeConfig>(&std::fs::read_to_string(path).unwrap())
+                    .map_err(Error::other)?;
+
+            let mut new_full_nodes = Vec::with_capacity(full_node_config.identities.len());
+            for node in full_node_config.identities {
+                let node_id = NodeId::new(node.secp256k1_pubkey);
+                new_full_nodes.push(node_id);
+            }
+
+            rt.block_on(write.send(Command::Write(WriteCommand::UpdateFullNodes(
+                monad_executor_glue::UpdateFullNodes::Request(new_full_nodes),
+            ))))?;
+
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            if let ControlPanelCommand::Write(WriteCommand::UpdateFullNodes(
+                monad_executor_glue::UpdateFullNodes::Response,
+            )) = response
+            {
+                println!("Full node list updated");
+            } else {
+                println!(
+                    "unexpected response{}",
+                    serde_json::to_string(&response).unwrap()
+                )
+            }
         }
     }
 

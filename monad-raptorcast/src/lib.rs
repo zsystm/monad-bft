@@ -11,13 +11,17 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, Stream};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
 use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{Message, RouterCommand};
+use monad_executor_glue::{
+    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand, UpdateFullNodes,
+    UpdatePeers,
+};
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
 
 pub mod udp;
@@ -45,7 +49,7 @@ where
     pub up_bandwidth_mbps: u64,
 }
 
-pub struct RaptorCast<ST, M, OM>
+pub struct RaptorCast<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
@@ -64,14 +68,26 @@ where
     udp_state: udp::UdpState<ST>,
 
     dataplane: Dataplane,
-    pending_events: VecDeque<M::Event>,
+    pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
-    _phantom: PhantomData<OM>,
+    _phantom: PhantomData<(OM, SE)>,
 }
 
-impl<ST, M, OM> RaptorCast<ST, M, OM>
+pub enum PeerManagerResponse<P: PubKey> {
+    PeerList(Vec<(NodeId<P>, SocketAddr)>),
+    UpdatePeersSuccess,
+    FullNodes(Vec<NodeId<P>>),
+    UpdateFullNodesSuccess,
+}
+
+pub enum RaptorCastEvent<E, P: PubKey> {
+    Message(E),
+    PeerManagerResponse(PeerManagerResponse<P>),
+}
+
+impl<ST, M, OM, SE> RaptorCast<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
@@ -124,7 +140,7 @@ where
     }
 }
 
-impl<ST, M, OM> Executor for RaptorCast<ST, M, OM>
+impl<ST, M, OM, SE> Executor for RaptorCast<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
@@ -230,7 +246,8 @@ where
 
                             if epoch_validators.validators.contains_key(&self_id) {
                                 let message: M = message.into();
-                                self.pending_events.push_back(message.event(self_id));
+                                self.pending_events
+                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
                                 if let Some(waker) = self.waker.take() {
                                     waker.wake()
                                 }
@@ -264,7 +281,8 @@ where
                         RouterTarget::PointToPoint(to) => {
                             if to == &self_id {
                                 let message: M = message.into();
-                                self.pending_events.push_back(message.event(self_id));
+                                self.pending_events
+                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
                                 if let Some(waker) = self.waker.take() {
                                     waker.wake()
                                 }
@@ -279,7 +297,8 @@ where
                         RouterTarget::TcpPointToPoint(to) => {
                             if to == &self_id {
                                 let message: M = message.into();
-                                self.pending_events.push_back(message.event(self_id));
+                                self.pending_events
+                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
                                 if let Some(waker) = self.waker.take() {
                                     waker.wake()
                                 }
@@ -288,6 +307,38 @@ where
                             }
                         }
                     };
+                }
+                RouterCommand::GetPeers => {
+                    let peer_list = self
+                        .known_addresses
+                        .iter()
+                        .map(|(node_id, sock_addr)| (*node_id, *sock_addr))
+                        .collect::<Vec<_>>();
+                    self.pending_events
+                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                            PeerManagerResponse::PeerList(peer_list),
+                        ));
+                }
+                RouterCommand::UpdatePeers(new_peers) => {
+                    self.known_addresses = new_peers.into_iter().collect();
+                    self.pending_events
+                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                            PeerManagerResponse::UpdatePeersSuccess,
+                        ));
+                }
+                RouterCommand::GetFullNodes => {
+                    let full_nodes = self.full_nodes.list.clone();
+                    self.pending_events
+                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                            PeerManagerResponse::FullNodes(full_nodes),
+                        ));
+                }
+                RouterCommand::UpdateFullNodes(new_full_nodes) => {
+                    self.full_nodes.list = new_full_nodes;
+                    self.pending_events
+                        .push_back(RaptorCastEvent::PeerManagerResponse(
+                            PeerManagerResponse::UpdateFullNodesSuccess,
+                        ));
                 }
             }
         }
@@ -318,15 +369,15 @@ fn handle_message<
     Ok(inbound)
 }
 
-impl<ST, M, OM> Stream for RaptorCast<ST, M, OM>
+impl<ST, M, OM, E> Stream for RaptorCast<ST, M, OM, E>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
-
+    E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
     Self: Unpin,
 {
-    type Item = M::Event;
+    type Item = E;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -336,7 +387,7 @@ where
         }
 
         if let Some(event) = this.pending_events.pop_front() {
-            return Poll::Ready(Some(event));
+            return Poll::Ready(Some(event.into()));
         }
 
         let full_node_addrs = this
@@ -399,9 +450,10 @@ where
                     }
                 },
             );
-            this.pending_events.extend(deserialized_app_messages);
+            this.pending_events
+                .extend(deserialized_app_messages.map(RaptorCastEvent::Message));
             if let Some(event) = this.pending_events.pop_front() {
-                return Poll::Ready(Some(event));
+                return Poll::Ready(Some(event.into()));
             }
         }
 
@@ -433,7 +485,9 @@ where
 
             match deserialized_message {
                 InboundRouterMessage::Application(message) => {
-                    return Poll::Ready(Some(message.event(NodeId::new(from))));
+                    return Poll::Ready(Some(
+                        RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
+                    ));
                 }
                 InboundRouterMessage::Discovery(discovery_message) => {
                     // pass message to self.discovery
@@ -443,5 +497,34 @@ where
         }
 
         Poll::Pending
+    }
+}
+
+impl<ST, SCT> From<RaptorCastEvent<MonadEvent<ST, SCT>, CertificateSignaturePubKey<ST>>>
+    for MonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn from(value: RaptorCastEvent<MonadEvent<ST, SCT>, CertificateSignaturePubKey<ST>>) -> Self {
+        match value {
+            RaptorCastEvent::Message(event) => event,
+            RaptorCastEvent::PeerManagerResponse(peer_manager_response) => {
+                match peer_manager_response {
+                    PeerManagerResponse::PeerList(peer_list) => MonadEvent::ControlPanelEvent(
+                        ControlPanelEvent::GetPeers(GetPeers::Response(peer_list)),
+                    ),
+                    PeerManagerResponse::UpdatePeersSuccess => MonadEvent::ControlPanelEvent(
+                        ControlPanelEvent::UpdatePeers(UpdatePeers::Response),
+                    ),
+                    PeerManagerResponse::FullNodes(full_nodes) => MonadEvent::ControlPanelEvent(
+                        ControlPanelEvent::GetFullNodes(GetFullNodes::Response(full_nodes)),
+                    ),
+                    PeerManagerResponse::UpdateFullNodesSuccess => MonadEvent::ControlPanelEvent(
+                        ControlPanelEvent::UpdateFullNodes(UpdateFullNodes::Response),
+                    ),
+                }
+            }
+        }
     }
 }

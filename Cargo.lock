@@ -3738,20 +3738,16 @@ name = "monad-control-panel"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "clap 4.4.10",
  "futures",
  "inquire",
- "itertools 0.10.5",
  "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
  "monad-secp",
- "serde_json",
  "tokio",
  "tokio-util",
- "toml 0.7.8",
  "tracing",
  "tracing-subscriber",
 ]
@@ -3806,6 +3802,27 @@ dependencies = [
  "socket2 0.5.7",
  "tracing",
  "zerocopy 0.6.5",
+]
+
+[[package]]
+name = "monad-debug-node"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "clap 4.4.10",
+ "futures",
+ "itertools 0.10.5",
+ "monad-bls",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor-glue",
+ "monad-node",
+ "monad-secp",
+ "monad-types",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "toml 0.7.8",
 ]
 
 [[package]]
@@ -4297,6 +4314,7 @@ dependencies = [
  "futures-util",
  "itertools 0.10.5",
  "lru",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-dataplane",
  "monad-discovery",

@@ -9,11 +9,11 @@ use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_raptorcast::{RaptorCast, RaptorCastConfig, RaptorCastEvent};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -118,8 +118,12 @@ fn service(
                     up_bandwidth_mbps: 1_000,
                 };
 
-                let mut service =
-                    RaptorCast::<SignatureType, MockMessage, MockMessage>::new(service_config);
+                let mut service = RaptorCast::<
+                    SignatureType,
+                    MockMessage,
+                    MockMessage,
+                    <MockMessage as Message>::Event,
+                >::new(service_config);
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
                     validator_set: all_peers.iter().map(|peer| (*peer, Stake(0))).collect(),
@@ -158,7 +162,7 @@ fn service(
             .expect("reader should never be dropped");
         expected_message_ids.insert(message.id, num_peers);
     }
-    while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(100)) {
+    while let Ok((_, MockEvent((tx, msg_id)))) = rx_reader.recv_timeout(Duration::from_secs(100)) {
         if &tx == tx_peer {
             let num_left = expected_message_ids
                 .get_mut(&msg_id)
@@ -195,10 +199,10 @@ impl MockMessage {
 
 impl Message for MockMessage {
     type NodeIdPubKey = PubKeyType;
-    type Event = (NodeId<Self::NodeIdPubKey>, u32);
+    type Event = MockEvent<Self::NodeIdPubKey>;
 
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
-        (from, self.id)
+        MockEvent((from, self.id))
     }
 }
 
@@ -222,5 +226,22 @@ impl Deserializable<Bytes> for MockMessage {
             u32::from_le_bytes(message[..4].try_into().unwrap()),
             message.len(),
         ))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MockEvent<P: PubKey>((NodeId<P>, u32));
+
+impl<P> From<RaptorCastEvent<MockEvent<P>, P>> for MockEvent<P>
+where
+    P: PubKey,
+{
+    fn from(value: RaptorCastEvent<MockEvent<P>, P>) -> Self {
+        match value {
+            RaptorCastEvent::Message(event) => event,
+            RaptorCastEvent::PeerManagerResponse(_peer_manager_response) => {
+                unimplemented!()
+            }
+        }
     }
 }

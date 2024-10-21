@@ -38,9 +38,10 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetMetrics, GetValidatorSet, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand, StateRootHashCommand,
-    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, ValidatorEvent, WriteCommand,
+    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
+    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
@@ -1131,6 +1132,46 @@ where
                         WriteCommand::UpdateLogFilter(filter),
                     ))]
                 }
+                ControlPanelEvent::GetPeers(req_resp) => match req_resp {
+                    GetPeers::Request => {
+                        vec![Command::RouterCommand(RouterCommand::GetPeers)]
+                    }
+                    GetPeers::Response(resp) => {
+                        vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
+                            ReadCommand::GetPeers(GetPeers::Response(resp)),
+                        ))]
+                    }
+                },
+                ControlPanelEvent::UpdatePeers(req_resp) => match req_resp {
+                    UpdatePeers::Request(vec) => {
+                        vec![Command::RouterCommand(RouterCommand::UpdatePeers(vec))]
+                    }
+                    UpdatePeers::Response => {
+                        vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
+                            WriteCommand::UpdatePeers(UpdatePeers::Response),
+                        ))]
+                    }
+                },
+                ControlPanelEvent::GetFullNodes(req_resp) => match req_resp {
+                    GetFullNodes::Request => {
+                        vec![Command::RouterCommand(RouterCommand::GetFullNodes)]
+                    }
+                    GetFullNodes::Response(vec) => {
+                        vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
+                            ReadCommand::GetFullNodes(GetFullNodes::Response(vec)),
+                        ))]
+                    }
+                },
+                ControlPanelEvent::UpdateFullNodes(req_resp) => match req_resp {
+                    UpdateFullNodes::Request(vec) => {
+                        vec![Command::RouterCommand(RouterCommand::UpdateFullNodes(vec))]
+                    }
+                    UpdateFullNodes::Response => {
+                        vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
+                            WriteCommand::UpdateFullNodes(UpdateFullNodes::Response),
+                        ))]
+                    }
+                },
             },
             MonadEvent::TimestampUpdateEvent(t) => {
                 self.block_timestamp.update_time(t);

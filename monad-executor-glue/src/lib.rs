@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::fmt::Debug;
+use std::{fmt::Debug, net::SocketAddr};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -40,6 +40,10 @@ pub enum RouterCommand<PT: PubKey, OM> {
         validator_set: Vec<(NodeId<PT>, Stake)>,
     },
     UpdateCurrentRound(Epoch, Round),
+    GetPeers,
+    UpdatePeers(Vec<(NodeId<PT>, SocketAddr)>),
+    GetFullNodes,
+    UpdateFullNodes(Vec<NodeId<PT>>),
 }
 
 pub trait Message: Clone + Send + Sync {
@@ -123,11 +127,29 @@ pub enum GetMetrics {
     Response(Metrics),
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GetPeers<PT: PubKey> {
+    Request,
+    #[serde(bound = "PT: PubKey")]
+    Response(Vec<(NodeId<PT>, SocketAddr)>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GetFullNodes<PT: PubKey> {
+    Request,
+    #[serde(bound = "PT: PubKey")]
+    Response(Vec<NodeId<PT>>),
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ReadCommand<SCT: SignatureCollection + Clone> {
     #[serde(bound = "SCT: SignatureCollection")]
     GetValidatorSet(GetValidatorSet<SCT>),
     GetMetrics(GetMetrics),
+    #[serde(bound = "SCT: SignatureCollection")]
+    GetPeers(GetPeers<SCT::NodeIdPubKey>),
+    #[serde(bound = "SCT: SignatureCollection")]
+    GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -146,15 +168,30 @@ pub enum ClearMetrics {
     Response(Metrics),
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum UpdatePeers<PT: PubKey> {
+    #[serde(bound = "PT: PubKey")]
+    Request(Vec<(NodeId<PT>, SocketAddr)>),
+    Response,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum UpdateFullNodes<PT: PubKey> {
+    #[serde(bound = "PT: PubKey")]
+    Request(Vec<NodeId<PT>>),
+    Response,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum WriteCommand<SCT: SignatureCollection> {
-    #[serde(bound(
-        deserialize = "SCT: SignatureCollection",
-        serialize = "SCT: SignatureCollection",
-    ))]
+    #[serde(bound = "SCT: SignatureCollection")]
     UpdateValidatorSet(UpdateValidatorSet<SCT>),
     ClearMetrics(ClearMetrics),
     UpdateLogFilter(String),
+    #[serde(bound = "SCT: SignatureCollection")]
+    UpdatePeers(UpdatePeers<SCT::NodeIdPubKey>),
+    #[serde(bound = "SCT: SignatureCollection")]
+    UpdateFullNodes(UpdateFullNodes<SCT::NodeIdPubKey>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -520,6 +557,10 @@ where
     ClearMetricsEvent,
     UpdateValidators((ValidatorSetData<SCT>, Epoch)),
     UpdateLogFilter(String),
+    GetPeers(GetPeers<SCT::NodeIdPubKey>),
+    UpdatePeers(UpdatePeers<SCT::NodeIdPubKey>),
+    GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),
+    UpdateFullNodes(UpdateFullNodes<SCT::NodeIdPubKey>),
 }
 
 /// MonadEvent are inputs to MonadState

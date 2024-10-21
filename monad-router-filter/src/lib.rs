@@ -56,6 +56,10 @@ where
                 },
                 RouterCommand::AddEpochValidatorSet { .. } => Some(cmd),
                 RouterCommand::UpdateCurrentRound(..) => Some(cmd),
+                RouterCommand::GetPeers => Some(cmd),
+                RouterCommand::UpdatePeers(_) => Some(cmd),
+                RouterCommand::GetFullNodes => Some(cmd),
+                RouterCommand::UpdateFullNodes(_vec) => Some(cmd),
             })
             .collect_vec();
 

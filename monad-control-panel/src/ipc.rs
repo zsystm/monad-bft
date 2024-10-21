@@ -14,8 +14,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetMetrics, GetValidatorSet, MonadEvent,
-    ReadCommand, UpdateValidatorSet, WriteCommand,
+    ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
+    GetValidatorSet, MonadEvent, ReadCommand, UpdateFullNodes, UpdatePeers, UpdateValidatorSet,
+    WriteCommand,
 };
 use tokio::{
     net::{unix::OwnedReadHalf, UnixListener},
@@ -157,13 +158,55 @@ where
                         }
                         m => error!("unhandled message {:?}", m),
                     },
+                    ReadCommand::GetPeers(l) => match l {
+                        GetPeers::Request => {
+                            let event = MonadEvent::ControlPanelEvent(ControlPanelEvent::GetPeers(
+                                GetPeers::Request,
+                            ));
+                            let Ok(_) = event_channel.send(event.clone()).await else {
+                                error!("failed to forward request {:?} to executor, closing connection", &event);
+                                break;
+                            };
+                        }
+                        m => error!("unhandled message {:?}", m),
+                    },
+                    ReadCommand::GetFullNodes(get_full_nodes) => match get_full_nodes {
+                        GetFullNodes::Request => {
+                            let event = MonadEvent::ControlPanelEvent(
+                                ControlPanelEvent::GetFullNodes(GetFullNodes::Request),
+                            );
+                            let Ok(_) = event_channel.send(event.clone()).await else {
+                                error!("failed to forward request {:?} to executor, closing connection", &event);
+                                break;
+                            };
+                        }
+                        m => error!("unhandled message {:?}", m),
+                    },
                 },
-                ControlPanelCommand::Write(w) => {
-                    match w {
-                        WriteCommand::ClearMetrics(clear_metrics) => match clear_metrics {
-                            ClearMetrics::Request => {
-                                let event = MonadEvent::ControlPanelEvent(
-                                    ControlPanelEvent::ClearMetricsEvent,
+                ControlPanelCommand::Write(w) => match w {
+                    WriteCommand::ClearMetrics(clear_metrics) => match clear_metrics {
+                        ClearMetrics::Request => {
+                            let event =
+                                MonadEvent::ControlPanelEvent(ControlPanelEvent::ClearMetricsEvent);
+                            let Ok(_) = event_channel.send(event.clone()).await else {
+                                error!("failed to forward request {:?} to executor, closing connection", &event);
+                                break;
+                            };
+                        }
+                        m => error!("unhandled message {:?}", m),
+                    },
+                    WriteCommand::UpdateValidatorSet(update_validator_set) => {
+                        match update_validator_set {
+                            UpdateValidatorSet::Request(parsed_validator_set) => {
+                                let ParsedValidatorData::<SCT> { epoch, validators } =
+                                    parsed_validator_set;
+                                let validators =
+                                    validators.into_iter().map(Into::into).collect::<Vec<_>>();
+                                let event = MonadEvent::<ST, SCT>::ControlPanelEvent(
+                                    ControlPanelEvent::UpdateValidators((
+                                        ValidatorSetData(validators),
+                                        epoch,
+                                    )),
                                 );
                                 let Ok(_) = event_channel.send(event.clone()).await else {
                                     error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -171,39 +214,45 @@ where
                                 };
                             }
                             m => error!("unhandled message {:?}", m),
-                        },
-                        WriteCommand::UpdateValidatorSet(update_validator_set) => {
-                            match update_validator_set {
-                                UpdateValidatorSet::Request(parsed_validator_set) => {
-                                    let ParsedValidatorData::<SCT> { epoch, validators } =
-                                        parsed_validator_set;
-                                    let validators =
-                                        validators.into_iter().map(Into::into).collect::<Vec<_>>();
-                                    let event = MonadEvent::<ST, SCT>::ControlPanelEvent(
-                                        ControlPanelEvent::UpdateValidators((
-                                            ValidatorSetData(validators),
-                                            epoch,
-                                        )),
-                                    );
-                                    let Ok(_) = event_channel.send(event.clone()).await else {
-                                        error!("failed to forward request {:?} to executor, closing connection", &event);
-                                        break;
-                                    };
-                                }
-                                m => error!("unhandled message {:?}", m),
-                            }
                         }
-                        WriteCommand::UpdateLogFilter(filter) => {
+                    }
+                    WriteCommand::UpdateLogFilter(filter) => {
+                        let event = MonadEvent::ControlPanelEvent(
+                            ControlPanelEvent::UpdateLogFilter(filter),
+                        );
+                        let Ok(_) = event_channel.send(event.clone()).await else {
+                            error!(
+                                "failed to forward request {:?} to executor, closing connection",
+                                &event
+                            );
+                            break;
+                        };
+                    }
+                    WriteCommand::UpdatePeers(update_peers) => match update_peers {
+                        UpdatePeers::Request(vec) => {
                             let event = MonadEvent::ControlPanelEvent(
-                                ControlPanelEvent::UpdateLogFilter(filter),
+                                ControlPanelEvent::UpdatePeers(UpdatePeers::Request(vec)),
                             );
                             let Ok(_) = event_channel.send(event.clone()).await else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
                                 break;
                             };
                         }
-                    }
-                }
+                        m => error!("unhandled message {:?}", m),
+                    },
+                    WriteCommand::UpdateFullNodes(update_full_nodes) => match update_full_nodes {
+                        UpdateFullNodes::Request(vec) => {
+                            let event = MonadEvent::ControlPanelEvent(
+                                ControlPanelEvent::UpdateFullNodes(UpdateFullNodes::Request(vec)),
+                            );
+                            let Ok(_) = event_channel.send(event.clone()).await else {
+                                error!("failed to forward request {:?} to executor, closing connection", &event);
+                                break;
+                            };
+                        }
+                        m => error!("unhandled message {:?}", m),
+                    },
+                },
             }
         }
     }
