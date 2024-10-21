@@ -3,7 +3,7 @@ use secp256k1::Secp256k1;
 use zeroize::Zeroize;
 
 /// secp256k1 public key
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialOrd, Ord)]
 pub struct PubKey(secp256k1::PublicKey);
 /// secp256k1 keypair
 pub struct KeyPair(secp256k1::KeyPair);
@@ -41,18 +41,6 @@ impl std::cmp::PartialEq for PubKey {
 }
 
 impl std::cmp::Eq for PubKey {}
-
-impl std::cmp::Ord for PubKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.cmp_fast_unstable(&other.0)
-    }
-}
-
-impl std::cmp::PartialOrd for PubKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
 
 /// Faster to use the transmuted memory values, but might not be stable across
 /// library versions
