@@ -2,7 +2,7 @@ use alloy_rpc_client::ReqwestClient;
 use eyre::{eyre, Result};
 use rand::Rng;
 use reth_primitives::{Address, Bytes, TransactionSigned, U256, U64};
-use tracing::trace;
+use tracing::{trace, warn};
 
 use super::erc20::ERC20;
 
@@ -118,10 +118,9 @@ impl JsonRpc for ReqwestClient {
         }
 
         let elapsed_ms = now.elapsed().as_millis();
-        trace!(
+        warn!(
             num_addrs = addrs.len(),
-            elapsed_ms,
-            "batch_get_erc20_balance"
+            elapsed_ms, "batch_get_erc20_balance"
         );
         Ok(output)
     }
