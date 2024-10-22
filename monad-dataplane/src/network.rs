@@ -30,6 +30,10 @@ const MAX_IOVEC_LEN: usize = 65493 / MONAD_GSO_SIZE * MONAD_GSO_SIZE;
 const LINUX_SENDMMSG_VLEN_MAX: usize = 1024;
 const NUM_IOVECS: usize = 1024;
 
+// header: preamble (8) + ethernet header (14) + ip header (20) + udp header (8)
+// footer: fcs (4) + ipg (12)
+const ETHERNET_FRAME_OVERHEAD: usize = 8 + 14 + 20 + 8 + 4 + 12;
+
 // 64 is linux kernel limit on max number of segments
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!((MAX_IOVEC_LEN / MONAD_GSO_SIZE) <= 64);
@@ -415,16 +419,17 @@ impl<'a> NetworkSocket<'a> {
                     }
                 }
 
-                let sleep = std::time::Duration::from_nanos(
-                    (self.send_ctrl.msgs[i].msg_len as u64) * 8 * 1000 / self.up_bandwidth_mbps,
-                );
+                let msg_len: usize = self.send_ctrl.msgs[i].msg_len.try_into().unwrap();
+                let num_frames = msg_len / MONAD_GSO_SIZE;
+                let overhead = num_frames * ETHERNET_FRAME_OVERHEAD;
+                let tx_bytes = msg_len + overhead;
+                let tx_bits: u64 = (8 * tx_bytes).try_into().unwrap();
+
+                let sleep =
+                    std::time::Duration::from_nanos(tx_bits * 1000 / self.up_bandwidth_mbps);
                 self.next_transmit += sleep;
             }
         }
-        // // TODO try sending the stuff that wasn't sent
-        // if r != num_msgs as i32 {
-        //     debug!("only sent {} out of {} msgs", r, num_msgs);
-        // }
 
         Some(())
     }
