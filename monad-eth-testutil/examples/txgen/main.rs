@@ -1,9 +1,7 @@
 #![allow(async_fn_in_trait)]
 
-use std::path::PathBuf;
-
 use alloy_rpc_client::ClientBuilder;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use prelude::*;
 use serde::Deserialize;
 use shared::erc20::ERC20;
@@ -37,9 +35,9 @@ pub struct Cli {
 
     #[arg(long, default_value = "native")]
     pub tx_type: TxType,
-
-    #[arg(long, default_value = "-1")]
-    pub num_recipients: i32,
+    //
+    // #[arg(long, default_value = "-1")]
+    // pub num_recipients: i32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -50,12 +48,11 @@ pub struct Config {
     pub tps: u64,
     pub root_private_key: String,
     pub tx_mode: TxType,
-    pub recipient_mode: RecipientMode,
 }
 
 pub enum RecipientMode {
     Infinite,
-    Finite
+    Finite,
 }
 
 #[derive(Deserialize, Debug)]
@@ -78,7 +75,7 @@ async fn main() -> Result<()> {
     // let config = EthTxGeneratorConfig::new_from_file(args.config).expect("Failed to load config");
     let config = Config {
         tps: args.tps,
-        num_senders: 2_000,
+        num_senders: 1_000,
         seed: args.seed,
         tx_mode: TxType::Native,
         refresh_delay_secs: 5.,

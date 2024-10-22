@@ -1,13 +1,7 @@
-use std::{
-    iter,
-    sync::atomic::{AtomicUsize, Ordering::SeqCst},
-};
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
 use futures::{stream::FuturesUnordered, StreamExt};
-use monad_consensus_types::metrics;
-use rand::rngs::SmallRng;
 use reth_primitives::TransactionSigned;
-use serde::Deserialize;
 
 use crate::{
     prelude::*,
@@ -15,14 +9,16 @@ use crate::{
 };
 
 pub mod gen;
+pub mod metrics;
+pub mod recipient_tracker;
 pub mod refresher;
 pub mod rpc_sender;
-pub mod recipient_tracker;
-pub mod metrics;
 
 pub use gen::*;
+pub use metrics::*;
 pub use refresher::*;
 pub use rpc_sender::*;
+pub use recipient_tracker::*;
 
 pub const BATCH_SIZE: usize = 500;
 
@@ -47,7 +43,6 @@ pub struct AccountsWithTxs {
     txs: Vec<Vec<TransactionSigned>>,
     to_accts: Vec<Accounts>,
 }
-
 
 impl std::fmt::Display for SimpleAccount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -1,17 +1,13 @@
 use std::iter;
 
 use clap::ValueEnum;
-use futures::{stream::FuturesUnordered, StreamExt};
 use rand::rngs::SmallRng;
 use refresher::refresh_batch;
 use reth_primitives::TransactionSigned;
 use rpc_sender::send_batch;
 use serde::Deserialize;
 
-use crate::{
-    prelude::*,
-    shared::{erc20::ERC20, json_rpc::JsonRpc},
-};
+use crate::{prelude::*, shared::erc20::ERC20};
 
 use super::*;
 
@@ -75,12 +71,9 @@ impl Generator {
                 "Gen recv'd accts from refresher"
             );
 
-            let mut txs = Vec::with_capacity(accts.len());
-            let mut to_accts = Vec::with_capacity(accts.len());
-            for acct in &mut accts {
-                txs.push(self.generate(acct));
-                to_accts.push(self.to_generator.drain());
-            }
+            let (txs, to_accts): (Vec<_>, Vec<_>) =
+                accts.iter_mut().map(|a| self.generate(a)).unzip();
+
             let num_txs = txs.len();
 
             self.rpc_sender
@@ -99,7 +92,6 @@ impl Generator {
     pub fn generate(&mut self, sender: &mut SimpleAccount) -> (Vec<TransactionSigned>, Accounts) {
         // ensure sender stays within batch boundary
         let mut txs = Vec::with_capacity(BATCH_SIZE);
-        let mut to_accts = Vec::with_capacity(BATCH_SIZE);
         for _ in 0..BATCH_SIZE {
             if sender.native_bal < self.min_native {
                 debug!(
@@ -117,7 +109,7 @@ impl Generator {
                 U256::from(10),
             ));
         }
-        txs
+        (txs, self.to_generator.drain())
     }
 
     pub async fn seed(&mut self, num_senders: usize) {

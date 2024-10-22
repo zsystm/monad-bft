@@ -37,7 +37,7 @@ impl Refresher {
 
         tokio::spawn(async move {
             let mut times_sent = 0;
-            while let Err(e) = refresh_batch(&client, &erc20, &mut accts, &metrics).await {
+            while let Err(e) = refresh_batch_w_erc20(&client, &erc20, &mut accts, &metrics).await {
                 if times_sent > 5 {
                     error!("Exhausted retries refreshing account, oh well! {e}");
                 } else {
@@ -88,6 +88,50 @@ pub async fn refresh_batch(
         // if let Ok(b) = &erc20_bals[i] {
         //     acct.erc20_bal = *b;
         // }
+        if let Ok(b) = &native_bals[i] {
+            acct.native_bal = *b;
+        }
+        if let Ok(n) = &nonces[i] {
+            acct.nonce = *n;
+        }
+    }
+    trace!("Batch refreshed");
+
+    Ok(())
+}
+
+/// problematic version to show erc20 behaving badly
+pub async fn refresh_batch_w_erc20(
+    client: &ReqwestClient,
+    erc20: &ERC20,
+    accts: &mut [SimpleAccount],
+    metrics: &Metrics,
+) -> Result<()> {
+    trace!("Refreshing batch...");
+    let str_addrs = accts.iter().map(|a| a.addr.to_string()).collect::<Vec<_>>();
+    let addrs = accts.iter().map(|a| a.addr).collect::<Vec<_>>();
+
+    let (erc20_res, native_bals, nonces) = tokio::join!(
+        client.batch_get_erc20_balance(&addrs, *erc20),
+        client.batch_get_balance(&str_addrs),
+        client.batch_get_transaction_count(&str_addrs),
+    );
+
+    // let (native_bals, nonces) = tokio::join!(
+    //     client.batch_get_balance(&str_addrs),
+    //     client.batch_get_transaction_count(&str_addrs),
+    // );
+
+    let native_bals = native_bals?;
+    let nonces = nonces?;
+    let erc20_bals = erc20_res?;
+
+    metrics.total_rpc_calls.fetch_add(accts.len() * 2, SeqCst);
+
+    for (i, acct) in accts.iter_mut().enumerate() {
+        if let Ok(b) = &erc20_bals[i] {
+            acct.erc20_bal = *b;
+        }
         if let Ok(b) = &native_bals[i] {
             acct.native_bal = *b;
         }
