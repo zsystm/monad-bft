@@ -41,6 +41,11 @@ const MIN_CHUNK_LENGTH: usize = 980;
 // if we have many peers to transmit the message to.
 const MAX_NUM_PACKETS: usize = 65535;
 
+struct DecoderState {
+    decoder: ManagedDecoder,
+    recipient_chunks: BTreeMap<[u8; 20], usize>,
+}
+
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
 
@@ -50,8 +55,7 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
     // TODO strong bound on max amount of memory used per decoder?
     // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
-    pending_message_cache:
-        LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, ManagedDecoder>,
+    pending_message_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, DecoderState>,
     signature_cache: LruCache<
         [u8; HEADER_LEN as usize - SIGNATURE_SIZE + 20],
         NodeId<CertificateSignaturePubKey<ST>>,
@@ -181,25 +185,31 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 continue;
             }
 
-            let decoder_result = self.pending_message_cache.try_get_or_insert_mut(key, || {
-                let symbol_len = parsed_message.chunk.len();
+            let decoder_state_result =
+                self.pending_message_cache.try_get_or_insert_mut(key, || {
+                    let symbol_len = parsed_message.chunk.len();
 
-                // symbol_len is always greater than zero, so this division is safe
-                let num_source_symbols =
-                    app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
+                    // symbol_len is always greater than zero, so this division is safe
+                    let num_source_symbols =
+                        app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
 
-                ManagedDecoder::new(num_source_symbols, symbol_len)
-            });
+                    ManagedDecoder::new(num_source_symbols, symbol_len).map(|decoder| {
+                        DecoderState {
+                            decoder,
+                            recipient_chunks: BTreeMap::new(),
+                        }
+                    })
+                });
 
-            let decoder = match decoder_result {
-                Ok(decoder) => decoder,
+            let decoder_state = match decoder_state_result {
+                Ok(decoder_state) => decoder_state,
                 Err(err) => {
-                    tracing::warn!(?err, "unable to create ManagedDecoder, dropping message");
+                    tracing::warn!(?err, "unable to create DecoderState, dropping message");
                     continue;
                 }
             };
 
-            let num_buffers_received = decoder.num_encoded_symbols_received() + 1;
+            let num_buffers_received = decoder_state.decoder.num_encoded_symbols_received() + 1;
 
             if (num_buffers_received % 100) == 0 {
                 tracing::debug!(
@@ -213,12 +223,21 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 );
             }
 
-            // can we assert!(!decoder.decoding_done()) ?
+            // can we assert!(!decoder_state.decoder.decoding_done()) ?
 
-            match decoder.received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id) {
+            match decoder_state
+                .decoder
+                .received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id)
+            {
                 Ok(()) => {
-                    if decoder.try_decode() {
-                        let Some(mut decoded) = decoder.reconstruct_source_data() else {
+                    *decoder_state
+                        .recipient_chunks
+                        .entry(parsed_message.recipient_hash)
+                        .or_insert(0) += 1;
+
+                    if decoder_state.decoder.try_decode() {
+                        let Some(mut decoded) = decoder_state.decoder.reconstruct_source_data()
+                        else {
                             tracing::error!("failed to reconstruct source data");
                             continue;
                         };
@@ -254,11 +273,13 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         }
 
         while self.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.into() {
-            let (key, decoder) = self.pending_message_cache.pop_lru().expect("nonempty");
+            let (key, decoder_state) = self.pending_message_cache.pop_lru().expect("nonempty");
             tracing::debug!(
-                num_source_symbols = decoder.num_source_symbols(),
-                num_encoded_symbols_received = decoder.num_encoded_symbols_received(),
-                inactivation_symbol_threshold = decoder.inactivation_symbol_threshold(),
+                num_source_symbols = decoder_state.decoder.num_source_symbols(),
+                num_encoded_symbols_received = decoder_state.decoder.num_encoded_symbols_received(),
+                inactivation_symbol_threshold =
+                    decoder_state.decoder.inactivation_symbol_threshold(),
+                recipient_chunks =? decoder_state.recipient_chunks,
                 ?key,
                 "dropped unfinished ManagedDecoder"
             )
