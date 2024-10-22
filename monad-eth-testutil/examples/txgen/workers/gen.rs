@@ -1,5 +1,6 @@
 use std::iter;
 
+use clap::ValueEnum;
 use futures::{stream::FuturesUnordered, StreamExt};
 use rand::rngs::SmallRng;
 use refresher::refresh_batch;
@@ -28,7 +29,7 @@ pub struct Generator {
     pub seed_native: U256,
     pub min_native: U256,
     pub min_erc20: U256,
-    pub mode: GenMode,
+    pub mode: TxType,
 }
 
 pub struct ToAcctGenerator {
@@ -55,8 +56,9 @@ impl ToAcctGenerator {
     }
 }
 
-#[derive(Deserialize, Debug)]
-pub enum GenMode {
+#[derive(Deserialize, Clone, Copy, Debug, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum TxType {
     ERC20,
     Native,
 }
@@ -94,9 +96,10 @@ impl Generator {
         }
     }
 
-    pub fn generate(&mut self, sender: &mut SimpleAccount) -> Vec<TransactionSigned> {
+    pub fn generate(&mut self, sender: &mut SimpleAccount) -> (Vec<TransactionSigned>, Accounts) {
         // ensure sender stays within batch boundary
         let mut txs = Vec::with_capacity(BATCH_SIZE);
+        let mut to_accts = Vec::with_capacity(BATCH_SIZE);
         for _ in 0..BATCH_SIZE {
             if sender.native_bal < self.min_native {
                 debug!(
@@ -107,6 +110,7 @@ impl Generator {
                 // todo: refill from root somewhere
                 break;
             }
+
             txs.push(native_transfer(
                 sender,
                 self.to_generator.gen(),

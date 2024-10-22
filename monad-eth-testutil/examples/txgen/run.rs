@@ -46,7 +46,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         seed_native: U256::from(10e12),
         min_native: U256::from(10e7),
         min_erc20: U256::from(10e3),
-        mode: config.mode,
+        mode: config.tx_mode,
         metrics: Arc::clone(&metrics),
     };
 

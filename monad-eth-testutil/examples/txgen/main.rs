@@ -3,13 +3,13 @@
 use std::path::PathBuf;
 
 use alloy_rpc_client::ClientBuilder;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use prelude::*;
 use serde::Deserialize;
 use shared::erc20::ERC20;
-use workers::GenMode;
 use tracing_subscriber::util::SubscriberInitExt;
 use url::Url;
+use workers::TxType;
 
 // pub mod complex;
 pub mod prelude;
@@ -34,16 +34,28 @@ pub struct Cli {
 
     #[arg(long, default_value = "10101")]
     pub seed: u64,
+
+    #[arg(long, default_value = "native")]
+    pub tx_type: TxType,
+
+    #[arg(long, default_value = "-1")]
+    pub num_recipients: i32,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub num_senders: usize,
     pub seed: u64,
-    pub mode: GenMode,
     pub refresh_delay_secs: f64,
     pub tps: u64,
     pub root_private_key: String,
+    pub tx_mode: TxType,
+    pub recipient_mode: RecipientMode,
+}
+
+pub enum RecipientMode {
+    Infinite,
+    Finite
 }
 
 #[derive(Deserialize, Debug)]
@@ -68,7 +80,7 @@ async fn main() -> Result<()> {
         tps: args.tps,
         num_senders: 2_000,
         seed: args.seed,
-        mode: GenMode::Native,
+        tx_mode: TxType::Native,
         refresh_delay_secs: 5.,
         root_private_key: args.root_private_key,
     };
