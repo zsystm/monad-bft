@@ -36,13 +36,13 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         erc20: erc20.clone(),
         root,
         last_used_root: Instant::now() - Duration::from_secs(60 * 60),
-        recipient_keys: AsyncSeededKeyPool::new(config.num_recipients, config.recipient_seed),
+        recipient_keys: SeededKeyPool::new(config.num_recipients, config.recipient_seed),
+        sender_random_seed: config.sender_seed,
         seed_native_amt: U256::from(10e12),
         min_native: U256::from(10e7),
         min_erc20: U256::from(10e3),
         mode: config.tx_mode,
         metrics: Arc::clone(&metrics),
-        sender_random_seed: config.sender_seed,
     };
 
     let refresher = Refresher {

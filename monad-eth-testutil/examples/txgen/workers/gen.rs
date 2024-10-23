@@ -1,4 +1,3 @@
-
 use clap::ValueEnum;
 use rand::Rng;
 use refresher::refresh_batch;
@@ -20,7 +19,7 @@ pub struct Generator {
     pub last_used_root: Instant, // todo: figure out a better way to do root refreshes...
     pub metrics: Arc<Metrics>,
 
-    pub recipient_keys: AsyncSeededKeyPool,
+    pub recipient_keys: SeededKeyPool,
     pub sender_random_seed: u64,
 
     pub seed_native_amt: U256,
@@ -78,7 +77,18 @@ impl Generator {
         // ensure sender stays within batch boundary
         let mut txs = Vec::with_capacity(BATCH_SIZE);
         let mut recipients = Vec::with_capacity(BATCH_SIZE);
-        for _ in 0..BATCH_SIZE {
+
+        // fixme: don't just always mint...
+        if let TxType::ERC20 = self.mode {
+            txs.push(erc20_mint(
+                sender,
+                self.min_erc20 * U256::from(10),
+                &self.erc20,
+            ));
+            recipients.push(sender.addr);
+        }
+
+        for _ in txs.len()..BATCH_SIZE {
             if sender.native_bal < self.min_native {
                 debug!(
                     bal = sender.native_bal.to::<u128>(),
@@ -89,8 +99,23 @@ impl Generator {
                 break;
             }
 
-            let to = self.recipient_keys.next_addr().await;
-            txs.push(native_transfer(sender, to, U256::from(10)));
+            // if sender.erc20_bal < self.min_erc20 {
+            //     txs.push(erc20_mint(
+            //         sender,
+            //         self.min_erc20 * U256::from(10),
+            //         &self.erc20,
+            //     ));
+            //     recipients.push(sender.addr);
+            //     break;
+            // }
+
+            let to = self.recipient_keys.next_addr();
+
+            txs.push(match self.mode {
+                TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20),
+                TxType::Native => native_transfer(sender, to, U256::from(10)),
+            });
+
             recipients.push(to);
         }
         (txs, recipients)
@@ -181,6 +206,35 @@ pub fn native_transfer(from: &mut SimpleAccount, to: Address, amt: U256) -> Tran
 
     let sig = from.key.sign_transaction(&tx).unwrap();
     TransactionSigned::from_transaction_and_signature(tx, sig)
+}
+
+pub fn erc20_transfer(
+    from: &mut SimpleAccount,
+    to: Address,
+    amt: U256,
+    erc20: &ERC20,
+) -> TransactionSigned {
+    let tx = erc20
+        .construct_transfer(&from.key, to, from.nonce, amt)
+        .unwrap();
+
+    // update from
+    from.nonce += 1;
+    from.native_bal -= U256::from(400_000 * 1_000); // todo: fixme
+    from.erc20_bal -= amt;
+
+    tx
+}
+
+pub fn erc20_mint(from: &mut SimpleAccount, amt: U256, erc20: &ERC20) -> TransactionSigned {
+    let tx = erc20.construct_mint(&from.key, from.nonce).unwrap();
+
+    // update from
+    from.nonce += 1;
+    from.native_bal -= U256::from(400_000 * 1_000); // todo: fixme
+    from.erc20_bal += amt; // todo: fixme
+
+    tx
 }
 
 pub fn generate_keys<'a>(

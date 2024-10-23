@@ -73,8 +73,45 @@ impl From<(Address, PrivateKey)> for SimpleAccount {
     }
 }
 
+pub struct SeededKeyPool {
+    pub rng: SmallRng,
+    pub buf: Vec<(Address, PrivateKey)>,
+    pub cursor: usize,
+}
+
+impl SeededKeyPool {
+    pub fn new(num_keys: usize, seed: u64) -> SeededKeyPool {
+        let mut buf = Vec::with_capacity(num_keys);
+        let mut rng = SmallRng::seed_from_u64(seed);
+        buf.push(PrivateKey::new_with_random(&mut rng));
+        SeededKeyPool {
+            rng,
+            buf,
+            cursor: 0,
+        }
+    }
+
+    fn next_idx(&mut self) -> usize {
+        if self.buf.len() < self.buf.capacity() {
+            self.buf.push(PrivateKey::new_with_random(&mut self.rng));
+        }
+        let idx = self.cursor;
+        self.cursor = (self.cursor + 1) % self.buf.capacity();
+        idx
+    }
+
+    pub fn next_addr(&mut self) -> Address {
+        let idx = self.next_idx();
+        self.buf[idx].0
+    }
+
+    pub fn next_key(&mut self) -> (Address, PrivateKey) {
+        let idx = self.next_idx();
+        self.buf[idx].clone()
+    }
+}
+
 pub struct AsyncSeededKeyPool {
-    pub num_keys: usize,
     pub rx: mpsc::Receiver<(Address, PrivateKey)>,
     pub buf: Vec<(Address, PrivateKey)>,
     pub cursor: usize,
@@ -82,32 +119,24 @@ pub struct AsyncSeededKeyPool {
 
 impl AsyncSeededKeyPool {
     pub fn new(num_keys: usize, seed: u64) -> AsyncSeededKeyPool {
-        let buf = Vec::with_capacity(num_keys);
+        let mut buf = Vec::with_capacity(num_keys);
+        let mut rng = SmallRng::seed_from_u64(seed);
+        buf.push(PrivateKey::new_with_random(&mut rng));
 
         let (sender, rx) = mpsc::channel(num_keys.min(10000));
         tokio::task::spawn_blocking(move || {
-            let mut rng = SmallRng::seed_from_u64(seed);
-            for _ in 0..num_keys {
+            for _ in 1..num_keys {
                 let _ = sender.blocking_send(PrivateKey::new_with_random(&mut rng));
             }
         });
 
-        Self {
-            rx,
-            buf,
-            cursor: 0,
-            num_keys,
-        }
+        Self { rx, buf, cursor: 0 }
     }
 
     async fn next_idx(&mut self) -> usize {
-        if self.cursor == self.buf.len() {
-            let num_recvd = self.rx.recv_many(&mut self.buf, 10).await;
-            if num_recvd == 0 {
-                self.cursor = 0;
-            }
+        if let Some(x) = self.rx.recv().await {
+            self.buf.push(x);
         }
-
         let idx = self.cursor;
         self.cursor = (self.cursor + 1) % self.buf.len();
         idx
@@ -129,14 +158,40 @@ mod tests {
     use super::*;
 
     #[test]
-    async fn test_acct_gen() {
+    fn test_sync_pool() {
         let mut idxs = Vec::with_capacity(100);
-        let gen = AsyncSeededKeyPool::new(11, 1);
+        let mut gen = SeededKeyPool::new(11, 1);
+
+        for i in 0..12 {
+            idxs.push(gen.next_idx());
+        }
+
+        assert_eq!(idxs, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0]);
+
+        idxs.clear();
+        for i in 0..12 {
+            idxs.push(gen.next_idx());
+        }
+
+        assert_eq!(idxs, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_async_pool() {
+        let mut idxs = Vec::with_capacity(100);
+        let mut gen = AsyncSeededKeyPool::new(11, 1);
 
         for i in 0..12 {
             idxs.push(gen.next_idx().await);
         }
 
         assert_eq!(idxs, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0]);
+
+        idxs.clear();
+        for i in 0..12 {
+            idxs.push(gen.next_idx().await);
+        }
+
+        assert_eq!(idxs, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1]);
     }
 }

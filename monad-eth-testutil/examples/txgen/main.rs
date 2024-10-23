@@ -40,10 +40,10 @@ pub struct Cli {
     pub tx_type: TxType,
 
     #[arg(long, default_value = "100000")]
-    pub num_recipients: usize,
+    pub recipients: usize,
 
     #[arg(long, default_value = "1000")]
-    pub num_senders: usize,
+    pub senders: usize,
 }
 
 #[derive(Deserialize, Debug)]
@@ -77,8 +77,8 @@ async fn main() -> Result<()> {
     let args = Cli::parse();
     let config = Config {
         tps: args.tps,
-        num_senders: args.num_senders,
-        num_recipients: args.num_recipients,
+        num_senders: args.senders,
+        num_recipients: args.recipients,
         recipient_seed: args.recipient_seed,
         sender_seed: args.sender_seed,
         tx_mode: args.tx_type,

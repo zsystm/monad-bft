@@ -61,6 +61,14 @@ impl RecipientTracker {
             let addr_strings = addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>();
             let now = Instant::now();
             trace!("before recipient refresh");
+                
+            // let erc20_bals = match client.batch_get_erc20_balance(&addrs, ).await {
+            //     Ok(bals) => bals,
+            //     Err(e) => {
+            //         warn!("Recipient tracker failed to refresh batch: {e}");
+            //         return;
+            //     }
+            // };
 
             let bals = match client.batch_get_balance(&addr_strings).await {
                 Ok(bals) => bals,
