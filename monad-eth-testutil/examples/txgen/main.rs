@@ -17,7 +17,7 @@ pub mod workers;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
-pub struct Cli {
+pub struct Config {
     #[arg(long, default_value = "http://localhost:8080")]
     pub rpc_url: Url,
 
@@ -44,48 +44,42 @@ pub struct Cli {
 
     #[arg(long, default_value = "1000")]
     pub senders: usize,
-}
 
-#[derive(Deserialize, Debug)]
-pub struct Config {
-    pub num_senders: usize,
-    pub num_recipients: usize,
-    pub recipient_seed: u64,
-    pub sender_seed: u64,
+    #[arg(long, default_value = "50")]
+    pub sender_batch_size: usize,
+
+    #[arg(long, default_value = "5.")]
     pub refresh_delay_secs: f64,
-    pub tps: u64,
-    pub root_private_key: String,
-    pub tx_mode: TxType,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum EthTxActivityType {
-    NativeTokenTransfer {
-        quantity: U256,
-    },
-    Erc20TokenTransfer {
-        contract: Option<ERC20>,
-        quantity: U256,
-    },
-}
+// #[derive(Deserialize, Debug)]
+// pub struct Config {
+//     pub num_senders: usize,
+//     pub num_recipients: usize,
+//     pub recipient_seed: u64,
+//     pub sender_seed: u64,
+//     pub refresh_delay_secs: f64,
+//     pub tps: u64,
+//     pub root_private_key: String,
+//     pub tx_mode: TxType,
+// }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging()?;
 
-    let args = Cli::parse();
-    let config = Config {
-        tps: args.tps,
-        num_senders: args.senders,
-        num_recipients: args.recipients,
-        recipient_seed: args.recipient_seed,
-        sender_seed: args.sender_seed,
-        tx_mode: args.tx_type,
-        refresh_delay_secs: 5.,
-        root_private_key: args.root_private_key,
-    };
-    let client: ReqwestClient = ClientBuilder::default().http(args.rpc_url);
+    let config = Config::parse();
+    // let config = Config {
+    //     tps: args.tps,
+    //     num_senders: args.senders,
+    //     num_recipients: args.recipients,
+    //     recipient_seed: args.recipient_seed,
+    //     sender_seed: args.sender_seed,
+    //     tx_mode: args.tx_type,
+    //     refresh_delay_secs: 5.,
+    //     root_private_key: args.root_private_key,
+    // };
+    let client: ReqwestClient = ClientBuilder::default().http(config.rpc_url.clone());
 
     // info!("Config: {config:?}");
 

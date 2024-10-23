@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bullseye-slim as runner
 WORKDIR /usr/src/monad-bft
 
-COPY --from=builder /usr/src/monad-bft/tx_generator /usr/local/bin/tx_generator
+COPY --from=builder /usr/src/monad-bft/txgen /usr/local/bin/txgen
 
 ENV RUST_LOG=info
 CMD txgen

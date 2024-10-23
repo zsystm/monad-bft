@@ -36,13 +36,14 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         erc20: erc20.clone(),
         root,
         last_used_root: Instant::now() - Duration::from_secs(60 * 60),
-        recipient_keys: SeededKeyPool::new(config.num_recipients, config.recipient_seed),
+        recipient_keys: SeededKeyPool::new(config.recipients, config.recipient_seed),
         sender_random_seed: config.sender_seed,
         seed_native_amt: U256::from(10e12),
         min_native: U256::from(10e7),
         min_erc20: U256::from(10e3),
-        mode: config.tx_mode,
+        tx_type: config.tx_type,
         metrics: Arc::clone(&metrics),
+        sender_batch_size: config.sender_batch_size,
     };
 
     let refresher = Refresher {
@@ -75,7 +76,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
     let (_, _, _, _, _) = tokio::join!(
         tokio::spawn(refresher.run()),
         tokio::spawn(rpc_sender.run()),
-        tokio::spawn(gen.run(config.num_senders)),
+        tokio::spawn(gen.run(config.senders)),
         tokio::spawn(recipient_tracker.run()),
         tokio::spawn(metrics.run()),
     );

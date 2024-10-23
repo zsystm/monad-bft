@@ -25,7 +25,8 @@ pub struct Generator {
     pub seed_native_amt: U256,
     pub min_native: U256,
     pub min_erc20: U256,
-    pub mode: TxType,
+    pub tx_type: TxType,
+    pub sender_batch_size: usize,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, ValueEnum)]
@@ -79,7 +80,7 @@ impl Generator {
         let mut recipients = Vec::with_capacity(BATCH_SIZE);
 
         // fixme: don't just always mint...
-        if let TxType::ERC20 = self.mode {
+        if let TxType::ERC20 = self.tx_type {
             txs.push(erc20_mint(
                 sender,
                 self.min_erc20 * U256::from(10),
@@ -111,7 +112,7 @@ impl Generator {
 
             let to = self.recipient_keys.next_addr();
 
-            txs.push(match self.mode {
+            txs.push(match self.tx_type {
                 TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20),
                 TxType::Native => native_transfer(sender, to, U256::from(10)),
             });
@@ -169,7 +170,7 @@ impl Generator {
             }
 
             info!("Sending seed accts to rpc sender with no txs...");
-            for group in batch.chunks(50) {
+            for group in batch.chunks(self.sender_batch_size.min(BATCH_SIZE)) {
                 self.rpc_sender
                     .send(AccountsWithTxs {
                         accts: group.iter().cloned().map(SimpleAccount::from).collect(),
