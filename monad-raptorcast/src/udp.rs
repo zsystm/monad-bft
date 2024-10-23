@@ -20,7 +20,7 @@ use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
 
 use crate::{
-    util::{compute_hash, BuildTarget, EpochValidators},
+    util::{compute_hash, AppMessageHash, BuildTarget, EpochValidators, HexBytes, NodeIdHash},
     SIGNATURE_SIZE,
 };
 
@@ -43,7 +43,7 @@ const MAX_NUM_PACKETS: usize = 65535;
 
 struct DecoderState {
     decoder: ManagedDecoder,
-    recipient_chunks: BTreeMap<[u8; 20], usize>,
+    recipient_chunks: BTreeMap<NodeIdHash, usize>,
 }
 
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
@@ -71,7 +71,7 @@ where
 {
     unix_ts_ms: u64,
     author: NodeId<PT>,
-    app_message_hash: [u8; 20],
+    app_message_hash: AppMessageHash,
     app_message_len: usize,
 }
 
@@ -166,7 +166,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 self_id =? self.self_id,
                 author =? parsed_message.author,
                 unix_ts_ms = parsed_message.unix_ts_ms,
-                app_message_hash = hex::encode(parsed_message.app_message_hash),
+                app_message_hash =? parsed_message.app_message_hash,
                 encoding_symbol_id,
                 "received encoded symbol"
             );
@@ -216,7 +216,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     self_id =? self.self_id,
                     author =? parsed_message.author,
                     unix_ts_ms = parsed_message.unix_ts_ms,
-                    app_message_hash = hex::encode(parsed_message.app_message_hash),
+                    app_message_hash =? parsed_message.app_message_hash,
                     encoding_symbol_id,
                     num_buffers_received,
                     "received encoded symbol (100th)"
@@ -247,7 +247,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                                 ?self_id,
                                 author =? parsed_message.author,
                                 unix_ts_ms = parsed_message.unix_ts_ms,
-                                app_message_hash = hex::encode(parsed_message.app_message_hash),
+                                app_message_hash =? parsed_message.app_message_hash,
                                 encoding_symbol_id,
                                 app_message_len,
                                 "reconstructed large message"
@@ -470,7 +470,7 @@ where
             outbound_gso_idx.push((*addr, 0..gso_size as usize * num_packets));
             for (chunk_idx, (chunk_symbol_id, chunk_data)) in chunk_datas.iter_mut().enumerate() {
                 // populate chunk_recipient
-                chunk_data[0..20].copy_from_slice(&compute_hash(to));
+                chunk_data[0..20].copy_from_slice(&compute_hash(to).0);
                 *chunk_symbol_id = Some(chunk_idx as u16);
             }
         }
@@ -498,7 +498,7 @@ where
                     chunk_datas[start_idx..end_idx].iter_mut().enumerate()
                 {
                     // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id));
+                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
                     *chunk_symbol_id = Some(chunk_idx as u16);
                 }
             }
@@ -513,7 +513,7 @@ where
                 redundancy,
                 data_size,
                 num_packets,
-                app_message_hash = hex::encode(app_message_hash),
+                app_message_hash =? app_message_hash,
                 "raptorcasting message"
             );
 
@@ -543,7 +543,7 @@ where
                 }
                 for (chunk_symbol_id, chunk_data) in chunk_datas[start_idx..end_idx].iter_mut() {
                     // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id));
+                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
                     *chunk_symbol_id = Some(chunk_idx);
                     chunk_idx += 1;
                 }
@@ -680,10 +680,10 @@ where
     pub author: NodeId<PT>,
     pub epoch: u64,
     pub unix_ts_ms: u64,
-    pub app_message_hash: [u8; 20],
+    pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
     pub broadcast: bool,
-    pub recipient_hash: [u8; 20],
+    pub recipient_hash: NodeIdHash,
     pub chunk_id: u16,
     pub chunk: Bytes, // raptor-coded portion
 }
@@ -766,10 +766,12 @@ where
     );
 
     let cursor_app_message_hash = split_off(20)?;
-    let app_message_hash: [u8; 20] = cursor_app_message_hash
-        .as_ref()
-        .try_into()
-        .expect("Hash is 20 bytes");
+    let app_message_hash: AppMessageHash = HexBytes(
+        cursor_app_message_hash
+            .as_ref()
+            .try_into()
+            .expect("Hash is 20 bytes"),
+    );
 
     let cursor_app_message_len = split_off(4)?;
     let app_message_len = u32::from_le_bytes(
@@ -790,10 +792,12 @@ where
     }
 
     let cursor_recipient = split_off(20)?;
-    let recipient_hash: [u8; 20] = cursor_recipient
-        .as_ref()
-        .try_into()
-        .expect("Hash is 20 bytes");
+    let recipient_hash: NodeIdHash = HexBytes(
+        cursor_recipient
+            .as_ref()
+            .try_into()
+            .expect("Hash is 20 bytes"),
+    );
 
     let cursor_merkle_idx = split_off(1)?[0];
     let merkle_proof = MerkleProof::new_from_leaf_idx(merkle_proof, cursor_merkle_idx)
@@ -1076,7 +1080,7 @@ mod tests {
                     parse_message::<SignatureType>(&mut signature_cache, message.clone())
                         .expect("valid message");
                 assert_eq!(parsed_message.message, message);
-                assert_eq!(parsed_message.app_message_hash, app_message_hash.0[..20]);
+                assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0[..20]);
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
                 assert!(parsed_message.broadcast);
                 assert_eq!(parsed_message.app_message_len, app_message.len() as u32);

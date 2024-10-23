@@ -85,11 +85,26 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
     PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
 }
 
-pub fn compute_hash<PT>(id: &NodeId<PT>) -> [u8; 20]
+pub fn compute_hash<PT>(id: &NodeId<PT>) -> NodeIdHash
 where
     PT: PubKey,
 {
     let mut hasher = HasherType::new();
     hasher.update(id.pubkey().bytes());
-    hasher.hash().0[..20].try_into().expect("20 bytes")
+    HexBytes(hasher.hash().0[..20].try_into().expect("20 bytes"))
 }
+
+#[derive(Copy, Clone, Hash, Eq, Ord, PartialEq, PartialOrd)]
+pub struct HexBytes<const N: usize>(pub [u8; N]);
+impl<const N: usize> std::fmt::Debug for HexBytes<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "0x")?;
+        for byte in self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
+pub type NodeIdHash = HexBytes<20>;
+pub type AppMessageHash = HexBytes<20>;
