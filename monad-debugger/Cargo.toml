@@ -11,7 +11,6 @@ bench = false
 
 [[bin]]
 name = "schema_gen"
-src = "src/bin/schema_gen.rs"
 bench = false
 
 [dependencies]
