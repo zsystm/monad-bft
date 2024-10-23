@@ -5,7 +5,7 @@ use super::*;
 pub struct RpcSender {
     pub gen_rx: mpsc::Receiver<AccountsWithTxs>,
     pub refresh_sender: mpsc::Sender<AccountsWithTime>,
-    pub recipient_sender: mpsc::Sender<AccountsWithTime>,
+    pub recipient_sender: mpsc::UnboundedSender<AddrsWithTime>,
 
     pub client: ReqwestClient,
     pub target_tps: u64,
@@ -26,7 +26,7 @@ impl RpcSender {
         while let Some(AccountsWithTxs {
             accts,
             txs,
-            to_accts,
+            to_addrs: to_accts,
         }) = self.gen_rx.recv().await
         {
             info!(
@@ -55,7 +55,7 @@ impl RpcSender {
         }
     }
 
-    fn spawn_send_batch(&self, batch: Vec<TransactionSigned>, to_accts: Accounts) {
+    fn spawn_send_batch(&self, batch: Vec<TransactionSigned>, to_addrs: Vec<Address>) {
         if batch.is_empty() {
             return; // unnecessary?
         }
@@ -71,12 +71,11 @@ impl RpcSender {
 
             trace!("Sending accts to recipient tracker...");
             recipient_sender
-                .send(AccountsWithTime {
-                    accts: to_accts,
+                .send(AddrsWithTime {
+                    addrs: to_addrs,
                     sent: Instant::now(),
                 })
-                .await
-                .expect("recipient sender channel closed");
+                .expect("recipient tracker rx closed");
             trace!("Sent accts to recipient tracker");
         });
     }

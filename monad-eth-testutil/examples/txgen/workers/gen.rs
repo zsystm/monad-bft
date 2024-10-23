@@ -1,7 +1,6 @@
-use std::iter;
 
 use clap::ValueEnum;
-use rand::rngs::SmallRng;
+use rand::Rng;
 use refresher::refresh_batch;
 use reth_primitives::TransactionSigned;
 use rpc_sender::send_batch;
@@ -19,37 +18,15 @@ pub struct Generator {
     pub erc20: ERC20,
     pub root: SimpleAccount,
     pub last_used_root: Instant, // todo: figure out a better way to do root refreshes...
-    pub to_generator: ToAcctGenerator,
     pub metrics: Arc<Metrics>,
 
-    pub seed_native: U256,
+    pub recipient_keys: AsyncSeededKeyPool,
+    pub sender_random_seed: u64,
+
+    pub seed_native_amt: U256,
     pub min_native: U256,
     pub min_erc20: U256,
     pub mode: TxType,
-}
-
-pub struct ToAcctGenerator {
-    pub seed: u64,
-    pub rng: SmallRng,
-    pub buf: Vec<SimpleAccount>,
-}
-
-impl ToAcctGenerator {
-    fn gen(&mut self) -> Address {
-        let (addr, key) = PrivateKey::new_with_random(&mut self.rng);
-        self.buf.push(SimpleAccount {
-            nonce: 0,
-            native_bal: U256::ZERO,
-            erc20_bal: U256::ZERO,
-            key,
-            addr,
-        });
-        addr
-    }
-
-    pub fn drain(&mut self) -> Vec<SimpleAccount> {
-        std::mem::take(&mut self.buf)
-    }
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, ValueEnum)]
@@ -71,8 +48,13 @@ impl Generator {
                 "Gen recv'd accts from refresher"
             );
 
-            let (txs, to_accts): (Vec<_>, Vec<_>) =
-                accts.iter_mut().map(|a| self.generate(a)).unzip();
+            let mut txs = Vec::with_capacity(accts.len());
+            let mut to_addrs = Vec::with_capacity(accts.len());
+            for acct in &mut accts {
+                let (t, a) = self.generate(acct).await;
+                txs.push(t);
+                to_addrs.push(a);
+            }
 
             let num_txs = txs.len();
 
@@ -80,7 +62,7 @@ impl Generator {
                 .send(AccountsWithTxs {
                     accts,
                     txs,
-                    to_accts,
+                    to_addrs,
                 })
                 .await
                 .expect("rpc sender channel closed");
@@ -89,9 +71,13 @@ impl Generator {
         }
     }
 
-    pub fn generate(&mut self, sender: &mut SimpleAccount) -> (Vec<TransactionSigned>, Accounts) {
+    pub async fn generate(
+        &mut self,
+        sender: &mut SimpleAccount,
+    ) -> (Vec<TransactionSigned>, Vec<Address>) {
         // ensure sender stays within batch boundary
         let mut txs = Vec::with_capacity(BATCH_SIZE);
+        let mut recipients = Vec::with_capacity(BATCH_SIZE);
         for _ in 0..BATCH_SIZE {
             if sender.native_bal < self.min_native {
                 debug!(
@@ -103,35 +89,31 @@ impl Generator {
                 break;
             }
 
-            txs.push(native_transfer(
-                sender,
-                self.to_generator.gen(),
-                U256::from(10),
-            ));
+            let to = self.recipient_keys.next_addr().await;
+            txs.push(native_transfer(sender, to, U256::from(10)));
+            recipients.push(to);
         }
-        (txs, self.to_generator.drain())
+        (txs, recipients)
     }
 
     pub async fn seed(&mut self, num_senders: usize) {
-        iter::repeat_with(|| self.to_generator.gen())
-            .take(num_senders)
-            .count();
-        let mut to_seed = self.to_generator.buf.clone();
-        info!(num_to_seed = to_seed.len(), "Seeding...");
-
+        info!(num_senders = num_senders, "Generating sender keys...");
+        let mut rng = SmallRng::seed_from_u64(self.sender_random_seed);
+        let to_seed: Vec<_> = generate_keys(&mut rng, num_senders).collect();
         let mut root_slice = vec![std::mem::take(&mut self.root)]; // can't move out of array, so make it a vec...
 
-        for batch in to_seed.chunks_mut(BATCH_SIZE) {
+        info!("Seeding...");
+        for batch in to_seed.chunks(BATCH_SIZE) {
             info!(batch_size = batch.len(), "Seeding batch...");
 
             let mut txs = Vec::with_capacity(BATCH_SIZE);
 
             let pre_nonce = root_slice[0].nonce;
-            for acct in batch.iter_mut() {
+            for acct in batch.iter() {
                 txs.push(native_transfer(
                     &mut root_slice[0],
-                    acct.addr,
-                    self.seed_native,
+                    acct.0,
+                    self.seed_native_amt,
                 ));
             }
 
@@ -165,9 +147,9 @@ impl Generator {
             for group in batch.chunks(50) {
                 self.rpc_sender
                     .send(AccountsWithTxs {
-                        accts: group.iter().cloned().collect(),
+                        accts: group.iter().cloned().map(SimpleAccount::from).collect(),
                         txs: Vec::new(),
-                        to_accts: vec![self.to_generator.drain()],
+                        to_addrs: vec![group.iter().map(|(a, _)| *a).collect()],
                     })
                     .await
                     .unwrap();
@@ -199,4 +181,11 @@ pub fn native_transfer(from: &mut SimpleAccount, to: Address, amt: U256) -> Tran
 
     let sig = from.key.sign_transaction(&tx).unwrap();
     TransactionSigned::from_transaction_and_signature(tx, sig)
+}
+
+pub fn generate_keys<'a>(
+    rng: &'a mut impl Rng,
+    num_keys: usize,
+) -> impl Iterator<Item = (Address, PrivateKey)> + 'a {
+    (0..num_keys).map(|_| PrivateKey::new_with_random(rng))
 }

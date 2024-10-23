@@ -37,7 +37,7 @@ impl Refresher {
 
         tokio::spawn(async move {
             let mut times_sent = 0;
-            while let Err(e) = refresh_batch_w_erc20(&client, &erc20, &mut accts, &metrics).await {
+            while let Err(e) = refresh_batch(&client, &erc20, &mut accts, &metrics).await {
                 if times_sent > 5 {
                     error!("Exhausted retries refreshing account, oh well! {e}");
                 } else {

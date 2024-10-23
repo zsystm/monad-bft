@@ -31,28 +31,31 @@ pub struct Cli {
     pub root_private_key: String,
 
     #[arg(long, default_value = "10101")]
-    pub seed: u64,
+    pub recipient_seed: u64,
+
+    #[arg(long, default_value = "10101")]
+    pub sender_seed: u64,
 
     #[arg(long, default_value = "native")]
     pub tx_type: TxType,
-    //
-    // #[arg(long, default_value = "-1")]
-    // pub num_recipients: i32,
+
+    #[arg(long, default_value = "100000")]
+    pub num_recipients: usize,
+
+    #[arg(long, default_value = "1000")]
+    pub num_senders: usize,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub num_senders: usize,
-    pub seed: u64,
+    pub num_recipients: usize,
+    pub recipient_seed: u64,
+    pub sender_seed: u64,
     pub refresh_delay_secs: f64,
     pub tps: u64,
     pub root_private_key: String,
     pub tx_mode: TxType,
-}
-
-pub enum RecipientMode {
-    Infinite,
-    Finite,
 }
 
 #[derive(Deserialize, Debug)]
@@ -72,12 +75,13 @@ async fn main() -> Result<()> {
     setup_logging()?;
 
     let args = Cli::parse();
-    // let config = EthTxGeneratorConfig::new_from_file(args.config).expect("Failed to load config");
     let config = Config {
         tps: args.tps,
-        num_senders: 1_000,
-        seed: args.seed,
-        tx_mode: TxType::Native,
+        num_senders: args.num_senders,
+        num_recipients: args.num_recipients,
+        recipient_seed: args.recipient_seed,
+        sender_seed: args.sender_seed,
+        tx_mode: args.tx_type,
         refresh_delay_secs: 5.,
         root_private_key: args.root_private_key,
     };

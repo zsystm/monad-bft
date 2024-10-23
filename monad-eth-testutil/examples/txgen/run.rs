@@ -1,5 +1,3 @@
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
 use tokio::join;
 
 use crate::prelude::*;
@@ -12,7 +10,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
     let (rpc_sender, gen_rx) = mpsc::channel(10);
     let (gen_sender, refresh_rx) = mpsc::channel(100);
     let (refresh_sender, rpc_rx) = mpsc::channel(10);
-    let (recipient_sender, recipient_gen_rx) = mpsc::channel(10000);
+    let (recipient_sender, recipient_gen_rx) = mpsc::unbounded_channel();
 
     let (erc20, nonce, native_bal) = join!(
         ERC20::deploy(&root, client.clone()),
@@ -38,16 +36,13 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         erc20: erc20.clone(),
         root,
         last_used_root: Instant::now() - Duration::from_secs(60 * 60),
-        to_generator: ToAcctGenerator {
-            seed: config.seed,
-            rng: SmallRng::seed_from_u64(config.seed.into()),
-            buf: Vec::with_capacity(1000),
-        },
-        seed_native: U256::from(10e12),
+        recipient_keys: AsyncSeededKeyPool::new(config.num_recipients, config.recipient_seed),
+        seed_native_amt: U256::from(10e12),
         min_native: U256::from(10e7),
         min_erc20: U256::from(10e3),
         mode: config.tx_mode,
         metrics: Arc::clone(&metrics),
+        sender_random_seed: config.sender_seed,
     };
 
     let refresher = Refresher {
@@ -73,6 +68,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         client,
         erc20,
         delay: refresher.delay,
+        non_zero: Default::default(),
         metrics: Arc::clone(&metrics),
     };
 
