@@ -256,6 +256,7 @@ async fn main() {
 
                 if let TransactionPayload::Null = block_payload.txns {
                     debug!(?block_payload_path, "dropping null block payload");
+                    continue;
                 }
 
                 if let Err(err) = block_payload_tx.try_send((&block_payload).into()) {
