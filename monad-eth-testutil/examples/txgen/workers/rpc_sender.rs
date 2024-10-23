@@ -4,12 +4,13 @@ use super::*;
 
 pub struct RpcSender {
     pub gen_rx: mpsc::Receiver<AccountsWithTxs>,
-    pub refresh_sender: mpsc::Sender<AccountsWithTime>,
+    pub refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
     pub recipient_sender: mpsc::UnboundedSender<AddrsWithTime>,
 
     pub client: ReqwestClient,
     pub target_tps: u64,
     pub metrics: Arc<Metrics>,
+    pub sent_txs: Arc<DashMap<TxHash, Instant>>,
 }
 
 impl RpcSender {
@@ -49,7 +50,6 @@ impl RpcSender {
                     accts,
                     sent: Instant::now(),
                 })
-                .await
                 .expect("Sender not closed");
             debug!("Accts sent to refresher...");
         }
@@ -59,23 +59,29 @@ impl RpcSender {
         if batch.is_empty() {
             return; // unnecessary?
         }
-        debug!(batch_size = batch.len(), "Sending batch of txs...");
+        trace!(batch_size = batch.len(), "Sending batch of txs...");
 
         let recipient_sender = self.recipient_sender.clone();
         let client = self.client.clone();
         let metrics = self.metrics.clone();
+        let sent_txs = self.sent_txs.clone();
+
         tokio::spawn(async move {
+            let now = Instant::now();
+            for tx in &batch {
+                let _ = sent_txs.insert(tx.hash, now);
+            }
+
             send_batch(&client, batch, &metrics).await;
 
-            debug!("Tx batch sent");
-
-            trace!("Sending accts to recipient tracker...");
+            trace!("Tx batch sent, sending accts to recipient tracker...");
             recipient_sender
                 .send(AddrsWithTime {
                     addrs: to_addrs,
                     sent: Instant::now(),
                 })
                 .expect("recipient tracker rx closed");
+
             trace!("Sent accts to recipient tracker");
         });
     }

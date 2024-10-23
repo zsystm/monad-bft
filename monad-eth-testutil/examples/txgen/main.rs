@@ -3,8 +3,6 @@
 use alloy_rpc_client::ClientBuilder;
 use clap::Parser;
 use prelude::*;
-use serde::Deserialize;
-use shared::erc20::ERC20;
 use tracing_subscriber::util::SubscriberInitExt;
 use url::Url;
 use workers::TxType;
@@ -46,42 +44,36 @@ pub struct Config {
     pub senders: usize,
 
     #[arg(long, default_value = "50")]
-    pub sender_batch_size: usize,
+    pub sender_group_size: usize,
 
     #[arg(long, default_value = "5.")]
     pub refresh_delay_secs: f64,
-}
 
-// #[derive(Deserialize, Debug)]
-// pub struct Config {
-//     pub num_senders: usize,
-//     pub num_recipients: usize,
-//     pub recipient_seed: u64,
-//     pub sender_seed: u64,
-//     pub refresh_delay_secs: f64,
-//     pub tps: u64,
-//     pub root_private_key: String,
-//     pub tx_mode: TxType,
-// }
+    #[arg(long, default_value = "false")]
+    pub erc20_balance_of: bool,
+
+    #[arg(long, default_value = "500")]
+    pub tx_batch_size: usize,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging()?;
 
     let config = Config::parse();
-    // let config = Config {
-    //     tps: args.tps,
-    //     num_senders: args.senders,
-    //     num_recipients: args.recipients,
-    //     recipient_seed: args.recipient_seed,
-    //     sender_seed: args.sender_seed,
-    //     tx_mode: args.tx_type,
-    //     refresh_delay_secs: 5.,
-    //     root_private_key: args.root_private_key,
-    // };
     let client: ReqwestClient = ClientBuilder::default().http(config.rpc_url.clone());
 
-    // info!("Config: {config:?}");
+    info!("Config: {config:?}");
+
+    let time_to_send_txs_from_all_senders =
+        (config.tx_batch_size * config.senders) as f64 / config.tps as f64;
+    if time_to_send_txs_from_all_senders > config.refresh_delay_secs {
+        warn!(
+            time_to_send_txs_from_all_senders,
+            refresh_delay = config.refresh_delay_secs,
+            "Not enough senders for given tps to prevent stall during refresh"
+        );
+    }
 
     tokio::spawn(run::run(client, config)).await?
 }

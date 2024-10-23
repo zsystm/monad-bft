@@ -1,11 +1,14 @@
+use tokio::time::MissedTickBehavior;
+
 use super::*;
 
 pub struct Refresher {
-    pub rpc_rx: mpsc::Receiver<AccountsWithTime>,
+    pub rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,
     pub gen_sender: mpsc::Sender<Accounts>,
 
     pub client: ReqwestClient,
     pub erc20: ERC20,
+    pub erc20_check_bals: bool,
     pub metrics: Arc<Metrics>,
 
     pub delay: Duration,
@@ -13,6 +16,9 @@ pub struct Refresher {
 
 impl Refresher {
     pub async fn run(mut self) {
+        let mut interval = tokio::time::interval(Duration::from_millis(50));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         info!("Starting refresher loop");
         while let Some(AccountsWithTime { accts, sent }) = self.rpc_rx.recv().await {
             info!(
@@ -25,6 +31,8 @@ impl Refresher {
                 debug!("Refresher waited delay, refreshing batch...");
             }
 
+            interval.tick().await;
+
             self.handle_batch(accts);
         }
     }
@@ -34,10 +42,14 @@ impl Refresher {
         let erc20 = self.erc20.clone();
         let metrics = self.metrics.clone();
         let gen_sender = self.gen_sender.clone();
+        let erc20_check_bals = self.erc20_check_bals;
 
         tokio::spawn(async move {
             let mut times_sent = 0;
-            while let Err(e) = refresh_batch(&client, &erc20, &mut accts, &metrics).await {
+
+            while let Err(e) =
+                refresh_batch(&client, &erc20, &mut accts, &metrics, erc20_check_bals).await
+            {
                 if times_sent > 5 {
                     error!("Exhausted retries refreshing account, oh well! {e}");
                 } else {
@@ -62,16 +74,14 @@ pub async fn refresh_batch(
     _erc20: &ERC20,
     accts: &mut [SimpleAccount],
     metrics: &Metrics,
+    erc20_check_bals: bool, // todo: less jank
 ) -> Result<()> {
+    if erc20_check_bals {
+        return refresh_batch_w_erc20(client, _erc20, accts, metrics).await;
+    }
+
     trace!("Refreshing batch...");
     let str_addrs = accts.iter().map(|a| a.addr.to_string()).collect::<Vec<_>>();
-    // let addrs = accts.iter().map(|a| a.addr).collect::<Vec<_>>();
-
-    // let (erc20_res, native_bals, nonces) = tokio::join!(
-    //     client.batch_get_erc20_balance(&addrs, *erc20),
-    //     client.batch_get_balance(&str_addrs),
-    //     client.batch_get_transaction_count(&str_addrs),
-    // );
 
     let (native_bals, nonces) = tokio::join!(
         client.batch_get_balance(&str_addrs),
@@ -80,14 +90,10 @@ pub async fn refresh_batch(
 
     let native_bals = native_bals?;
     let nonces = nonces?;
-    // let erc20_bals = erc20_res?;
 
     metrics.total_rpc_calls.fetch_add(accts.len() * 2, SeqCst);
 
     for (i, acct) in accts.iter_mut().enumerate() {
-        // if let Ok(b) = &erc20_bals[i] {
-        //     acct.erc20_bal = *b;
-        // }
         if let Ok(b) = &native_bals[i] {
             acct.native_bal = *b;
         }
@@ -117,16 +123,11 @@ pub async fn refresh_batch_w_erc20(
         client.batch_get_transaction_count(&str_addrs),
     );
 
-    // let (native_bals, nonces) = tokio::join!(
-    //     client.batch_get_balance(&str_addrs),
-    //     client.batch_get_transaction_count(&str_addrs),
-    // );
-
     let native_bals = native_bals?;
     let nonces = nonces?;
     let erc20_bals = erc20_res?;
 
-    metrics.total_rpc_calls.fetch_add(accts.len() * 2, SeqCst);
+    metrics.total_rpc_calls.fetch_add(accts.len() * 3, SeqCst);
 
     for (i, acct) in accts.iter_mut().enumerate() {
         if let Ok(b) = &erc20_bals[i] {

@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use eyre::{Context, Result};
 use monad_secp::KeyPair;
 use rand::RngCore;
 use reth_primitives::{keccak256, sign_message, Address, Signature, Transaction, B256};
@@ -36,7 +35,7 @@ impl PrivateKey {
         (address, Self { priv_key: pk })
     }
 
-    pub fn sign_transaction(&self, transaction: &Transaction) -> Result<Signature> {
-        sign_message(self.priv_key, transaction.signature_hash()).context("signature works")
+    pub fn sign_transaction(&self, transaction: &Transaction) -> Signature {
+        sign_message(self.priv_key, transaction.signature_hash()).expect("signature works")
     }
 }

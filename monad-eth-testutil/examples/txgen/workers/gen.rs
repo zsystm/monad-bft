@@ -16,7 +16,6 @@ pub struct Generator {
     pub client: ReqwestClient,
     pub erc20: ERC20,
     pub root: SimpleAccount,
-    pub last_used_root: Instant, // todo: figure out a better way to do root refreshes...
     pub metrics: Arc<Metrics>,
 
     pub recipient_keys: SeededKeyPool,
@@ -26,7 +25,7 @@ pub struct Generator {
     pub min_native: U256,
     pub min_erc20: U256,
     pub tx_type: TxType,
-    pub sender_batch_size: usize,
+    pub sender_group_size: usize,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, ValueEnum)]
@@ -155,8 +154,14 @@ impl Generator {
                     poll_attempt,
                     "Polling for root account with updated nonce..."
                 );
-                let _ =
-                    refresh_batch(&self.client, &self.erc20, &mut root_slice, &self.metrics).await;
+                let _ = refresh_batch(
+                    &self.client,
+                    &self.erc20,
+                    &mut root_slice,
+                    &self.metrics,
+                    false,
+                )
+                .await;
 
                 if root_slice[0].nonce > pre_nonce {
                     info!(
@@ -164,13 +169,16 @@ impl Generator {
                         nonce = root_slice[0].nonce,
                         "Observed root account with updated nonce"
                     );
+                    if root_slice[0].nonce - pre_nonce < batch.len() as u64 {
+                        warn!("Expected root nonce to be incremented by number of accts to be seeded in batch");
+                    }
                     info!("Root {}", &root_slice[0]);
                     break;
                 }
             }
 
             info!("Sending seed accts to rpc sender with no txs...");
-            for group in batch.chunks(self.sender_batch_size.min(BATCH_SIZE)) {
+            for group in batch.chunks(self.sender_group_size.min(BATCH_SIZE)) {
                 self.rpc_sender
                     .send(AccountsWithTxs {
                         accts: group.iter().cloned().map(SimpleAccount::from).collect(),
@@ -205,7 +213,7 @@ pub fn native_transfer(from: &mut SimpleAccount, to: Address, amt: U256) -> Tran
     from.nonce += 1;
     from.native_bal -= amt + U256::from(21_000 * 1_000);
 
-    let sig = from.key.sign_transaction(&tx).unwrap();
+    let sig = from.key.sign_transaction(&tx);
     TransactionSigned::from_transaction_and_signature(tx, sig)
 }
 
@@ -215,9 +223,7 @@ pub fn erc20_transfer(
     amt: U256,
     erc20: &ERC20,
 ) -> TransactionSigned {
-    let tx = erc20
-        .construct_transfer(&from.key, to, from.nonce, amt)
-        .unwrap();
+    let tx = erc20.construct_transfer(&from.key, to, from.nonce, amt);
 
     // update from
     from.nonce += 1;
@@ -228,7 +234,7 @@ pub fn erc20_transfer(
 }
 
 pub fn erc20_mint(from: &mut SimpleAccount, amt: U256, erc20: &ERC20) -> TransactionSigned {
-    let tx = erc20.construct_mint(&from.key, from.nonce).unwrap();
+    let tx = erc20.construct_mint(&from.key, from.nonce);
 
     // update from
     from.nonce += 1;

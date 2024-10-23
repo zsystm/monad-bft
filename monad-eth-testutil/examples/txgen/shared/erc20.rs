@@ -40,7 +40,7 @@ impl ERC20 {
             input: input.into(),
         });
 
-        let sig = deployer.1.sign_transaction(&tx)?;
+        let sig = deployer.1.sign_transaction(&tx);
         let tx = TransactionSigned::from_transaction_and_signature(tx, sig);
 
         // make compiler happy, actually parse string : (
@@ -55,7 +55,7 @@ impl ERC20 {
         Ok(Self { addr })
     }
 
-    pub fn construct_mint(&self, from: &PrivateKey, nonce: u64) -> Result<TransactionSigned> {
+    pub fn construct_mint(&self, from: &PrivateKey, nonce: u64) -> TransactionSigned {
         let input = IERC20::mintCall {}.abi_encode();
         let tx = Transaction::Eip1559(TxEip1559 {
             chain_id: 41454,
@@ -68,8 +68,8 @@ impl ERC20 {
             access_list: AccessList::default(),
             input: input.into(),
         });
-        let sig = from.sign_transaction(&tx)?;
-        Ok(TransactionSigned::from_transaction_and_signature(tx, sig))
+        let sig = from.sign_transaction(&tx);
+        TransactionSigned::from_transaction_and_signature(tx, sig)
     }
 
     pub fn construct_transfer(
@@ -78,7 +78,7 @@ impl ERC20 {
         recipient: Address,
         nonce: u64,
         amount: U256,
-    ) -> Result<TransactionSigned> {
+    ) -> TransactionSigned {
         let input = IERC20::transferCall { recipient, amount }.abi_encode();
         let tx = Transaction::Eip1559(TxEip1559 {
             chain_id: 41454,
@@ -91,8 +91,8 @@ impl ERC20 {
             access_list: AccessList::default(),
             input: input.into(),
         });
-        let sig = from.sign_transaction(&tx)?;
-        Ok(TransactionSigned::from_transaction_and_signature(tx, sig))
+        let sig = from.sign_transaction(&tx);
+        TransactionSigned::from_transaction_and_signature(tx, sig)
     }
 
     pub fn balance_of(&self, account: Address) -> (&'static str, [Value; 1]) {

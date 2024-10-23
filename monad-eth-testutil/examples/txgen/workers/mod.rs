@@ -9,12 +9,14 @@ use crate::{
     shared::{erc20::ERC20, json_rpc::JsonRpc},
 };
 
+pub mod committed_tx_watcher;
 pub mod gen;
 pub mod metrics;
 pub mod recipient_tracker;
 pub mod refresher;
 pub mod rpc_sender;
 
+pub use committed_tx_watcher::*;
 pub use gen::*;
 pub use metrics::*;
 pub use recipient_tracker::*;

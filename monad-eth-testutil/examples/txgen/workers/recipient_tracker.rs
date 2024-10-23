@@ -3,6 +3,8 @@ use super::*;
 pub struct RecipientTracker {
     pub client: ReqwestClient,
     pub rpc_sender_rx: mpsc::UnboundedReceiver<AddrsWithTime>,
+
+    pub erc20_balance_of: bool,
     pub erc20: ERC20,
     pub delay: Duration,
 
@@ -56,51 +58,65 @@ impl RecipientTracker {
     fn handle_batch(&self, addrs: Vec<Address>, seen_non_zero: Arc<DashSet<Address>>) {
         let client = self.client.clone();
         let metrics = self.metrics.clone();
+        let erc20 = self.erc20;
+        let erc20_balance_of = self.erc20_balance_of;
 
         tokio::spawn(async move {
             let addr_strings = addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>();
             let now = Instant::now();
             trace!("before recipient refresh");
-                
-            // let erc20_bals = match client.batch_get_erc20_balance(&addrs, ).await {
-            //     Ok(bals) => bals,
-            //     Err(e) => {
-            //         warn!("Recipient tracker failed to refresh batch: {e}");
-            //         return;
-            //     }
-            // };
 
-            let bals = match client.batch_get_balance(&addr_strings).await {
-                Ok(bals) => bals,
+            match client.batch_get_balance(&addr_strings).await {
+                Ok(bals) => {
+                    Self::process_bals_vec(bals, &seen_non_zero, &addrs, &metrics);
+                }
                 Err(e) => {
                     warn!("Recipient tracker failed to refresh batch: {e}");
-                    return;
                 }
             };
+
+            if erc20_balance_of {
+                match client.batch_get_erc20_balance(&addrs, erc20).await {
+                    Ok(erc20_bals) => {
+                        Self::process_bals_vec(erc20_bals, &seen_non_zero, &addrs, &metrics);
+                    }
+                    Err(e) => {
+                        warn!("Recipient tracker failed to refresh batch: {e}");
+                    }
+                };
+            }
 
             trace!(
                 elapsed_ms = now.elapsed().as_millis(),
                 "after recipient refresh"
             );
-
-            let new_non_zero_addr_idxs =
-                bals.into_iter().enumerate().filter_map(|(i, b)| match b {
-                    Ok(b) => {
-                        if !b.is_zero() {
-                            Some(i)
-                        } else {
-                            None
-                        }
-                    }
-                    Err(_) => None,
-                });
-            for idx in new_non_zero_addr_idxs {
-                seen_non_zero.insert(addrs[idx]);
-            }
-
-            metrics
-                .accts_with_nonzero_bal
-                .store(seen_non_zero.len(), SeqCst);
         });
+    }
+
+    fn process_bals_vec(
+        bals: Vec<Result<U256>>,
+        seen_non_zero: &DashSet<Address>,
+        addrs: &Vec<Address>,
+        metrics: &Metrics,
+    ) {
+        metrics.total_rpc_calls.fetch_add(bals.len(), SeqCst);
+
+        let new_non_zero_addr_idxs = bals.into_iter().enumerate().filter_map(|(i, b)| match b {
+            Ok(b) => {
+                if !b.is_zero() {
+                    Some(i)
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        });
+        for idx in new_non_zero_addr_idxs {
+            seen_non_zero.insert(addrs[idx]);
+        }
+
+        metrics
+            .accts_with_nonzero_bal
+            .store(seen_non_zero.len(), SeqCst);
     }
 }

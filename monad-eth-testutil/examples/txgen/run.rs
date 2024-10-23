@@ -9,7 +9,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
     let root = PrivateKey::new(config.root_private_key);
     let (rpc_sender, gen_rx) = mpsc::channel(10);
     let (gen_sender, refresh_rx) = mpsc::channel(100);
-    let (refresh_sender, rpc_rx) = mpsc::channel(10);
+    let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
     let (recipient_sender, recipient_gen_rx) = mpsc::unbounded_channel();
 
     let (erc20, nonce, native_bal) = join!(
@@ -27,7 +27,16 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         addr: root.0,
     };
 
+    let sent_txs = Arc::new(DashMap::with_capacity(config.tps as usize * 10));
     let metrics = Arc::new(Metrics::default());
+
+    let committed_tx_watcher = CommittedTxWatcher::new(
+        &client,
+        &sent_txs,
+        &metrics,
+        Duration::from_secs_f64(config.refresh_delay_secs * 2.),
+    )
+    .await;
 
     let gen = Generator {
         refresh_rx,
@@ -35,7 +44,6 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         client: client.clone(),
         erc20: erc20.clone(),
         root,
-        last_used_root: Instant::now() - Duration::from_secs(60 * 60),
         recipient_keys: SeededKeyPool::new(config.recipients, config.recipient_seed),
         sender_random_seed: config.sender_seed,
         seed_native_amt: U256::from(10e12),
@@ -43,7 +51,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         min_erc20: U256::from(10e3),
         tx_type: config.tx_type,
         metrics: Arc::clone(&metrics),
-        sender_batch_size: config.sender_batch_size,
+        sender_group_size: config.sender_group_size,
     };
 
     let refresher = Refresher {
@@ -53,6 +61,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         erc20,
         delay: Duration::from_secs_f64(config.refresh_delay_secs),
         metrics: Arc::clone(&metrics),
+        erc20_check_bals: config.erc20_balance_of,
     };
 
     let rpc_sender = RpcSender {
@@ -62,6 +71,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         client: client.clone(),
         target_tps: config.tps,
         metrics: Arc::clone(&metrics),
+        sent_txs: sent_txs,
     };
 
     let recipient_tracker = RecipientTracker {
@@ -71,14 +81,16 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         delay: refresher.delay,
         non_zero: Default::default(),
         metrics: Arc::clone(&metrics),
+        erc20_balance_of: config.erc20_balance_of,
     };
 
-    let (_, _, _, _, _) = tokio::join!(
+    let (_, _, _, _, _, _) = tokio::join!(
         tokio::spawn(refresher.run()),
         tokio::spawn(rpc_sender.run()),
         tokio::spawn(gen.run(config.senders)),
         tokio::spawn(recipient_tracker.run()),
         tokio::spawn(metrics.run()),
+        tokio::spawn(committed_tx_watcher.run()),
     );
 
     Ok(())
