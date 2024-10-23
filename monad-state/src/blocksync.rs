@@ -257,6 +257,13 @@ where
                         cmds.push(BlockSyncCommand::ResetTimeout(block_id));
                         match response {
                             BlockSyncResponseMessage::BlockFound(block) => {
+                                tracing::debug!(
+                                    requester =? self_request.requester,
+                                    ?sender,
+                                    ?block_id,
+                                    ?block,
+                                    "blocksync response successful"
+                                );
                                 self.metrics.blocksync_events.blocksync_response_successful += 1;
                                 assert_eq!(
                                     self_request.requester,
@@ -266,6 +273,12 @@ where
                                 entry.remove();
                             }
                             BlockSyncResponseMessage::NotAvailable(_) => {
+                                tracing::debug!(
+                                    requester =? self_request.requester,
+                                    ?sender,
+                                    ?block_id,
+                                    "blocksync response failure"
+                                );
                                 self.metrics.blocksync_events.blocksync_response_failed += 1;
                                 let to = pick_peer();
                                 self_request.to = Some(to);
