@@ -12,15 +12,14 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
     let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
     let (recipient_sender, recipient_gen_rx) = mpsc::unbounded_channel();
 
-    let (erc20, nonce, native_bal) = join!(
-        ERC20::deploy(&root, client.clone()),
+    let erc20 = ERC20::deploy(&root, client.clone()).await?;
+    let (nonce, native_bal) = join!(
         client.get_transaction_count(&root.0),
         client.get_balance(&root.0)
     );
-    let erc20 = erc20?;
 
     let root = SimpleAccount {
-        nonce: nonce? + 1, // erc20 deploy
+        nonce: nonce?,
         native_bal: native_bal?,
         erc20_bal: U256::ZERO,
         key: root.1,

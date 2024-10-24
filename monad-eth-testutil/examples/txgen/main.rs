@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
 
     let time_to_send_txs_from_all_senders =
         (config.tx_batch_size * config.senders) as f64 / config.tps as f64;
-    if time_to_send_txs_from_all_senders > config.refresh_delay_secs {
+    if time_to_send_txs_from_all_senders < config.refresh_delay_secs {
         warn!(
             time_to_send_txs_from_all_senders,
             refresh_delay = config.refresh_delay_secs,
