@@ -163,6 +163,8 @@ fn read_node_config(node_config_path: &Path) -> Result<NodeConfig> {
 
 /// Pass in path of forkpoint *directory*
 pub fn forkpoint_changes(forkpoint_path: &Path) -> impl Stream<Item = ForkpointConfig> {
+    assert!(std::fs::metadata(forkpoint_path).is_ok_and(|path| path.is_dir()));
+
     let inotify = Inotify::init().expect("error initializing inotify");
     inotify
         .watches()
