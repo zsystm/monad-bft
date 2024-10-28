@@ -4102,8 +4102,10 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-tx",
+ "monad-node",
  "monad-secp",
  "monad-types",
+ "monad-validator",
  "serde",
  "tokio",
  "tracing",
@@ -4270,13 +4272,13 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool",
- "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
  "monad-ipc",
  "monad-keystore",
  "monad-ledger",
+ "monad-node-config",
  "monad-quic",
  "monad-raptorcast",
  "monad-secp",
@@ -4293,13 +4295,25 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "rayon",
- "serde",
  "thiserror",
  "tokio",
  "toml 0.7.8",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "monad-node-config"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "monad-bls",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-types",
+ "monad-secp",
+ "serde",
 ]
 
 [[package]]
@@ -4498,7 +4512,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor-glue",
  "monad-multi-sig",
- "monad-node",
+ "monad-node-config",
  "monad-proto",
  "monad-secp",
  "monad-state-backend",

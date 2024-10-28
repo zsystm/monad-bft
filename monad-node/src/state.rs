@@ -6,14 +6,11 @@ use std::{
 use clap::{error::ErrorKind, FromArgMatches};
 use monad_bls::BlsKeyPair;
 use monad_keystore::keystore::Keystore;
+use monad_node_config::{ForkpointConfig, NodeConfig};
 use monad_secp::KeyPair;
 use tracing::info;
 
-use crate::{
-    cli::Cli,
-    config::{ForkpointConfig, NodeConfig},
-    error::NodeSetupError,
-};
+use crate::{cli::Cli, error::NodeSetupError};
 
 pub struct NodeState {
     pub node_config: NodeConfig,

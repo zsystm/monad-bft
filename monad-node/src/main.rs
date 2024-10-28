@@ -7,7 +7,6 @@ use std::{
 use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
-use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_state::ConsensusConfig;
@@ -25,6 +24,7 @@ use monad_executor_glue::{LogFriendlyMonadEvent, Message};
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
+use monad_node_config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
@@ -63,14 +63,13 @@ use tracing_subscriber::{
 mod cli;
 use cli::Cli;
 
-mod config;
-use config::{SignatureCollectionType, SignatureType};
-
 mod error;
 use error::NodeSetupError;
 
 mod state;
 use state::NodeState;
+
+use monad_node_config::{SignatureCollectionType, SignatureType};
 
 fn main() {
     let mut cmd = Cli::command();

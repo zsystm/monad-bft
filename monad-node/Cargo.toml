@@ -4,14 +4,8 @@ description = "Monad consensus node"
 version = "0.1.0"
 edition = "2021"
 
-# this is necessary for criterion bench options
-# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [[bin]]
 name = "monad-node"
-bench = false
-
-[lib]
-bench = false
 
 [dependencies]
 monad-async-state-verify = { path = "../monad-async-state-verify" }
@@ -23,13 +17,13 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }
-monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-gossip = { path = "../monad-gossip" }
 monad-ipc = { path = "../monad-ipc" }
 monad-keystore = { path = "../monad-keystore" }
 monad-ledger = { path = "../monad-ledger" }
+monad-node-config = { path = "../monad-node-config" }
 monad-quic = { path = "../monad-quic" }
 monad-raptorcast = { path = "../monad-raptorcast" }
 monad-secp = { path = "../monad-secp" }
@@ -52,7 +46,6 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rayon = { workspace = true }
-serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }

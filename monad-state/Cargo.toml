@@ -31,7 +31,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 monad-bls = { path = "../monad-bls" }
 monad-multi-sig = { path = "../monad-multi-sig" }
-monad-node = { path = "../monad-node" }
+monad-node-config = { path = "../monad-node-config" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 

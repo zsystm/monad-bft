@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use glob::glob;
 use monad_consensus_types::checkpoint::Checkpoint;
-use monad_node::config::SignatureCollectionType;
+use monad_node_config::SignatureCollectionType;
 use monad_types::{Round, SeqNum};
 
 #[derive(Parser, Debug)]

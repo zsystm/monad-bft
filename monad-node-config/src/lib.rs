@@ -16,7 +16,7 @@ pub use network::NodeNetworkConfig;
 
 pub mod util;
 
-pub(crate) type SignatureType = SecpSignature;
+pub type SignatureType = SecpSignature;
 pub type SignatureCollectionType =
     BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 

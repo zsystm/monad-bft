@@ -33,6 +33,7 @@ members = [
     "monad-mock-swarm",
     "monad-multi-sig",
     "monad-node",
+    "monad-node-config",
     "monad-perf-util",
     "monad-proto",
     "monad-quic",
