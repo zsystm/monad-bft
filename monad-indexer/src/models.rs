@@ -216,7 +216,7 @@ impl From<&NodeBootstrapPeerConfig> for Key {
     }
 }
 
-#[derive(Insertable, Queryable, Selectable, Serialize)]
+#[derive(PartialEq, Eq, Insertable, Queryable, Selectable, Serialize)]
 #[diesel(table_name = crate::schema::validator_set)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct ValidatorSetMember {

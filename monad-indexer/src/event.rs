@@ -199,6 +199,9 @@ pub fn forkpoint_changes(forkpoint_path: &Path) -> impl Stream<Item = ForkpointC
             };
 
             let filename = event.name?;
+            if filename.to_str().is_some_and(|name| name.ends_with(".wip")) {
+                return None;
+            }
             let mut path_buf = forkpoint_path;
             path_buf.push(filename);
 

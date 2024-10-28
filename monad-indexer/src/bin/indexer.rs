@@ -1,4 +1,4 @@
-use std::{error::Error, path::PathBuf, pin::pin};
+use std::{collections::BTreeMap, error::Error, path::PathBuf, pin::pin};
 
 use clap::Parser;
 use diesel::{Connection, ExpressionMethods, RunQueryDsl};
@@ -12,6 +12,7 @@ use monad_indexer::{
     models::{validator_set_transform, BlockHeader, BlockPayload, Key, ValidatorSetMember},
 };
 use monad_node_config::{SignatureCollectionType, SignatureType};
+use monad_types::Epoch;
 use tracing::{debug, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -100,6 +101,8 @@ fn key_writer(key_rx: std::sync::mpsc::Receiver<Vec<Key>>) -> Result<(), Box<dyn
 fn validator_set_writer(
     validator_set_rx: std::sync::mpsc::Receiver<Vec<ValidatorSetMember>>,
 ) -> Result<(), Box<dyn Error>> {
+    let mut validator_sets: BTreeMap<Epoch, Vec<ValidatorSetMember>> = Default::default();
+
     use monad_indexer::schema::validator_set::dsl;
     let mut conn = create_db_connection();
     loop {
@@ -114,6 +117,11 @@ fn validator_set_writer(
             .iter()
             .all(|validator| validator.epoch == epoch));
 
+        let old_validator_set = validator_sets.get(&Epoch(epoch.try_into().unwrap()));
+        if old_validator_set.is_some_and(|old_validator_set| old_validator_set == &validator_set) {
+            continue;
+        }
+
         let num_writes = conn.transaction::<_, diesel::result::Error, _>(|conn| {
             diesel::delete(dsl::validator_set)
                 .filter(dsl::epoch.eq(epoch))
@@ -125,6 +133,11 @@ fn validator_set_writer(
             Ok(num_writes)
         })?;
         debug!(?epoch, ?num_writes, "successfully wrote validator set");
+
+        validator_sets.insert(Epoch(epoch as u64), validator_set);
+        while validator_sets.len() > 10 {
+            validator_sets.pop_first();
+        }
     }
 }
 
