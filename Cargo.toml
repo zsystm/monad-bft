@@ -35,6 +35,7 @@ members = [
     "monad-multi-sig",
     "monad-node-config",
     "monad-node",
+    "monad-node-config",
     "monad-perf-util",
     "monad-proto",
     "monad-randomized-tests",
