@@ -20,7 +20,7 @@ pub type SignatureType = SecpSignature;
 pub type SignatureCollectionType =
     BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     ////////////////////////////////

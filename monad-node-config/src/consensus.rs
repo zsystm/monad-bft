@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConsensusConfig {
     pub block_txn_limit: usize,

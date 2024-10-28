@@ -3,13 +3,13 @@ use serde::Deserialize;
 
 use super::util::deserialize_secp256k1_pubkey;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeBootstrapConfig {
     pub peers: Vec<NodeBootstrapPeerConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeBootstrapPeerConfig {
     pub address: String,

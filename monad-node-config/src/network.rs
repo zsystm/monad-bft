@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeNetworkConfig {
     pub bind_address_host: Ipv4Addr,

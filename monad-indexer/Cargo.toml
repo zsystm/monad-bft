@@ -15,6 +15,7 @@ hex = { workspace = true }
 inotify = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
+toml = { workspace =  true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
@@ -23,7 +24,7 @@ monad-bls = { path = "../monad-bls" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-tx = { path = "../monad-eth-tx" }
-monad-node = { path = "../monad-node" }
+monad-node-config = { path = "../monad-node-config" }
 monad-secp = { path = "../monad-secp" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
