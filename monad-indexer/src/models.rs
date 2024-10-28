@@ -14,9 +14,11 @@ use monad_consensus_types::{
     payload::{Payload, PayloadId, TransactionPayload},
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
+    validator_data::ValidatorSetDataWithEpoch,
 };
 use monad_crypto::{certificate_signature::PubKey, hasher::Hash};
 use monad_eth_tx::EthSignedTransaction;
+use monad_node_config::NodeBootstrapPeerConfig;
 use monad_types::BlockId;
 use serde::{Serialize, Serializer};
 
@@ -194,4 +196,58 @@ impl From<&Payload> for BlockPayload {
             payload_size: payload.bytes().len() as i32,
         }
     }
+}
+
+#[derive(Insertable, Queryable, Selectable, Serialize)]
+#[diesel(table_name = crate::schema::key)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct Key {
+    #[serde(serialize_with = "serialize_hex")]
+    node_id: Vec<u8>,
+    dns: String,
+}
+
+impl From<&NodeBootstrapPeerConfig> for Key {
+    fn from(config: &NodeBootstrapPeerConfig) -> Self {
+        Self {
+            node_id: config.secp256k1_pubkey.bytes(),
+            dns: config.address.clone(),
+        }
+    }
+}
+
+#[derive(Insertable, Queryable, Selectable, Serialize)]
+#[diesel(table_name = crate::schema::validator_set)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct ValidatorSetMember {
+    pub epoch: i64,
+    pub round: Option<i64>,
+    #[serde(serialize_with = "serialize_hex")]
+    pub node_id: Vec<u8>,
+    #[serde(serialize_with = "serialize_hex")]
+    pub certificate_key: Vec<u8>,
+    pub stake: i64,
+}
+
+pub fn validator_set_transform<SCT: SignatureCollection>(
+    validator_set: &ValidatorSetDataWithEpoch<SCT>,
+) -> Vec<ValidatorSetMember> {
+    validator_set
+        .validators
+        .0
+        .iter()
+        .map(|validator| ValidatorSetMember {
+            epoch: validator_set
+                .epoch
+                .0
+                .try_into()
+                .expect("epoch doesn't fit in i64"),
+            round: validator_set
+                .round
+                .map(|round| round.0.try_into().expect("round doesn't fit in i64")),
+            node_id: validator.node_id.pubkey().bytes(),
+            certificate_key: validator.cert_pubkey.bytes(),
+            stake: validator.stake.0,
+        })
+        .collect()
 }

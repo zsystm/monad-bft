@@ -1,26 +1,18 @@
-use std::{
-    error::Error,
-    ffi::OsString,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-    pin::pin,
-};
+use std::{error::Error, path::PathBuf, pin::pin};
 
 use clap::Parser;
-use diesel::RunQueryDsl;
+use diesel::{Connection, ExpressionMethods, RunQueryDsl};
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use monad_block_persist::FileBlockPersist;
-use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::payload::TransactionPayload;
-use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_indexer::{
     create_db_connection,
-    event::{new_block_headers, new_block_payloads},
-    models::{BlockHeader, BlockPayload},
+    event::{forkpoint_changes, new_block_headers, new_block_payloads, node_config_changes},
+    models::{validator_set_transform, BlockHeader, BlockPayload, Key, ValidatorSetMember},
 };
-use monad_secp::SecpSignature;
-use tracing::{debug, error, warn};
+use monad_node_config::{SignatureCollectionType, SignatureType};
+use tracing::{debug, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
@@ -39,6 +31,13 @@ pub struct Cli {
     /// Set the path where the bft block payloads will be stored
     #[arg(long)]
     pub bft_block_payload_path: PathBuf,
+
+    #[arg(long)]
+    pub node_config_path: PathBuf,
+
+    /// Set the *directory* where forkpoints are generated
+    #[arg(long)]
+    pub forkpoint_path: PathBuf,
 }
 
 fn block_header_writer(
@@ -85,8 +84,49 @@ fn block_payload_writer(
     }
 }
 
-type SignatureType = SecpSignature;
-type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+fn key_writer(key_rx: std::sync::mpsc::Receiver<Vec<Key>>) -> Result<(), Box<dyn Error>> {
+    let mut conn = create_db_connection();
+    loop {
+        let keys = key_rx.recv()?;
+
+        let num_writes = diesel::insert_into(monad_indexer::schema::key::dsl::key)
+            .values(&keys)
+            .on_conflict_do_nothing()
+            .execute(&mut conn)?;
+        debug!(?num_writes, "successfully wrote keys");
+    }
+}
+
+fn validator_set_writer(
+    validator_set_rx: std::sync::mpsc::Receiver<Vec<ValidatorSetMember>>,
+) -> Result<(), Box<dyn Error>> {
+    use monad_indexer::schema::validator_set::dsl;
+    let mut conn = create_db_connection();
+    loop {
+        let validator_set = validator_set_rx.recv()?;
+
+        let Some(first) = validator_set.first() else {
+            continue;
+        };
+
+        let epoch = first.epoch;
+        assert!(validator_set
+            .iter()
+            .all(|validator| validator.epoch == epoch));
+
+        let num_writes = conn.transaction::<_, diesel::result::Error, _>(|conn| {
+            diesel::delete(dsl::validator_set)
+                .filter(dsl::epoch.eq(epoch))
+                .execute(conn)?;
+            let num_writes = diesel::insert_into(dsl::validator_set)
+                .values(&validator_set)
+                .on_conflict_do_nothing()
+                .execute(conn)?;
+            Ok(num_writes)
+        })?;
+        debug!(?epoch, ?num_writes, "successfully wrote validator set");
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -113,6 +153,14 @@ async fn main() {
         block_payload_writer(block_payload_rx).expect("block_payload_writer error")
     });
 
+    let (key_tx, key_rx) = std::sync::mpsc::sync_channel(10);
+    std::thread::spawn(move || key_writer(key_rx).expect("key_writer error"));
+
+    let (validator_set_tx, validator_set_rx) = std::sync::mpsc::sync_channel(10);
+    std::thread::spawn(move || {
+        validator_set_writer(validator_set_rx).expect("validator_set_writer error")
+    });
+
     let mut block_header_paths = pin!(new_block_headers(&cmd.bft_block_header_path));
     let mut block_payload_paths = pin!(new_block_payloads(&cmd.bft_block_header_path));
     let block_persist = FileBlockPersist::<SignatureType, SignatureCollectionType>::new(
@@ -121,12 +169,13 @@ async fn main() {
         cmd.execution_ledger_path,
     );
 
+    let mut node_config_changes = pin!(node_config_changes(&cmd.node_config_path));
+    let mut forkpoint_changes = pin!(forkpoint_changes(&cmd.forkpoint_path));
+
     // TODO refine to also index backwards
     loop {
-        let event =
-            futures::future::select(block_header_paths.next(), block_payload_paths.next()).await;
-        match event {
-            futures::future::Either::Left((block_header_path, _)) => {
+        tokio::select! {
+            block_header_path = block_header_paths.next() => {
                 let block_header_path = block_header_path.expect("block_header stream terminated");
 
                 debug!(?block_header_path, "reading block header");
@@ -153,7 +202,7 @@ async fn main() {
                     continue;
                 }
             }
-            futures::future::Either::Right((block_payload_path, _)) => {
+            block_payload_path = block_payload_paths.next() => {
                 let block_payload_path =
                     block_payload_path.expect("block_payload stream terminated");
 
@@ -179,6 +228,30 @@ async fn main() {
                         "dropping block payload, channel full? consider resizing channel"
                     );
                     continue;
+                }
+            }
+            node_config = node_config_changes.next() => {
+                let node_config = node_config.expect("node_config stream terminated");
+                if let Err(err) = key_tx.try_send(node_config.bootstrap.peers.iter().map(Into::into).collect()) {
+                    warn!(
+                        ?err,
+                        "dropping node_config change, channel full? consider resizing channel"
+                    );
+                    continue;
+                }
+            }
+            forkpoint = forkpoint_changes.next() => {
+                let forkpoint = forkpoint.expect("forkpoint stream terminated");
+                for validator_set in forkpoint.validator_sets {
+                    if let Err(err) =
+                        validator_set_tx.try_send(validator_set_transform(&validator_set))
+                    {
+                        warn!(
+                            ?err,
+                            "dropping forkpoint change, channel full? consider resizing channel"
+                        );
+                        continue;
+                    }
                 }
             }
         }

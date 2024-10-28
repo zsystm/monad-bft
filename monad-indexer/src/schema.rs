@@ -24,7 +24,26 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    key (node_id) {
+        node_id -> Bytea,
+        dns -> Text,
+    }
+}
+
+diesel::table! {
+    validator_set (epoch, node_id) {
+        epoch -> Int8,
+        round -> Nullable<Int8>,
+        node_id -> Bytea,
+        certificate_key -> Bytea,
+        stake -> Int8,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(
     block_header,
     block_payload,
+    key,
+    validator_set,
 );
