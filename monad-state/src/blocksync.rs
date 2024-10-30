@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, time::Duration};
 
 use monad_blocksync::blocksync::{
-    BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
+    BlockCache, BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
 };
 use monad_consensus_types::{
     block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
@@ -76,14 +76,16 @@ where
         &mut self,
         event: BlockSyncEvent<SCT>,
     ) -> Vec<WrappedBlockSyncCommand<SCT>> {
-        let maybe_blocktree = match self.consensus {
-            ConsensusMode::Sync { .. } => None,
-            ConsensusMode::Live(consensus) => Some(consensus.blocktree()),
+        let block_cache = match self.consensus {
+            ConsensusMode::Sync { block_buffer, .. } => {
+                BlockCache::BlockBuffer(block_buffer.get_full_blocks())
+            }
+            ConsensusMode::Live(consensus) => BlockCache::BlockTree(consensus.blocktree()),
         };
 
         let mut block_sync_wrapper = BlockSyncWrapper {
             block_sync: self.block_sync,
-            maybe_blocktree,
+            block_cache,
             metrics: self.metrics,
             nodeid: self.nodeid,
             current_epoch: self.consensus.current_epoch(),
@@ -107,7 +109,7 @@ where
                 Vec::new()
             }
             BlockSyncEvent::SelfResponse { response } => {
-                block_sync_wrapper.handle_self_response(response)
+                block_sync_wrapper.handle_ledger_response(response)
             }
             BlockSyncEvent::Response { sender, response } => {
                 block_sync_wrapper.handle_peer_response(sender, response)

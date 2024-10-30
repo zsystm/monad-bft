@@ -12,7 +12,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, NodeId};
+use monad_types::{BlockId, Epoch, NodeId};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -137,6 +137,16 @@ where
     }
 }
 
+pub enum BlockCache<'a, SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
+{
+    BlockTree(&'a BlockTree<SCT, BPT, SBT>),
+    BlockBuffer(&'a HashMap<BlockId, FullBlock<SCT>>),
+}
+
 pub struct BlockSyncWrapper<'a, ST, SCT, BPT, SBT, VTF>
 where
     ST: CertificateSignatureRecoverable,
@@ -147,7 +157,7 @@ where
 {
     pub block_sync: &'a mut BlockSync<ST, SCT>,
 
-    pub maybe_blocktree: Option<&'a BlockTree<SCT, BPT, SBT>>,
+    pub block_cache: BlockCache<'a, SCT, BPT, SBT>,
     pub metrics: &'a mut Metrics,
     pub nodeid: &'a NodeId<SCT::NodeIdPubKey>,
     pub current_epoch: Epoch,
@@ -229,19 +239,20 @@ where
                 self.metrics.blocksync_events.peer_headers_request += 1;
                 trace!(?sender, ?block_range, "blocksync: peer headers request");
 
-                let cached_blocks = self
-                    .maybe_blocktree
-                    .map(|blocktree| blocktree.get_parent_block_chain(&block_range.last_block_id))
-                    .iter()
-                    .flatten()
-                    .filter_map(|validated_block| {
-                        if validated_block.get_seq_num() >= block_range.root_seq_num {
-                            Some(validated_block.get_unvalidated_block_ref().clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect_vec();
+                let cached_blocks = match self.block_cache {
+                    BlockCache::BlockTree(blocktree) => blocktree
+                        .get_parent_block_chain(&block_range.last_block_id)
+                        .into_iter()
+                        .filter_map(|validated_block| {
+                            if validated_block.get_seq_num() >= block_range.root_seq_num {
+                                Some(validated_block.get_unvalidated_block_ref().clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect_vec(),
+                    BlockCache::BlockBuffer(_) => Vec::new(), // TODO
+                };
 
                 // all blocks are cached if the first block is the non-empty block of requested
                 // root_seq_num.
@@ -280,11 +291,7 @@ where
                 self.metrics.blocksync_events.peer_payload_request += 1;
                 trace!(?sender, ?payload_id, "blocksync: peer payload request");
 
-                if let Some(cached_payload) = self
-                    .maybe_blocktree
-                    .map(|blocktree| blocktree.get_payload(&payload_id))
-                    .flatten()
-                {
+                if let Some(cached_payload) = self.get_cached_payload(payload_id) {
                     cmds.push(BlockSyncCommand::SendResponse {
                         to: sender,
                         response: BlockSyncResponseMessage::PayloadResponse(
@@ -366,9 +373,59 @@ where
         true
     }
 
+    fn get_cached_payload(&self, payload_id: PayloadId) -> Option<Payload> {
+        if let Some(payload) = match self.block_cache {
+            BlockCache::BlockBuffer(full_blocks) => full_blocks
+                .iter()
+                .find(|(_, full_block)| full_block.get_payload_id() == payload_id)
+                .map(|(_, full_block)| full_block.get_payload()),
+            BlockCache::BlockTree(blocktree) => blocktree.get_payload(&payload_id),
+        } {
+            return Some(payload);
+        }
+
+        for (_, (_, requested_payloads)) in self.block_sync.self_completed_headers_requests.iter() {
+            for (header, maybe_payload) in requested_payloads.iter() {
+                if header.payload_id == payload_id && maybe_payload.is_some() {
+                    return maybe_payload.clone();
+                }
+            }
+        }
+
+        None
+    }
+
     #[must_use]
-    fn try_initiate_payload_requests(&mut self) -> Vec<BlockSyncCommand<SCT>> {
+    fn try_initiate_payload_requests_for_self(&mut self) -> Vec<BlockSyncCommand<SCT>> {
         let mut cmds = Vec::new();
+
+        let payload_ids_to_request = self
+            .block_sync
+            .self_payload_requests
+            .keys()
+            .cloned()
+            .collect_vec();
+        for payload_id in payload_ids_to_request {
+            if let Some(payload) = self.get_cached_payload(payload_id) {
+                // remove request and clone payload to existing headers
+                self.block_sync.self_payload_requests.remove(&payload_id);
+
+                for (_, (_, payload_requests)) in
+                    self.block_sync.self_completed_headers_requests.iter_mut()
+                {
+                    for (block, maybe_payload) in payload_requests {
+                        if block.payload_id == payload_id && maybe_payload.is_none() {
+                            // clone incase there are multiple requests that require the same payload
+                            *maybe_payload = Some(payload.clone());
+
+                            self.metrics
+                                .blocksync_events
+                                .self_payload_response_successful += 1;
+                        }
+                    }
+                }
+            }
+        }
 
         while self.block_sync.self_payload_requests_in_flight < BLOCKSYNC_MAX_PAYLOAD_REQUESTS {
             if let Some((payload_id, req)) = self
@@ -378,7 +435,6 @@ where
                 .find(|(_, req)| req.is_none())
             {
                 trace!(?payload_id, "blocksync: self initiating payload request");
-                // TODO: check blocktree and not request existing payloads
 
                 cmds.push(BlockSyncCommand::FetchPayload(*payload_id));
                 *req = Some(SelfRequest {
@@ -395,6 +451,8 @@ where
                 break;
             }
         }
+
+        cmds.extend(self.handle_completed_ranges());
 
         cmds
     }
@@ -432,8 +490,15 @@ where
                         ?block_range,
                         "blocksync: headers response verifcation passed"
                     );
+
+                    // valid headers, remove entry and reset timeout
+                    entry.remove();
+
                     if sender.is_some() {
                         self.metrics.blocksync_events.headers_response_successful += 1;
+                        cmds.push(BlockSyncCommand::ResetTimeout(
+                            BlockSyncRequestMessage::Headers(block_range),
+                        ));
                     } else {
                         self.metrics
                             .blocksync_events
@@ -441,12 +506,6 @@ where
                     }
                     self.metrics.blocksync_events.num_headers_received +=
                         block_headers.len() as u64;
-
-                    // valid headers, remove entry and reset timeout
-                    entry.remove();
-                    cmds.push(BlockSyncCommand::ResetTimeout(
-                        BlockSyncRequestMessage::Headers(block_range),
-                    ));
 
                     // add payloads to be requested
                     for payload_id in block_headers.iter().map(|block| block.payload_id) {
@@ -533,7 +592,7 @@ where
         }
 
         // try start the payload requests
-        cmds.extend(self.try_initiate_payload_requests());
+        cmds.extend(self.try_initiate_payload_requests_for_self());
 
         cmds
     }
@@ -635,7 +694,7 @@ where
         cmds.extend(self.handle_completed_ranges());
 
         // try initiating more payload requests
-        cmds.extend(self.try_initiate_payload_requests());
+        cmds.extend(self.try_initiate_payload_requests_for_self());
 
         cmds
     }
@@ -683,7 +742,7 @@ where
     }
 
     #[must_use]
-    pub fn handle_self_response(
+    pub fn handle_ledger_response(
         &mut self,
         response: BlockSyncResponseMessage<SCT>,
     ) -> Vec<BlockSyncCommand<SCT>> {
@@ -898,7 +957,9 @@ mod test {
     use test_case::test_case;
     use zerocopy::AsBytes;
 
-    use super::{BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper};
+    use super::{
+        BlockCache, BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
+    };
     use crate::{
         blocksync::BLOCKSYNC_MAX_PAYLOAD_REQUESTS,
         messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
@@ -915,7 +976,8 @@ mod test {
     {
         block_sync: BlockSync<ST, SCT>,
 
-        maybe_blocktree: Option<BlockTree<SCT, BPT, SBT>>,
+        // TODO: include BlockBuffer
+        blocktree: BlockTree<SCT, BPT, SBT>,
         metrics: Metrics,
         nodeid: NodeId<SCT::NodeIdPubKey>,
         current_epoch: Epoch,
@@ -944,9 +1006,10 @@ mod test {
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         fn wrapped_state(&mut self) -> BlockSyncWrapper<ST, SCT, BPT, SBT, VTF> {
+            let block_cache = BlockCache::BlockTree(&self.blocktree);
             BlockSyncWrapper {
                 block_sync: &mut self.block_sync,
-                maybe_blocktree: self.maybe_blocktree.as_ref(),
+                block_cache,
                 metrics: &mut self.metrics,
                 nodeid: &self.nodeid,
                 current_epoch: self.current_epoch,
@@ -981,11 +1044,11 @@ mod test {
             self.wrapped_state().handle_peer_request(sender, request)
         }
 
-        fn handle_self_response(
+        fn handle_ledger_response(
             &mut self,
             response: BlockSyncResponseMessage<SCT>,
         ) -> Vec<BlockSyncCommand<SCT>> {
-            self.wrapped_state().handle_self_response(response)
+            self.wrapped_state().handle_ledger_response(response)
         }
 
         fn handle_peer_response(
@@ -1158,7 +1221,7 @@ mod test {
 
         BlockSyncContext {
             block_sync: BlockSync::default(),
-            maybe_blocktree: Some(blocktree),
+            blocktree,
             metrics: Metrics::default(),
             nodeid: NodeId::new(keys[0].pubkey()),
             current_epoch: Epoch(1),
@@ -1250,7 +1313,7 @@ mod test {
 
         // headers not availabe in self ledger, should request from a peer
         let cmds = context
-            .handle_self_response(BlockSyncResponseMessage::headers_not_available(block_range));
+            .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
         assert_eq!(cmds.len(), 2);
 
         let request_cmds = find_send_request_commands(&cmds);
@@ -1296,7 +1359,7 @@ mod test {
 
         // headers not availabe in self ledger, should request from a peer
         let cmds = context
-            .handle_self_response(BlockSyncResponseMessage::headers_not_available(block_range));
+            .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
 
         let request_cmds = find_send_request_commands(&cmds);
         assert_eq!(request_cmds.len(), 1);
@@ -1335,8 +1398,9 @@ mod test {
 
             let expected_request = BlockSyncRequestMessage::Payload(payload_id);
             // payload not available in self ledger. should request from peer
-            let cmds = context
-                .handle_self_response(BlockSyncResponseMessage::payload_not_available(payload_id));
+            let cmds = context.handle_ledger_response(
+                BlockSyncResponseMessage::payload_not_available(payload_id),
+            );
             assert_eq!(cmds.len(), 2);
 
             let request_cmds = find_send_request_commands(&cmds);
@@ -1360,6 +1424,55 @@ mod test {
     }
 
     #[test]
+    fn avoid_duplicate_payload_requests() {
+        let mut context = setup();
+
+        let num_blocks = 5;
+        let num_in_blocktree = 2;
+        let full_blocks = context.get_blocks(num_blocks);
+
+        // add the first num_in_blocktree blocks to the blocktree
+        let mut block_policy = PassthruBlockPolicy {};
+        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
+        for full_block in full_blocks.iter().take(num_in_blocktree) {
+            assert!(context
+                .blocktree
+                .add(full_block.clone(), &mut block_policy, &state_backend)
+                .is_ok());
+        }
+
+        // request all num_blocks
+        let requester = BlockSyncSelfRequester::Consensus;
+        let block_range = BlockRange {
+            last_block_id: full_blocks.last().unwrap().get_id(),
+            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+        };
+
+        let (headers, payloads): (Vec<_>, Vec<_>) = full_blocks
+            .into_iter()
+            .map(|full_block| (full_block.block, full_block.payload))
+            .unzip();
+
+        // requesting a block range should initiate a headers request
+        let cmds = context.handle_self_request(requester, block_range);
+        assert_eq!(cmds.len(), 1);
+
+        // found headers, should initiate payload requests for block 3, 4 and 5 only
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range,
+            headers,
+        ));
+
+        let fetch_payload_cmds = find_fetch_payload_commands(&cmds);
+        assert_eq!(fetch_payload_cmds.len(), 3);
+
+        for payload in payloads.iter().skip(num_in_blocktree) {
+            let payload_id = payload.get_id();
+            assert!(fetch_payload_cmds.contains(&&BlockSyncCommand::FetchPayload(payload_id)));
+        }
+    }
+
+    #[test]
     fn throttle_payload_requests() {
         let mut context = setup();
         let num_blocks = BLOCKSYNC_MAX_PAYLOAD_REQUESTS + 1;
@@ -1378,7 +1491,7 @@ mod test {
 
         // headers not availabe in self ledger, should request from a peer
         let cmds = context
-            .handle_self_response(BlockSyncResponseMessage::headers_not_available(block_range));
+            .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
 
         let request_cmds = find_send_request_commands(&cmds);
         assert_eq!(request_cmds.len(), 1);
@@ -1417,11 +1530,13 @@ mod test {
             .collect_vec();
 
         let payload_1 = payloads.get(&requested_payload_ids[0]).unwrap().clone();
-        let cmds = context.handle_self_response(BlockSyncResponseMessage::found_payload(payload_1));
+        let cmds =
+            context.handle_ledger_response(BlockSyncResponseMessage::found_payload(payload_1));
         assert_eq!(find_fetch_payload_commands(&cmds).len(), 1);
 
         let payload_2 = payloads.get(&requested_payload_ids[1]).unwrap().clone();
-        let cmds = context.handle_self_response(BlockSyncResponseMessage::found_payload(payload_2));
+        let cmds =
+            context.handle_ledger_response(BlockSyncResponseMessage::found_payload(payload_2));
         assert_eq!(find_fetch_payload_commands(&cmds).len(), 0);
     }
 
@@ -1444,7 +1559,7 @@ mod test {
 
         // headers not availabe in self ledger, should request from a peer
         let cmds = context
-            .handle_self_response(BlockSyncResponseMessage::headers_not_available(block_range));
+            .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
 
         let request_cmds = find_send_request_commands(&cmds);
         assert_eq!(request_cmds.len(), 1);
@@ -1467,8 +1582,9 @@ mod test {
         for payload in payloads.iter() {
             let payload_id = payload.get_id();
             // payload not available in self ledger. should request from peer
-            let cmds = context
-                .handle_self_response(BlockSyncResponseMessage::payload_not_available(payload_id));
+            let cmds = context.handle_ledger_response(
+                BlockSyncResponseMessage::payload_not_available(payload_id),
+            );
 
             let request_cmds = find_send_request_commands(&cmds);
             payload_self_requests.push(request_cmds[0].clone());
@@ -1532,9 +1648,7 @@ mod test {
         let cmds = if cached_in_blocktree {
             for full_block in full_blocks {
                 assert!(context
-                    .maybe_blocktree
-                    .as_mut()
-                    .unwrap()
+                    .blocktree
                     .add(full_block, &mut block_policy, &state_backend)
                     .is_ok());
             }
@@ -1556,7 +1670,7 @@ mod test {
             }
 
             // ledger response should emit response command with all the headers
-            context.handle_self_response(BlockSyncResponseMessage::found_headers(
+            context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
                 block_range,
                 headers.clone(),
             ))
@@ -1607,7 +1721,7 @@ mod test {
 
         // ledger response should emit response command as headers not available
         let cmds = context
-            .handle_self_response(BlockSyncResponseMessage::headers_not_available(block_range));
+            .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
 
         assert_eq!(cmds.len(), 1);
         let response_cmds = find_send_response_commands(&cmds);
@@ -1643,9 +1757,7 @@ mod test {
 
         let cmds = if cached_in_blocktree {
             assert!(context
-                .maybe_blocktree
-                .as_mut()
-                .unwrap()
+                .blocktree
                 .add(full_blocks[0].clone(), &mut block_policy, &state_backend)
                 .is_ok());
 
@@ -1666,7 +1778,7 @@ mod test {
             }
 
             // ledger response should emit response command with requested payload
-            context.handle_self_response(BlockSyncResponseMessage::found_payload(payload.clone()))
+            context.handle_ledger_response(BlockSyncResponseMessage::found_payload(payload.clone()))
         };
 
         assert_eq!(cmds.len(), 1);
@@ -1710,7 +1822,7 @@ mod test {
 
         // ledger response should emit response command as payload not available
         let cmds = context
-            .handle_self_response(BlockSyncResponseMessage::payload_not_available(payload_id));
+            .handle_ledger_response(BlockSyncResponseMessage::payload_not_available(payload_id));
 
         assert_eq!(cmds.len(), 1);
         let response_cmds = find_send_response_commands(&cmds);

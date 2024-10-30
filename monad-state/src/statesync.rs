@@ -47,6 +47,10 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         }
     }
 
+    pub fn get_full_blocks(&self) -> &HashMap<BlockId, FullBlock<SCT>> {
+        &self.full_blocks
+    }
+
     /// returns a new sync_target is applicable.
     ///
     /// concretely, if new_root > current_root + resync_threshold
