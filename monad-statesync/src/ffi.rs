@@ -205,6 +205,7 @@ impl<PT: PubKey> StateSync<PT> {
                             for (upsert_type, upsert_data) in &response.response {
                                 let upsert_result = bindings::monad_statesync_client_handle_upsert(
                                     sync_ctx.ctx,
+                                    response.request.prefix,
                                     match upsert_type {
                                         StateSyncUpsertType::Code => {
                                             bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE
@@ -413,13 +414,24 @@ impl SyncCtx {
             statesync_send_request,
 
             ctx: unsafe {
-                bindings::monad_statesync_client_context_create(
+                let ctx = bindings::monad_statesync_client_context_create(
                     dbname_paths,
                     len,
                     genesis_file,
                     request_ctx,
                     statesync_send_request,
-                )
+                );
+                let client_version = bindings::monad_statesync_version();
+                assert!(bindings::monad_statesync_client_compatible(client_version));
+                let num_prefixes = bindings::monad_statesync_client_prefixes();
+                for prefix in 0..num_prefixes {
+                    bindings::monad_statesync_client_handle_new_peer(
+                        ctx,
+                        prefix as u64,
+                        client_version,
+                    );
+                }
+                ctx
             },
         }
     }
@@ -432,13 +444,24 @@ impl SyncCtx {
 
             unsafe { bindings::monad_statesync_client_context_destroy(self.ctx) }
             self.ctx = unsafe {
-                bindings::monad_statesync_client_context_create(
+                let ctx = bindings::monad_statesync_client_context_create(
                     self.dbname_paths,
                     self.len,
                     self.genesis_file,
                     self.request_ctx,
                     self.statesync_send_request,
-                )
+                );
+                let client_version = bindings::monad_statesync_version();
+                assert!(bindings::monad_statesync_client_compatible(client_version));
+                let num_prefixes = bindings::monad_statesync_client_prefixes();
+                for prefix in 0..num_prefixes {
+                    bindings::monad_statesync_client_handle_new_peer(
+                        ctx,
+                        prefix as u64,
+                        client_version,
+                    );
+                }
+                ctx
             };
             return true;
         }

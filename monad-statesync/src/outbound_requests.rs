@@ -46,7 +46,6 @@ impl OutboundRequests {
         {
             assert_eq!(current_target, request.target);
         }
-        let _batch_size = 256_usize.pow(request.prefix_bytes.into());
         self.pending_requests.insert(request);
     }
 

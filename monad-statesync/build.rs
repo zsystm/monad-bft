@@ -29,6 +29,9 @@ fn main() {
         .header(
             "../monad-cxx/monad-execution/libs/statesync/src/monad/statesync/statesync_client.h",
         )
+        .header(
+            "../monad-cxx/monad-execution/libs/statesync/src/monad/statesync/statesync_version.h",
+        )
         .clang_arg("-I../monad-cxx/monad-execution/libs/statesync/src")
         .clang_arg("-std=c23")
         // invalidate on header change
