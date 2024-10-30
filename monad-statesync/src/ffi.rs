@@ -64,36 +64,51 @@ pub(crate) enum SyncResponse {
     UpdateTarget(Target),
 }
 
+const NUM_PREFIXES: u64 = 256;
+
 #[derive(Clone, Copy, Default)]
 struct Progress {
     start_target: Option<SeqNum>,
     end_target: Option<SeqNum>,
 
-    num_prefixes: Option<u64>,
+    // our guess for the minimum block at which servicers statesync'd before
+    min_until_guess: Option<SeqNum>,
     current_progress: Option<u64>,
 }
 
 impl Progress {
     fn update_target(&mut self, target: Target) {
         self.end_target = Some(target.n);
+        if self.min_until_guess.is_none() {
+            // guess that the statesync servicers have been up for at least 10_000 blocks
+            self.min_until_guess = Some(SeqNum(target.n.0.max(10_000) - 10_000));
+        }
     }
 
     fn update_handled_request(&mut self, request: &StateSyncRequest) {
         assert_eq!(self.end_target, Some(SeqNum(request.target)));
-        if self.num_prefixes.is_none() {
-            self.num_prefixes = Some(2_usize.pow(8).pow(request.prefix_bytes.into()) as u64);
-        }
+        let min_until_guess = self.min_until_guess.expect("self.end_target exists").0;
+
         if self.start_target.is_none() {
             self.start_target = Some(SeqNum(request.from));
         }
+        let start_target = self.start_target.expect("start_target set").0;
+
         if self.current_progress.is_none() {
-            self.current_progress =
-                Some(request.from * self.num_prefixes.expect("num_prefixes was set"));
+            self.current_progress = Some(request.from * NUM_PREFIXES);
         }
-        *self
-            .current_progress
-            .as_mut()
-            .expect("current_progress was set") += request.until - request.from;
+
+        if request.until >= min_until_guess {
+            let adjusted_from = if request.from <= min_until_guess {
+                start_target
+            } else {
+                request.from
+            };
+            *self
+                .current_progress
+                .as_mut()
+                .expect("current_progress was set") += request.until - adjusted_from;
+        }
     }
 
     fn update_reached_target(&mut self, target: Target) {
@@ -112,11 +127,11 @@ impl Progress {
 
         assert!(end_target > start_target);
 
-        let _total_progress = (end_target - start_target).0 * self.num_prefixes?;
+        let _total_progress = (end_target - start_target).0 * NUM_PREFIXES;
         // current_progress / _total_progress would estimate progress in percentage terms
 
         // current_progress / num_prefixes can be used as a target estimate
-        Some(SeqNum(self.current_progress? / self.num_prefixes?))
+        Some(SeqNum(self.current_progress? / NUM_PREFIXES))
     }
 }
 
