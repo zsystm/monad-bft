@@ -82,6 +82,7 @@ impl Config {
             | Duplicates
             | RandomPriorityFee
             | HighCallData
+            | SelfDestructs
             | NonDeterministicStorage
             | StorageDeletes => 10,
             NullGen => 0,
@@ -98,10 +99,9 @@ impl Config {
             ManyToMany { .. }
             | Duplicates
             | RandomPriorityFee
-            | HighCallData
             | NonDeterministicStorage
             | StorageDeletes => 100,
-            NullGen => 10,
+            NullGen | SelfDestructs | HighCallData => 10,
         }
     }
 
@@ -115,10 +115,10 @@ impl Config {
             ManyToMany { .. }
             | Duplicates
             | RandomPriorityFee
-            | HighCallData
             | NonDeterministicStorage
             | StorageDeletes => 2500,
             NullGen => 100,
+            SelfDestructs | HighCallData => 100,
         }
     }
 }
@@ -136,6 +136,7 @@ pub enum GeneratorConfig {
     Duplicates,
     RandomPriorityFee,
     HighCallData,
+    SelfDestructs,
     NonDeterministicStorage,
     StorageDeletes,
     NullGen,

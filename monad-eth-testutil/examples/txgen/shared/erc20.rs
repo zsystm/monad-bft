@@ -62,6 +62,10 @@ impl ERC20 {
         TransactionSigned::from_transaction_and_signature(tx, sig)
     }
 
+    pub fn self_destruct_tx(&self, sender: &mut SimpleAccount) -> TransactionSigned {
+        self.construct_tx(sender, IERC20::destroySmartContractCall {})
+    }
+
     pub fn construct_tx<T: alloy_sol_types::SolCall>(
         &self,
         sender: &mut SimpleAccount,

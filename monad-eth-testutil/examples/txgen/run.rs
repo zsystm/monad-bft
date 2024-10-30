@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
-    let (rpc_sender, gen_rx) = mpsc::channel(10);
+    let (rpc_sender, gen_rx) = mpsc::channel(2);
     let (gen_sender, refresh_rx) = mpsc::channel(100);
     let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
     let (recipient_sender, recipient_gen_rx) = mpsc::unbounded_channel();

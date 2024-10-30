@@ -1,6 +1,7 @@
 use duplicates::DuplicateTxGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
+use self_destruct::SelfDestructTxGenerator;
 use storage_deletes::StorageDeletesTxGenerator;
 
 use crate::{prelude::*, shared::erc20::ERC20, GeneratorConfig, TxType};
@@ -8,6 +9,7 @@ use crate::{prelude::*, shared::erc20::ERC20, GeneratorConfig, TxType};
 mod duplicates;
 mod high_call_data;
 mod non_deterministic_storage;
+mod self_destruct;
 mod storage_deletes;
 
 pub fn make_generator(config: &Config, erc20: ERC20) -> Box<dyn Generator + Send + Sync> {
@@ -50,6 +52,10 @@ pub fn make_generator(config: &Config, erc20: ERC20) -> Box<dyn Generator + Send
             recipient_keys,
             tx_per_sender,
             erc20,
+        }),
+        GeneratorConfig::SelfDestructs => Box::new(SelfDestructTxGenerator {
+            tx_per_sender,
+            contracts: Vec::with_capacity(1000),
         }),
     }
 }
