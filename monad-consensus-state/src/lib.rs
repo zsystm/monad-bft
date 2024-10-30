@@ -1337,9 +1337,10 @@ where
                 last_block_id: qc.get_block_id(),
                 root_seq_num: high_qc_seq_num - delay,
             };
-            info!(
+            debug!(
                 ?request_range,
-                "consensus requesting enough blocks to trigger statesync"
+                min_requested_blocks =? qc.get_seq_num() - root_seq_num,
+                "consensus blocksyncing enough blocks to trigger statesync"
             );
 
             request_range
@@ -1352,7 +1353,11 @@ where
                 last_block_id: qc.get_block_id(),
                 root_seq_num,
             };
-            info!(?request_range, "consensus requesting blocks upto root");
+            debug!(
+                ?request_range,
+                min_requested_blocks =? qc.get_seq_num().max(root_seq_num) - root_seq_num,
+                "consensus blocksyncing blocks up to root"
+            );
 
             request_range
         };

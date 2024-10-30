@@ -182,10 +182,16 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         let chain = self.root_parent_chain(root);
 
         let Some(last) = chain.last() else {
-            return Some(BlockRange {
+            let request_range = BlockRange {
                 last_block_id: root.block_id,
                 root_seq_num: blocksync_to,
-            });
+            };
+            tracing::debug!(
+                ?request_range,
+                min_requested_blocks =? root.seq_num - blocksync_to,
+                "statesync blocksyncing blocks"
+            );
+            return Some(request_range);
         };
 
         let block_seq_num = last.get_seq_num();
@@ -193,10 +199,16 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         let block_parent_id = last.get_parent_id();
 
         if block_seq_num > blocksync_to || (block_seq_num == blocksync_to && block_is_empty) {
-            Some(BlockRange {
+            let request_range = BlockRange {
                 last_block_id: block_parent_id,
                 root_seq_num: blocksync_to,
-            })
+            };
+            tracing::debug!(
+                ?request_range,
+                min_requested_blocks =? block_seq_num - blocksync_to,
+                "statesync blocksyncing blocks"
+            );
+            Some(request_range)
         } else {
             None
         }
