@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    fmt,
-    result::Result as StdResult,
-};
+use std::{collections::VecDeque, fmt, result::Result as StdResult};
 
 use monad_consensus_types::{
     block::{BlockPolicy, BlockPolicyError, BlockType},
@@ -15,6 +11,8 @@ use monad_consensus_types::{
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, SeqNum};
 use tracing::trace;
+
+use crate::tree::{BlockTreeEntry, Tree};
 
 type Result<T> = StdResult<T, BlockTreeError>;
 
@@ -45,73 +43,6 @@ struct Root {
     children_blocks: Vec<BlockId>,
 }
 
-pub struct BlockTreeEntry<SCT, BPT, SBT>
-where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
-    SBT: StateBackend,
-{
-    pub validated_block: BPT::ValidatedBlock,
-    /// A blocktree entry is coherent if there is a path to root from the entry and it
-    /// is a valid extension of the chain
-    pub is_coherent: bool,
-    /// A vector of all the block ids that extend this validated block in the blocktree
-    pub children_blocks: Vec<BlockId>,
-}
-
-impl<SCT, BPT, SBT> Clone for BlockTreeEntry<SCT, BPT, SBT>
-where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
-    SBT: StateBackend,
-{
-    fn clone(&self) -> Self {
-        Self {
-            validated_block: self.validated_block.clone(),
-            is_coherent: self.is_coherent,
-            children_blocks: self.children_blocks.clone(),
-        }
-    }
-}
-
-impl<SCT, BPT, SBT> fmt::Debug for BlockTreeEntry<SCT, BPT, SBT>
-where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
-    SBT: StateBackend,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BlockTreeEntry")
-            .field("validated_block", &self.validated_block)
-            .field("is_coherent", &self.is_coherent)
-            .field("children_blocks", &self.children_blocks)
-            .finish()
-    }
-}
-
-impl<SCT, BPT, SBT> PartialEq<Self> for BlockTreeEntry<SCT, BPT, SBT>
-where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
-    SBT: StateBackend,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.validated_block == other.validated_block
-            && self.is_coherent == other.is_coherent
-            && self.children_blocks == other.children_blocks
-    }
-}
-
-impl<SCT, BPT, SBT> Eq for BlockTreeEntry<SCT, BPT, SBT>
-where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
-    SBT: StateBackend,
-{
-}
-
-type Tree<T> = HashMap<BlockId, T>;
-
 pub struct BlockTree<SCT, BPT, SBT>
 where
     SCT: SignatureCollection,
@@ -122,7 +53,7 @@ where
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
-    tree: Tree<BlockTreeEntry<SCT, BPT, SBT>>,
+    tree: Tree<SCT, BPT, SBT>,
 }
 
 impl<SCT, BPT, SBT> fmt::Debug for BlockTree<SCT, BPT, SBT>
@@ -170,7 +101,7 @@ where
                 info: root,
                 children_blocks: Vec::new(),
             },
-            tree: HashMap::new(),
+            tree: Default::default(),
         }
     }
 
@@ -235,9 +166,23 @@ where
 
         // garbage collect old blocks
         // remove any blocks less than or equal to round `n`
-        self.tree.retain(|_, b| {
-            b.validated_block.get_parent_round() >= new_root_entry.validated_block.get_round()
-        });
+        let blocks_to_delete: Vec<_> = self
+            .tree
+            .iter()
+            .filter_map(|(block_id, block)| {
+                if block.validated_block.get_parent_round()
+                    < new_root_entry.validated_block.get_round()
+                {
+                    Some(block_id)
+                } else {
+                    None
+                }
+            })
+            .copied()
+            .collect();
+        for block_to_delete in blocks_to_delete {
+            self.tree.remove(&block_to_delete);
+        }
         self.root = Root {
             info: RootInfo {
                 round: new_root_entry.validated_block.get_round(),
@@ -267,40 +212,14 @@ where
 
         let new_block_id = block.get_id();
         let parent_id = block.get_parent_id();
-        let is_coherent = false;
 
-        // Get all the children blocks in the blocktree
-        let mut children_blocks = Vec::new();
-        for (block_id, blocktree_entry) in self.tree.iter() {
-            if blocktree_entry.validated_block.get_parent_id() == new_block_id {
-                children_blocks.push(*block_id);
-            }
-        }
+        self.tree.insert(block);
 
-        // Create the new blocktree entry
-        let new_block_entry = BlockTreeEntry {
-            validated_block: block,
-            is_coherent,
-            children_blocks,
+        if parent_id == self.root.info.block_id {
+            self.root.children_blocks.push(new_block_id);
         };
 
-        self.tree.insert(new_block_id, new_block_entry);
-
-        // Retrieve the parent block's coherency and children blocks
-        let children_blocks_to_update = if parent_id == self.root.info.block_id {
-            Some(&mut self.root.children_blocks)
-        } else if let Some(parent_entry) = self.tree.get_mut(&parent_id) {
-            Some(&mut parent_entry.children_blocks)
-        } else {
-            // Parent missing, should be requested. Skip coherency check
-            None
-        };
-
-        // Push the new block to the children blocks in the parent
-        if let Some(children_blocks_to_update) = children_blocks_to_update {
-            children_blocks_to_update.push(new_block_id);
-        }
-
+        // Update coherency
         if let Some(path_to_root) = self.get_blocks_on_path_from_root(&new_block_id) {
             let incoherent_parent_or_self = path_to_root
                 .iter()
@@ -359,9 +278,9 @@ where
                     }
                 };
             } else {
-                self.tree.entry(next_block).and_modify(|entry| {
-                    entry.is_coherent = true;
-                });
+                self.tree
+                    .set_coherent(&next_block, true)
+                    .expect("should be in tree");
 
                 // Can check coherency of children blocks now
                 block_ids_to_update.extend(
@@ -476,7 +395,7 @@ where
         !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.info.round
     }
 
-    pub fn tree(&self) -> &Tree<BlockTreeEntry<SCT, BPT, SBT>> {
+    pub fn tree(&self) -> &Tree<SCT, BPT, SBT> {
         &self.tree
     }
 
@@ -495,13 +414,7 @@ where
     }
 
     pub fn get_payload(&self, payload_id: &PayloadId) -> Option<Payload> {
-        if let Some((_, block)) = self.tree.iter().find(|(_, blocktree_entry)| {
-            &blocktree_entry.validated_block.get_payload_id() == payload_id
-        }) {
-            Some(block.validated_block.get_payload())
-        } else {
-            None
-        }
+        self.tree.get_payload(payload_id).cloned()
     }
 
     pub fn get_block_state_root(&self, block_id: &BlockId) -> Option<StateRootHash> {
@@ -1577,11 +1490,11 @@ mod test {
             )
             .is_ok());
 
-        let b1_entry = blocktree.tree.get_mut(&b1.get_id()).unwrap();
+        let b1_entry = blocktree.tree.get(&b1.get_id()).unwrap();
         assert!(b1_entry.is_coherent);
         // set b1 to be incoherent
-        b1_entry.is_coherent = false;
-        assert!(!b1_entry.is_coherent);
+        blocktree.tree.set_coherent(&b1.get_id(), false).unwrap();
+        assert!(!blocktree.is_coherent(&b1.get_id()));
 
         // when b2 is added, b1 coherency should be updated
         assert!(blocktree
