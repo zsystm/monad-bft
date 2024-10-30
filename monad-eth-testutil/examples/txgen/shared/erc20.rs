@@ -28,7 +28,7 @@ pub struct ERC20 {
 }
 
 impl ERC20 {
-    pub async fn deploy(deployer: &(Address, PrivateKey), client: ReqwestClient) -> Result<Self> {
+    pub async fn deploy(deployer: &(Address, PrivateKey), client: &ReqwestClient) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
         let tx = Self::deploy_tx(nonce, &deployer.1);
 

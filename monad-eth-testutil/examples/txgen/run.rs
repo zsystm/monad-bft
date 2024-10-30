@@ -1,4 +1,7 @@
+use std::str::FromStr;
+
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use serde::{Deserialize, Serialize};
 
 use crate::{generators::make_generator, prelude::*, shared::erc20::ERC20};
 
@@ -9,10 +12,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
     let (recipient_sender, recipient_gen_rx) = mpsc::unbounded_channel();
 
     // simpler to always deploy erc20 even if not used
-    let erc20 = {
-        let deployer = PrivateKey::new(&config.root_private_keys[0]);
-        ERC20::deploy(&deployer, client.clone()).await?
-    };
+    let erc20 = load_or_deploy_erc20(&config, &client).await?;
 
     // kick start cycle by injecting accounts
     generate_sender_groups(&config).for_each(|group| refresh_sender.send(group).unwrap());
@@ -48,7 +48,8 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         rpc_sender,
         &client,
         erc20,
-        U256::from(1e6),
+        U256::from(1e15),
+        U256::from(1e18),
         &metrics,
     );
 
@@ -135,4 +136,35 @@ fn generate_sender_groups(config: &Config) -> impl Iterator<Item = AccountsWithT
         },
         sent: Instant::now() - Duration::from_secs_f64(config.refresh_delay_secs),
     })
+}
+
+async fn load_or_deploy_erc20(config: &Config, client: &ReqwestClient) -> Result<ERC20> {
+    if let Some(addr) = &config.erc20_contract {
+        return Ok(ERC20 {
+            addr: Address::from_str(addr).context("failed to parse erc20 contract string")?,
+        });
+    }
+
+    // try reading deployed contracts from file
+    if let Ok(addr) = (|| -> Result<Address> {
+        let file = std::fs::File::open("deployed_contracts.json")?;
+        let deployed_contracts: DeployedContract = serde_json::from_reader(&file)?;
+        Ok(deployed_contracts.erc20)
+    })() {
+        return Ok(ERC20 { addr });
+    }
+
+    let deployer = PrivateKey::new(&config.root_private_keys[0]);
+    let erc20 = ERC20::deploy(&deployer, client).await?;
+
+    // write deployed_contracts to file
+    let file = std::fs::File::create("deployed_contracts.json")?;
+    serde_json::to_writer(file, &DeployedContract { erc20: erc20.addr })?;
+
+    Ok(erc20)
+}
+
+#[derive(Deserialize, Serialize)]
+struct DeployedContract {
+    erc20: Address,
 }

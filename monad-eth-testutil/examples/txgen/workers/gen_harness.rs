@@ -19,9 +19,8 @@ pub struct GeneratorHarness {
     pub erc20: ERC20,
     pub root_accts: VecDeque<SimpleAccount>,
     pub min_native: U256,
-    pub metrics: Arc<Metrics>,
-
     pub seed_native_amt: U256,
+    pub metrics: Arc<Metrics>,
 }
 
 impl GeneratorHarness {
@@ -32,6 +31,7 @@ impl GeneratorHarness {
         client: &ReqwestClient,
         erc20: ERC20,
         min_native: U256,
+        seed_native_amt: U256,
         metrics: &Arc<Metrics>,
     ) -> Self {
         Self {
@@ -43,13 +43,11 @@ impl GeneratorHarness {
             root_accts: VecDeque::with_capacity(10),
             min_native,
             metrics: Arc::clone(metrics),
-            seed_native_amt: U256::from(10e12),
+            seed_native_amt,
         }
     }
 
     pub async fn run(mut self) {
-        // self.seed(num_senders).await;
-
         info!("Starting main gen loop");
         while let Some(accts) = self.refresh_rx.recv().await {
             info!(

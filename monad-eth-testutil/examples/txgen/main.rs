@@ -65,6 +65,9 @@ pub struct Config {
 
     #[clap(long, global = true)]
     tx_per_sender: Option<usize>,
+
+    #[clap(long, global = true)]
+    erc20_contract: Option<String>,
 }
 
 impl Config {
