@@ -13,7 +13,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
 use monad_eth_tx::EthSignedTransaction;
-use monad_eth_txpool::EthTxPool;
+use monad_eth_txpool::MockEthTxPool;
 use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -53,7 +53,7 @@ type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState;
 
-type Pool = dyn TxPool<SignatureCollectionType, EthBlockPolicy, StateBackendType>;
+type Pool = MockEthTxPool<SignatureCollectionType, StateBackendType>;
 
 fn make_test_block_policy() -> EthBlockPolicy {
     EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
@@ -75,7 +75,7 @@ enum TxPoolTestEvent<'a> {
         expected_committed_seq_num: u64,
     },
     Clear,
-    Block(Box<dyn FnOnce(&mut EthTxPool<SignatureCollectionType, StateBackendType>)>),
+    Block(Box<dyn FnOnce(&mut Pool)>),
 }
 
 fn run_custom_eth_txpool_test<const N: usize>(
@@ -106,7 +106,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
         InMemoryStateInner::new(Balance::MAX, SeqNum(4), InMemoryBlockState::genesis(nonces))
     };
 
-    let mut pool = EthTxPool::default_testing();
+    let mut pool = Pool::new(&eth_block_policy);
 
     pool.update_committed_block(&generate_block_with_txs(
         Round(0),

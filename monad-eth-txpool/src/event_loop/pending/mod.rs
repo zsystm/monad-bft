@@ -3,7 +3,7 @@ use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::EthAddress;
 
 pub use self::list::PendingTxList;
-use crate::transaction::ValidEthTransaction;
+use crate::ValidEthTransaction;
 
 mod list;
 
@@ -11,6 +11,7 @@ mod list;
 // numbers for the txpool.
 const MAX_ADDRESSES: usize = 16 * 1024;
 const MAX_TXS: usize = 64 * 1024;
+
 const PROMOTE_TXS_WATERMARK: usize = MAX_TXS * 3 / 4;
 
 /// Wrapper type to store byte-validated transactions and quickly query the total number of

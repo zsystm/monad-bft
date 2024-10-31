@@ -6,7 +6,7 @@ use monad_eth_block_policy::{AccountNonceRetrievable, EthValidatedBlock};
 use monad_eth_types::EthAddress;
 
 use super::list::TrackedTxList;
-use crate::transaction::ValidEthTransaction;
+use crate::ValidEthTransaction;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct OrderedTxGroup<'a> {
@@ -24,12 +24,12 @@ pub struct TrackedTxHeap<'a> {
 impl<'a> TrackedTxHeap<'a> {
     pub fn new<SCT>(
         tracked_txs: &'a IndexMap<EthAddress, TrackedTxList>,
-        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
+        pending_blocks: &Vec<&EthValidatedBlock<SCT>>,
     ) -> Self
     where
         SCT: SignatureCollection,
     {
-        let pending_account_nonces = extending_blocks.get_account_nonces();
+        let pending_account_nonces = pending_blocks.get_account_nonces();
 
         let mut heap_vec = Vec::with_capacity(tracked_txs.len());
 

@@ -3,7 +3,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use itertools::Itertools;
 use monad_consensus_types::txpool::TxPool;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::EthTxPool;
+use monad_eth_txpool::MockEthTxPool;
 use monad_state_backend::InMemoryState;
 use monad_types::GENESIS_SEQ_NUM;
 
@@ -20,7 +20,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         c,
         "insert",
         |controller_config| {
-            let pool = EthTxPool::default_testing();
+            let pool = MockEthTxPool::new(&block_policy);
 
             let (pending_txs, txs) = BenchController::generate_txs(
                 controller_config.accounts,

@@ -7,7 +7,7 @@ use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::{EthAddress, Nonce};
 use tracing::error;
 
-use crate::{pending::PendingTxList, transaction::ValidEthTransaction};
+use crate::{event_loop::pending::PendingTxList, ValidEthTransaction};
 
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
 /// that all the transactions in the txs map have a nonce at least account_nonce. Similar to

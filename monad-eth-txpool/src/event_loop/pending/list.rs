@@ -3,7 +3,7 @@ use std::collections::{btree_map::Entry, BTreeMap};
 use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::Nonce;
 
-use crate::transaction::ValidEthTransaction;
+use crate::ValidEthTransaction;
 
 /// This struct ensures at the type level that nonce_map is never empty, a property used to enforce
 /// that every address in the PendingTxMap has an associated pending transaction.

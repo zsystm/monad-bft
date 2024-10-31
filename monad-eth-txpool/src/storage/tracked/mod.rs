@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
+use self::tx_heap::{TrackedTxHeap, TrackedTxHeapDrainAction};
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
@@ -14,10 +15,9 @@ use monad_eth_types::EthAddress;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
-use tx_heap::TrackedTxHeapDrainAction;
 
-use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
-use crate::{pending::PendingTxMap, transaction::ValidEthTransaction};
+use self::list::TrackedTxList;
+use crate::{event_loop::pending::PendingTxMap, ValidEthTransaction};
 
 mod list;
 mod tx_heap;
@@ -43,7 +43,7 @@ pub struct TrackedTxMap<SCT, SBT> {
     // evict expired txs through the entry API.
     txs: IndexMap<EthAddress, TrackedTxList>,
 
-    _phantom: PhantomData<(SCT, SBT)>,
+    _phantom: PhantomData<(SCT, fn(SBT) -> ())>,
 }
 
 impl<SCT, SBT> TrackedTxMap<SCT, SBT>
@@ -91,7 +91,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         block_policy: &EthBlockPolicy,
-        extending_blocks: Vec<&EthValidatedBlock<SCT>>,
+        pending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
     ) -> Result<FullTransactionList, StateBackendError> {
@@ -100,7 +100,7 @@ where
         };
 
         assert!(
-            block_policy.get_last_commit().ge(&last_commit_seq_num),
+            block_policy.get_last_commit() >= last_commit_seq_num,
             "txpool received block policy with lower committed seq num"
         );
 
@@ -129,12 +129,12 @@ where
             return Ok(FullTransactionList::empty());
         }
 
-        let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
+        let tx_heap = TrackedTxHeap::new(&self.txs, &pending_blocks);
 
         let account_balances = block_policy.compute_account_base_balances(
             proposed_seq_num,
             state_backend,
-            Some(&extending_blocks),
+            Some(&pending_blocks),
             tx_heap.addresses(),
         )?;
 
@@ -292,7 +292,7 @@ where
 
     pub fn update_committed_block(
         &mut self,
-        committed_block: &EthValidatedBlock<SCT>,
+        committed_block: EthValidatedBlock<SCT>,
         pending: &mut PendingTxMap,
     ) {
         if committed_block.is_empty_block() {
@@ -315,17 +315,17 @@ where
         }
         self.last_commit_seq_num = Some(committed_block.get_seq_num());
 
-        for (address, highest_tx_nonce) in committed_block.get_nonces() {
+        for (address, highest_tx_nonce) in committed_block.nonces {
             let account_nonce = highest_tx_nonce
                 .checked_add(1)
                 .expect("nonce does not overflow");
 
-            match self.txs.entry(*address) {
+            match self.txs.entry(address) {
                 IndexMapEntry::Occupied(tx_list) => {
                     TrackedTxList::update_account_nonce(tx_list, account_nonce)
                 }
                 IndexMapEntry::Vacant(v) => {
-                    let Some(tx_list) = pending.remove(address) else {
+                    let Some(tx_list) = pending.remove(&address) else {
                         continue;
                     };
 

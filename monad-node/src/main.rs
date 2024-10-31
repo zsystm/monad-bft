@@ -22,6 +22,8 @@ use monad_crypto::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
+#[cfg(feature = "full-node")]
+use monad_eth_txpool::NoopEthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ipc::IpcReceiver;
@@ -268,27 +270,29 @@ async fn run(
         return Err(());
     };
 
+    let block_policy = EthBlockPolicy::new(
+        GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
+        node_state.node_config.consensus.execution_delay,
+        node_state.node_config.chain_id,
+    );
+
     let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
     let builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
         #[cfg(feature = "full-node")]
-        transaction_pool: EthTxPool::new(false, Duration::from_secs(0)),
+        transaction_pool: NoopEthTxPool::default(),
         // TODO(andr-dev): Add tx_expiry to node config
         #[cfg(not(feature = "full-node"))]
-        transaction_pool: EthTxPool::new(true, Duration::from_secs(5)),
+        transaction_pool: EthTxPool::new(&block_policy, Duration::from_secs(5)),
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             chain_id: node_state.node_config.chain_id,
         },
         // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only
         // mode
-        block_policy: EthBlockPolicy::new(
-            GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
-            node_state.node_config.consensus.execution_delay,
-            node_state.node_config.chain_id,
-        ),
+        block_policy,
         state_backend: StateBackendCache::new(
             TriedbReader::try_new(node_state.triedb_path.as_path())
                 .expect("triedb should exist in path"),

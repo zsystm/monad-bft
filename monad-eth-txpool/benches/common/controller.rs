@@ -7,7 +7,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx};
 use monad_eth_tx::EthSignedTransaction;
-use monad_eth_txpool::EthTxPool;
+use monad_eth_txpool::MockEthTxPool;
 use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -20,7 +20,7 @@ const TRANSACTION_SIZE_BYTES: usize = 400;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
 pub type BlockPolicyType = EthBlockPolicy;
 pub type StateBackendType = InMemoryState;
-pub type Pool = EthTxPool<SignatureCollectionType, StateBackendType>;
+pub type Pool = MockEthTxPool<SignatureCollectionType, StateBackendType>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BenchControllerConfig {
@@ -88,7 +88,7 @@ impl<'a> BenchController<'a> {
         state_backend: &StateBackendType,
         txs: &[EthSignedTransaction],
     ) -> Pool {
-        let mut pool = Pool::default_testing();
+        let mut pool = MockEthTxPool::new(block_policy);
 
         assert!(!Pool::insert_tx(
             &mut pool,
