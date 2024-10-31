@@ -4,6 +4,7 @@ use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus_types::{
     block::{Block, BlockRange, BlockType, FullBlock},
     checkpoint::RootInfo,
+    payload::{Payload, PayloadId},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
@@ -25,6 +26,7 @@ pub(crate) struct BlockBuffer<SCT: SignatureCollection> {
     root: SeqNum,
     // blocks <= root
     full_blocks: HashMap<BlockId, FullBlock<SCT>>,
+    payload_cache: HashMap<PayloadId, Payload>,
     // block headers >= root
     block_headers: HashMap<BlockId, Block<SCT>>,
 
@@ -42,13 +44,14 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
             root,
 
             full_blocks: Default::default(),
+            payload_cache: Default::default(),
             block_headers: Default::default(),
             proposal_buffer: Default::default(),
         }
     }
 
-    pub fn get_full_blocks(&self) -> &HashMap<BlockId, FullBlock<SCT>> {
-        &self.full_blocks
+    pub fn get_payload_cache(&self) -> &HashMap<PayloadId, Payload> {
+        &self.payload_cache
     }
 
     /// returns a new sync_target is applicable.
@@ -105,6 +108,8 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
             return;
         }
 
+        self.payload_cache
+            .insert(block.get_payload_id(), block.get_payload());
         self.full_blocks.insert(block.get_id(), block);
     }
 
@@ -141,6 +146,11 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
 
             root,
 
+            payload_cache: self
+                .full_blocks
+                .values()
+                .map(|block| (block.get_payload_id(), block.get_payload()))
+                .collect(),
             full_blocks: self.full_blocks,
             block_headers: self.block_headers,
             proposal_buffer: self.proposal_buffer,

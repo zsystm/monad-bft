@@ -12,7 +12,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{BlockId, Epoch, NodeId};
+use monad_types::{Epoch, NodeId};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -150,7 +150,7 @@ where
     SBT: StateBackend,
 {
     BlockTree(&'a BlockTree<SCT, BPT, SBT>),
-    BlockBuffer(&'a HashMap<BlockId, FullBlock<SCT>>),
+    BlockBuffer(&'a HashMap<PayloadId, Payload>),
 }
 
 pub struct BlockSyncWrapper<'a, ST, SCT, BPT, SBT, VTF>
@@ -381,10 +381,7 @@ where
 
     fn get_cached_payload(&self, payload_id: PayloadId) -> Option<Payload> {
         if let Some(payload) = match self.block_cache {
-            BlockCache::BlockBuffer(full_blocks) => full_blocks
-                .iter()
-                .find(|(_, full_block)| full_block.get_payload_id() == payload_id)
-                .map(|(_, full_block)| full_block.get_payload()),
+            BlockCache::BlockBuffer(full_blocks) => full_blocks.get(&payload_id).cloned(),
             BlockCache::BlockTree(blocktree) => blocktree.get_payload(&payload_id),
         } {
             return Some(payload);

@@ -78,7 +78,7 @@ where
     ) -> Vec<WrappedBlockSyncCommand<SCT>> {
         let block_cache = match self.consensus {
             ConsensusMode::Sync { block_buffer, .. } => {
-                BlockCache::BlockBuffer(block_buffer.get_full_blocks())
+                BlockCache::BlockBuffer(block_buffer.get_payload_cache())
             }
             ConsensusMode::Live(consensus) => BlockCache::BlockTree(consensus.blocktree()),
         };
