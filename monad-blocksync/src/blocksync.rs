@@ -81,26 +81,32 @@ pub struct BlockSync<ST: CertificateSignatureRecoverable, SCT: SignatureCollecti
     /// rest of the blocks from the requested range are fetched from ledger
     /// e.g. If NodeX requests a -> c and blocks b -> c are fetched from blocktree,
     /// stored in the map is [a -> b, (NodeX, b -> c)] while a -> b is fetched from ledger
-    pub headers_requests:
+    headers_requests:
         HashMap<BlockRange, BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<Block<SCT>>>>,
-    pub payload_requests: HashMap<PayloadId, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+    payload_requests: HashMap<PayloadId, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
     /// Headers requests for self
-    pub self_headers_requests: HashMap<BlockRange, SelfRequest<CertificateSignaturePubKey<ST>>>,
+    self_headers_requests: HashMap<BlockRange, SelfRequest<CertificateSignaturePubKey<ST>>>,
     /// Payload requests for self
-    pub self_payload_requests:
-        HashMap<PayloadId, Option<SelfRequest<CertificateSignaturePubKey<ST>>>>,
+    self_payload_requests: HashMap<PayloadId, Option<SelfRequest<CertificateSignaturePubKey<ST>>>>,
     /// Should be <= BLOCKSYNC_MAX_PAYLOAD_REQUESTS
-    pub self_payload_requests_in_flight: usize,
+    self_payload_requests_in_flight: usize,
     /// Parallel payload requests from self after receiving headers
     /// If payload is None, the payload request is still in flight and should be
     /// in self_payload_requests
-    pub self_completed_headers_requests:
-        HashMap<BlockRange, (BlockSyncSelfRequester, Vec<(Block<SCT>, Option<Payload>)>)>,
+    self_completed_headers_requests: HashMap<BlockRange, SelfCompletedHeader<SCT>>,
 
-    pub self_request_mode: BlockSyncSelfRequester,
+    self_request_mode: BlockSyncSelfRequester,
 
-    pub rng: ChaCha8Rng,
+    rng: ChaCha8Rng,
+}
+
+// TODO move this to a separate file, restrict mutators to maintain invariants
+#[derive(Debug)]
+struct SelfCompletedHeader<SCT: SignatureCollection> {
+    requester: BlockSyncSelfRequester,
+    blocks: Vec<(Block<SCT>, Option<Payload>)>,
+    payload_cache: HashMap<PayloadId, Payload>,
 }
 
 impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Default for BlockSync<ST, SCT> {
@@ -220,7 +226,7 @@ where
             .self_completed_headers_requests
             .entry(block_range)
         {
-            if entry.get().0 == requester {
+            if entry.get().requester == requester {
                 entry.remove();
             }
         }
@@ -384,11 +390,9 @@ where
             return Some(payload);
         }
 
-        for (_, (_, requested_payloads)) in self.block_sync.self_completed_headers_requests.iter() {
-            for (header, maybe_payload) in requested_payloads.iter() {
-                if header.payload_id == payload_id && maybe_payload.is_some() {
-                    return maybe_payload.clone();
-                }
+        for (_, completed_header) in self.block_sync.self_completed_headers_requests.iter() {
+            if let Some(payload) = completed_header.payload_cache.get(&payload_id) {
+                return Some(payload.clone());
             }
         }
 
@@ -410,13 +414,16 @@ where
                 // remove request and clone payload to existing headers
                 self.block_sync.self_payload_requests.remove(&payload_id);
 
-                for (_, (_, payload_requests)) in
+                for (_, completed_header) in
                     self.block_sync.self_completed_headers_requests.iter_mut()
                 {
-                    for (block, maybe_payload) in payload_requests {
+                    for (block, maybe_payload) in &mut completed_header.blocks {
                         if block.payload_id == payload_id && maybe_payload.is_none() {
                             // clone incase there are multiple requests that require the same payload
                             *maybe_payload = Some(payload.clone());
+                            completed_header
+                                .payload_cache
+                                .insert(payload_id, payload.clone());
 
                             self.metrics
                                 .blocksync_events
@@ -522,13 +529,14 @@ where
                     // insert headers as completed
                     self.block_sync.self_completed_headers_requests.insert(
                         block_range,
-                        (
-                            self.block_sync.self_request_mode,
-                            block_headers
+                        SelfCompletedHeader {
+                            requester: self.block_sync.self_request_mode,
+                            blocks: block_headers
                                 .into_iter()
                                 .map(|block| (block, None))
-                                .collect_vec(),
-                        ),
+                                .collect(),
+                            payload_cache: Default::default(),
+                        },
                     );
                 } else {
                     // failed header verification
@@ -654,13 +662,16 @@ where
                         .self_payload_response_successful += 1;
                 }
 
-                for (_, (_, payload_requests)) in
+                for (_, completed_header) in
                     self.block_sync.self_completed_headers_requests.iter_mut()
                 {
-                    for (block, maybe_payload) in payload_requests {
+                    for (block, maybe_payload) in &mut completed_header.blocks {
                         if block.payload_id == payload_id && maybe_payload.is_none() {
                             // clone incase there are multiple requests that require the same payload
                             *maybe_payload = Some(payload.clone());
+                            completed_header
+                                .payload_cache
+                                .insert(block.payload_id, payload.clone());
                         }
                     }
                 }
@@ -707,8 +718,9 @@ where
             .block_sync
             .self_completed_headers_requests
             .iter()
-            .filter_map(|(block_range, (_, payloads))| {
-                payloads
+            .filter_map(|(block_range, completed_header)| {
+                completed_header
+                    .blocks
                     .iter()
                     .all(|(_, maybe_payload)| maybe_payload.is_some())
                     .then_some(block_range)
@@ -717,14 +729,15 @@ where
             .collect_vec();
 
         for completed_range in completed_ranges {
-            let (self_requester, payload_requests) = self
+            let completed_header = self
                 .block_sync
                 .self_completed_headers_requests
                 .remove(&completed_range)
                 .unwrap();
 
             // create the full blocks and emit for the completed range
-            let full_blocks = payload_requests
+            let full_blocks = completed_header
+                .blocks
                 .into_iter()
                 .map(|(block, payload)| FullBlock {
                     block,
@@ -733,7 +746,7 @@ where
                 .collect();
 
             cmds.push(BlockSyncCommand::Emit(
-                self_requester,
+                completed_header.requester,
                 (completed_range, full_blocks),
             ));
         }
