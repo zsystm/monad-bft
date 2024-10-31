@@ -9,7 +9,7 @@ use monad_crypto::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
-use monad_eth_txpool::EthTxPool;
+use monad_eth_txpool::MockEthTxPool;
 use monad_eth_types::Balance;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
@@ -49,7 +49,7 @@ impl SwarmRelation for ForkpointSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type TxPool = EthTxPool;
+    type TxPool = MockEthTxPool;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -163,7 +163,7 @@ fn forkpoint_restart_f(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        Default::default,
+        || MockEthTxPool::new_with_chain_id(10),
         Default::default,
         || {
             EthBlockPolicy::new(
@@ -198,7 +198,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            Default::default,
+            || MockEthTxPool::new_with_chain_id(10),
             Default::default,
             || {
                 EthBlockPolicy::new(
@@ -222,7 +222,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            Default::default,
+            || MockEthTxPool::new_with_chain_id(10),
             Default::default,
             || {
                 EthBlockPolicy::new(
@@ -482,7 +482,7 @@ fn forkpoint_restart_below_all(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        Default::default,
+        || MockEthTxPool::new_with_chain_id(10),
         Default::default,
         || {
             EthBlockPolicy::new(
@@ -527,7 +527,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            Default::default,
+            || MockEthTxPool::new_with_chain_id(10),
             Default::default,
             || {
                 EthBlockPolicy::new(
@@ -551,7 +551,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            Default::default,
+            || MockEthTxPool::new_with_chain_id(10),
             Default::default,
             || {
                 EthBlockPolicy::new(

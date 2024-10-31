@@ -11,7 +11,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_tx};
 use monad_eth_tx::EthSignedTransaction;
-use monad_eth_txpool::EthTxPool;
+use monad_eth_txpool::MockEthTxPool;
 use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -73,7 +73,7 @@ enum TxPoolTestEvent<'a> {
         expected_committed_seq_num: u64,
     },
     Clear,
-    Block(Box<dyn FnOnce(&mut EthTxPool)>),
+    Block(Box<dyn FnOnce(&mut MockEthTxPool)>),
 }
 
 fn run_custom_eth_txpool_test<const N: usize>(
@@ -104,7 +104,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
         InMemoryStateInner::new(Balance::MAX, SeqNum(4), InMemoryBlockState::genesis(nonces))
     };
 
-    let mut pool = EthTxPool::default();
+    let mut pool = MockEthTxPool::new(&eth_block_policy);
     let mut current_round = 1u64;
     let mut current_seq_num = 1u64;
     let mut pending_blocks = VecDeque::default();

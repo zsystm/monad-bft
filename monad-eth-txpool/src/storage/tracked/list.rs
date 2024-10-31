@@ -3,7 +3,7 @@ use std::collections::{btree_map, BTreeMap};
 use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::{EthAddress, Nonce};
 
-use crate::{pending::EthTxPendingList, transaction::ValidEthTransaction};
+use super::{EthTxPendingList, ValidEthTransaction};
 
 #[derive(Clone, Debug, Default)]
 pub struct TrackedTxList {

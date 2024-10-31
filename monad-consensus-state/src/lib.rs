@@ -1580,7 +1580,7 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_testutil::make_tx;
     use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
-    use monad_eth_txpool::EthTxPool;
+    use monad_eth_txpool::MockEthTxPool;
     use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{
@@ -4836,7 +4836,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            MockEthTxPool::new_with_chain_id(1337),
             || NopStateRoot,
         );
 
@@ -4897,7 +4897,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            MockEthTxPool::new_with_chain_id(1337),
             || NopStateRoot,
         );
 
@@ -4957,7 +4957,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            MockEthTxPool::new_with_chain_id(133),
             || NopStateRoot,
         );
 
@@ -5044,7 +5044,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            MockEthTxPool::new_with_chain_id(1337),
             || NopStateRoot,
         );
 
@@ -5166,7 +5166,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            MockEthTxPool::new_with_chain_id(1337),
             || NopStateRoot,
         );
 
@@ -5275,7 +5275,7 @@ mod test {
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            MockEthTxPool::new_with_chain_id(1337),
             || NopStateRoot,
         );
 

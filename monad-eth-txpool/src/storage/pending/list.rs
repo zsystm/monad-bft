@@ -3,7 +3,7 @@ use std::collections::{btree_map::Entry, BTreeMap};
 use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::Nonce;
 
-use crate::transaction::ValidEthTransaction;
+use super::ValidEthTransaction;
 
 #[derive(Clone, Debug, Default)]
 pub struct EthTxPendingList {

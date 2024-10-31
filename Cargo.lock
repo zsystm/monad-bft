@@ -3864,6 +3864,7 @@ dependencies = [
  "rand_chacha",
  "rayon",
  "reth-primitives",
+ "thiserror",
  "tracing",
  "tracing-test",
 ]

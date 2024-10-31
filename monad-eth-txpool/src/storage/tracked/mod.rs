@@ -15,7 +15,8 @@ use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
 
 use self::list::TrackedTxList;
-use crate::{pending::PendingEthTxMap, transaction::ValidEthTransaction};
+pub use super::pending::EthTxPendingList;
+use super::{PendingEthTxMap, ValidEthTransaction};
 
 mod list;
 
@@ -74,7 +75,7 @@ impl TrackedEthTxMap {
         SBT: StateBackend,
     {
         assert!(
-            block_policy.get_last_commit().ge(&self.last_commit_seq_num),
+            block_policy.get_last_commit() >= self.last_commit_seq_num,
             "txpool received block policy with lower committed seq num"
         );
 
@@ -307,7 +308,7 @@ impl TrackedEthTxMap {
         Ok((total_gas, txs))
     }
 
-    pub fn update_committed_block<SCT>(&mut self, committed_block: &EthValidatedBlock<SCT>)
+    pub fn update_committed_block<SCT>(&mut self, committed_block: EthValidatedBlock<SCT>)
     where
         SCT: SignatureCollection,
     {
@@ -331,8 +332,8 @@ impl TrackedEthTxMap {
         }
         self.last_commit_seq_num = committed_block.get_seq_num();
 
-        for (address, highest_tx_nonce) in committed_block.get_nonces() {
-            match self.txs.entry(*address) {
+        for (address, highest_tx_nonce) in committed_block.nonces {
+            match self.txs.entry(address) {
                 IndexMapEntry::Vacant(_) => continue,
                 IndexMapEntry::Occupied(tx_list) => TrackedTxList::update_account_nonce(
                     tx_list,

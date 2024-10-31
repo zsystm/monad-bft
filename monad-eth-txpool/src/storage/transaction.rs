@@ -1,9 +1,7 @@
 use std::cmp::Ordering;
 
 use monad_consensus_types::txpool::TxPoolInsertionError;
-use monad_eth_block_policy::{
-    compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy,
-};
+use monad_eth_block_policy::{compute_txn_max_value_to_u128, static_validate_transaction};
 use monad_eth_tx::{EthTransaction, EthTxHash};
 use monad_eth_types::{Balance, EthAddress, Nonce};
 use tracing::trace;
@@ -16,11 +14,8 @@ pub struct ValidEthTransaction {
 }
 
 impl ValidEthTransaction {
-    pub fn validate(
-        tx: EthTransaction,
-        block_policy: &EthBlockPolicy,
-    ) -> Result<Self, TxPoolInsertionError> {
-        if static_validate_transaction(&tx, block_policy.get_chain_id()).is_err() {
+    pub fn validate(tx: EthTransaction, chain_id: u64) -> Result<Self, TxPoolInsertionError> {
+        if static_validate_transaction(&tx, chain_id).is_err() {
             return Err(TxPoolInsertionError::NotWellFormed);
         }
 

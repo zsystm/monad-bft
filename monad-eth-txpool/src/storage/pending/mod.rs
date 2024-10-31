@@ -3,7 +3,7 @@ use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::EthAddress;
 
 pub use self::list::EthTxPendingList;
-use crate::transaction::ValidEthTransaction;
+use super::ValidEthTransaction;
 
 mod list;
 
