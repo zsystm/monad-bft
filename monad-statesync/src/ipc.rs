@@ -224,8 +224,19 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     ) -> Result<(), tokio::io::Error> {
         self.pending_requests.retain(|pending_request| {
             // delete any requests from this peer for an old target
-            !(pending_request.from == from && pending_request.request.target != request.target)
+            // delete any duplicate requests from this peer
+            !(pending_request.from == from
+                && (pending_request.request.target != request.target
+                    || pending_request.request == request))
         });
+        if self
+            .wip_response
+            .as_ref()
+            .is_some_and(|wip_response| wip_response.response.request == request)
+        {
+            // we are already servicing this request, drop the new one
+            return Ok(());
+        }
         self.pending_requests.push_back(PendingRequest {
             from,
             request,
