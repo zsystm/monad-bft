@@ -4399,6 +4399,7 @@ dependencies = [
  "rand_chacha",
  "rayon",
  "reth-primitives",
+ "thiserror",
  "tracing",
  "tracing-test",
 ]
@@ -4836,6 +4837,7 @@ dependencies = [
  "monad-eth-types",
  "monad-types",
  "serde",
+ "thiserror",
 ]
 
 [[package]]

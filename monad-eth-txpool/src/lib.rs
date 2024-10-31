@@ -1,140 +1,141 @@
 use alloy_rlp::Decodable;
 use bytes::Bytes;
-use itertools::{Either, Itertools};
 use monad_consensus_types::{
-    payload::FullTransactionList,
-    signature_collection::SignatureCollection,
-    txpool::{TxPool, TxPoolInsertionError},
+    payload::FullTransactionList, signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::EthTransaction;
-use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::warn;
 
-use crate::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
+use self::event_loop::{EthTxPoolEventLoop, EthTxPoolEventLoopClient};
+pub use self::mock::MockEthTxPool;
+pub(self) use self::transaction::ValidEthTransaction;
 
-mod pending;
-mod tracked;
+mod event_loop;
+mod mock;
+mod storage;
 mod transaction;
 
 const MAX_PROPOSAL_SIZE: usize = 10_000;
 const INSERT_TXS_MIN_PROMOTE: usize = 32;
 const INSERT_TXS_MAX_PROMOTE: usize = 128;
 
-#[derive(Clone, Debug)]
-pub struct EthTxPool {
+#[derive(Debug)]
+pub struct EthTxPool<SCT>
+where
+    SCT: SignatureCollection,
+{
+    event_loop_client: EthTxPoolEventLoopClient<SCT>,
     do_local_insert: bool,
-    pending: PendingTxMap,
-    tracked: TrackedTxMap,
 }
 
-impl Default for EthTxPool {
-    fn default() -> Self {
-        Self::new(true)
-    }
-}
+impl<SCT> EthTxPool<SCT>
+where
+    SCT: SignatureCollection,
+{
+    pub fn new(block_policy: &EthBlockPolicy, do_local_insert: bool) -> Self {
+        let event_loop_client = EthTxPoolEventLoop::start(block_policy);
 
-impl EthTxPool {
-    pub fn new(do_local_insert: bool) -> Self {
         Self {
+            event_loop_client,
             do_local_insert,
-            pending: PendingTxMap::default(),
-            tracked: TrackedTxMap::default(),
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.tracked.is_empty()
-    }
+    // pub fn is_empty(&self) -> bool {
+    //     self.pending.is_empty() && self.tracked.is_empty()
+    // }
 
-    pub fn num_txs(&self) -> usize {
-        self.pending
-            .num_txs()
-            .checked_add(self.tracked.num_txs())
-            .expect("pool size does not overflow")
-    }
+    // pub fn num_txs(&self) -> usize {
+    //     self.pending
+    //         .num_txs()
+    //         .checked_add(self.tracked.num_txs())
+    //         .expect("pool size does not overflow")
+    // }
 
-    pub fn promote_pending<SCT, SBT>(
-        &mut self,
-        block_policy: &EthBlockPolicy,
-        state_backend: &SBT,
-        max_promotable: usize,
-    ) -> Result<(), StateBackendError>
-    where
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-    {
-        self.tracked.promote_pending::<SCT, SBT>(
-            block_policy,
-            state_backend,
-            &mut self.pending,
-            max_promotable,
-        )
-    }
+    // pub fn promote_pending<SCT, SBT>(
+    //     &mut self,
+    //     block_policy: &EthBlockPolicy,
+    //     state_backend: &SBT,
+    //     max_promotable: usize,
+    // ) -> Result<(), StateBackendError>
+    // where
+    //     SCT: SignatureCollection,
+    //     SBT: StateBackend,
+    // {
+    //     self.tracked.promote_pending::<SCT, SBT>(
+    //         block_policy,
+    //         state_backend,
+    //         &mut self.pending,
+    //         max_promotable,
+    //     )
+    // }
 
-    fn validate_and_insert_tx(
-        &mut self,
-        tx: EthTransaction,
-        block_policy: &EthBlockPolicy,
-        account_balance: &Balance,
-    ) -> Result<(), TxPoolInsertionError> {
-        if !self.do_local_insert {
-            return Ok(());
-        }
+    // fn validate_and_insert_tx(
+    //     &mut self,
+    //     tx: EthTransaction,
+    //     block_policy: &EthBlockPolicy,
+    //     account_balance: &Balance,
+    // ) -> Result<(), TxPoolInsertionError> {
+    //     if !self.do_local_insert {
+    //         return Ok(());
+    //     }
 
-        let tx = ValidEthTransaction::validate(tx, block_policy)?;
-        tx.apply_txn_fee(account_balance)?;
+    //     let tx = ValidEthTransaction::validate(tx, block_policy)?;
+    //     tx.apply_txn_fee(account_balance)?;
 
-        // TODO(andr-dev): Should any additional tx validation occur before inserting into mempool
+    //     // TODO(andr-dev): Should any additional tx validation occur before inserting into mempool
 
-        match self.tracked.try_add_tx(tx) {
-            Either::Left(tx) => self.pending.try_add_tx(tx),
-            Either::Right(result) => result,
-        }
-    }
+    //     match self.tracked.try_add_tx(tx) {
+    //         Either::Left(tx) => self.pending.try_add_tx(tx),
+    //         Either::Right(result) => result,
+    //     }
+    // }
 
-    fn validate_and_insert_txs<SCT>(
-        &mut self,
-        block_policy: &EthBlockPolicy,
-        state_backend: &impl StateBackend,
-        txs: Vec<EthTransaction>,
-    ) -> Result<Vec<Result<(), TxPoolInsertionError>>, StateBackendError>
-    where
-        SCT: SignatureCollection,
-    {
-        let senders = txs.iter().map(|tx| EthAddress(tx.signer())).collect_vec();
+    // fn validate_and_insert_txs<SCT>(
+    //     &mut self,
+    //     block_policy: &EthBlockPolicy,
+    //     state_backend: &impl StateBackend,
+    //     txs: Vec<EthTransaction>,
+    // ) -> Result<Vec<Result<(), TxPoolInsertionError>>, StateBackendError>
+    // where
+    //     SCT: SignatureCollection,
+    // {
+    //     let senders = txs.iter().map(|tx| EthAddress(tx.signer())).collect_vec();
 
-        let block_seq_num = block_policy.get_last_commit() + SeqNum(1); // ?????
+    //     let block_seq_num = block_policy.get_last_commit() + SeqNum(1); // ?????
 
-        let sender_account_balances = block_policy.compute_account_base_balances::<SCT>(
-            block_seq_num,
-            state_backend,
-            None,
-            senders.iter(),
-        )?;
+    //     let sender_account_balances = block_policy.compute_account_base_balances::<SCT>(
+    //         block_seq_num,
+    //         state_backend,
+    //         None,
+    //         senders.iter(),
+    //     )?;
 
-        let results = txs
-            .into_iter()
-            .zip(senders.iter())
-            .map(|(tx, sender)| {
-                self.validate_and_insert_tx(
-                    tx,
-                    block_policy,
-                    &sender_account_balances
-                        .get(&sender)
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
-        Ok(results)
-    }
+    //     let results = txs
+    //         .into_iter()
+    //         .zip(senders.iter())
+    //         .map(|(tx, sender)| {
+    //             self.validate_and_insert_tx(
+    //                 tx,
+    //                 block_policy,
+    //                 &sender_account_balances
+    //                     .get(&sender)
+    //                     .cloned()
+    //                     .unwrap_or_default(),
+    //             )
+    //         })
+    //         .collect();
+    //     Ok(results)
+    // }
+    //     }
+    // }
 }
 
-impl<SCT, SBT> TxPool<SCT, EthBlockPolicy, SBT> for EthTxPool
+impl<SCT, SBT> TxPool<SCT, EthBlockPolicy, SBT> for EthTxPool<SCT>
 where
     SCT: SignatureCollection,
     SBT: StateBackend,
@@ -142,28 +143,31 @@ where
     fn insert_tx(
         &mut self,
         txns: Vec<Bytes>,
-        block_policy: &EthBlockPolicy,
-        state_backend: &SBT,
+        _block_policy: &EthBlockPolicy,
+        _state_backend: &SBT,
     ) -> Vec<Bytes> {
-        if let Err(state_backend_error) = self.promote_pending::<SCT, SBT>(
-            block_policy,
-            state_backend,
-            txns.len()
-                .min(INSERT_TXS_MIN_PROMOTE)
-                .max(INSERT_TXS_MAX_PROMOTE),
-        ) {
-            if self.pending.is_at_promote_txs_watermark() {
-                warn!(
-                    ?state_backend_error,
-                    "txpool failed to promote at pending promote txs watermark"
-                );
-            }
+        // if let Err(state_backend_error) = self.promote_pending::<SCT, SBT>(
+        //     block_policy,
+        //     state_backend,
+        //     txns.len()
+        //         .min(INSERT_TXS_MIN_PROMOTE)
+        //         .max(INSERT_TXS_MAX_PROMOTE),
+        // ) {
+        //     if self.pending.is_at_promote_txs_watermark() {
+        //         warn!(
+        //             ?state_backend_error,
+        //             "txpool failed to promote at pending promote txs watermark"
+        //         );
+        //     }
+
+        if !self.do_local_insert {
+            return Vec::default();
         }
 
         // TODO: unwrap can be removed when this is made generic over the actual
         // tx type rather than Bytes and decoding won't be necessary
         // TODO(rene): sender recovery is done inline here
-        let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
+        let (txs, tx_hashes) = txns
             .into_par_iter()
             .filter_map(|b| {
                 EthTransaction::decode(&mut b.as_ref())
@@ -172,21 +176,11 @@ where
             })
             .unzip();
 
-        let Ok(insertion_results) =
-            self.validate_and_insert_txs::<SCT>(block_policy, state_backend, decoded_txs)
-        else {
-            // can't insert, state backend is delayed
-            return Vec::new();
-        };
+        self.event_loop_client
+            .notify_tx_batch(txs)
+            .expect("tx batch notify succeeds");
 
-        insertion_results
-            .into_iter()
-            .zip(raw_txs)
-            .filter_map(|(insertion_result, b)| match insertion_result {
-                Ok(()) => Some(b),
-                Err(_) => None,
-            })
-            .collect::<Vec<_>>()
+        tx_hashes
     }
 
     fn create_proposal(
@@ -198,31 +192,31 @@ where
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
     ) -> Result<FullTransactionList, StateBackendError> {
-        self.tracked.evict_expired_txs();
-
-        self.tracked.create_proposal(
-            proposed_seq_num,
-            tx_limit.min(MAX_PROPOSAL_SIZE),
-            proposal_gas_limit,
-            block_policy,
-            extending_blocks,
-            state_backend,
-            &mut self.pending,
-        )
+        self.event_loop_client
+            .create_proposal(
+                proposed_seq_num,
+                tx_limit.min(MAX_PROPOSAL_SIZE),
+                proposal_gas_limit,
+                block_policy,
+                extending_blocks,
+                state_backend,
+            )
+            .expect("create proposal client task succeeds")
     }
 
     fn update_committed_block(&mut self, committed_block: &EthValidatedBlock<SCT>) {
-        self.tracked
-            .update_committed_block(committed_block, &mut self.pending);
-
-        self.tracked.evict_expired_txs();
+        self.event_loop_client
+            .notify_committed_block(committed_block.to_owned())
+            .expect("committed block notify succeeds");
     }
 
     fn clear(&mut self) {
-        self.tracked.evict_expired_txs();
+        self.event_loop_client
+            .notify_clear()
+            .expect("clear notify succeeds")
     }
 
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<SCT>>) {
-        self.tracked.reset(last_delay_committed_blocks);
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&BPT::ValidatedBlock>) {
+        todo!()
     }
 }

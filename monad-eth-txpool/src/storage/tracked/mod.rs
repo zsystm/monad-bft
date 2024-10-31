@@ -14,7 +14,10 @@ use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
 use tx_heap::TrackedTxHeapDrainAction;
 
+use self::list::TrackedTxList;
 use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
+use super::ValidEthTransaction;
+use crate::event_loop::PendingEthTxMap;
 use crate::{pending::PendingTxMap, transaction::ValidEthTransaction};
 
 mod list;
@@ -78,7 +81,7 @@ impl TrackedTxMap {
         SBT: StateBackend,
     {
         assert!(
-            block_policy.get_last_commit().ge(&self.last_commit_seq_num),
+            block_policy.get_last_commit() >= self.last_commit_seq_num,
             "txpool received block policy with lower committed seq num"
         );
 

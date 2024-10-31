@@ -18,7 +18,7 @@ mod test {
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_tx, secret_to_eth_address};
     use monad_eth_tx::EthSignedTransaction;
-    use monad_eth_txpool::EthTxPool;
+    use monad_eth_txpool::MockEthTxPool;
     use monad_eth_types::{Balance, EthAddress};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
@@ -64,7 +64,7 @@ mod test {
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-        type TxPool = EthTxPool;
+        type TxPool = MockEthTxPool;
         type Ledger = MockEthLedger<Self::SignatureType, Self::SignatureCollectionType>;
         type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
@@ -91,6 +91,7 @@ mod test {
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
     const BASE_FEE: u128 = 1000;
     const GAS_LIMIT: u64 = 30000;
+    const CHAIN_ID: u64 = 1337;
 
     fn generate_eth_swarm(
         num_nodes: u16,
@@ -105,9 +106,9 @@ mod test {
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthTxPool::new(true),
+            || MockEthTxPool::new_with_chain_id(CHAIN_ID),
             || EthValidator::new(10_000, 1_000_000, 1337),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, CHAIN_ID),
             || {
                 InMemoryStateInner::new(
                     Balance::MAX,

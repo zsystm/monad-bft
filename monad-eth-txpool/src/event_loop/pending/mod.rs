@@ -2,8 +2,13 @@ use indexmap::IndexMap;
 use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::EthAddress;
 
+<<<<<<< HEAD:monad-eth-txpool/src/pending/mod.rs
 pub use self::list::PendingTxList;
 use crate::transaction::ValidEthTransaction;
+=======
+pub use self::list::EthTxPendingList;
+use crate::ValidEthTransaction;
+>>>>>>> e8fdfa39 (Move txpool to separate thread):monad-eth-txpool/src/event_loop/pending/mod.rs
 
 mod list;
 
@@ -19,6 +24,7 @@ pub struct PendingTxMap {
     num_txs: usize,
 }
 
+<<<<<<< HEAD:monad-eth-txpool/src/pending/mod.rs
 impl PendingTxMap {
     pub fn is_empty(&self) -> bool {
         self.txs.is_empty()
@@ -32,6 +38,9 @@ impl PendingTxMap {
         self.num_txs >= PROMOTE_TXS_WATERMARK
     }
 
+=======
+impl PendingEthTxMap {
+>>>>>>> e8fdfa39 (Move txpool to separate thread):monad-eth-txpool/src/event_loop/pending/mod.rs
     pub fn try_add_tx(&mut self, tx: ValidEthTransaction) -> Result<(), TxPoolInsertionError> {
         if self.num_txs >= MAX_TXS {
             return Err(TxPoolInsertionError::PoolFull);
