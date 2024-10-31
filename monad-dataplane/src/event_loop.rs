@@ -55,7 +55,7 @@ const TCP_OUTGOING_CONNECTION_TIMER_LAST_TOKEN: u64 =
 const TCP_MESSAGE_LENGTH_LIMIT: usize = 1 * 1024 * 1024 * 1024;
 
 const TCP_HEADER_TIMEOUT: Duration = Duration::from_secs(2);
-const TCP_MESSAGE_TIMEOUT: Duration = Duration::from_secs(60);
+const TCP_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Send the same payload to multiple destinations
 #[derive(Clone)]

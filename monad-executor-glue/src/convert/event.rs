@@ -9,7 +9,7 @@ use monad_proto::{
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
     StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, ValidatorEvent,
+    StateSyncUpsertType, StateSyncVersion, ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -461,6 +461,7 @@ where
 impl From<&StateSyncRequest> for monad_proto::proto::message::ProtoStateSyncRequest {
     fn from(request: &StateSyncRequest) -> Self {
         Self {
+            version: StateSyncVersion::to_u32(&request.version),
             prefix: request.prefix,
             prefix_bytes: request.prefix_bytes.into(),
             target: request.target,
@@ -496,6 +497,9 @@ impl From<&StateSyncUpsertType> for monad_proto::proto::message::ProtoStateSyncU
 impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncResponse {
     fn from(response: &StateSyncResponse) -> Self {
         Self {
+            version: StateSyncVersion::to_u32(&response.version),
+            nonce: response.nonce,
+            response_index: response.response_index,
             request: Some((&response.request).into()),
             upserts: response
                 .response
@@ -583,6 +587,7 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncRequest> for StateSyncRe
         request: monad_proto::proto::message::ProtoStateSyncRequest,
     ) -> Result<Self, Self::Error> {
         Ok(StateSyncRequest {
+            version: StateSyncVersion::from_u32(request.version),
             prefix: request.prefix,
             prefix_bytes: request
                 .prefix_bytes
@@ -635,6 +640,9 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
             }
             OneofMessage::Response(response) => {
                 Ok(StateSyncNetworkMessage::Response(StateSyncResponse {
+                    version: StateSyncVersion::from_u32(response.version),
+                    nonce: response.nonce,
+                    response_index: response.response_index,
                     request: response
                         .request
                         .ok_or(ProtoError::MissingRequiredField(

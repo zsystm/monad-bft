@@ -6,7 +6,9 @@ use std::{
 
 use futures::FutureExt;
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncResponse, StateSyncUpsertType};
+use monad_executor_glue::{
+    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+};
 use monad_types::NodeId;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
@@ -46,13 +48,15 @@ pub enum ExecutionMessage {
     SyncDone(bindings::monad_sync_done),
 }
 
+const MAX_UPSERTS_PER_RESPONSE: usize = 1_000_000;
+
 impl<PT: PubKey> StateSyncIpc<PT> {
     pub fn new(uds_path: &str, request_timeout: Duration) -> Self {
         let listener = UnixListener::bind(uds_path)
             .unwrap_or_else(|e| panic!("invalid UDS path={:?}, err={:?}", uds_path, e));
 
         let (request_tx_writer, mut request_tx_reader) = tokio::sync::mpsc::channel(10);
-        let (mut response_rx_writer, response_rx_reader) = tokio::sync::mpsc::channel(10);
+        let (mut response_rx_writer, response_rx_reader) = tokio::sync::mpsc::channel(100);
         tokio::spawn(async move {
             loop {
                 let execution_stream = {
@@ -188,6 +192,23 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     .as_mut()
                     .expect("SyncUpsert with no pending_response");
                 wip_response.response.response.push((upsert_type, data));
+                if wip_response.response.response.len() == MAX_UPSERTS_PER_RESPONSE {
+                    // send batch
+                    let response = StateSyncResponse {
+                        version: wip_response.response.version,
+                        nonce: wip_response.response.nonce,
+                        response_index: wip_response.response.response_index,
+
+                        request: wip_response.response.request,
+                        response: std::mem::take(&mut wip_response.response.response),
+                        response_n: wip_response.response.response_n,
+                    };
+                    wip_response.response.response_index += 1;
+                    // unnecessary but keeping for clarity
+                    wip_response.response.response.clear();
+                    let from = wip_response.from;
+                    self.write_response(from, response);
+                }
             }
             ExecutionMessage::SyncDone(done) => {
                 // only one request can be handled at once - because no way of identifying which
@@ -205,10 +226,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 );
                 if done.success {
                     assert_eq!(wip_response.response.request.prefix, done.prefix);
+                    // response_n is overloaded to indicate that the response is done
                     wip_response.response.response_n = done.n;
                     self.write_response(wip_response.from, wip_response.response);
                 } else {
-                    // request failed, so don't send back a response. we've dropped the
+                    // request failed, so don't send finish the response. we've dropped the
                     // wip_response at this point.
                 }
                 self.try_queue_response().await?;
@@ -222,6 +244,16 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         from: NodeId<PT>,
         request: StateSyncRequest,
     ) -> Result<(), tokio::io::Error> {
+        if !request.version.is_compatible() {
+            tracing::debug!(
+                ?from,
+                ?request,
+                ?SELF_STATESYNC_VERSION,
+                "dropping statesync request, version incompatible"
+            );
+            return Ok(());
+        }
+
         self.pending_requests.retain(|pending_request| {
             // delete any requests from this peer for an old target
             // delete any duplicate requests from this peer
@@ -274,6 +306,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             rx_time: request.rx_time,
             service_start_time: Instant::now(),
             response: StateSyncResponse {
+                version: SELF_STATESYNC_VERSION,
+                nonce: rand::random(),
+                response_index: 0,
+
                 request: request.request,
                 response: Vec::new(),
 

@@ -407,8 +407,35 @@ pub enum AsyncStateVerifyEvent<SCT: SignatureCollection> {
     LocalStateRoot(StateRootHashInfo),
 }
 
+pub const SELF_STATESYNC_VERSION: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StateSyncVersion {
+    major: u16,
+    minor: u16,
+}
+
+impl StateSyncVersion {
+    pub fn from_u32(version: u32) -> Self {
+        Self {
+            major: (version >> 16) as u16,
+            minor: (version & 0xFFFF) as u16,
+        }
+    }
+
+    pub fn to_u32(&self) -> u32 {
+        (self.major as u32) << 16 | (self.minor as u32)
+    }
+
+    pub fn is_compatible(&self) -> bool {
+        self.major == SELF_STATESYNC_VERSION.major
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StateSyncRequest {
+    pub version: StateSyncVersion,
+
     pub prefix: u64,
     pub prefix_bytes: u8,
     pub target: u64,
@@ -428,6 +455,10 @@ pub enum StateSyncUpsertType {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct StateSyncResponse {
+    pub version: StateSyncVersion,
+    pub nonce: u64,
+    pub response_index: u32,
+
     pub request: StateSyncRequest,
     // consensus state must validate that this sender is "trusted"
     pub response: Vec<(StateSyncUpsertType, Vec<u8>)>,
@@ -437,6 +468,9 @@ pub struct StateSyncResponse {
 impl Debug for StateSyncResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateSyncResponse")
+            .field("version", &self.version)
+            .field("nonce", &self.nonce)
+            .field("response_index", &self.response_index)
             .field("request", &self.request)
             .field("response_len", &self.response.len())
             .field("response_n", &self.response_n)

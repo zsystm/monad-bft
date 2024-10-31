@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ffi::CString,
     ops::DerefMut,
     pin::{pin, Pin},
@@ -10,7 +9,9 @@ use std::{
 
 use futures::{FutureExt, Stream};
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncResponse, StateSyncUpsertType};
+use monad_executor_glue::{
+    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+};
 use monad_types::{NodeId, SeqNum};
 use rand::seq::SliceRandom;
 
@@ -30,11 +31,8 @@ pub extern "C" fn statesync_send_request(
 
 pub(crate) struct StateSync<PT: PubKey> {
     state_sync_peers: Vec<NodeId<PT>>,
-    outbound_requests: OutboundRequests,
+    outbound_requests: OutboundRequests<PT>,
     current_target: Option<Target>,
-
-    /// for each prefix, the node (if any) that all further responses must come from
-    prefix_peers: HashMap<u64, NodeId<PT>>,
 
     request_rx: tokio::sync::mpsc::UnboundedReceiver<SyncRequest<StateSyncRequest>>,
     response_tx: std::sync::mpsc::Sender<SyncResponse>,
@@ -170,6 +168,7 @@ impl<PT: PubKey> StateSync<PT> {
                 let request_tx = request_tx.clone();
                 move |request| {
                     let result = request_tx.send(SyncRequest::Request(StateSyncRequest {
+                        version: SELF_STATESYNC_VERSION,
                         prefix: request.prefix,
                         prefix_bytes: request.prefix_bytes,
                         target: request.target,
@@ -281,8 +280,6 @@ impl<PT: PubKey> StateSync<PT> {
             outbound_requests: OutboundRequests::new(max_parallel_requests, request_timeout),
             current_target: None,
 
-            prefix_peers: Default::default(),
-
             request_rx,
             response_tx,
 
@@ -310,29 +307,22 @@ impl<PT: PubKey> StateSync<PT> {
             );
             return;
         }
-        let maybe_prefix_peer = self.prefix_peers.get(&response.request.prefix);
-        if maybe_prefix_peer.is_some_and(|prefix_peer| prefix_peer != &from) {
+
+        if !response.version.is_compatible() {
             tracing::debug!(
                 ?from,
                 ?response,
-                "dropping statesync response, already fixed to different prefix_peer"
+                ?SELF_STATESYNC_VERSION,
+                "dropping statesync response, version incompatible"
             );
             return;
         }
 
-        if !self.outbound_requests.handle_response(&response) {
-            tracing::debug!(
-                ?from,
-                ?response,
-                "dropping response, request is no longer queued"
-            );
-            return;
+        if let Some(full_response) = self.outbound_requests.handle_response(from, response) {
+            self.response_tx
+                .send(SyncResponse::Response(full_response))
+                .expect("response_rx dropped");
         }
-        // valid request
-        self.prefix_peers.insert(response.request.prefix, from);
-        self.response_tx
-            .send(SyncResponse::Response(response))
-            .expect("response_rx dropped");
     }
 
     /// An estimate of current sync progress in `Target` units
@@ -370,7 +360,7 @@ impl<PT: PubKey> Stream for StateSync<PT> {
                     // from the perspective of the statesync thread. Any subsequent queued requests
                     // therefore must have been sequenced after this DoneSync is handled.
                     assert!(this.outbound_requests.is_empty());
-                    this.prefix_peers.clear();
+                    this.outbound_requests.clear_prefix_peers();
 
                     return Poll::Ready(Some(SyncRequest::DoneSync(target)));
                 }
@@ -378,8 +368,8 @@ impl<PT: PubKey> Stream for StateSync<PT> {
         }
 
         let fut = this.outbound_requests.poll();
-        if let Poll::Ready(request) = pin!(fut).poll_unpin(cx) {
-            let servicer = this.prefix_peers.get(&request.prefix).unwrap_or_else(|| {
+        if let Poll::Ready((maybe_locked_peer, request)) = pin!(fut).poll_unpin(cx) {
+            let servicer = maybe_locked_peer.unwrap_or_else(|| {
                 this.state_sync_peers
                     .choose(&mut rand::thread_rng())
                     .expect("unable to send statesync request, no peers")
