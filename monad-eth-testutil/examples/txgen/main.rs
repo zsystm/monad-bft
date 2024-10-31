@@ -68,6 +68,9 @@ pub struct Config {
 
     #[clap(long, global = true)]
     erc20_contract: Option<String>,
+
+    #[clap(long, global = true, default_value = "false")]
+    verbose: bool,
 }
 
 impl Config {

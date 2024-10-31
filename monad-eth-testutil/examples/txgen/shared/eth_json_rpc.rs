@@ -13,6 +13,7 @@ pub trait EthJsonRpc {
     async fn get_transaction_count(&self, addr: &Address) -> Result<u64>;
     async fn get_balance(&self, addr: &Address) -> Result<U256>;
     async fn get_erc20_balance(&self, addr: &Address, erc20: ERC20) -> Result<U256>;
+    async fn get_code(&self, addr: &Address) -> Result<String>;
 
     async fn batch_get_balance(
         &self,
@@ -40,6 +41,13 @@ impl EthJsonRpc for ReqwestClient {
 
     async fn send_raw_transaction_params(&self, tx: TransactionSigned) -> (&'static str, Bytes) {
         ("eth_sendRawTransaction", tx.envelope_encoded())
+    }
+
+    async fn get_code(&self, addr: &Address) -> Result<String> {
+        let addr = addr.to_string();
+        self.request::<_, _>("eth_getCode", [&addr, "latest"])
+            .await
+            .map_err(Into::into)
     }
 
     async fn get_balance(&self, addr: &Address) -> Result<U256> {

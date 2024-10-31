@@ -1,5 +1,6 @@
 use std::{io::Write, str::FromStr};
 
+use eyre::bail;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +76,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         target_tps: config.tps,
         metrics: Arc::clone(&metrics),
         sent_txs,
+        verbose: config.verbose,
     };
 
     let mut tasks = FuturesUnordered::new();
@@ -144,9 +146,18 @@ fn generate_sender_groups(config: &Config) -> impl Iterator<Item = AccountsWithT
 
 async fn load_or_deploy_erc20(config: &Config, client: &ReqwestClient) -> Result<ERC20> {
     if let Some(addr) = &config.erc20_contract {
-        return Ok(ERC20 {
+        let erc20 = ERC20 {
             addr: Address::from_str(addr).context("failed to parse erc20 contract string")?,
-        });
+        };
+        let code = client.get_code(&erc20.addr).await?;
+        info!("code: {code}");
+        if code != "0x" {
+            return Ok(erc20);
+        }
+        bail!(
+            "erc20 address provided does not exist on chain! {}",
+            erc20.addr.to_string(),
+        );
     }
 
     let deployer = PrivateKey::new(&config.root_private_keys[0]);
@@ -167,16 +178,28 @@ async fn load_or_deploy_erc20(config: &Config, client: &ReqwestClient) -> Result
         Ok(erc20)
     })();
     if let Ok(erc20) = res {
-        if client.get_erc20_balance(&deployer.0, erc20).await.is_ok() {
-            warn!(
-                address = erc20.addr.to_string(),
-                "erc20 address read from file does not exist on-chain, deploying a new contract..."
-            );
+        let code = client.get_code(&erc20.addr).await?;
+        info!("code: {code}");
+
+        if code != "0x" {
             return res;
         }
+        warn!(
+            address = erc20.addr.to_string(),
+            "erc20 address read from file does not exist on-chain, deploying a new contract..."
+        );
     }
 
     let erc20 = ERC20::deploy(&deployer, client).await?;
+
+    let code = client.get_code(&erc20.addr).await?;
+    info!("code: {code}");
+    if code == "0x" {
+        bail!(
+            "'deployed' erc20 address provided does not exist on chain! {}",
+            erc20.addr.to_string(),
+        );
+    }
 
     // write deployed_contracts to file
     let mut file = std::fs::File::create(path)?;
