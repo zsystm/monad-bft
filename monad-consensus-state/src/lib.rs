@@ -1333,13 +1333,14 @@ where
             // should statesync at this point
             // request only upto delay blocks to trigger statesync
             let delay = self.state_root_validator.get_delay();
+            let blocksync_root = high_qc_seq_num - delay;
             let request_range = BlockRange {
                 last_block_id: qc.get_block_id(),
-                root_seq_num: high_qc_seq_num - delay,
+                root_seq_num: blocksync_root,
             };
             debug!(
                 ?request_range,
-                min_requested_blocks =? qc.get_seq_num() - root_seq_num,
+                min_requested_blocks =? qc.get_seq_num() - blocksync_root,
                 "consensus blocksyncing enough blocks to trigger statesync"
             );
 
