@@ -375,7 +375,9 @@ where
                 proposal_txn_limit: 10,
                 proposal_gas_limit: 30_000_000,
                 delta: Duration::from_millis(delta_ms),
-                state_sync_threshold: SeqNum(100),
+                statesync_to_live_threshold: SeqNum(600),
+                live_to_statesync_threshold: SeqNum(900),
+                start_execution_threshold: SeqNum(300),
                 timestamp_latency_estimate_ms: 10,
             },
         })

@@ -163,11 +163,20 @@ pub struct ConsensusConfig {
     /// delta should be approximately equal to the upper bound of message
     /// delivery during a broadcast
     pub delta: Duration,
-    /// If the node is lagging over state_sync_threshold blocks behind,
+
+    /// If the node is in Live mode and is lagging this many blocks behind,
     /// then it should trigger statesync.
-    /// Lagging (0, state_sync_threshold) blocks: request blocksync
-    /// Lagging  >= state_sync_threshold  blocks: trigger statesync
-    pub state_sync_threshold: SeqNum,
+    pub live_to_statesync_threshold: SeqNum,
+    /// If the node is in StateSync mode and is within this many blocks of
+    /// root, then it should trigger statesync.
+    ///
+    /// Must be lower than live_to_statesync_threshold. The node will have
+    /// at least (live_to_statesync_threshold - statesync_to_live_threshold)
+    /// blocks of time to sync live_to_statesync_threshold blocks.
+    pub statesync_to_live_threshold: SeqNum,
+    /// Start execution if receive a high_qc within this threshold of root
+    /// Must be lower than live_to_statesync_threshold
+    pub start_execution_threshold: SeqNum,
 
     pub timestamp_latency_estimate_ms: u64,
 }
@@ -905,16 +914,15 @@ where
     #[must_use]
     fn maybe_start_execution(&mut self) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = Vec::new();
-        // TODO make this lower start_execution threshold also configurable instead of overloading
-        let execution_start_threshold = SeqNum(self.config.state_sync_threshold.0 / 2);
         if !self.consensus.started_execution
-            && self.consensus.pending_block_tree.get_root_seq_num() + execution_start_threshold
+            && self.consensus.pending_block_tree.get_root_seq_num()
+                + self.config.start_execution_threshold
                 > self.consensus.high_qc.get_seq_num()
         {
             tracing::info!(
                 root =? self.consensus.pending_block_tree.root(),
                 high_qc =? self.consensus.high_qc,
-                ?execution_start_threshold,
+                start_execution_threshold =? self.config.start_execution_threshold,
                 "starting execution - close enough to tip",
             );
             cmds.push(ConsensusCommand::StartExecution);
@@ -930,7 +938,8 @@ where
         }
 
         let high_qc_seq_num = self.consensus.high_qc.get_seq_num();
-        if self.consensus.pending_block_tree.get_root_seq_num() + self.config.state_sync_threshold
+        if self.consensus.pending_block_tree.get_root_seq_num()
+            + self.config.live_to_statesync_threshold
             > high_qc_seq_num
         {
             return Vec::new();
@@ -945,7 +954,7 @@ where
         // set high_qc to N
         // execution will sync to N-2*delay using state_root in consensus_root
 
-        assert!(self.config.state_sync_threshold > self.state_root_validator.get_delay());
+        assert!(self.config.live_to_statesync_threshold > self.state_root_validator.get_delay());
         let max_committed_seq_num = high_qc_seq_num - self.state_root_validator.get_delay();
 
         let earliest_block_exists_and_is_not_empty = connected_blocks
@@ -960,7 +969,7 @@ where
         {
             info!(
                 branch_len = connected_blocks.len(),
-                state_sync_threshold =? self.config.state_sync_threshold,
+                live_to_statesync_threshold =? self.config.live_to_statesync_threshold,
                 ?high_qc_seq_num,
                 "waiting for enough blocks to trigger statesync",
             );
@@ -969,7 +978,7 @@ where
 
         info!(
             branch_len = connected_blocks.len(),
-            state_sync_threshold =? self.config.state_sync_threshold,
+            live_to_statesync_threshold =? self.config.live_to_statesync_threshold,
             ?high_qc_seq_num,
             "triggering statesync",
         );
@@ -1333,39 +1342,40 @@ where
 
         let mut root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
         let high_qc_seq_num = self.consensus.high_qc.get_seq_num();
-        let request_range = if root_seq_num + self.config.state_sync_threshold <= high_qc_seq_num {
-            // should statesync at this point
-            // request only upto delay blocks to trigger statesync
-            let delay = self.state_root_validator.get_delay();
-            let blocksync_root = high_qc_seq_num - delay;
-            let request_range = BlockRange {
-                last_block_id: qc.get_block_id(),
-                root_seq_num: blocksync_root,
-            };
-            debug!(
-                ?request_range,
-                min_requested_blocks =? qc.get_seq_num() - blocksync_root,
-                "consensus blocksyncing enough blocks to trigger statesync"
-            );
+        let request_range =
+            if root_seq_num + self.config.live_to_statesync_threshold <= high_qc_seq_num {
+                // should statesync at this point
+                // request only upto delay blocks to trigger statesync
+                let delay = self.state_root_validator.get_delay();
+                let blocksync_root = high_qc_seq_num - delay;
+                let request_range = BlockRange {
+                    last_block_id: qc.get_block_id(),
+                    root_seq_num: blocksync_root,
+                };
+                debug!(
+                    ?request_range,
+                    min_requested_blocks =? qc.get_seq_num() - blocksync_root,
+                    "consensus blocksyncing enough blocks to trigger statesync"
+                );
 
-            request_range
-        } else {
-            // request upto root of blocktree
-            // don't request genesis block
-            // NOTE: this only works because there will be no NULL blocks with SeqNum(0)
-            root_seq_num = root_seq_num.max(SeqNum(1));
-            let request_range = BlockRange {
-                last_block_id: qc.get_block_id(),
-                root_seq_num,
-            };
-            debug!(
-                ?request_range,
-                min_requested_blocks =? qc.get_seq_num().max(root_seq_num) - root_seq_num,
-                "consensus blocksyncing blocks up to root"
-            );
+                request_range
+            } else {
+                // request upto root of blocktree
+                // don't request genesis block
+                // NOTE: this only works because there will be no NULL blocks with SeqNum(0)
+                root_seq_num = root_seq_num.max(SeqNum(1));
+                let request_range = BlockRange {
+                    last_block_id: qc.get_block_id(),
+                    root_seq_num,
+                };
+                debug!(
+                    ?request_range,
+                    min_requested_blocks =? qc.get_seq_num().max(root_seq_num) - root_seq_num,
+                    "consensus blocksyncing blocks up to root"
+                );
 
-            request_range
-        };
+                request_range
+            };
 
         self.consensus
             .block_sync_requests
@@ -1798,7 +1808,9 @@ mod test {
                     proposal_txn_limit: 5000,
                     proposal_gas_limit: 8_000_000,
                     delta: Duration::from_secs(1),
-                    state_sync_threshold: SeqNum(100),
+                    statesync_to_live_threshold: SeqNum(600),
+                    live_to_statesync_threshold: SeqNum(900),
+                    start_execution_threshold: SeqNum(300),
                     timestamp_latency_estimate_ms: 1,
                 };
                 let genesis_qc = QuorumCertificate::genesis_qc();
@@ -4302,61 +4314,6 @@ mod test {
         }
     }
 
-    // ignored because statesync trigger is more complicated... it needs a valid root before
-    #[ignore]
-    #[test]
-    fn test_request_over_state_sync_threshold() {
-        let num_states = 4;
-        let (mut env, mut ctx) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            BlockPolicyType,
-            StateBackendType,
-            BlockValidatorType,
-            _,
-            StateRootValidatorType,
-            _,
-            _,
-        >(
-            num_states as u32,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-            || MockValidator,
-            MockTxPool::default(),
-            || NopStateRoot,
-        );
-        let mut blocks = vec![];
-
-        // Sequence number of the block after which statesync should be triggered
-        let state_sync_threshold_block = ctx[0].consensus_config.state_sync_threshold;
-        // Round number of that block is the same as its sequence number (NO TCs in between)
-        let state_sync_threshold_round = Round(state_sync_threshold_block.0);
-
-        let (n1, other_states) = ctx.split_first_mut().unwrap();
-
-        // handle proposals for 3 states until state_sync_threshold
-        for _ in 0..state_sync_threshold_round.0 {
-            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
-            let (author, _, verified_message) = cp.destructure();
-            for node in other_states.iter_mut() {
-                let cmds = node.handle_proposal_message(author, verified_message.clone());
-                // state should not request blocksync
-                assert!(extract_blocksync_requests(cmds).is_empty());
-            }
-
-            blocks.push(verified_message.block);
-        }
-
-        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
-        let (author, _, verified_message) = cp.destructure();
-        let _cmds = n1.handle_proposal_message(author, verified_message);
-
-        // Should trigger statesync (only metric assertion for now)
-        assert_eq!(n1.metrics.consensus_events.trigger_state_sync, 1);
-    }
-
     #[test_case(true; "Receive missed block through blocksync")]
     #[test_case(false; "Receive missed block through out of order proposal")]
     fn test_delay_coherency_check_of_proposal_message_scenario(through_blocksync: bool) {
@@ -5152,7 +5109,8 @@ mod test {
         let epoch_length = ctx[0].epoch_manager.val_set_update_interval;
         let epoch_start_delay = ctx[0].epoch_manager.epoch_start_delay;
         // we don't want to start execution, so set statesync threshold very high
-        ctx[0].consensus_config.state_sync_threshold = SeqNum(u32::MAX.into());
+        ctx[0].consensus_config.live_to_statesync_threshold = SeqNum(u32::MAX.into());
+        ctx[0].consensus_config.start_execution_threshold = SeqNum(u32::MAX.into());
 
         // enter the first round of epoch(2) via a QC. Node is unaware of the epoch change because of missing boundary block
         // generate many proposal, skips the boundary block proposal

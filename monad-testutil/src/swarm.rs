@@ -31,7 +31,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
     state_root_quorum_threshold: fn(Stake) -> Stake,
-    state_sync_threshold: SeqNum,
+    statesync_threshold: SeqNum,
 ) -> Vec<
     MonadStateBuilder<
         S::SignatureType,
@@ -79,7 +79,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             state_root_validator: state_root_validator(),
             async_state_verify: async_state_verify(
                 state_root_quorum_threshold,
-                state_sync_threshold.0 as usize,
+                statesync_threshold.0 as usize,
             ),
             forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
 
@@ -94,7 +94,12 @@ pub fn make_state_configs<S: SwarmRelation>(
                 proposal_txn_limit,
                 proposal_gas_limit: 30_000_000,
                 delta,
-                state_sync_threshold,
+                // StateSync -> Live transition happens here
+                statesync_to_live_threshold: statesync_threshold,
+                // Live -> StateSync transition happens here
+                live_to_statesync_threshold: SeqNum(statesync_threshold.0 * 3 / 2),
+                // Live starts execution here
+                start_execution_threshold: SeqNum(statesync_threshold.0 / 2),
                 timestamp_latency_estimate_ms: 10,
             },
         })

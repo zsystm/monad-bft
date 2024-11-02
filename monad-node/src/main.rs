@@ -345,7 +345,12 @@ async fn run(
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
-            state_sync_threshold: SeqNum(statesync_threshold as u64),
+            // StateSync -> Live transition happens here
+            statesync_to_live_threshold: SeqNum(statesync_threshold as u64),
+            // Live -> StateSync transition happens here
+            live_to_statesync_threshold: SeqNum(statesync_threshold as u64 * 3 / 2),
+            // Live starts execution here
+            start_execution_threshold: SeqNum(statesync_threshold as u64 / 2),
             timestamp_latency_estimate_ms: 20,
         },
     };
