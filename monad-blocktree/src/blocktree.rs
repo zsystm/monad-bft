@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, fmt, result::Result as StdResult};
 
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockPolicyError, BlockType},
+    block::{Block, BlockPolicy, BlockPolicyError, BlockType},
     checkpoint::RootInfo,
     payload::{Payload, PayloadId},
     quorum_certificate::QuorumCertificate,
@@ -206,7 +206,7 @@ where
         block_policy: &mut BPT,
         state_backend: &SBT,
     ) -> Result<()> {
-        if !self.is_valid_to_insert(&block) {
+        if !self.is_valid_to_insert(block.get_unvalidated_block_ref()) {
             return Ok(());
         }
 
@@ -391,7 +391,7 @@ where
 
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
-    pub fn is_valid_to_insert(&self, b: &BPT::ValidatedBlock) -> bool {
+    pub fn is_valid_to_insert(&self, b: &Block<SCT>) -> bool {
         !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.info.round
     }
 

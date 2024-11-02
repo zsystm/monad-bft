@@ -622,18 +622,22 @@ where
         assert_eq!(removed, Some((last_block_round, block_range)));
 
         for full_block in full_blocks {
-            let author_pubkey = self
-                .val_epoch_map
-                .get_cert_pubkeys(&full_block.get_epoch())
-                .expect("epoch should be available for blocksync'd block")
-                .map
-                .get(&full_block.get_author())
-                .expect("blocksync'd block author should be in validator set");
-            let block = self
-                .block_validator
-                .validate(full_block.block, full_block.payload, Some(author_pubkey))
-                .expect("majority extended invalid block");
-            if self.consensus.pending_block_tree.is_valid_to_insert(&block) {
+            if self
+                .consensus
+                .pending_block_tree
+                .is_valid_to_insert(&full_block.block)
+            {
+                let author_pubkey = self
+                    .val_epoch_map
+                    .get_cert_pubkeys(&full_block.get_epoch())
+                    .expect("epoch should be available for blocksync'd block")
+                    .map
+                    .get(&full_block.get_author())
+                    .expect("blocksync'd block author should be in validator set");
+                let block = self
+                    .block_validator
+                    .validate(full_block.block, full_block.payload, Some(author_pubkey))
+                    .expect("majority extended invalid block");
                 let res_cmds = self
                     .try_add_and_commit_blocktree(&block, None)
                     .expect("majority extend incoherent block");
