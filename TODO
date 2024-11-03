@@ -1,0 +1,13 @@
+- number of proposals per validator (over last hour)
+
+- number of txs over last hour
+- number of timeouts over last hour
+- number of timeouts per validator per last hour
+- block time percentiles over last hour
+
+
+
+
+
+
+- number of votes per block (and WHO voted)
