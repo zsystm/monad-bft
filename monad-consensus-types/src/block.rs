@@ -319,6 +319,8 @@ where
     SCT: SignatureCollection,
     SBT: StateBackend,
 {
+    // TODO this should be a type parameter on BVT, not BPT
+    // BPT should be parameterized by BVT, not vice versa
     type ValidatedBlock: Sized
         + Clone
         + PartialEq

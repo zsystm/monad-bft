@@ -1,14 +1,16 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus_types::{
-    block::{Block, BlockRange, BlockType, FullBlock},
+    block::{Block, BlockPolicy, BlockRange, BlockType, FullBlock},
+    block_validator::BlockValidator,
     checkpoint::RootInfo,
     payload::{Payload, PayloadId},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
-use monad_types::{BlockId, NodeId, SeqNum, GENESIS_SEQ_NUM};
+use monad_state_backend::StateBackend;
+use monad_types::{BlockId, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
 use crate::NUM_BLOCK_HASH;
 
@@ -16,7 +18,12 @@ use crate::NUM_BLOCK_HASH;
 /// It performs a function very similar to the blocktree, but specifically for statesync purposes
 /// This could likely be unified with the blocktree, but will be a larger implementation lift
 #[derive(Clone)]
-pub(crate) struct BlockBuffer<SCT: SignatureCollection> {
+pub(crate) struct BlockBuffer<SCT, SBT, BPT>
+where
+    SCT: SignatureCollection,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
+{
     max_buffered_proposals: usize,
 
     /// trigger resync once passively observe new_root > current_root + resync_threshold
@@ -30,11 +37,18 @@ pub(crate) struct BlockBuffer<SCT: SignatureCollection> {
     // block headers >= root
     block_headers: HashMap<BlockId, Block<SCT>>,
 
+    certified_blocks: HashMap<BlockId, BPT::ValidatedBlock>,
     // cache of last max_buffered_proposals proposals
-    proposal_buffer: VecDeque<(NodeId<SCT::NodeIdPubKey>, ProposalMessage<SCT>)>,
+    uncertified_proposals: HashMap<BlockId, (NodeId<SCT::NodeIdPubKey>, ProposalMessage<SCT>)>,
+    round_block_ids: BTreeMap<Round, BTreeSet<BlockId>>,
 }
 
-impl<SCT: SignatureCollection> BlockBuffer<SCT> {
+impl<SCT, SBT, BPT> BlockBuffer<SCT, SBT, BPT>
+where
+    SCT: SignatureCollection,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
+{
     pub fn new(state_root_delay: SeqNum, root: SeqNum, resync_threshold: SeqNum) -> Self {
         Self {
             max_buffered_proposals: resync_threshold.0 as usize,
@@ -46,7 +60,9 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
             full_blocks: Default::default(),
             payload_cache: Default::default(),
             block_headers: Default::default(),
-            proposal_buffer: Default::default(),
+            certified_blocks: Default::default(),
+            uncertified_proposals: Default::default(),
+            round_block_ids: Default::default(),
         }
     }
 
@@ -70,10 +86,44 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         let block_header = proposal.block.clone();
         self.block_headers
             .insert(proposal.block.get_id(), block_header.clone());
+        let mut certified_block_id = proposal.block.get_parent_id();
 
-        self.proposal_buffer.push_back((author, proposal));
-        if self.proposal_buffer.len() > self.max_buffered_proposals {
-            self.proposal_buffer.pop_front();
+        self.round_block_ids
+            .entry(proposal.block.get_round())
+            .or_default()
+            .insert(proposal.block.get_id());
+        self.uncertified_proposals
+            .insert(proposal.block.get_id(), (author, proposal));
+
+        while let Some((_author, certified_proposal)) =
+            self.uncertified_proposals.remove(&certified_block_id)
+        {
+            let certified_proposal_parent_id = certified_proposal.block.get_parent_id();
+            let certified_round_blocks = self
+                .round_block_ids
+                .remove(&certified_proposal.block.round)
+                .expect("round_block_ids contains uncertified proposals");
+            for block in &certified_round_blocks {
+                self.uncertified_proposals.remove(block);
+            }
+            self.certified_blocks
+                .insert(certified_proposal.block.get_id(), certified_proposal.block);
+
+            certified_block_id = certified_proposal_parent_id;
+        }
+        if self.uncertified_proposals.len() > self.max_buffered_proposals {
+            let mut entry = self
+                .round_block_ids
+                .first_entry()
+                .expect("round_block_ids contains at least 1 entry");
+            let block_id_to_remove = entry
+                .get_mut()
+                .pop_first()
+                .expect("round_block_ids contains at least block_id");
+            self.uncertified_proposals.remove(&block_id_to_remove);
+            if entry.get().is_empty() {
+                entry.remove();
+            }
         }
 
         let start_seq_num = block_header.get_seq_num();
