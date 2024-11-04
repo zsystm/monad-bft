@@ -53,8 +53,8 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         rpc_sender,
         &client,
         erc20,
+        U256::from(1e14),
         U256::from(1e15),
-        U256::from(1e18),
         &metrics,
     );
 

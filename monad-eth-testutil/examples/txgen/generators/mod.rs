@@ -152,7 +152,10 @@ pub fn native_transfer(from: &mut SimpleAccount, to: Address, amt: U256) -> Tran
 
     // update from
     from.nonce += 1;
-    from.native_bal -= amt + U256::from(21_000 * 1_000);
+    from.native_bal = from
+        .native_bal
+        .checked_sub(amt + U256::from(21_000 * 1_000))
+        .unwrap_or(U256::ZERO);
 
     let sig = from.key.sign_transaction(&tx);
     TransactionSigned::from_transaction_and_signature(tx, sig)
@@ -178,7 +181,10 @@ pub fn native_transfer_priority_fee(
 
     // update from
     from.nonce += 1;
-    from.native_bal -= amt + U256::from(21_000 * 1_000);
+    from.native_bal = from
+        .native_bal
+        .checked_sub(amt + U256::from(21_000 * 1_000))
+        .unwrap_or(U256::ZERO);
 
     let sig = from.key.sign_transaction(&tx);
     TransactionSigned::from_transaction_and_signature(tx, sig)
@@ -194,9 +200,11 @@ pub fn erc20_transfer(
 
     // update from
     from.nonce += 1;
-    from.native_bal -= U256::from(400_000 * 1_000); // todo: wire gas correctly, but doesn't really matter given refresher and gen_harness will ensure enough balance
-    from.erc20_bal -= amt;
-
+    from.native_bal = from
+        .native_bal
+        .checked_sub(U256::from(400_000 * 1_000))
+        .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
+    from.erc20_bal = from.erc20_bal.checked_sub(amt).unwrap_or(U256::ZERO);
     tx
 }
 
@@ -205,7 +213,11 @@ pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20) -> TransactionSigned 
 
     // update from
     from.nonce += 1;
-    from.native_bal -= U256::from(400_000 * 1_000); // todo: wire gas correctly, see above comment
+
+    from.native_bal = from
+        .native_bal
+        .checked_sub(U256::from(400_000 * 1_000))
+        .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
     from.erc20_bal += U256::from(10_u128.pow(30)); // todo: current erc20 impl just mints a constant
     tx
 }
