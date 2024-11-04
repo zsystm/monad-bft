@@ -1,3 +1,5 @@
+use std::sync::RwLock;
+
 use futures::join;
 
 use super::*;
@@ -8,6 +10,28 @@ pub struct Metrics {
     pub total_txs_sent: AtomicUsize,
     pub total_rpc_calls: AtomicUsize,
     pub total_committed_txs: AtomicUsize,
+
+    pub receipts_rpc_calls: AtomicUsize,
+    pub receipts_rpc_calls_error: AtomicUsize,
+    pub receipts_tx_success: AtomicUsize,
+    pub receipts_tx_failure: AtomicUsize,
+    pub receipts_contracts_deployed: AtomicUsize,
+    pub receipts_gas_consumed: Arc<RwLock<U256>>,
+
+    pub logs_rpc_calls: AtomicUsize,
+    pub logs_rpc_calls_error: AtomicUsize,
+    pub logs_total: AtomicUsize,
+    // pub logs_erc20_transfers: AtomicUsize,
+    // pub logs_erc20_total_value_transfered: Arc<RwLock<U256>>,
+
+    // pub txs_by_hash_rpc_calls: AtomicUsize,
+    // pub txs_by_hash_rpc_calls_error: AtomicUsize,
+}
+
+macro_rules! def_rate {
+    (self.$field:ident) => {
+        let mut $field = Rate::new(&self.$field);
+    };
 }
 
 impl Metrics {
@@ -22,38 +46,72 @@ impl Metrics {
     async fn metrics_at_timestep(&self, report_interval: Duration) {
         let mut report_interval = tokio::time::interval(report_interval);
         report_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        let mut prev_non_zero = self.accts_with_nonzero_bal.load(SeqCst);
-        let mut prev_txs_sent = self.total_txs_sent.load(SeqCst);
-        let mut prev_rpc_calls = self.total_rpc_calls.load(SeqCst);
-        let mut prev_committed_txs = self.total_committed_txs.load(SeqCst);
         let mut last = Instant::now();
+
+        // Basic metrics
+        let mut nonzero_accts = Rate::new(&self.accts_with_nonzero_bal);
+        let mut txs_sent = Rate::new(&self.total_txs_sent);
+        let mut rpc_calls = Rate::new(&self.total_rpc_calls);
+        let mut committed_txs = Rate::new(&self.total_committed_txs);
+
+        // Receipt metrics
+        let mut receipts_rpc_calls = Rate::new(&self.receipts_rpc_calls);
+        let mut receipts_rpc_calls_error = Rate::new(&self.receipts_rpc_calls_error);
+        let mut receipts_tx_success = Rate::new(&self.receipts_tx_success);
+        let mut receipts_tx_failure = Rate::new(&self.receipts_tx_failure);
+        let mut receipts_contracts_deployed = Rate::new(&self.receipts_contracts_deployed);
+        // let mut receipts_gas_consumed = Rate::new(&self.receipts_gas_consumed);
+
+        // Logs metrics
+        let mut logs_rpc_calls = Rate::new(&self.logs_rpc_calls);
+        let mut logs_rpc_calls_error = Rate::new(&self.logs_rpc_calls_error);
+        let mut logs_total = Rate::new(&self.logs_total);
 
         loop {
             let now = report_interval.tick().await;
             let elapsed = last.elapsed().as_secs_f64();
 
-            let (total_nonzero_accts, accts_created_per_sec) =
-                rate(&mut prev_non_zero, &self.accts_with_nonzero_bal, elapsed);
-            let (total_sent_txs, tps) = rate(&mut prev_txs_sent, &self.total_txs_sent, elapsed);
-            let (_, rps) = rate(&mut prev_rpc_calls, &self.total_rpc_calls, elapsed);
-            let (total_committed_txs, committed_tps) =
-                rate(&mut prev_committed_txs, &self.total_committed_txs, elapsed);
-
-            let seconds = report_interval.period().as_secs() % 60;
-            let minutes = report_interval.period().as_secs() / 60;
+            info!(
+                total_nonzero_accts = nonzero_accts.val(),
+                total_sent_txs = txs_sent.val(),
+                total_committed_txs = committed_txs.val(),
+                rps = rpc_calls.rate(elapsed),
+                accts_created_per_sec = nonzero_accts.rate(elapsed),
+                committed_tps = committed_txs.rate(elapsed),
+                tps = txs_sent.rate(elapsed),
+                "Metrics (Interval: {}:{})",
+                report_interval.period().as_secs() / 60,
+                report_interval.period().as_secs() % 60
+            );
 
             info!(
-                total_nonzero_accts,
-                total_sent_txs,
-                total_committed_txs,
-                rps,
-                accts_created_per_sec,
-                committed_tps,
-                tps,
-                "Metrics (Interval: {}:{})",
-                minutes,
-                seconds
+                receipts_contracts_deployed = receipts_contracts_deployed.val(),
+                receipts_contracts_deployed_ps = receipts_contracts_deployed.rate(elapsed),
+                // receipts_gas_consumed = receipts_gas_consumed.val(),
+                // receipts_gas_consumed_per_sec = receipts_gas_consumed.rate(),
+                receipts_tx_failure = receipts_tx_failure.val(),
+                receipts_tx_failure_ps = receipts_tx_failure.rate(elapsed),
+                receipts_tx_success = receipts_tx_success.val(),
+                receipts_tx_success_ps = receipts_tx_success.rate(elapsed),
+                receipts_rpc_calls = receipts_rpc_calls.val(),
+                receipts_rpc_calls_ps = receipts_rpc_calls.rate(elapsed),
+                receipts_rpc_calls_error = receipts_rpc_calls_error.val(),
+                receipts_rpc_calls_error_ps = receipts_rpc_calls_error.rate(elapsed),
+                "Metrics (Interval: {}:{}) Receipts",
+                report_interval.period().as_secs() / 60,
+                report_interval.period().as_secs() % 60
+            );
+
+            info!(
+                logs_rpc_calls = logs_rpc_calls.val(),
+                logs_rpc_calls_ps = logs_rpc_calls.rate(elapsed),
+                logs_rpc_calls_error = logs_rpc_calls_error.val(),
+                logs_rpc_calls_error_ps = logs_rpc_calls_error.rate(elapsed),
+                logs_total = logs_total.val(),
+                logs_total_ps = logs_total.rate(elapsed),
+                "Metrics (Interval: {}:{}) Logs",
+                report_interval.period().as_secs() / 60,
+                report_interval.period().as_secs() % 60
             );
 
             last = now;
@@ -61,10 +119,28 @@ impl Metrics {
     }
 }
 
-fn rate(prev: &mut usize, a_curr: &AtomicUsize, elapsed: f64) -> (usize, usize) {
-    let curr = a_curr.load(SeqCst);
-    let diff = curr - *prev;
-    let raw = (diff) as f64 / elapsed;
-    *prev = curr;
-    (curr, raw.round() as usize)
+struct Rate<'a> {
+    val: &'a AtomicUsize,
+    prev: usize,
+}
+
+impl<'a> Rate<'a> {
+    fn new(val: &'a AtomicUsize) -> Rate<'a> {
+        Rate {
+            val,
+            prev: val.load(SeqCst),
+        }
+    }
+
+    fn rate(&mut self, elapsed: f64) -> usize {
+        let curr = self.val();
+        let diff = curr - self.prev;
+        let raw = (diff) as f64 / elapsed;
+        self.prev = curr;
+        raw.round() as usize
+    }
+
+    fn val(&self) -> usize {
+        self.val.load(SeqCst)
+    }
 }

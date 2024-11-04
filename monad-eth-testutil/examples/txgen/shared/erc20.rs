@@ -156,6 +156,7 @@ pragma solidity ^0.8.13;
 
 contract IERC20 {
     // constructor(string memory _name, string memory _symbol, uint8 _decimals);
+    event Transfer(address indexed from, address indexed to, uint256 value);
 
     function totalSupply() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);

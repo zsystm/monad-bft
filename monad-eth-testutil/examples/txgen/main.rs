@@ -71,6 +71,12 @@ pub struct Config {
 
     #[clap(long, global = true, default_value = "false")]
     verbose: bool,
+
+    #[clap(long, global = true, default_value = "false")]
+    use_receipts: bool,
+
+    #[clap(long, global = true, default_value = "false")]
+    use_get_logs: bool,
 }
 
 impl Config {
