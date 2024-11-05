@@ -24,6 +24,10 @@ struct InFlightRequest<PT: PubKey> {
     // response indexed by response_idx
     responses: BTreeMap<u32, StateSyncResponse>,
 
+    // map from nonce -> num responses received
+    // TODO bound size of this
+    seen_nonces: HashMap<u64, usize>,
+
     _pd: PhantomData<PT>,
 }
 
@@ -33,10 +37,17 @@ impl<PT: PubKey> Default for InFlightRequest<PT> {
             last_active: std::time::Instant::now(),
             responses: BTreeMap::default(),
 
+            seen_nonces: Default::default(),
+
             _pd: PhantomData,
         }
     }
 }
+
+/// Timeout after which a chunked response can get evicted
+/// This can happen if one of the chunks in the (large) response gets dropped
+/// Currently, the entire chunked response will be retried
+const STATESYNC_CHUNKED_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 impl<PT: PubKey> InFlightRequest<PT> {
     fn apply_response(
@@ -44,19 +55,34 @@ impl<PT: PubKey> InFlightRequest<PT> {
         from: &NodeId<PT>,
         response: StateSyncResponse,
     ) -> Option<StateSyncResponse> {
+        let num_nonce_seen = self.seen_nonces.entry(response.nonce).or_default();
+        *num_nonce_seen += 1;
         if self
             .responses
             .values()
             .next()
             .is_some_and(|existing_response| existing_response.nonce != response.nonce)
         {
-            tracing::debug!(
-                ?from,
-                ?response,
-                existing_response_nonce =? self.responses.values().next().unwrap().nonce,
-                "dropping statesync response, already fixed to different response nonce"
-            );
-            return None;
+            let existing_response_nonce = self.responses.values().next().unwrap().nonce;
+            if self.last_active.elapsed() > STATESYNC_CHUNKED_RESPONSE_TIMEOUT
+                && num_nonce_seen == &1
+            {
+                tracing::debug!(
+                    ?from,
+                    ?response,
+                    ?existing_response_nonce,
+                    "resetting statesync response for existing nonce, long time elapsed since update"
+                );
+                self.responses.clear();
+            } else {
+                tracing::debug!(
+                    ?from,
+                    ?response,
+                    ?existing_response_nonce,
+                    "dropping statesync response, already fixed to different response nonce"
+                );
+                return None;
+            }
         }
         tracing::debug!(?from, ?response, "applying statesync response");
         self.last_active = std::time::Instant::now();
