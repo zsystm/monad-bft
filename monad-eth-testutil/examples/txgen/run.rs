@@ -32,8 +32,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         &sent_txs,
         &metrics,
         Duration::from_secs_f64(config.refresh_delay_secs * 2.),
-        config.use_receipts,
-        config.use_get_logs,
+        &config,
     )
     .await;
 

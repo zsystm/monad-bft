@@ -76,6 +76,9 @@ pub struct Config {
     use_receipts: bool,
 
     #[clap(long, global = true, default_value = "false")]
+    use_receipts_by_block: bool,
+
+    #[clap(long, global = true, default_value = "false")]
     use_get_logs: bool,
 }
 

@@ -1,5 +1,7 @@
+use alloy_rlp::Encodable;
 use alloy_sol_types::SolEvent;
 use eyre::{Context, WrapErr};
+use reth_primitives::hex::{encode, ToHex};
 use reth_rpc_types::{Block, FilterChanges, TransactionReceipt};
 use serde_json::json;
 
@@ -15,6 +17,7 @@ pub struct CommittedTxWatcher {
 
     // extra rpc flags
     use_receipts: bool,
+    use_receipts_by_block: bool,
     use_get_logs: bool,
     // use_by_hash: bool,
 }
@@ -25,9 +28,7 @@ impl CommittedTxWatcher {
         sent_txs: &Arc<DashMap<TxHash, Instant>>,
         metrics: &Arc<Metrics>,
         delay: Duration,
-        use_receipts: bool,
-        use_get_logs: bool,
-        // use_by_hash: bool,
+        config: &Config,
     ) -> Self {
         Self {
             client: client.clone(),
@@ -38,8 +39,9 @@ impl CommittedTxWatcher {
                 .await
                 .expect("Failed to fetch initial block number for blockstream"),
 
-            use_receipts,
-            use_get_logs,
+            use_receipts: config.use_receipts,
+            use_get_logs: config.use_get_logs,
+            use_receipts_by_block: config.use_receipts_by_block,
             // use_by_hash,
         }
     }
@@ -66,14 +68,28 @@ impl CommittedTxWatcher {
             let now = Instant::now();
             self.sent_txs.retain(|_, v| *v + self.delay > now);
 
-            if self.use_receipts {
-                if let Err(e) =
-                    Self::receipts_for_block_slow(self.client.clone(), self.metrics.clone(), &block)
-                        .await
-                {
-                    error!("Failed to get receipts for block: {e}");
+            if self.use_receipts || self.use_receipts_by_block {
+                // prefer by block
+                if !self.use_receipts_by_block {
+                    if let Err(e) = Self::receipts_for_block_slow(
+                        self.client.clone(),
+                        self.metrics.clone(),
+                        &block,
+                    )
+                    .await
+                    {
+                        error!("Failed to get receipts for block: {e}");
+                    }
+                } else {
+                    if let Err(e) =
+                        Self::receipts_for_block(self.client.clone(), self.metrics.clone(), &block)
+                            .await
+                    {
+                        error!("Failed to get receipts for block: {e}");
+                    }
                 }
             }
+            if self.use_receipts_by_block {}
             if self.use_get_logs {
                 if let Err(e) =
                     Self::logs_for_block(self.client.clone(), self.metrics.clone(), &block).await
@@ -96,23 +112,30 @@ impl CommittedTxWatcher {
         let block_num = block
             .header
             .number
-            .context("block number not present in header")?
-            .to::<u32>();
-        let params = serde_json::to_string(&json! {{
-            "toBlock": block_num,
-            "fromBlock": block_num,
-        }})?;
+            .context("block number not present in header")?;
+
+        // let x = block_num.encode_hex::<String>();
+
+        // let mut block_num_bytes = [0u8; 32];
+        // block_num.encode(&mut (&mut block_num_bytes as &mut [u8]));
+        let block_num_hex_string = format!("0x{:x}", block_num);
+
+        let params = json! {{
+            "toBlock": block_num_hex_string,
+            "fromBlock": block_num_hex_string,
+        }};
 
         metrics.logs_rpc_calls.fetch_add(1, SeqCst);
-        let rx: FilterChanges = client
-            .request("eth_getLogs", [&params])
-            .await
-            .map_err(|e| {
-                metrics.logs_rpc_calls_error.fetch_add(1, SeqCst);
-                e
-            })?;
+        let logs_resp: FilterChanges =
+            client
+                .request("eth_getLogs", [&params])
+                .await
+                .map_err(|e| {
+                    metrics.logs_rpc_calls_error.fetch_add(1, SeqCst);
+                    e
+                })?;
 
-        match rx {
+        match logs_resp {
             FilterChanges::Logs(logs) => {
                 num_logs += logs.len();
 
@@ -124,7 +147,10 @@ impl CommittedTxWatcher {
                 //     }
                 // }
             }
-            FilterChanges::Hashes(_) | FilterChanges::Transactions(_) | FilterChanges::Empty => {
+            FilterChanges::Empty => {
+                debug!("No logs in block");
+            }
+            FilterChanges::Hashes(_) | FilterChanges::Transactions(_) => {
                 warn!("Unexpected response from eth_getLogs")
             }
         }
@@ -152,7 +178,8 @@ impl CommittedTxWatcher {
         let rxs: Vec<TransactionReceipt> = {
             let method = "eth_getBlockReceipts";
             let block_num = block.header.number.context("block number not found")?;
-            let block_num = block_num.to::<u32>();
+            let mut block_num_bytes = [0u8; 32];
+            block_num.encode(&mut (&mut block_num_bytes as &mut [u8]));
 
             metrics.receipts_rpc_calls.fetch_add(1, SeqCst);
             client.request(method, [block_num]).await.map_err(|e| {

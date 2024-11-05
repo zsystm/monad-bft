@@ -28,12 +28,6 @@ pub struct Metrics {
     // pub txs_by_hash_rpc_calls_error: AtomicUsize,
 }
 
-macro_rules! def_rate {
-    (self.$field:ident) => {
-        let mut $field = Rate::new(&self.$field);
-    };
-}
-
 impl Metrics {
     pub async fn run(self: Arc<Metrics>) {
         let secs_5 = self.metrics_at_timestep(Duration::from_secs(5));
@@ -71,49 +65,50 @@ impl Metrics {
             let now = report_interval.tick().await;
             let elapsed = last.elapsed().as_secs_f64();
 
+            // Note: can't call rate twice, so must make var if used twice
+            let tx_success_ps = receipts_tx_success.rate(elapsed);
+
             info!(
-                total_nonzero_accts = nonzero_accts.val(),
-                total_sent_txs = txs_sent.val(),
-                total_committed_txs = committed_txs.val(),
+                nonzero_accts = nonzero_accts.val(),
+                sent_txs = txs_sent.val(),
+                committed_txs = committed_txs.val(),
                 rps = rpc_calls.rate(elapsed),
-                accts_created_per_sec = nonzero_accts.rate(elapsed),
+                accts_created_ps = nonzero_accts.rate(elapsed),
+                tx_success_ps,
                 committed_tps = committed_txs.rate(elapsed),
                 tps = txs_sent.rate(elapsed),
-                "Metrics (Interval: {}:{})",
+                "Metrics          (freq: {}m:{}s)",
                 report_interval.period().as_secs() / 60,
                 report_interval.period().as_secs() % 60
             );
 
             info!(
-                receipts_contracts_deployed = receipts_contracts_deployed.val(),
-                receipts_contracts_deployed_ps = receipts_contracts_deployed.rate(elapsed),
-                // receipts_gas_consumed = receipts_gas_consumed.val(),
-                // receipts_gas_consumed_per_sec = receipts_gas_consumed.rate(),
-                receipts_tx_failure = receipts_tx_failure.val(),
-                receipts_tx_failure_ps = receipts_tx_failure.rate(elapsed),
-                receipts_tx_success = receipts_tx_success.val(),
-                receipts_tx_success_ps = receipts_tx_success.rate(elapsed),
-                receipts_rpc_calls = receipts_rpc_calls.val(),
-                receipts_rpc_calls_ps = receipts_rpc_calls.rate(elapsed),
-                receipts_rpc_calls_error = receipts_rpc_calls_error.val(),
-                receipts_rpc_calls_error_ps = receipts_rpc_calls_error.rate(elapsed),
-                "Metrics (Interval: {}:{}) Receipts",
+                contracts_deployed = receipts_contracts_deployed.val(),
+                tx_success = receipts_tx_success.val(),
+                tx_failure = receipts_tx_failure.val(),
+                rpc_calls = receipts_rpc_calls.val(),
+                rpc_calls_error = receipts_rpc_calls_error.val(),
+                contracts_deployed_ps = receipts_contracts_deployed.rate(elapsed),
+                rpc_calls_error_ps = receipts_rpc_calls_error.rate(elapsed),
+                rpc_calls_ps = receipts_rpc_calls.rate(elapsed),
+                tx_failure_ps = receipts_tx_failure.rate(elapsed),
+                tx_success_ps,
+                "Metrics Receipts (freq: {}m:{}s)",
                 report_interval.period().as_secs() / 60,
                 report_interval.period().as_secs() % 60
             );
 
             info!(
-                logs_rpc_calls = logs_rpc_calls.val(),
-                logs_rpc_calls_ps = logs_rpc_calls.rate(elapsed),
-                logs_rpc_calls_error = logs_rpc_calls_error.val(),
-                logs_rpc_calls_error_ps = logs_rpc_calls_error.rate(elapsed),
-                logs_total = logs_total.val(),
-                logs_total_ps = logs_total.rate(elapsed),
-                "Metrics (Interval: {}:{}) Logs",
+                rpc_calls = logs_rpc_calls.val(),
+                rpc_calls_error = logs_rpc_calls_error.val(),
+                total = logs_total.val(),
+                rpc_calls_ps = logs_rpc_calls.rate(elapsed),
+                rpc_calls_error_ps = logs_rpc_calls_error.rate(elapsed),
+                total_ps = logs_total.rate(elapsed),
+                "Metrics Logs     (freq: {}m:{}s)",
                 report_interval.period().as_secs() / 60,
                 report_interval.period().as_secs() % 60
             );
-
             last = now;
         }
     }
