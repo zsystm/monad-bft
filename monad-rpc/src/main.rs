@@ -243,7 +243,7 @@ async fn rpc_select(
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_sendRawTransaction(
-                app_state.mempool_sender.clone(),
+                &app_state.mempool_sender,
                 params,
                 app_state.chain_id,
                 app_state.allow_unprotected_txs,
@@ -260,130 +260,94 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "eth_getTransactionByHash" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByHash(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getTransactionByHash(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getBlockByHash" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByHash(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBlockByHash(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getBlockByNumber" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByNumber(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBlockByNumber(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getTransactionByBlockHashAndIndex" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockHashAndIndex(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getTransactionByBlockHashAndIndex(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getTransactionByBlockNumberAndIndex" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockNumberAndIndex(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getTransactionByBlockNumberAndIndex(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getBlockTransactionCountByHash" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByHash(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBlockTransactionCountByHash(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getBlockTransactionCountByNumber" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByNumber(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBlockTransactionCountByNumber(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getBalance" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBalance(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBalance(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getCode" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getCode(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getCode(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getStorageAt" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getStorageAt(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getStorageAt(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getTransactionCount" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionCount(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getTransactionCount(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_blockNumber" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                monad_eth_blockNumber(reader).await.map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            monad_eth_blockNumber(triedb_env)
+                .await
+                .map(serialize_result)?
         }
         "eth_chainId" => monad_eth_chainId(app_state.chain_id)
             .await
             .map(serialize_result)?,
         "eth_syncing" => monad_eth_syncing().await,
         "eth_estimateGas" => {
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
             let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
                 debug!("execution ledger path was not set");
@@ -406,38 +370,26 @@ async fn rpc_select(
             .map(serialize_result)?
         }
         "eth_gasPrice" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
         }
         "eth_maxPriorityFeePerGas" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                monad_eth_maxPriorityFeePerGas(triedb_env)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            monad_eth_maxPriorityFeePerGas(triedb_env)
+                .await
+                .map(serialize_result)?
         }
         "eth_feeHistory" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_feeHistory(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_feeHistory(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_getTransactionReceipt" => {
-            let Some(triedb_reader) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getTransactionReceipt(triedb_reader, params)
+            monad_eth_getTransactionReceipt(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
@@ -539,35 +491,15 @@ impl Actor for MonadRpcResources {
     type Context = Context<Self>;
 }
 
-pub fn create_app_with_metrics<S: 'static>(
-    app_data: S,
-    with_metrics: metrics::Metrics,
-) -> App<
-    impl ServiceFactory<
-        ServiceRequest,
-        Config = (),
-        Response = ServiceResponse,
-        Error = actix_web::Error,
-        InitError = (),
-    >,
-> {
-    App::new()
-        .app_data(web::JsonConfig::default().limit(8192))
-        .app_data(web::Data::new(app_data))
-        .wrap(with_metrics)
-        .service(web::resource("/").route(web::post().to(rpc_handler)))
-        .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
-}
-
 pub fn create_app<S: 'static>(
     app_data: S,
 ) -> App<
     impl ServiceFactory<
         ServiceRequest,
         Response = ServiceResponse<BoxBody>,
+        Error = Error,
         Config = (),
         InitError = (),
-        Error = Error,
     >,
 > {
     App::new()
@@ -575,6 +507,21 @@ pub fn create_app<S: 'static>(
         .app_data(web::Data::new(app_data))
         .service(web::resource("/").route(web::post().to(rpc_handler)))
         .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
+}
+
+pub fn create_app_with_metrics<S: 'static>(
+    app_data: S,
+    with_metrics: metrics::Metrics,
+) -> App<
+    impl ServiceFactory<
+        ServiceRequest,
+        Response = ServiceResponse,
+        Error = actix_web::Error,
+        Config = (),
+        InitError = (),
+    >,
+> {
+    create_app(app_data).wrap(with_metrics)
 }
 
 #[tokio::main]
@@ -601,8 +548,6 @@ async fn main() -> std::io::Result<()> {
     ));
 
     // channels and thread for communicating over the mempool ipc socket
-    // RPC handlers that need to send to the mempool can clone the ipc_sender
-    // channel to send
     let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(
         // TODO configurable
         10_000,
@@ -621,8 +566,8 @@ async fn main() -> std::io::Result<()> {
     });
 
     let resources = MonadRpcResources::new(
-        ipc_sender.clone(),
-        args.triedb_path.clone().as_deref().map(TriedbEnv::new),
+        ipc_sender,
+        args.triedb_path.as_deref().map(TriedbEnv::new),
         Some(args.execution_ledger_path),
         args.chain_id,
         args.batch_request_limit,
@@ -645,7 +590,7 @@ async fn main() -> std::io::Result<()> {
 
     let with_metrics = meter_provider
         .as_ref()
-        .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
+        .map(|provider| metrics::Metrics::new(provider.meter("opentelemetry")));
 
     // main server app
     match with_metrics {
@@ -660,9 +605,7 @@ async fn main() -> std::io::Result<()> {
             .shutdown_timeout(1)
             .run(),
     }
-    .await?;
-
-    Ok(())
+    .await
 }
 
 async fn retry<T, E, F>(attempt: impl Fn() -> F) -> Result<T, E>
@@ -716,7 +659,7 @@ mod tests {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(1_000);
         let m = MonadRpcResourcesState { ipc_receiver };
         let app = test::init_service(create_app(MonadRpcResources {
-            mempool_sender: ipc_sender.clone(),
+            mempool_sender: ipc_sender,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 1337,
