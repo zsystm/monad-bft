@@ -89,7 +89,6 @@ impl CommittedTxWatcher {
                     }
                 }
             }
-            if self.use_receipts_by_block {}
             if self.use_get_logs {
                 if let Err(e) =
                     Self::logs_for_block(self.client.clone(), self.metrics.clone(), &block).await
@@ -121,19 +120,24 @@ impl CommittedTxWatcher {
         let block_num_hex_string = format!("0x{:x}", block_num);
 
         let params = json! {{
-            "toBlock": block_num_hex_string,
-            "fromBlock": block_num_hex_string,
+            "toBlock": block_num.to::<u32>(),
+            "fromBlock": block_num.to::<u32>(),
         }};
 
+        // let params = json! {{
+        //     "toBlock": block_num_hex_string,
+        //     "fromBlock": block_num_hex_string,
+        // }};
+
         metrics.logs_rpc_calls.fetch_add(1, SeqCst);
-        let logs_resp: FilterChanges =
-            client
-                .request("eth_getLogs", [&params])
-                .await
-                .map_err(|e| {
-                    metrics.logs_rpc_calls_error.fetch_add(1, SeqCst);
-                    e
-                })?;
+        let logs_resp: FilterChanges = client
+            .request("eth_getLogs", [&params])
+            .await
+            .map_err(|e| {
+                metrics.logs_rpc_calls_error.fetch_add(1, SeqCst);
+                e
+            })
+            .wrap_err( format!("params: {}", params.to_string()))?;
 
         match logs_resp {
             FilterChanges::Logs(logs) => {
@@ -237,11 +241,10 @@ impl CommittedTxWatcher {
                         continue;
                     }
                 };
-            tx_success += 1;
 
             match rx.status_code {
                 Some(status) if status.to::<u64>() == 1 => {
-                    tx_failure += 1;
+                    tx_success += 1;
                 }
                 _ => tx_failure += 1,
             }
