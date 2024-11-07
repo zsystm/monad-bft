@@ -244,8 +244,10 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<SCT>,
+        timestamp: Duration,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        self.wrapped_state().handle_proposal_message(author, p)
+        self.wrapped_state()
+            .handle_proposal_message(author, p, timestamp)
     }
 
     fn handle_timeout_message(
@@ -570,7 +572,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             || init(true),
             |(_txns, env, ctx, author, proposal_message)| {
                 let mut wrapped_state = ctx[0].wrapped_state();
-                let cmds = wrapped_state.handle_proposal_message(*author, proposal_message.clone());
+                let cmds = wrapped_state.handle_proposal_message(
+                    *author,
+                    proposal_message.clone(),
+                    Default::default(),
+                );
             },
             BatchSize::SmallInput,
         );
@@ -624,7 +630,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let mut wrapped_state = node.wrapped_state();
                     let cmds = wrapped_state.handle_proposal_message(
                         author,
-                        proposal_message.clone(),
+                        proposal_message.clone(), Default::default()
                     );
                     votes.extend(
                         std::iter::repeat(*wrapped_state.nodeid)

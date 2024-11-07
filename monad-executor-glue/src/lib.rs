@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::{fmt::Debug, net::SocketAddr};
+use std::{fmt::Debug, net::SocketAddr, time::Duration};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -51,7 +51,7 @@ pub trait Message: Clone + Send + Sync {
     type Event: Send + Sync;
 
     // TODO-3 NodeId -> &NodeId
-    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event;
+    fn event(self, from: NodeId<Self::NodeIdPubKey>, timestamp: Duration) -> Self::Event;
 }
 
 /// TimeoutVariant distinguishes the source of the timer scheduled
@@ -292,6 +292,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Message {
         sender: NodeId<SCT::NodeIdPubKey>,
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
+        timestamp: Duration,
     },
     Timeout,
     /// a block that was previously requested
@@ -309,6 +310,7 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
+                timestamp: _,
             } => f
                 .debug_struct("Message")
                 .field("sender", sender)
@@ -555,6 +557,13 @@ pub struct PingEvent<SCT: SignatureCollection> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposalPingEvent<SCT: SignatureCollection> {
+    pub sender: NodeId<SCT::NodeIdPubKey>,
+    pub round: Round,
+    pub timestamp: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlPanelEvent<SCT>
 where
     SCT: SignatureCollection,
@@ -598,6 +607,7 @@ where
     PingRequestEvent(PingEvent<SCT>),
     PingResponseEvent(PingEvent<SCT>),
     PingTickEvent,
+    ProposalPingEvent(ProposalPingEvent<SCT>),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
@@ -633,6 +643,7 @@ where
             MonadEvent::ConsensusEvent(ConsensusEvent::Message {
                 sender,
                 unverified_message: _,
+                timestamp: _,
             }) => {
                 format!("ConsensusEvent::Message from {sender}")
             }
@@ -671,6 +682,9 @@ where
                 format!("PingResponseEvent: {} {}", e.sender, e.sequence.0)
             }
             MonadEvent::PingTickEvent => "PingTickEvent".to_string(),
+            MonadEvent::ProposalPingEvent(e) => {
+                format!("ProposalPingEvent: {} {}", e.sender, e.round.0)
+            }
         };
 
         write!(f, "{}", s)

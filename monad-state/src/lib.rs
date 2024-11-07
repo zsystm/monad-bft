@@ -1,5 +1,4 @@
-use core::time;
-use std::{fmt::Debug, ops::Deref};
+use std::{ops::Deref, time::Duration};
 
 use async_state_verify::AsyncStateVerifyChildState;
 use blocksync::BlockSyncChildState;
@@ -40,8 +39,8 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, PingEvent, ReadCommand, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, PingEvent, ProposalPingEvent, ReadCommand,
+    RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
     TimeoutVariant, TimerCommand, UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
@@ -561,6 +560,7 @@ where
     StateSyncMessage(StateSyncNetworkMessage),
     PingRequest(PingSequence),
     PingResponse(PingSequence),
+    ProposalPing(Round),
 }
 
 impl<ST, SCT> From<Verified<ST, Validated<ConsensusMessage<SCT>>>> for VerifiedMonadMessage<ST, SCT>
@@ -600,6 +600,10 @@ where
     PingRequest(PingSequence),
 
     PingResponse(PingSequence),
+
+    /// Periodically sent in parallel with proposal broadcast to allow for nodes
+    /// to determine broadcast latency
+    ProposalPing(Round),
 }
 
 impl<ST, SCT> monad_types::Serializable<Bytes> for VerifiedMonadMessage<ST, SCT>
@@ -629,6 +633,7 @@ where
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
             VerifiedMonadMessage::PingRequest(seq) => MonadMessage::PingRequest(seq),
             VerifiedMonadMessage::PingResponse(seq) => MonadMessage::PingResponse(seq),
+            VerifiedMonadMessage::ProposalPing(round) => MonadMessage::ProposalPing(round),
         }
     }
 }
@@ -662,6 +667,7 @@ where
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
             VerifiedMonadMessage::PingRequest(seq) => MonadMessage::PingRequest(seq),
             VerifiedMonadMessage::PingResponse(seq) => MonadMessage::PingResponse(seq),
+            VerifiedMonadMessage::ProposalPing(round) => MonadMessage::ProposalPing(round),
         }
     }
 }
@@ -677,7 +683,7 @@ where
     // FIXME-2: from: NodeId is immediately converted to pubkey. All other msgs
     // put the NodeId wrap back on again, except ConsensusMessage when verifying
     // the consensus signature
-    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
+    fn event(self, from: NodeId<Self::NodeIdPubKey>, timestamp: Duration) -> Self::Event {
         // MUST assert that output is valid and came from the `from` NodeId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
@@ -685,6 +691,7 @@ where
             MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
                 sender: from,
                 unverified_message: msg,
+                timestamp,
             }),
 
             MonadMessage::BlockSyncRequest(request) => {
@@ -721,6 +728,11 @@ where
             MonadMessage::PingResponse(sequence) => MonadEvent::PingResponseEvent(PingEvent {
                 sender: from,
                 sequence,
+            }),
+            MonadMessage::ProposalPing(round) => MonadEvent::ProposalPingEvent(ProposalPingEvent {
+                sender: from,
+                round,
+                timestamp,
             }),
         }
     }
@@ -869,7 +881,7 @@ where
         )));
 
         init_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
-            duration: time::Duration::from_secs(1),
+            duration: Duration::from_secs(1),
             variant: TimeoutVariant::Ping,
             on_timeout: MonadEvent::PingTickEvent,
         }));
@@ -1242,6 +1254,16 @@ where
                 }));
                 cmds
             }
+            MonadEvent::ProposalPingEvent(ProposalPingEvent {
+                sender,
+                round,
+                timestamp,
+            }) => {
+                tracing::info!(?sender, ?round, "received proposal ping");
+                self.block_timestamp
+                    .proposal_ping_received(round, &sender, timestamp);
+                Vec::new()
+            }
         }
     }
 
@@ -1345,7 +1367,7 @@ where
         tracing::info!(?root, ?high_qc, "done syncing, initializing consensus");
         self.consensus = ConsensusMode::Live(consensus);
         commands.extend(self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
-        for (sender, proposal) in cached_proposals {
+        for (sender, proposal, timestamp) in cached_proposals {
             // handle proposals in reverse order because later blocks are more likely to pass
             // timestamp validation
             //
@@ -1353,7 +1375,7 @@ where
             let mut consensus = ConsensusChildState::new(self);
             commands.extend(
                 consensus
-                    .handle_validated_proposal(sender, proposal)
+                    .handle_validated_proposal(sender, proposal, timestamp)
                     .into_iter()
                     .flat_map(Into::<Vec<Command<_, _, _>>>::into),
             );

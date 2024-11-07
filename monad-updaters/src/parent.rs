@@ -104,14 +104,14 @@ where
         let this = self.deref_mut();
 
         futures::future::select_all(vec![
+            this.router.next().boxed_local(), // TODO: consensus msgs should be prioritized
             this.timer.next().boxed_local(),
             this.control_panel.next().boxed_local(),
             this.ledger.next().boxed_local(),
             this.state_root_hash.next().boxed_local(),
             this.timestamp.next().boxed_local(),
             this.loopback.next().boxed_local(),
-            this.router.next().boxed_local(), // TODO: consensus msgs should be prioritized
-            this.ipc.next().boxed_local(),    // ingesting txs is lowest priority
+            this.ipc.next().boxed_local(), // ingesting txs is lowest priority
             this.state_sync.next().boxed_local(),
         ])
         .map(|(event, _, _)| event)

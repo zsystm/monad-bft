@@ -18,7 +18,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{Epoch, Round, RouterTarget};
+use monad_types::{Epoch, NodeId, Round, RouterTarget};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -69,6 +69,10 @@ where
     TimestampUpdate(TimestampAdjustment),
     ScheduleVote {
         duration: Duration,
+        round: Round,
+    },
+    ProposalPing {
+        node_id: NodeId<SCT::NodeIdPubKey>,
         round: Round,
     },
 }

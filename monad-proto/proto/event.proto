@@ -258,7 +258,11 @@ message PingResponseEvent {
 }
 
 message PingTickEvent {
+}
 
+message ProposalPingEvent {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  uint64 round = 2;
 }
 
 message ProtoMonadEvent{
@@ -275,5 +279,6 @@ message ProtoMonadEvent{
     PingRequestEvent ping_request = 10;
     PingResponseEvent ping_response = 11;
     PingTickEvent ping_tick = 12;
+    ProposalPingEvent proposal_ping = 13;
   }
 }

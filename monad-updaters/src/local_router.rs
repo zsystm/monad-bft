@@ -3,7 +3,7 @@ use std::{
     marker::PhantomData,
     ops::DerefMut,
     task::Poll,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use futures::Stream;
@@ -159,8 +159,15 @@ where
     ) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        this.rx
-            .poll_recv(cx)
-            .map(|maybe_message| maybe_message.map(|(from, message)| message.event(from)))
+        this.rx.poll_recv(cx).map(|maybe_message| {
+            maybe_message.map(|(from, message)| {
+                message.event(
+                    from,
+                    SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap(),
+                )
+            })
+        })
     }
 }

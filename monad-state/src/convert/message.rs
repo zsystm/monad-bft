@@ -45,6 +45,11 @@ where
                         sequence: msg.0,
                     })
                 }
+                VerifiedMonadMessage::ProposalPing(msg) => {
+                    proto_monad_message::OneofMessage::ProposalPing(ProtoProposalPing {
+                        round: msg.0,
+                    })
+                }
             }),
         }
     }
@@ -82,6 +87,9 @@ where
             }
             Some(proto_monad_message::OneofMessage::PingResponse(msg)) => {
                 MonadMessage::PingResponse(PingSequence(msg.sequence))
+            }
+            Some(proto_monad_message::OneofMessage::ProposalPing(msg)) => {
+                MonadMessage::ProposalPing(monad_types::Round(msg.round))
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadMessage.oneofmessage".to_owned(),

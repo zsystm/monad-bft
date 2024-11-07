@@ -695,6 +695,7 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 
 #[cfg(test)]
 mod test {
+
     use monad_consensus_types::{
         block::{Block, BlockKind},
         ledger::CommitResult,

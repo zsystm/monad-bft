@@ -6,7 +6,7 @@ use std::{
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll, Waker},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -367,9 +367,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
 
                     match maybe_router_event {
                         None => continue, // try next tick
-                        Some(RouterEvent::Rx(from, message)) => {
-                            MockExecutorEvent::Event(message.event(from))
-                        }
+                        Some(RouterEvent::Rx(from, message)) => MockExecutorEvent::Event(
+                            message
+                                .event(from, SystemTime::now().duration_since(UNIX_EPOCH).unwrap()),
+                        ),
                         Some(RouterEvent::Tx(to, ser)) => MockExecutorEvent::Send(to, ser),
                     }
                 }

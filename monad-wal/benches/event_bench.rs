@@ -109,6 +109,7 @@ fn bench_proposal(c: &mut Criterion) {
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: NodeId::new(author_keypair.pubkey()),
         unverified_message,
+        timestamp: Default::default(),
     });
 
     let mut bencher = MonadEventBencher::new(event);
@@ -148,6 +149,7 @@ fn bench_vote(c: &mut Criterion) {
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: NodeId::new(keypair.pubkey()),
         unverified_message,
+        timestamp: Default::default(),
     });
 
     let mut bencher = MonadEventBencher::new(event);
@@ -255,6 +257,7 @@ fn bench_timeout(c: &mut Criterion) {
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: NodeId::new(author_keypair.pubkey()),
         unverified_message,
+        timestamp: Default::default(),
     });
 
     let mut bencher = MonadEventBencher::new(event);

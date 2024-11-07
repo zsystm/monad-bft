@@ -81,6 +81,7 @@ fn test_consensus_message_event_vote_multisig() {
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: NodeId::new(keypair.pubkey()),
         unverified_message: unmsg,
+        timestamp: Default::default(),
     });
 
     let buf = serialize_event(&event);
@@ -133,6 +134,7 @@ fn test_consensus_message_event_proposal_bls() {
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: NodeId::new(proposal.author().pubkey()),
         unverified_message: uvm,
+        timestamp: Default::default(),
     });
 
     let buf = serialize_event(&event);

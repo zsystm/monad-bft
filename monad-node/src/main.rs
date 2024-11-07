@@ -214,7 +214,7 @@ async fn run(
             checkpoint_validators_last.validators,
             val_set_update_interval,
         ),
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        timestamp: TokioTimestamp::new(Duration::from_millis(1), 100, 10001),
         ipc: IpcReceiver::new(
             node_state.mempool_ipc_path,
             node_state.node_config.ipc_tx_batch_size as usize, // tx_batch_size

@@ -201,7 +201,7 @@ impl Message for MockMessage {
     type NodeIdPubKey = PubKeyType;
     type Event = MockEvent<Self::NodeIdPubKey>;
 
-    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
+    fn event(self, from: NodeId<Self::NodeIdPubKey>, timestamp: Duration) -> Self::Event {
         MockEvent((from, self.id))
     }
 }

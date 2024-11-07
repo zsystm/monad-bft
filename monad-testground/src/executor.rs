@@ -121,7 +121,7 @@ where
                 val_set_update_interval,
             )),
         },
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        timestamp: TokioTimestamp::new(Duration::from_millis(1), 100, 10001),
         ipc: IpcReceiver::new(
             format!("./monad_mempool_{}.sock", instance_id).into(),
             500, // tx_batch_size

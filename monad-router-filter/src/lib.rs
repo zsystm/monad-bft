@@ -55,6 +55,7 @@ where
                     VerifiedMonadMessage::StateSyncMessage(_) => Some(cmd),
                     VerifiedMonadMessage::PingRequest(_) => Some(cmd),
                     VerifiedMonadMessage::PingResponse(_) => Some(cmd),
+                    VerifiedMonadMessage::ProposalPing(_) => Some(cmd),
                 },
                 RouterCommand::AddEpochValidatorSet { .. } => Some(cmd),
                 RouterCommand::UpdateCurrentRound(..) => Some(cmd),
@@ -104,6 +105,7 @@ where
                     ConsensusEvent::Message {
                         sender: _,
                         unverified_message,
+                        timestamp: _,
                     } => {
                         if unverified_message.is_proposal() {
                             polled_event

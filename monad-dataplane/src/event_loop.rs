@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
     task::Poll,
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -75,6 +75,7 @@ pub struct RecvMsg {
     pub src_addr: SocketAddr,
     pub payload: Bytes,
     pub stride: usize,
+    pub timestamp: Duration,
 }
 
 pub struct Dataplane {
@@ -437,6 +438,8 @@ impl DataplaneEventLoop {
 
         let mut total_recv_bytes = 0;
 
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+
         for (i, result) in recvs.into_iter().enumerate() {
             let len = result.len;
             total_recv_bytes += len;
@@ -457,6 +460,7 @@ impl DataplaneEventLoop {
                 src_addr: src_sock_addr,
                 payload: b,
                 stride,
+                timestamp: now,
             };
             match self.udp_ingress_sender.producer.push(rx) {
                 Err(e) => {

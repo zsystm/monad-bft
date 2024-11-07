@@ -456,6 +456,7 @@ impl Widget for &EventListWidget {
                 MonadEvent::PingRequestEvent(_) => "PINGREQUEST".to_string(),
                 MonadEvent::PingResponseEvent(_) => "PINGRESPONSE".to_string(),
                 MonadEvent::PingTickEvent => "PINGTICK".to_string(),
+                MonadEvent::ProposalPingEvent(_) => "PROPOSALPING".to_string(),
             };
 
             let s = Span::styled(format!("{header_str:<20}"), Style::default().blue());
@@ -524,6 +525,7 @@ impl StatExtractor {
                 MonadEvent::ConsensusEvent(monad_executor_glue::ConsensusEvent::Message {
                     sender: _,
                     unverified_message,
+                    timestamp: _,
                 }) => {
                     let msg = unverified_message.get_obj_unsafe();
                     match &msg.message {
@@ -601,6 +603,7 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
             MonadEvent::PingRequestEvent(_) => "pingrequestevent",
             MonadEvent::PingResponseEvent(_) => "pingresponseevent",
             MonadEvent::PingTickEvent => "pingtickevent",
+            MonadEvent::ProposalPingEvent(_) => "proposalpingevent",
         };
 
         buckets

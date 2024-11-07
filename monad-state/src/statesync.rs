@@ -1,4 +1,7 @@
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Duration,
+};
 
 use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus_types::{
@@ -31,7 +34,7 @@ pub(crate) struct BlockBuffer<SCT: SignatureCollection> {
     block_headers: HashMap<BlockId, Block<SCT>>,
 
     // cache of last max_buffered_proposals proposals
-    proposal_buffer: VecDeque<(NodeId<SCT::NodeIdPubKey>, ProposalMessage<SCT>)>,
+    proposal_buffer: VecDeque<(NodeId<SCT::NodeIdPubKey>, ProposalMessage<SCT>, Duration)>,
 }
 
 impl<SCT: SignatureCollection> BlockBuffer<SCT> {
@@ -61,6 +64,7 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         proposal: ProposalMessage<SCT>,
+        timestamp: Duration,
     ) -> Option<(RootInfo, QuorumCertificate<SCT>)> {
         // TODO more validation? leader checking? more sophisticated eviction?
 
@@ -71,7 +75,8 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         self.block_headers
             .insert(proposal.block.get_id(), block_header.clone());
 
-        self.proposal_buffer.push_back((author, proposal));
+        self.proposal_buffer
+            .push_back((author, proposal, timestamp));
         if self.proposal_buffer.len() > self.max_buffered_proposals {
             self.proposal_buffer.pop_front();
         }
@@ -121,7 +126,7 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         self.full_blocks.retain(|_id, block| {
             block.get_seq_num() + NUM_BLOCK_HASH + self.state_root_delay >= root
         });
-        for (_sender, proposal) in &self.proposal_buffer {
+        for (_sender, proposal, _) in &self.proposal_buffer {
             if proposal.block.get_seq_num() < self.root {
                 self.full_blocks.insert(
                     proposal.block.get_id(),
@@ -159,7 +164,7 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
 
     pub fn proposals(
         &self,
-    ) -> impl Iterator<Item = &(NodeId<SCT::NodeIdPubKey>, ProposalMessage<SCT>)> {
+    ) -> impl Iterator<Item = &(NodeId<SCT::NodeIdPubKey>, ProposalMessage<SCT>, Duration)> {
         self.proposal_buffer.iter()
     }
 

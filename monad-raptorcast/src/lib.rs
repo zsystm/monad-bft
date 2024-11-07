@@ -6,7 +6,7 @@ use std::{
     ops::DerefMut,
     pin::{pin, Pin},
     task::{Context, Poll, Waker},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -246,8 +246,12 @@ where
 
                             if epoch_validators.validators.contains_key(&self_id) {
                                 let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
+                                self.pending_events.push_back(RaptorCastEvent::Message(
+                                    message.event(
+                                        self_id,
+                                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap(),
+                                    ),
+                                ));
                                 if let Some(waker) = self.waker.take() {
                                     waker.wake()
                                 }
@@ -281,8 +285,12 @@ where
                         RouterTarget::PointToPoint(to) => {
                             if to == &self_id {
                                 let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
+                                self.pending_events.push_back(RaptorCastEvent::Message(
+                                    message.event(
+                                        self_id,
+                                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap(),
+                                    ),
+                                ));
                                 if let Some(waker) = self.waker.take() {
                                     waker.wake()
                                 }
@@ -297,8 +305,12 @@ where
                         RouterTarget::TcpPointToPoint(to) => {
                             if to == &self_id {
                                 let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
+                                self.pending_events.push_back(RaptorCastEvent::Message(
+                                    message.event(
+                                        self_id,
+                                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap(),
+                                    ),
+                                ));
                                 if let Some(waker) = self.waker.take() {
                                     waker.wake()
                                 }
@@ -430,26 +442,29 @@ where
                     message,
                 )
             };
-            let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
-                |(from, decoded)| match handle_message::<ST, M>(&decoded) {
-                    Ok(inbound) => match inbound {
-                        InboundRouterMessage::Application(app_message) => {
-                            Some(app_message.event(from))
+            let deserialized_app_messages =
+                decoded_app_messages
+                    .into_iter()
+                    .filter_map(|(from, decoded, timestamp)| {
+                        match handle_message::<ST, M>(&decoded) {
+                            Ok(inbound) => match inbound {
+                                InboundRouterMessage::Application(app_message) => {
+                                    Some(app_message.event(from, timestamp))
+                                }
+                                InboundRouterMessage::Discovery(_) => {
+                                    tracing::error!(
+                                        ?from,
+                                        "receiving discovery messages over UDP is not supported"
+                                    );
+                                    None
+                                }
+                            },
+                            Err(_) => {
+                                tracing::warn!(?from, "failed to deserialize message");
+                                None
+                            }
                         }
-                        InboundRouterMessage::Discovery(_) => {
-                            tracing::error!(
-                                ?from,
-                                "receiving discovery messages over UDP is not supported"
-                            );
-                            None
-                        }
-                    },
-                    Err(_) => {
-                        tracing::warn!(?from, "failed to deserialize message");
-                        None
-                    }
-                },
-            );
+                    });
             this.pending_events
                 .extend(deserialized_app_messages.map(RaptorCastEvent::Message));
             if let Some(event) = this.pending_events.pop_front() {
@@ -486,7 +501,10 @@ where
             match deserialized_message {
                 InboundRouterMessage::Application(message) => {
                     return Poll::Ready(Some(
-                        RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
+                        RaptorCastEvent::Message(
+                            message.event(NodeId::new(from), Default::default()),
+                        )
+                        .into(),
                     ));
                 }
                 InboundRouterMessage::Discovery(discovery_message) => {

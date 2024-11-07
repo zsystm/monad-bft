@@ -3,6 +3,7 @@ use std::{
     net::SocketAddr,
     num::NonZero,
     ops::Range,
+    time::Duration,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -44,6 +45,7 @@ const MAX_NUM_PACKETS: usize = 65535;
 struct DecoderState {
     decoder: ManagedDecoder,
     recipient_chunks: BTreeMap<NodeIdHash, usize>,
+    timestamp: Duration,
 }
 
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
@@ -93,7 +95,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes),
         forward: impl FnMut(Bytes),
         message: RecvMsg,
-    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes, Duration)> {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
 
@@ -204,6 +206,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         DecoderState {
                             decoder,
                             recipient_chunks: BTreeMap::new(),
+                            timestamp: message.timestamp,
                         }
                     })
                 });
@@ -249,6 +252,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                             continue;
                         };
 
+                        let ts = decoder_state.timestamp;
+
                         if app_message_len > 10_000 {
                             tracing::debug!(
                                 ?self_id,
@@ -268,7 +273,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                             .expect("decoder exists");
                         self.recently_decoded_cache.push(key, 0);
 
-                        messages.push((parsed_message.author, Bytes::from(decoded)));
+                        messages.push((parsed_message.author, Bytes::from(decoded), ts));
                     }
                 }
                 Err(err) => {
@@ -1362,6 +1367,7 @@ mod tests {
             src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000),
             payload,
             stride: 1024,
+            timestamp: Default::default(),
         };
 
         udp_state.handle_message(

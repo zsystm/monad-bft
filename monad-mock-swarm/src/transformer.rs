@@ -63,7 +63,8 @@ where
             VerifiedMonadMessage::ForwardedTx(_)
             | VerifiedMonadMessage::StateSyncMessage(_)
             | VerifiedMonadMessage::PingRequest(_)
-            | VerifiedMonadMessage::PingResponse(_) => false,
+            | VerifiedMonadMessage::PingResponse(_)
+            | VerifiedMonadMessage::ProposalPing(_) => false,
         };
 
         if should_drop {
@@ -164,6 +165,7 @@ where
             VerifiedMonadMessage::StateSyncMessage(_) => TwinsCapture::Spread(pid),
             VerifiedMonadMessage::PingRequest(_) => TwinsCapture::Spread(pid),
             VerifiedMonadMessage::PingResponse(_) => TwinsCapture::Spread(pid),
+            VerifiedMonadMessage::ProposalPing(_) => TwinsCapture::Spread(pid),
         };
 
         match capture {

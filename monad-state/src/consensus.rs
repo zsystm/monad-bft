@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, time::Duration};
 
 use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_consensus::{
@@ -64,7 +64,7 @@ where
     version: &'a MonadVersion,
 
     state_root_validator: &'a SVT,
-    block_timestamp: &'a BlockTimestamp<SCT::NodeIdPubKey>,
+    block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey>,
     block_validator: &'a BVT,
     beneficiary: &'a EthAddress,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
@@ -106,7 +106,7 @@ where
             version: &monad_state.version,
 
             state_root_validator: &monad_state.state_root_validator,
-            block_timestamp: &monad_state.block_timestamp,
+            block_timestamp: &mut monad_state.block_timestamp,
             block_validator: &monad_state.block_validator,
             beneficiary: &monad_state.beneficiary,
             nodeid: &monad_state.nodeid,
@@ -133,6 +133,7 @@ where
                 if let ConsensusEvent::Message {
                     sender,
                     unverified_message,
+                    timestamp,
                 } = event.clone()
                 {
                     if let Ok((author, ProtocolMessage::Proposal(proposal))) =
@@ -146,7 +147,7 @@ where
                         )
                     {
                         if let Some((new_root, new_high_qc)) =
-                            block_buffer.handle_proposal(author, proposal)
+                            block_buffer.handle_proposal(author, proposal, timestamp)
                         {
                             if !*updating_target {
                                 // used for deduplication, because RequestStateSync isn't synchronous
@@ -200,6 +201,7 @@ where
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
+                timestamp,
             } => {
                 match Self::verify_and_validate_consensus_message(
                     consensus.epoch_manager,
@@ -210,7 +212,7 @@ where
                     unverified_message,
                 ) {
                     Ok((author, ProtocolMessage::Proposal(msg))) => {
-                        consensus.handle_proposal_message(author, msg)
+                        consensus.handle_proposal_message(author, msg, timestamp)
                     }
                     Ok((author, ProtocolMessage::Vote(msg))) => {
                         consensus.handle_vote_message(author, msg)
@@ -241,6 +243,7 @@ where
         &mut self,
         author: NodeId<CertificateSignaturePubKey<ST>>,
         validated_proposal: ProposalMessage<SCT>,
+        timestamp: Duration,
     ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
         let ConsensusMode::Live(mode) = self.consensus else {
             unreachable!("handle_validated_proposal when not live")
@@ -270,7 +273,8 @@ where
             cert_keypair: self.cert_keypair,
         };
 
-        let consensus_cmds = consensus.handle_proposal_message(author, validated_proposal);
+        let consensus_cmds =
+            consensus.handle_proposal_message(author, validated_proposal, timestamp);
 
         consensus_cmds
             .into_iter()
@@ -418,6 +422,12 @@ where
                     duration,
                     variant: TimeoutVariant::SendVote,
                     on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(round)),
+                }))
+            }
+            ConsensusCommand::ProposalPing { node_id, round } => {
+                parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
+                    target: monad_types::RouterTarget::PointToPoint(node_id),
+                    message: VerifiedMonadMessage::ProposalPing(round),
                 }))
             }
         }
