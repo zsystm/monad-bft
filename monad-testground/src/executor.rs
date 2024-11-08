@@ -13,14 +13,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
-use monad_gossip::{
-    gossipsub::UnsafeGossipsubConfig,
-    mock::MockGossipConfig,
-    seeder::{Raptor, SeederConfig},
-    Gossip,
-};
 use monad_ipc::IpcReceiver;
-use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{
     Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
@@ -40,12 +33,6 @@ use monad_validator::{
 use rand::distributions::{Alphanumeric, DistString};
 use tracing_subscriber::EnvFilter;
 
-pub enum MonadP2PGossipConfig<ST: CertificateSignatureRecoverable> {
-    Simple(MockGossipConfig<CertificateSignaturePubKey<ST>>),
-    Gossipsub(UnsafeGossipsubConfig<CertificateSignaturePubKey<ST>>),
-    Raptor(SeederConfig<'static, Raptor<'static, ST>>),
-}
-
 pub enum RouterConfig<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -55,10 +42,6 @@ where
         /// Must be passed ahead-of-time because they can't be instantiated individually
         LocalPeerRouter<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
     ),
-    MonadP2P {
-        config: ServiceConfig<SafeQuinnConfig<ST>>,
-        gossip_config: MonadP2PGossipConfig<ST>,
-    },
     RaptorCast(RaptorCastConfig<ST>),
 }
 
@@ -117,21 +100,6 @@ where
     ParentExecutor {
         router: match config.router_config {
             RouterConfig::Local(router) => Updater::boxed(router),
-            RouterConfig::MonadP2P {
-                config,
-                gossip_config,
-            } => Updater::boxed(Service::<_, _, MonadMessage<ST, SCT>, _>::new(
-                config,
-                match gossip_config {
-                    MonadP2PGossipConfig::Simple(mock_config) => Gossip::boxed(mock_config.build()),
-                    MonadP2PGossipConfig::Gossipsub(gossipsub_config) => {
-                        Gossip::boxed(gossipsub_config.build())
-                    }
-                    MonadP2PGossipConfig::Raptor(raptor_config) => {
-                        Gossip::boxed(raptor_config.build())
-                    }
-                },
-            )),
             RouterConfig::RaptorCast(config) => Updater::boxed(RaptorCast::<
                 ST,
                 MonadMessage<ST, SCT>,

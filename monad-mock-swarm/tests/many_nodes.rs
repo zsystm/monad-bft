@@ -1,32 +1,20 @@
-mod common;
-use std::{
-    collections::BTreeSet,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeSet, time::Duration};
 
-use common::QuicSwarm;
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-    payload::StateRoot, txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
+    txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
-    fetch_metric,
-    mock::TimestamperConfig,
-    mock_swarm::SwarmBuilder,
-    node::NodeBuilder,
-    swarm_relation::NoSerSwarm,
-    terminator::UntilTerminator,
-    verifier::{happy_path_tick_by_block, MockSwarmVerifier},
+    mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
+    swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
 };
-use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_transformer::{BytesTransformer, GenericTransformer, LatencyTransformer, ID};
+use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
@@ -106,122 +94,5 @@ fn many_nodes_noser() {
     let node_ids = swarm.states().keys().copied().collect_vec();
     verifier.metrics_happy_path(&node_ids, &swarm);
 
-    assert!(verifier.verify(&swarm));
-}
-
-#[test]
-fn many_nodes_quic_latency() {
-    let zero_instant = Instant::now();
-
-    let delta = Duration::from_millis(100);
-    let vote_pace = Duration::from_millis(5);
-    let state_configs = make_state_configs::<QuicSwarm>(
-        40, // num_nodes
-        ValidatorSetFactory::default,
-        SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
-        || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        || {
-            StateRoot::new(
-                SeqNum(4), // state_root_delay
-            )
-        },
-        PeerAsyncStateVerify::new,
-        delta,              // delta
-        vote_pace,          // vote pace
-        0,                  // proposal_tx_limit
-        SeqNum(2000),       // val_set_update_interval
-        Round(50),          // epoch_start_delay
-        majority_threshold, // state root quorum threshold
-        SeqNum(100),        // state_sync_threshold
-    );
-    let all_peers: BTreeSet<_> = state_configs
-        .iter()
-        .map(|state_config| NodeId::new(state_config.key.pubkey()))
-        .collect();
-    let swarm_config = SwarmBuilder::<QuicSwarm>(
-        state_configs
-            .into_iter()
-            .enumerate()
-            .map(|(seed, state_builder)| {
-                let me = NodeId::new(state_builder.key.pubkey());
-                let state_backend = state_builder.state_backend.clone();
-                let validators = state_builder.forkpoint.validator_sets[0].clone();
-                NodeBuilder::<QuicSwarm>::new(
-                    ID::new(me),
-                    state_builder,
-                    QuicRouterSchedulerConfig::new(
-                        zero_instant,
-                        all_peers.clone(),
-                        me,
-                        seed.try_into().unwrap(),
-                        MockGossipConfig {
-                            all_peers: all_peers.iter().copied().collect(),
-                            me,
-                            message_delay: Duration::ZERO,
-                        }
-                        .build(),
-                        delta * 2,
-                        1000,
-                    )
-                    .build(),
-                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
-                    MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(
-                        state_backend,
-                        validators
-                            .validators
-                            .0
-                            .into_iter()
-                            .map(|v| v.node_id)
-                            .collect(),
-                    ),
-                    vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
-                    vec![],
-                    TimestamperConfig::default(),
-                    seed.try_into().unwrap(),
-                )
-            })
-            .collect(),
-    );
-
-    let mut swarm = swarm_config.build();
-    swarm.batch_step_until(&mut UntilTerminator::new().until_block(100));
-
-    let min_ledger_len = 100;
-    swarm_ledger_verification(&swarm, min_ledger_len);
-
-    // quic router scheduler loses the first message when it's handshaking
-    // handshake takes less than consensus round timer
-    // initial timeout is sent out at t=consensus_round_timer=4*delta
-    let mut verifier = MockSwarmVerifier::default()
-        .tick_range(happy_path_tick_by_block(100, delta) + 4 * delta, 10 * delta);
-
-    let node_ids = swarm.states().keys().copied().collect_vec();
-    verifier
-        .metric_exact(
-            &node_ids,
-            fetch_metric!(blocksync_events.self_headers_request),
-            0,
-        )
-        .metric_exact(
-            &node_ids,
-            fetch_metric!(blocksync_events.self_payload_request),
-            0,
-        )
-        // handle proposal for all blocks in ledger
-        .metric_minimum(
-            &node_ids,
-            fetch_metric!(consensus_events.handle_proposal),
-            min_ledger_len as u64,
-        )
-        // vote for all blocks in ledger
-        .metric_minimum(
-            &node_ids,
-            fetch_metric!(consensus_events.created_vote),
-            min_ledger_len as u64,
-        );
     assert!(verifier.verify(&swarm));
 }

@@ -1,5 +1,3 @@
-mod common;
-
 mod test {
     use std::{
         collections::{BTreeSet, HashSet},

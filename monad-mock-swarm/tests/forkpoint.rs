@@ -1,5 +1,3 @@
-mod common;
-
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;

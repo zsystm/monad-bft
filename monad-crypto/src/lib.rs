@@ -2,9 +2,6 @@ use std::fmt::{Debug, Display};
 
 use hasher::{Hashable, Hasher};
 
-#[cfg(feature = "rustls")]
-pub mod rustls;
-
 pub mod convert;
 pub mod hasher;
 

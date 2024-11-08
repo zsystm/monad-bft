@@ -1,4 +1,3 @@
-mod common;
 use std::{collections::BTreeSet, env};
 
 use itertools::Itertools;

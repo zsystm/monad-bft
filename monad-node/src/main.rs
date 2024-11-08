@@ -22,10 +22,8 @@ use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
-use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
-use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 #[cfg(feature = "full-node")]
 use monad_router_filter::FullNodeRouterFilter;
@@ -34,7 +32,7 @@ use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{
-    Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, Stake, GENESIS_SEQ_NUM,
+    Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
@@ -158,14 +156,7 @@ async fn run(
         .expect("no validator sets")
         .clone();
 
-    let router: BoxUpdater<_, _> = if checkpoint_validators_first
-        .validators
-        .0
-        .iter()
-        .filter(|node| node.stake != Stake(0))
-        .count()
-        > 1
-    {
+    let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
             MonadMessage<SignatureType, SignatureCollectionType>,
             VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
@@ -181,35 +172,6 @@ async fn run(
         let raptor_router = FullNodeRouterFilter::new(raptor_router);
 
         <_ as Updater<_>>::boxed(raptor_router)
-    } else {
-        let gossip = MockGossipConfig {
-            all_peers: checkpoint_validators_first
-                .validators
-                .0
-                .iter()
-                .map(|peer| NodeId::new(peer.node_id.pubkey()))
-                .collect(),
-            me: NodeId::new(node_state.secp256k1_identity.pubkey()),
-            message_delay: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
-        }
-        .build()
-        .boxed();
-        let mock_router = build_mockgossip_router::<
-            MonadMessage<SignatureType, SignatureCollectionType>,
-            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-            _,
-        >(
-            node_state.node_config.network.clone(),
-            &node_state.router_identity,
-            &node_state.node_config.bootstrap.peers,
-            gossip,
-        )
-        .await;
-
-        #[cfg(feature = "full-node")]
-        let mock_router = FullNodeRouterFilter::new(mock_router);
-
-        <_ as Updater<_>>::boxed(mock_router)
     };
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
@@ -558,39 +520,6 @@ fn resolve_domain(domain: &String) -> SocketAddr {
         .unwrap_or_else(|err| panic!("unable to resolve address={}, err={:?}", domain, err))
         .next()
         .unwrap_or_else(|| panic!("couldn't look up address={}", domain))
-}
-
-async fn build_mockgossip_router<M, OM, G>(
-    network_config: NodeNetworkConfig,
-    identity: &<SignatureType as CertificateSignature>::KeyPairType,
-    peers: &[NodeBootstrapPeerConfig],
-    gossip: G,
-) -> Service<SafeQuinnConfig<SignatureType>, G, M, OM>
-where
-    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>> + Send + 'static,
-    M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
-    <M as Deserializable<Bytes>>::ReadError: 'static,
-    OM: Serializable<Bytes> + Send + Sync + 'static,
-{
-    Service::new(
-        ServiceConfig {
-            me: NodeId::new(identity.pubkey()),
-            server_address: SocketAddr::V4(SocketAddrV4::new(
-                network_config.bind_address_host,
-                network_config.bind_address_port,
-            )),
-            quinn_config: SafeQuinnConfig::new(
-                identity,
-                Duration::from_millis(network_config.max_rtt_ms),
-                network_config.max_mbps,
-            ),
-            known_addresses: peers
-                .iter()
-                .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
-                .collect(),
-        },
-        gossip,
-    )
 }
 
 /// Returns (otel_context, expiry)

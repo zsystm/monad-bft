@@ -5,7 +5,7 @@ use std::{
 };
 
 use clap::Parser;
-use executor::{LedgerConfig, MonadP2PGossipConfig, StateRootHashConfig};
+use executor::{LedgerConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
@@ -18,10 +18,6 @@ use monad_crypto::certificate_signature::{
     CertificateSignatureRecoverable,
 };
 use monad_executor::Executor;
-use monad_gossip::{
-    gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, seeder::SeederConfig,
-};
-use monad_quic::{SafeQuinnConfig, ServiceConfig};
 use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
@@ -75,15 +71,7 @@ struct TestgroundArgs {
 }
 
 enum RouterArgs {
-    Local {
-        external_latency_ms: u64,
-    },
-    MonadP2P {
-        max_rtt_ms: u64,
-        /// bandwidth_Mbps is in Megabit/s
-        bandwidth_Mbps: u16,
-        gossip: GossipArgs,
-    },
+    Local { external_latency_ms: u64 },
     RaptorCast,
 }
 
@@ -153,18 +141,7 @@ async fn main() {
         val_set_update_interval: 2_000,
         epoch_start_delay: 50,
 
-        router: if false {
-            RouterArgs::MonadP2P {
-                max_rtt_ms: 200,
-                bandwidth_Mbps: 1_000,
-                gossip: GossipArgs::Raptor {
-                    timeout: Duration::from_millis(150),
-                    up_bandwidth_Mbps: 1_000,
-                },
-            }
-        } else {
-            RouterArgs::RaptorCast
-        },
+        router: RouterArgs::RaptorCast,
         ledger: LedgerArgs::Mock,
     };
 
@@ -266,7 +243,7 @@ where
             external_latency_ms,
         } => {
             let local_routers = LocalRouterConfig {
-                all_peers: all_peers.clone(),
+                all_peers,
                 external_latency: Duration::from_millis(external_latency_ms),
             }
             .build();
@@ -294,54 +271,6 @@ where
                         RouterArgs::Local { .. } => RouterConfig::Local(
                             maybe_local_routers.as_mut().unwrap().remove(&me).unwrap(),
                         ),
-                        RouterArgs::MonadP2P {
-                            max_rtt_ms,
-                            bandwidth_Mbps,
-                            gossip,
-                        } => RouterConfig::MonadP2P {
-                            config: ServiceConfig {
-                                me,
-                                server_address: address.parse().unwrap(),
-                                quinn_config: SafeQuinnConfig::new(
-                                    &keypair,
-                                    Duration::from_millis(*max_rtt_ms),
-                                    *bandwidth_Mbps,
-                                ),
-                                known_addresses: known_addresses.clone(),
-                            },
-                            gossip_config: match gossip {
-                                GossipArgs::Simple => {
-                                    MonadP2PGossipConfig::Simple(MockGossipConfig {
-                                        all_peers: validators.0.iter().map(|v| v.node_id).collect(),
-                                        me,
-                                        message_delay: Duration::ZERO,
-                                    })
-                                }
-                                GossipArgs::Gossipsub { fanout } => {
-                                    MonadP2PGossipConfig::Gossipsub(UnsafeGossipsubConfig {
-                                        seed: rand::random(),
-                                        me,
-                                        all_peers: all_peers.clone(),
-                                        fanout: *fanout,
-                                    })
-                                }
-                                GossipArgs::Raptor {
-                                    timeout,
-                                    up_bandwidth_Mbps,
-                                } => MonadP2PGossipConfig::Raptor(SeederConfig {
-                                    all_peers: all_peers.clone(),
-                                    key: Box::leak(Box::new(unsafe {
-                                        std::ptr::read::<<ST as CertificateSignature>::KeyPairType>(
-                                            &keypair
-                                                as *const <ST as CertificateSignature>::KeyPairType,
-                                        )
-                                    })),
-                                    timeout: *timeout,
-                                    up_bandwidth_Mbps: *up_bandwidth_Mbps,
-                                    chunker_poll_interval: Duration::from_millis(10),
-                                }),
-                            },
-                        },
                         RouterArgs::RaptorCast => RouterConfig::RaptorCast(RaptorCastConfig {
                             key: keypair,
                             known_addresses: known_addresses.clone(),
