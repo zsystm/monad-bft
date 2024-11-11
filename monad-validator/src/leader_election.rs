@@ -8,9 +8,17 @@ use monad_types::{NodeId, Round, Stake};
 #[auto_impl(Box)]
 pub trait LeaderElection {
     type NodeIdPubKey: PubKey;
+
     fn get_leader(
         &self,
         round: Round,
         validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> NodeId<Self::NodeIdPubKey>;
+
+    fn next_leader_round(
+        &self,
+        current_round: Round,
+        leader: NodeId<Self::NodeIdPubKey>,
+        validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
+    ) -> Option<Round>;
 }

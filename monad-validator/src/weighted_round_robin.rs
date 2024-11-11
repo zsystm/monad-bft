@@ -68,6 +68,25 @@ impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
             .unwrap_err();
         *stake_bounds[upper_bound].0
     }
+
+    fn next_leader_round(
+        &self,
+        current_round: Round,
+        leader: NodeId<Self::NodeIdPubKey>,
+        validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
+    ) -> Option<Round> {
+        let mut round = current_round;
+
+        while round < current_round + Round(32) {
+            if self.get_leader(round, validators) == leader {
+                return Some(round);
+            }
+
+            round += Round(1);
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]

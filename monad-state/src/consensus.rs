@@ -27,10 +27,12 @@ use monad_executor_glue::{
     StateSyncEvent, TimeoutVariant, TimerCommand, TimestampCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{NodeId, SeqNum};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection,
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use tracing::info;
 
@@ -158,6 +160,7 @@ where
                                 );
                                 cmds.push(WrappedConsensusCommand {
                                     state_root_delay: self.state_root_validator.get_delay(),
+                                    next_leader_round: self.get_next_leader_round(),
                                     command: ConsensusCommand::RequestStateSync {
                                         root: new_root,
                                         high_qc: new_high_qc,
@@ -228,10 +231,12 @@ where
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
+
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: consensus.state_root_validator.get_delay(),
+                state_root_delay: self.state_root_validator.get_delay(),
+                next_leader_round: self.get_next_leader_round(),
                 command: cmd,
             })
             .collect::<Vec<_>>()
@@ -275,7 +280,8 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: consensus.state_root_validator.get_delay(),
+                state_root_delay: self.state_root_validator.get_delay(),
+                next_leader_round: self.get_next_leader_round(),
                 command: cmd,
             })
             .collect::<Vec<_>>()
@@ -314,6 +320,26 @@ where
 
         Ok((author, validated_mesage.into_inner()))
     }
+
+    fn get_next_leader_round(&mut self) -> Option<Round> {
+        let ConsensusMode::Live(mode) = self.consensus else {
+            return None;
+        };
+
+        self.leader_election.next_leader_round(
+            mode.get_current_round(),
+            *self.nodeid,
+            self.val_epoch_map
+                .get_val_set(
+                    &self
+                        .epoch_manager
+                        .get_epoch(mode.get_current_round())
+                        .expect("epoch exists"),
+                )
+                .expect("valset exists")
+                .get_members(),
+        )
+    }
 }
 
 pub(super) struct WrappedConsensusCommand<ST, SCT>
@@ -322,6 +348,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     state_root_delay: SeqNum,
+    next_leader_round: Option<Round>,
     command: ConsensusCommand<ST, SCT>,
 }
 
@@ -332,12 +359,26 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn from(wrapped: WrappedConsensusCommand<ST, SCT>) -> Self {
+        let WrappedConsensusCommand {
+            state_root_delay,
+            next_leader_round,
+            command,
+        } = wrapped;
+
         let mut parent_cmds: Vec<Command<_, _, _>> = Vec::new();
 
-        match wrapped.command {
-            ConsensusCommand::EnterRound(epoch, round) => parent_cmds.push(Command::RouterCommand(
-                RouterCommand::UpdateCurrentRound(epoch, round),
-            )),
+        match command {
+            ConsensusCommand::EnterRound(epoch, round) => {
+                parent_cmds.push(Command::RouterCommand(RouterCommand::UpdateCurrentRound(
+                    epoch, round,
+                )));
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::MempoolEvent(MempoolEvent::RoundUpdate {
+                        current_round: round,
+                        next_leader_round,
+                    }),
+                )));
+            }
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
                     target,
@@ -396,8 +437,8 @@ where
                     // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
                     // exactly `delay` number of roots
                     StateRootHashCommand::CancelBelow(
-                        (last_block.get_seq_num() + SeqNum(1)).max(wrapped.state_root_delay)
-                            - wrapped.state_root_delay,
+                        (last_block.get_seq_num() + SeqNum(1)).max(state_root_delay)
+                            - state_root_delay,
                     ),
                 ));
                 parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(blocks)));
@@ -405,11 +446,6 @@ where
             ConsensusCommand::CheckpointSave(checkpoint) => parent_cmds.push(
                 Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
             ),
-            ConsensusCommand::ClearMempool => {
-                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::MempoolEvent(MempoolEvent::Clear),
-                )));
-            }
             ConsensusCommand::TimestampUpdate(t) => {
                 parent_cmds.push(Command::TimestampCommand(TimestampCommand::AdjustDelta(t)))
             }

@@ -5,7 +5,8 @@ use monad_consensus_types::{
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::SeqNum;
+use monad_types::{Round, SeqNum};
+use tracing::info;
 
 use super::event::EthTxPoolEventLoopEvent;
 use crate::storage::EthTxPoolStorage;
@@ -19,6 +20,8 @@ where
 {
     storage: EthTxPoolStorage,
     events: Vec<EthTxPoolEventLoopEvent<SCT>>,
+    current_round: Round,
+    next_leader_round: Option<Round>,
 }
 
 impl<SCT> EthTxPoolEventLoopState<SCT>
@@ -29,6 +32,8 @@ where
         Arc::new(Mutex::new(Self {
             storage: EthTxPoolStorage::new(block_policy),
             events: Vec::default(),
+            current_round: Round(0),
+            next_leader_round: None,
         }))
     }
 
@@ -53,8 +58,12 @@ where
         SBT: StateBackend,
     {
         self.process_filtered_events(|event| match event {
-            EthTxPoolEventLoopEvent::CommittedBlock(_) => true,
-            EthTxPoolEventLoopEvent::TxBatch(_) | EthTxPoolEventLoopEvent::Clear => false,
+            EthTxPoolEventLoopEvent::CommittedBlock(_)
+            | EthTxPoolEventLoopEvent::RoundUpdate {
+                current_round: _,
+                next_leader_round: _,
+            } => true,
+            EthTxPoolEventLoopEvent::TxBatch(_) => false,
         });
 
         self.storage.create_proposal(
@@ -88,8 +97,26 @@ where
             EthTxPoolEventLoopEvent::CommittedBlock(committed_block) => {
                 self.storage.update_committed_block(committed_block);
             }
-            EthTxPoolEventLoopEvent::Clear => {
-                self.storage.clear();
+            EthTxPoolEventLoopEvent::RoundUpdate {
+                current_round: new_current_round,
+                next_leader_round: new_next_leader_round,
+            } => {
+                if let Some(next_leader_round) = self.next_leader_round {
+                    if self.current_round == next_leader_round
+                        && self
+                            .current_round
+                            .0
+                            .checked_add(1)
+                            .expect("round number does not overflow")
+                            == new_current_round.0
+                    {
+                        info!("txpool fake clear");
+                        self.storage.clear();
+                    }
+                }
+
+                self.current_round = new_current_round;
+                self.next_leader_round = new_next_leader_round;
             }
         }
     }

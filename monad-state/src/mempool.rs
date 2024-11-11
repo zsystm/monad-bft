@@ -106,9 +106,10 @@ where
     ) -> Vec<MempoolCommand<CertificateSignaturePubKey<ST>>> {
         let ConsensusMode::Live(consensus) = self.consensus else {
             tracing::trace!("ignoring MempoolEvent, not live yet");
-            self.txpool.clear();
+            // TODO(andr-dev): We probably want the RoundUpdate message from below even during blocksync
             return vec![];
         };
+
         match event {
             MempoolEvent::UserTxns(txns) => {
                 let num_txns = txns.len() as u64;
@@ -153,8 +154,12 @@ where
 
                 vec![]
             }
-            MempoolEvent::Clear => {
-                self.txpool.clear();
+            MempoolEvent::RoundUpdate {
+                current_round,
+                next_leader_round,
+            } => {
+                self.txpool
+                    .process_round_update(current_round, next_leader_round);
                 vec![]
             }
         }

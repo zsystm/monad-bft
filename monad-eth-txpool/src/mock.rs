@@ -7,7 +7,7 @@ use monad_consensus_types::{
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::EthTransaction;
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::SeqNum;
+use monad_types::{Round, SeqNum};
 
 use crate::{storage::EthTxPoolStorage, MAX_PROPOSAL_SIZE};
 
@@ -49,6 +49,10 @@ impl MockEthTxPool {
     {
         self.storage
             .promote_pending::<SCT, SBT>(block_policy, state_backend, max_promotable)
+    }
+
+    pub fn clear(&mut self) {
+        self.storage.clear();
     }
 }
 
@@ -96,7 +100,5 @@ where
             .update_committed_block(committed_block.to_owned())
     }
 
-    fn clear(&mut self) {
-        self.storage.clear();
-    }
+    fn process_round_update(&mut self, current_round: Round, next_leader_round: Option<Round>) {}
 }

@@ -6,7 +6,7 @@ use monad_consensus_types::{
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::EthTransaction;
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::SeqNum;
+use monad_types::{Round, SeqNum};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use self::event_loop::{EthTxPoolEventLoop, EthTxPoolEventLoopClient};
@@ -102,9 +102,9 @@ where
             .expect("committed block notify succeeds");
     }
 
-    fn clear(&mut self) {
+    fn process_round_update(&mut self, current_round: Round, next_leader_round: Option<Round>) {
         self.event_loop_client
-            .notify_clear()
-            .expect("clear notify succeeds")
+            .notify_round_update(current_round, next_leader_round)
+            .expect("round update notify succeeds")
     }
 }

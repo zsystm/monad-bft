@@ -1,7 +1,7 @@
 use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::SeqNum;
+use monad_types::{Round, SeqNum};
 
 use crate::{
     block::{BlockPolicy, PassthruBlockPolicy},
@@ -56,12 +56,9 @@ where
         state_backend: &SBT,
     ) -> Result<FullTransactionList, StateBackendError>;
 
-    /// Optional callback on block commit
-    /// Can be used for clearing of stale txs from txpool
     fn update_committed_block(&mut self, committed_block: &BPT::ValidatedBlock);
 
-    /// Reclaims memory used by internal TxPool datastructures
-    fn clear(&mut self);
+    fn process_round_update(&mut self, current_round: Round, next_leader_round: Option<Round>);
 }
 
 use rand::RngCore;
@@ -117,11 +114,11 @@ where
         }
     }
 
-    fn clear(&mut self) {}
-
     fn update_committed_block(
         &mut self,
         _committed_block: &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
     ) {
     }
+
+    fn process_round_update(&mut self, _current_round: Round, _next_leader_round: Option<Round>) {}
 }

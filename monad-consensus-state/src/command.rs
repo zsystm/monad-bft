@@ -62,10 +62,6 @@ where
     /// Checkpoints periodically can upload/backup the ledger and garbage collect persisted events
     /// if necessary
     CheckpointSave(Checkpoint<SCT>),
-    // TODO-2 add command for updating validator_set/round
-    // - to handle this command, we need to call message_state.set_round()
-    /// Issue to clear mempool
-    ClearMempool,
     TimestampUpdate(TimestampAdjustment),
     ScheduleVote {
         duration: Duration,

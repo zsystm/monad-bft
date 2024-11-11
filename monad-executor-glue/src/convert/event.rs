@@ -276,7 +276,13 @@ impl<PT: PubKey> From<&MempoolEvent<PT>> for ProtoMempoolEvent {
                     }),
                 })
             }
-            MempoolEvent::Clear => proto_mempool_event::Event::Clear(ProtoClearMempool {}),
+            MempoolEvent::RoundUpdate {
+                current_round,
+                next_leader_round,
+            } => proto_mempool_event::Event::RoundUpdate(ProtoRoundUpdate {
+                current_round: Some(current_round.into()),
+                next_leader_round: next_leader_round.as_ref().map(|v| v.into()),
+            }),
         };
         Self { event: Some(event) }
     }
@@ -304,7 +310,17 @@ impl<PT: PubKey> TryFrom<ProtoMempoolEvent> for MempoolEvent<PT> {
                         .tx,
                 }
             }
-            Some(proto_mempool_event::Event::Clear(_)) => MempoolEvent::Clear,
+            Some(proto_mempool_event::Event::RoundUpdate(ProtoRoundUpdate {
+                current_round,
+                next_leader_round,
+            })) => MempoolEvent::RoundUpdate {
+                current_round: current_round
+                    .ok_or(Self::Error::MissingRequiredField(
+                        "MempoolEvent::RoundUpdate.current_round".to_owned(),
+                    ))?
+                    .try_into()?,
+                next_leader_round: next_leader_round.map(|v| v.try_into()).transpose()?,
+            },
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),
             ))?,

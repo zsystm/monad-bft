@@ -20,7 +20,7 @@ use super::{PendingEthTxMap, ValidEthTransaction};
 
 mod list;
 
-const MAX_ADDRESSES: usize = 10_000;
+const MAX_ADDRESSES: usize = 1024 * 16;
 
 // TODO(andr-dev): This currently limits the number of unique addresses in a
 // proposal. This will be removed once we move the txpool into its own thread.

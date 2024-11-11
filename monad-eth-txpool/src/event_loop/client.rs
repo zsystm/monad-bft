@@ -9,7 +9,7 @@ use monad_consensus_types::{
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::EthTransaction;
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::SeqNum;
+use monad_types::{Round, SeqNum};
 use thiserror::Error;
 
 use super::{
@@ -91,10 +91,17 @@ where
         Ok(())
     }
 
-    pub fn notify_clear(&self) -> Result<(), EthTxPoolEventLoopClientError> {
+    pub fn notify_round_update(
+        &self,
+        current_round: Round,
+        next_leader_round: Option<Round>,
+    ) -> Result<(), EthTxPoolEventLoopClientError> {
         let mut state = self.lock_state()?;
 
-        state.add_event(EthTxPoolEventLoopEvent::Clear);
+        state.add_event(EthTxPoolEventLoopEvent::RoundUpdate {
+            current_round,
+            next_leader_round,
+        });
         self.new_event.notify_all();
 
         Ok(())

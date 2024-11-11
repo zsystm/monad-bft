@@ -35,7 +35,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             controller.pool
         },
         |pool| {
-            TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::clear(pool);
+            pool.clear();
         },
     );
 }

@@ -413,8 +413,10 @@ pub enum MempoolEvent<PT: PubKey> {
         sender: NodeId<PT>,
         txns: Vec<Bytes>,
     },
-    /// Remove transactions that were not included in proposal
-    Clear,
+    RoundUpdate {
+        current_round: Round,
+        next_leader_round: Option<Round>,
+    },
 }
 
 impl<PT: PubKey> Debug for MempoolEvent<PT> {
@@ -435,7 +437,14 @@ impl<PT: PubKey> Debug for MempoolEvent<PT> {
                     &txns.iter().map(Bytes::len).sum::<usize>(),
                 )
                 .finish(),
-            Self::Clear => f.debug_struct("Clear").finish(),
+            Self::RoundUpdate {
+                current_round,
+                next_leader_round,
+            } => f
+                .debug_struct("RoundUpdate")
+                .field("current_round", current_round)
+                .field("next_leader_round", next_leader_round)
+                .finish(),
         }
     }
 }
@@ -641,7 +650,12 @@ where
                     txns.len()
                 )
             }
-            MonadEvent::MempoolEvent(MempoolEvent::Clear) => "CLEARMEMPOOL".to_string(),
+            MonadEvent::MempoolEvent(MempoolEvent::RoundUpdate {
+                current_round,
+                next_leader_round,
+            }) => {
+                format!("MempoolEvent::RoundUpdate -- current round: {current_round:?}, next leader round: {next_leader_round:?}")
+            }
             MonadEvent::StateRootEvent(_) => "STATE_ROOT".to_string(),
             MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::LocalStateRoot(root)) => {
                 format!(

@@ -96,18 +96,21 @@ message ProtoUserTx {
   repeated bytes tx = 1;
 }
 
-message ProtoClearMempool {}
-
 message ProtoForwardedTxs {
   monad_proto.basic.ProtoNodeId sender = 1;
   monad_proto.message.ProtoForwardedTx forwarded_tx = 2;
+}
+
+message ProtoRoundUpdate {
+  monad_proto.basic.ProtoRound current_round = 1;
+  optional monad_proto.basic.ProtoRound next_leader_round = 2;
 }
 
 message ProtoMempoolEvent {
   oneof event {
     ProtoUserTx usertx = 1;
     ProtoForwardedTxs forwarded_txs = 2;
-    ProtoClearMempool clear = 3;
+    ProtoRoundUpdate round_update = 3;
   }
 }
 
