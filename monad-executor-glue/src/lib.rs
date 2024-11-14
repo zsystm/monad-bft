@@ -221,11 +221,6 @@ pub enum LoopbackCommand<E> {
     Forward(E),
 }
 
-#[derive(Debug)]
-pub enum TimestampCommand {
-    AdjustDelta(TimestampAdjustment),
-}
-
 pub enum StateSyncCommand<ST, EPT>
 where
     ST: CertificateSignatureRecoverable,

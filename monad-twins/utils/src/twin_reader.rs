@@ -16,6 +16,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
+    clock::AdjusterConfig,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::ValidatorSetData,
 };
@@ -134,7 +135,10 @@ where
                 block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
 
                 consensus_config: self.state_config.consensus_config,
-
+                adjuster_config: AdjusterConfig::Enabled {
+                    max_delta: 100,
+                    adjustment_period: 10001,
+                },
                 _phantom: PhantomData,
             },
             partition: self.partition.clone(),
@@ -372,6 +376,10 @@ where
                 _phantom: PhantomData,
             },
 
+            adjuster_config: AdjusterConfig::Enabled {
+                max_delta: 100,
+                adjustment_period: 10001,
+            },
             _phantom: PhantomData,
         })
         .collect();

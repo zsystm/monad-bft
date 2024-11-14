@@ -22,6 +22,7 @@ use monad_consensus_types::{
     },
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, RootInfo},
+    clock::Clock,
     metrics::Metrics,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, Rank},
@@ -49,6 +50,7 @@ use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
 
 pub mod command;
 pub mod timestamp;
+mod timestamp_adjuster;
 
 /// core consensus algorithm
 pub struct ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
@@ -132,7 +134,7 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, TS>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -144,6 +146,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    TS: Clock,
 {
     pub consensus: &'a mut ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
@@ -161,7 +164,7 @@ where
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
     /// Track local timestamp and validate proposal timestamps
-    pub block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey>,
+    pub block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey, TS>,
 
     /// Destination address for proposal payments
     pub beneficiary: &'a [u8; 20],
@@ -311,8 +314,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, TS>
+    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, TS>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -324,6 +327,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    TS: Clock,
 {
     /// handles the local timeout expiry event
     pub fn handle_timeout_expiry(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
@@ -591,6 +595,7 @@ where
                 // only update timestamp if the block advanced us our round
                 if block_round > original_round {
                     info!(?ts_delta, "update timestamp");
+                    self.block_timestamp.handle_adjustment(ts_delta);
                     cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
                 }
             }
@@ -1663,6 +1668,8 @@ mod test {
         },
         block_validator::BlockValidator,
         checkpoint::RootInfo,
+        clock::{AdjusterConfig, Clock, TestClock},
+        ledger::CommitResult,
         metrics::Metrics,
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
         quorum_certificate::QuorumCertificate,
@@ -1741,7 +1748,7 @@ mod test {
         tracing::subscriber::set_global_default(subscriber);
     }
 
-    struct NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>
+    struct NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT, CL>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1753,6 +1760,7 @@ mod test {
         SBT: StateBackend,
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        CL: Clock,
     {
         consensus_state: ConsensusState<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>,
 
@@ -1766,7 +1774,7 @@ mod test {
         block_validator: BVT,
         block_policy: BPT,
         state_backend: SBT,
-        block_timestamp: BlockTimestamp<SCT::NodeIdPubKey>,
+        block_timestamp: BlockTimestamp<SCT::NodeIdPubKey, CL>,
         beneficiary: [u8; 20],
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
         consensus_config: ConsensusConfig<MockChainConfig, MockChainRevision>,
@@ -1775,7 +1783,7 @@ mod test {
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     }
 
-    impl<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT> NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>
+    impl<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT, CL> NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT, CL>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1787,6 +1795,7 @@ mod test {
         SBT: StateBackend,
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        CL: Clock,
     {
         fn wrapped_state(
             &mut self,
@@ -1799,6 +1808,7 @@ mod test {
             VTF,
             LT,
             BVT,
+            CL,
             MockChainConfig,
             MockChainRevision,
         > {
@@ -1956,6 +1966,7 @@ mod test {
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
+        CL: Clock,
     >(
         num_states: u32,
         valset_factory: VTF,
@@ -1966,7 +1977,7 @@ mod test {
         execution_delay: SeqNum,
     ) -> (
         EnvContext<ST, SCT, EPT, VTF, LT>,
-        Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>>,
+        Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT, CL>>,
     )
     where
         EPT::FinalizedHeader: MockableFinalizedHeader,
@@ -1983,7 +1994,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, _, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -2043,7 +2054,7 @@ mod test {
                     block_validator: block_validator(),
                     block_policy: block_policy(),
                     state_backend: state_backend(),
-                    block_timestamp: BlockTimestamp::new(1000, 1),
+                    block_timestamp: BlockTimestamp::new(1000, 1, AdjusterConfig::Disabled),
                     beneficiary: Default::default(),
                     nodeid: NodeId::new(keys[i as usize].pubkey()),
                     consensus_config,
@@ -2261,20 +2272,6 @@ mod test {
             .collect()
     }
 
-    fn find_timestamp_update_cmd<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT>],
-    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT>>
-    where
-        ST: CertificateSignatureRecoverable,
-        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
-    {
-        cmds.iter()
-            .find(|c| matches!(c, ConsensusCommand::TimestampUpdate(_)))
-    }
-
     // genesis_qc start with "0" sequence number and Round(0)
     // hence round == seqnum if no round times out
     fn seqnum_to_round_no_tc(seq_num: SeqNum) -> Round {
@@ -2296,6 +2293,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -2355,6 +2353,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2399,6 +2398,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2447,6 +2447,7 @@ mod test {
         );
     }
 
+    #[traced_test]
     #[test]
     fn scheduled_vote_round() {
         let num_state = 4;
@@ -2460,6 +2461,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2482,99 +2484,6 @@ mod test {
     }
 
     #[ignore]
-    #[test]
-    fn timestamp_update_only_for_higher_round() {
-        let num_state = 4;
-        let execution_delay = SeqNum::MAX;
-        let (mut env, mut ctx) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            EthExecutionProtocol,
-            BlockPolicyType,
-            StateBackendType,
-            BlockValidatorType,
-            _,
-            _,
-        >(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0),
-            execution_delay,
-        );
-        for ctx in &mut ctx {
-            ctx.wrapped_state().block_timestamp.update_time(1000);
-        }
-
-        let mut wrapped_state = ctx[0].wrapped_state();
-
-        // our initial starting logic has consensus in round 1 so the first proposal does not
-        // increase the round
-        let p1 = env.next_proposal_empty();
-        let (author, _, verified_message) = p1.destructure();
-        let _cmds = wrapped_state.handle_proposal_message(author, verified_message);
-
-        let p2 = env.next_proposal_empty();
-        let (author, _, verified_message) = p2.destructure();
-
-        let val_set = wrapped_state
-            .val_epoch_map
-            .get_val_set(
-                &wrapped_state
-                    .epoch_manager
-                    .get_epoch(verified_message.block_header.round)
-                    .unwrap(),
-            )
-            .unwrap();
-        let val_data = val_set
-            .get_members()
-            .iter()
-            .map(
-                |(node_id, stake)| crate::ValidatorData::<SignatureCollectionType> {
-                    node_id: *node_id,
-                    stake: *stake,
-                    cert_pubkey: node_id.pubkey(),
-                },
-            )
-            .collect::<Vec<_>>();
-
-        wrapped_state
-            .block_timestamp
-            .update_validators(&val_data, wrapped_state.nodeid);
-
-        for _ in 0..30 {
-            wrapped_state.block_timestamp.tick();
-        }
-        std::thread::sleep(Duration::from_millis(1));
-        for val in val_set.get_members().keys() {
-            wrapped_state
-                .block_timestamp
-                .pong_received(*val, PingSequence(1));
-        }
-        let leader = wrapped_state.election.get_leader(Round(1), val_set.get_members());
-        wrapped_state.block_timestamp.vote_sent(Round(1), &leader);
-        let cmds = wrapped_state.handle_proposal_message(author, verified_message.clone());
-        assert!(find_timestamp_update_cmd(&cmds).is_some());
-
-        // send same proposal again -- its valid but won't increase round so should not produce a
-        // timestamp delta
-        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(find_timestamp_update_cmd(&cmds).is_none());
-
-        for _ in 0..4 {
-            env.next_proposal_empty();
-        }
-        let p7 = env.next_proposal_empty();
-        let (author, _, verified_message) = p7.destructure();
-        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(
-            find_timestamp_update_cmd(&cmds).is_none(),
-            "no timestamp adjustment because did not vote previous round"
-        );
-    }
-
     #[test]
     fn test_out_of_order_proposals() {
         // Permutation of 1 message isn't interesting to test. Plus p4 can
@@ -2602,6 +2511,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2693,6 +2603,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2785,6 +2696,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2863,6 +2775,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -3105,6 +3018,63 @@ mod test {
         assert_eq!(wrapped_state.metrics.consensus_events.rx_no_path_to_root, 1);
     }
 
+    /// Test the behaviour of consensus when execution is lagging. This is tested
+    /// by handling a non-empty proposal which is missing the state root hash (lagging execution)
+    #[test]
+    fn test_lagging_execution() {
+        let num_state = 4;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            StateRoot,
+            _,
+            _,
+            TestClock,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
+            || MockValidator,
+            MockTxPool::default(),
+            || StateRoot::new(SeqNum(1)),
+        );
+        let mut wrapped_state = ctx[0].wrapped_state();
+
+        env.next_proposal(
+            FullTransactionList::new(vec![0xaa].into()),
+            StateRootHash::default(),
+        );
+
+        let p1 = env.next_proposal(
+            FullTransactionList::new(vec![0xaa].into()),
+            StateRootHash::default(),
+        );
+
+        let (author, _, verified_message) = p1.destructure();
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+
+        // the proposal still gets processed: the node enters a new round, and
+        // issues a request for the block it skipped over
+        assert_eq!(cmds.len(), 4);
+        assert!(matches!(cmds[0], ConsensusCommand::CheckpointSave { .. }));
+        assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
+        assert!(matches!(
+            cmds[2],
+            ConsensusCommand::Schedule { duration: _ }
+        ));
+        assert!(matches!(cmds[4], ConsensusCommand::RequestSync { .. }));
+        assert_eq!(
+            wrapped_state.metrics.consensus_events.rx_execution_lagging,
+            1
+        );
+    }
+
     /// Test consensus behavior when a state root hash is missing. This is
     /// tested by only updating consensus with one state root, then handling a
     /// proposal with state root lower than that
@@ -3121,6 +3091,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -3187,7 +3158,6 @@ mod test {
 
     /// Test consensus behaviour of a leader who is supposed to propose
     /// the next round but does not have a recent enough state root hash
-    /*
         #[traced_test]
         #[test]
         fn test_unavailable_state_root_during_proposal() {
@@ -3204,6 +3174,7 @@ mod test {
                 MissingNextStateRoot,
                 _,
                 _,
+                TestClock,
             >(
                 num_state,
                 ValidatorSetFactory::default(),
@@ -3309,6 +3280,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -3359,6 +3331,95 @@ mod test {
             .contains_key(&SeqNum(1)));
     }
 
+    #[test]
+    fn test_fetch_uncommitted_block() {
+        let num_state = 4;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+            TestClock,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || MockValidator,
+            MockTxPool::default(),
+            || NopStateRoot,
+        );
+        let node = &mut ctx[0];
+
+        let cp1 = env.next_proposal_empty();
+        let (author, _, verified_message) = cp1.destructure();
+        let block_1 = verified_message.block.clone();
+        let bid_correct = block_1.get_id();
+        // requesting a block that's doesn't exists should yield None
+        assert_eq!(
+            node.consensus_state.fetch_uncommitted_block(&bid_correct),
+            None
+        );
+        // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
+        let _ = node.handle_proposal_message(author, verified_message);
+        let full_block = node
+            .consensus_state
+            .fetch_uncommitted_block(&bid_correct)
+            .unwrap();
+        assert_eq!(full_block.get_id(), bid_correct);
+
+        // you can also receive a branch, which would cause pending block tree retrieval to also be valid
+        let bp1 = env.branch_proposal(
+            FullTransactionList::new(vec![13, 32].into()),
+            StateRootHash::default(),
+        );
+
+        let (author, _, verified_message) = bp1.destructure();
+        let block_1 = verified_message.block.clone();
+        let bid_branch = block_1.get_id();
+        assert_eq!(
+            node.consensus_state.fetch_uncommitted_block(&bid_branch),
+            None
+        );
+
+        let _ = node.handle_proposal_message(author, verified_message);
+        let full_block = node
+            .consensus_state
+            .fetch_uncommitted_block(&bid_branch)
+            .unwrap();
+        assert_eq!(full_block.get_id(), bid_branch);
+
+        let mut ledger_blocks = Vec::new();
+        // if a certain commit is triggered, then fetching block would fail
+        for _ in 0..3 {
+            let cp = env.next_proposal_empty();
+            let (author, _, verified_message) = cp.destructure();
+            let block = verified_message.block.clone();
+            let bid = block.get_id();
+            // requesting a block that's doesn't exists should yield None
+            assert_eq!(node.consensus_state.fetch_uncommitted_block(&bid), None);
+            // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
+
+            let cmds = node.handle_proposal_message(author, verified_message);
+
+            for cmd in cmds {
+                if let ConsensusCommand::LedgerCommit(blocks) = cmd {
+                    ledger_blocks.extend(blocks);
+                }
+            }
+            let full_block = node.consensus_state.fetch_uncommitted_block(&bid).unwrap();
+            assert_eq!(full_block.get_id(), bid);
+        }
+        assert!(ledger_blocks.iter().any(|x| x.get_id() == bid_correct));
+        assert!(ledger_blocks.iter().all(|x| x.get_id() != bid_branch));
+    }
+
     #[test_case(4; "4 participants")]
     #[test_case(5; "5 participants")]
     #[test_case(6; "6 participants")]
@@ -3375,6 +3436,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3481,6 +3543,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3551,6 +3614,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3598,6 +3662,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3721,6 +3786,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3792,6 +3858,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -3860,6 +3927,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -3966,6 +4034,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4063,6 +4132,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4176,6 +4246,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4326,6 +4397,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4446,6 +4518,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -4492,6 +4565,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4600,6 +4674,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4726,6 +4801,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4873,6 +4949,453 @@ mod test {
         assert!(block_4_blocktree_entry.is_coherent);
     }
 
+    /// Coherency check for a block with a valid first transaction from an account (nonce = 0) should
+    /// pass and the state should vote for the block
+    #[test]
+    fn test_coherent_block_zero_nonce() {
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            InMemoryState,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+            TestClock,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    SeqNum(4),
+                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // vote for block 1
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+        );
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+    }
+
+    /// Coherency check for a block with invalid first transaction should fail and
+    /// state should not vote for the block
+    #[test]
+    fn test_incoherent_block_invalid_nonce() {
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            InMemoryState,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+            TestClock,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    SeqNum(4),
+                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            // first nonce from an account should be 0. this tx list is invalid since the transaction
+            // has nonce = 1
+            generate_full_tx_list(vec![txn_nonce_one]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should not vote for block 1
+        assert!(find_vote_message(&cmds).is_none());
+        // block 1 should be in the blocktree as non coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(!block_1_blocktree_entry.is_coherent);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_incoherent_block_duplicate_nonce() {
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_zero_prime = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 1000);
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            InMemoryState,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+            TestClock,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    SeqNum(4),
+                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should vote for block 1
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+        );
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // state receives incoherent block 2
+        let cp = env.next_proposal(
+            // next nonce from this account must be 1. this tx is invalid since it has nonce = 0
+            generate_full_tx_list(vec![txn_nonce_zero_prime]),
+            StateRootHash::default(),
+        );
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block.get_id();
+
+        let _ = n1.handle_proposal_message(author_2, proposal_message_2);
+        // should not vote for block 2
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(2))
+        );
+        // block 2 should be in the blocktree as incoherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(!block_2_blocktree_entry.is_coherent);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_coherent_block_valid_nonce() {
+        let num_states = 2;
+
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_two = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 2, 10);
+        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 3, 10);
+
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            InMemoryState,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+            TestClock,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    SeqNum(4),
+                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1 with nonce zero txn
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should vote for block 1
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+        );
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // state receives block 2 with txns with nonce one and two
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_one, txn_nonce_two]),
+            StateRootHash::default(),
+        );
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
+        // should vote for block 2
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
+        );
+        // block 2 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // state receives block 3 with txns with nonce three
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_three]),
+            StateRootHash::default(),
+        );
+        let (author_3, _, proposal_message_3) = cp.destructure();
+        let block_3_id = proposal_message_3.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+        // should vote for block 3
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(3))
+        );
+        // should commit block 1
+        assert!(find_commit_cmd(&cmds).is_some());
+        // block 3 should be in the blocktree as coherent
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(block_3_blocktree_entry.is_coherent);
+
+        // block policy should be updated with latest account nonces from block 1
+        assert_eq!(
+            n1.block_policy
+                .get_account_base_nonces(
+                    SeqNum(4),
+                    &n1.state_backend,
+                    &Vec::<&EthValidatedBlock<SignatureCollectionType>>::default(),
+                    std::iter::once(&sender_1_address),
+                )
+                .unwrap()
+                .first_key_value()
+                .unwrap()
+                .1,
+            &1
+        );
+    }
+
+    #[test]
+    fn test_branched_coherent_block_valid_nonce() {
+        let num_states = 2;
+
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_1_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_2_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 1000);
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            InMemoryState,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+            TestClock,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    SeqNum(4),
+                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1 with nonce zero txn
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should vote for block 1
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+        );
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // state receives block 2 with nonce one txn
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_1_nonce_one]),
+            StateRootHash::default(),
+        );
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_round_2_id = proposal_message_2.block.get_id();
+
+        let _ = n1.handle_proposal_message(author_2, proposal_message_2);
+        // should vote for block 2
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
+        );
+        // block 2 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_round_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // the round times out, so the QC for block 2 is not created
+        let _timeouts = env.next_tc(Epoch(1));
+
+        // state receives block 2 (in round 3) with nonce one txn
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_2_nonce_one]),
+            StateRootHash::default(),
+        );
+        let (author_3, _, proposal_message_3) = cp.destructure();
+        let block_2_round_3_id = proposal_message_3.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+        // should vote for block 2 immediately after timeout
+        assert!(find_vote_message(&cmds).is_some());
+        // block 2 from round 3 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_round_3_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // block 2 from round 2 should also be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_round_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+    }
+
     /// Asserts that pacemaker epoch is brought to sync if blocktree commits
     /// bump the current epoch
     ///
@@ -4895,6 +5418,7 @@ mod test {
             EthValidator<SignatureType, SignatureCollectionType, InMemoryState>,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),

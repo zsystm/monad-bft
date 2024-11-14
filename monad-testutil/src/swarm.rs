@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::ConsensusFullBlock, signature_collection::SignatureCollection,
+    block::ConsensusFullBlock, signature_collection::SignatureCollection, clock::AdjusterConfig,
     validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
@@ -98,6 +98,10 @@ pub fn make_state_configs<S: SwarmRelation>(
                 _phantom: PhantomData,
             },
 
+            adjuster_config: AdjusterConfig::Enabled {
+                max_delta: 10000,
+                adjustment_period: 9,
+            },
             _phantom: PhantomData,
         })
         .collect()

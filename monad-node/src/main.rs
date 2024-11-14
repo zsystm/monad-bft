@@ -11,7 +11,10 @@ use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
+use monad_consensus_types::{
+    metrics::Metrics, signature_collection::SignatureCollection};
+    clock::{AdjusterConfig, SystemClock},
+};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -340,11 +343,12 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             chain_config: node_state.chain_config,
             timestamp_latency_estimate_ns: 20_000_000,
             _phantom: Default::default(),
-        },
+        }
+        adjuster_config: AdjusterConfig::Disabled, // TODO: enable timestamp adjuster
         _phantom: PhantomData,
     };
 
-    let (mut state, init_commands) = builder.build();
+    let (mut state, init_commands) = builder.build::<SystemClock>();
     executor.exec(init_commands);
 
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_tip = last_ledger_tip.0);

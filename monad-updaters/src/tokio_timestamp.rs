@@ -8,6 +8,7 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::signature_collection::SignatureCollection;
+<<<<<<< HEAD
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -21,17 +22,18 @@ use crate::timestamp::TimestampAdjuster;
 pub struct TokioTimestamp<ST, SCT, EPT> {
     /// create timestamp events at this interval
     interval: Interval,
-    adjuster: TimestampAdjuster,
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
 impl<ST, SCT, EPT> TokioTimestamp<ST, SCT, EPT> {
-    pub fn new(period: Duration, max_delta_ns: u128, adjustment_period: usize) -> Self {
+    pub fn new(period: Duration) -> Self {
         Self {
             interval: tokio::time::interval(period),
-            adjuster: TimestampAdjuster::new(max_delta_ns, adjustment_period),
             metrics: Default::default(),
+
+        Self {
+            interval: tokio::time::interval(period),
             _phantom: PhantomData,
         }
     }
@@ -40,13 +42,6 @@ impl<ST, SCT, EPT> TokioTimestamp<ST, SCT, EPT> {
 impl<ST, SCT, EPT> Executor for TokioTimestamp<ST, SCT, EPT> {
     type Command = TimestampCommand;
 
-    fn exec(&mut self, commands: Vec<Self::Command>) {
-        for command in commands {
-            match command {
-                TimestampCommand::AdjustDelta(t) => self.adjuster.handle_adjustment(t),
-            }
-        }
-    }
     fn metrics(&self) -> ExecutorMetricsChain {
         self.metrics.as_ref().into()
     }
@@ -64,15 +59,14 @@ where
         let this = self.deref_mut();
 
         match this.interval.poll_tick(cx) {
-            Poll::Ready(_) => {
-                let start = SystemTime::now();
-                let epoch_time = start
+            Poll::Ready(_) => Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(
+                SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Clock may have gone backwards");
-                let t = epoch_time.as_nanos();
-                // t += self.adjuster.get_adjustment();
-                Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(t)))
-            }
+                    .unwrap()
+                    .as_millis()
+                    .try_into()
+                    .unwrap(),
+            ))),
             Poll::Pending => Poll::Pending,
         }
     }

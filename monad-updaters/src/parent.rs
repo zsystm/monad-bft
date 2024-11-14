@@ -13,7 +13,7 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     CheckpointCommand, Command, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
     LoopbackCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, TimerCommand,
-    TimestampCommand, TxPoolCommand,
+    TxPoolCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
@@ -68,7 +68,6 @@ where
             ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
-            timestamp_cmds,
             txpool_cmds,
             control_panel_cmds,
             loopback_cmds,
@@ -81,8 +80,8 @@ where
         self.ledger.exec(ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
-        self.timestamp.exec(timestamp_cmds);
         self.txpool.exec(txpool_cmds);
+        self.loopback.exec(loopback_cmds);
         self.control_panel.exec(control_panel_cmds);
         self.loopback.exec(loopback_cmds);
         self.state_sync.exec(state_sync_cmds);

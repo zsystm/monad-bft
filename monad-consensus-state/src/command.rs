@@ -11,7 +11,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, OptimisticPolicyCommit},
-    checkpoint::Checkpoint,
+    checkpoint::{Checkpoint, RootInfo},
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -90,7 +90,8 @@ where
     },
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
-    TimestampUpdate(TimestampAdjustment),
+    /// Issue to clear mempool
+    ClearMempool,
     ScheduleVote {
         duration: Duration,
         round: Round,

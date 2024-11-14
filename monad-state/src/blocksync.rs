@@ -5,8 +5,7 @@ use monad_blocksync::blocksync::{
 };
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
-    signature_collection::SignatureCollection,
+    block::BlockPolicy, block_validator::BlockValidator, clock::Clock, metrics::Metrics,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -62,7 +61,7 @@ where
     CRT: ChainRevision,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,

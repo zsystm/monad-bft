@@ -6,6 +6,7 @@ use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
     signature_collection::SignatureCollection,
+    clock::{AdjusterConfig, TestClock},
     validator_data::ValidatorSetData,
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -147,9 +148,7 @@ type MonadStateType<ST, SCT> = MonadState<
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     MockValidator,
-    MockChainConfig,
-    MockChainRevision,
->;
+    TestClock>;
 
 pub struct StateConfig<ST, SCT>
 where
@@ -202,7 +201,7 @@ where
         forkpoint: Forkpoint::genesis(config.validators),
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
-
+        adjuster_config: AdjusterConfig::Disabled,
         _phantom: PhantomData,
     }
     .build()

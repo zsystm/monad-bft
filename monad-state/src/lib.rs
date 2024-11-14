@@ -28,6 +28,7 @@ use monad_consensus_types::{
     block::{BlockPolicy, OptimisticCommit},
     block_validator::BlockValidator,
     checkpoint::Checkpoint,
+    clock::{AdjusterConfig, Clock},
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -313,7 +314,7 @@ where
     }
 }
 
-pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -324,6 +325,7 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     keypair: ST::KeyPairType,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
@@ -343,7 +345,7 @@ where
     /// Maps the epoch number to validator stakes and certificate pubkeys
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
 
-    block_timestamp: BlockTimestamp<SCT::NodeIdPubKey>,
+    block_timestamp: BlockTimestamp<SCT::NodeIdPubKey, CL>,
     block_validator: BVT,
     block_policy: BPT,
     state_backend: SBT,
@@ -356,8 +358,8 @@ where
     version: MonadVersion,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -368,6 +370,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub fn consensus(&self) -> Option<&ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         match &self.consensus {
@@ -743,6 +746,7 @@ where
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
+    pub adjuster_config: AdjusterConfig,
 
     pub _phantom: PhantomData<EPT>,
 }
@@ -761,10 +765,10 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pub fn build(
+    pub fn build<CL: Clock>(
         self,
     ) -> (
-        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT. CL>,
         Vec<
             Command<
                 MonadEvent<ST, SCT, EPT>,
@@ -788,10 +792,11 @@ where
             self.val_set_update_interval,
             self.epoch_start_delay,
             &self.forkpoint.get_epoch_starts(),
+            self.adjuster_config,
         );
 
         let nodeid = NodeId::new(self.key.pubkey());
-        let block_timestamp = BlockTimestamp::new(
+        let block_timestamp = BlockTimestamp::<CL>::new(
             5 * self.consensus_config.delta.as_nanos(),
             self.consensus_config.timestamp_latency_estimate_ns,
         );
@@ -853,8 +858,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT,CL>
+    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -866,6 +871,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub fn update(
         &mut self,
