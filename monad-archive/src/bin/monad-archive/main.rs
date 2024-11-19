@@ -1,10 +1,13 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use archive_writer::ArchiveWriter;
 use clap::Parser;
+use cli::Cli;
+use eyre::bail;
 use futures::future::join_all;
+use kv_interface::{KVStore, S3Store};
 use reth_primitives::ReceiptWithBloom;
-use s3_archive::S3ArchiveWriter;
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
@@ -13,16 +16,11 @@ use tokio::{
 use tracing::{error, info, Level};
 use triedb::Triedb;
 
-use crate::{
-    archive_interface::ArchiveWriterInterface, cli::Cli, errors::ArchiveError,
-    s3_archive::S3Archive, triedb::TriedbEnv,
-};
+use monad_archive::*;
 
-mod archive_interface;
 mod cli;
-mod errors;
-mod s3_archive;
-mod triedb;
+
+use crate::{errors::ArchiveError, triedb::TriedbEnv};
 
 #[tokio::main]
 async fn main() -> Result<(), ArchiveError> {
@@ -30,20 +28,22 @@ async fn main() -> Result<(), ArchiveError> {
 
     let args = Cli::parse();
 
-    let max_concurrent_connections = args.max_concurrent_connections;
+    // TODO: support other store types for testing
+    let cli_base::StorageType::S3(s3_config) = args.storage else {
+        bail!("Only s3 storage supported currently");
+    };
 
-    let max_concurrent_blocks = args.max_concurrent_blocks;
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
+    let concurrent_block_semaphore = Arc::new(Semaphore::new(s3_config.max_concurrent_blocks));
 
     // This will spin off a polling thread
     let triedb = TriedbEnv::new(&args.triedb_path.unwrap());
 
     // Construct an s3 instance
-    let s3_archive =
-        S3Archive::new(args.s3_bucket, args.s3_region, max_concurrent_connections).await?;
-    let s3_archive_writer = S3ArchiveWriter::new(s3_archive).await?;
+    let store = S3Store::new(s3_config).await?;
+    let archive_writer = ArchiveWriter::new(store);
 
-    let mut latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or_default();
+    let mut latest_processed_block =
+        (archive_writer.get_latest_uploaded().await).unwrap_or_default();
 
     info!("Latest processed block is : {}", latest_processed_block);
 
@@ -76,7 +76,7 @@ async fn main() -> Result<(), ArchiveError> {
 
         let join_handles = (start_block_number..block_number + 1).map(|current_block: u64| {
             let triedb = triedb.clone();
-            let s3_archive_writer = s3_archive_writer.clone();
+            let s3_archive_writer = archive_writer.clone();
 
             let semaphore = concurrent_block_semaphore.clone();
             tokio::spawn(async move {
@@ -91,7 +91,7 @@ async fn main() -> Result<(), ArchiveError> {
 
         join_all(join_handles).await;
 
-        s3_archive_writer.update_latest(block_number).await?;
+        archive_writer.update_latest_uploaded(block_number).await?;
         latest_processed_block = block_number;
 
         let duration = start.elapsed();
@@ -99,10 +99,10 @@ async fn main() -> Result<(), ArchiveError> {
     }
 }
 
-async fn handle_block(
+async fn handle_block<KV: KVStore>(
     triedb: &TriedbEnv,
     current_block: u64,
-    s3_archive: &S3ArchiveWriter,
+    s3_archive: &ArchiveWriter<KV>,
 ) -> Result<(), ArchiveError> {
     /*  Store block & transaction inside block */
     let block_header = match triedb.get_block_header(current_block).await? {
@@ -128,10 +128,10 @@ async fn handle_block(
 
     let f_trace = s3_archive.archive_traces(traces.clone(), current_block);
 
-    /* Store hashs */
-    let f_hash = s3_archive.archive_hashes(transactions, receipts, traces, tx_hashes);
+    // /* Store hashs */
+    // let f_hash = s3_archive.archive_hashes(transactions, receipts, traces, tx_hashes);
 
-    match try_join!(f_block, f_receipt, f_trace, f_hash) {
+    match try_join!(f_block, f_receipt, f_trace) {
         Ok(_) => {
             info!("Successfully archived block {}", current_block);
         }

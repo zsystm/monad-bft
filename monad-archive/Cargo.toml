@@ -8,6 +8,10 @@ edition = "2021"
 name = "monad-archive"
 bench = false
 
+[[bin]]
+name = "txhash-indexer"
+bench = false
+
 [lib]
 bench = false
 
@@ -17,14 +21,23 @@ monad-triedb-utils = { path = "../monad-triedb-utils" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+eyre = { workspace = true }
 aws-config = { workspace = true }
+aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+dashmap = { workspace = true }
 hex = { workspace = true }
 schemars = "0.8.21"
 serde = { workspace = true }
-tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs", "sync"] }
+tokio = { workspace = true, features = [
+    "net",
+    "macros",
+    "rt-multi-thread",
+    "fs",
+    "sync",
+] }
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }

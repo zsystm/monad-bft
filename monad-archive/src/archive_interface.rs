@@ -2,12 +2,19 @@ use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 
 use crate::{errors::ArchiveError, triedb::BlockHeader};
 
+/*
 pub trait ArchiveWriterInterface {
-    // Get the latest stored block
-    async fn get_latest(&self) -> Result<u64, ArchiveError>;
+    /// Get the latest uploaded block
+    async fn get_latest_uploaded(&self) -> Result<u64, ArchiveError>;
 
-    // Update latest processed block
-    async fn update_latest(&self, block_num: u64) -> Result<(), ArchiveError>;
+    /// Get the latest indexed block
+    async fn get_latest_indexed(&self) -> Result<u64, ArchiveError>;
+
+    /// Update latest uploaded block
+    async fn update_latest_uploaded(&self, block_num: u64) -> Result<(), ArchiveError>;
+
+    /// Update latest indexed block
+    async fn update_latest_indexed(&self, block_num: u64) -> Result<(), ArchiveError>;
 
     /*
         Archive Block
@@ -47,6 +54,7 @@ pub trait ArchiveWriterInterface {
         tx_hashes: Vec<[u8; 32]>,
     ) -> Result<(), ArchiveError>;
 }
+*/
 
 pub trait ArchiveReaderInterface {
     // Get the latest stored block

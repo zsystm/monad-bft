@@ -9,6 +9,7 @@ use std::{
 
 use alloy_primitives::FixedBytes;
 use alloy_rlp::Decodable;
+use eyre::{bail, eyre, Context};
 use futures::channel::oneshot;
 use monad_triedb::TriedbHandle;
 use monad_triedb_utils::key::{create_triedb_key, KeyInput};
@@ -195,18 +196,14 @@ impl Triedb for TriedbEnv {
                 }))
         {
             error!("Polling thread channel full: {e}");
-            return Err(ArchiveError::custom_error(
-                "could not get latest block from triedb".to_string(),
-            ));
+            bail!("could not get latest block from triedb: {e}");
         }
 
         match request_receiver.await {
             Ok(block_num) => Ok(block_num),
             Err(e) => {
                 error!("Error when receiving response from polling thread: {e}");
-                Err(ArchiveError::custom_error(
-                    "could not get latest block from triedb".to_string(),
-                ))
+                bail!("could not get latest block from triedb: {e}");
             }
         }
     }
@@ -228,9 +225,7 @@ impl Triedb for TriedbEnv {
             }))
         {
             error!("Polling thread channel full: {e}");
-            return Err(ArchiveError::custom_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            bail!("error reading from db due to rate limit {e}");
         }
 
         // await the result using request_receiver
@@ -240,12 +235,14 @@ impl Triedb for TriedbEnv {
                     let receipts = rlp_receipts
                         .iter()
                         .filter_map(|rlp_receipt| {
-                            ReceiptWithBloom::decode(&mut rlp_receipt.as_slice())
-                                .map_err(|e| {
+                            let receipt = ReceiptWithBloom::decode(&mut rlp_receipt.as_slice());
+                            match receipt {
+                                Ok(receipt) => Some(receipt),
+                                Err(e) => {
                                     error!("Failed to decode RLP receipt: {e}");
-                                    ArchiveError::custom_error("error decoding receipt".into())
-                                })
-                                .ok()
+                                    None
+                                }
+                            }
                         })
                         .collect();
                     Ok(receipts)
@@ -254,7 +251,7 @@ impl Triedb for TriedbEnv {
             },
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(ArchiveError::custom_error("error reading from db".into()))
+                bail!("Error awaiting result: {e}");
             }
         }
     }
@@ -279,9 +276,7 @@ impl Triedb for TriedbEnv {
             }))
         {
             error!("Polling thread channel full: {e}");
-            return Err(ArchiveError::custom_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            bail!("Polling thread channel full: {e}");
         }
 
         // await the result using request_receiver
@@ -294,7 +289,7 @@ impl Triedb for TriedbEnv {
                             TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice())
                                 .map_err(|e| {
                                     error!("Failed to decode RLP transaction: {e}");
-                                    ArchiveError::custom_error("error decoding transaction".into())
+                                    eyre!("Failed to decode RLP transaction: {e}");
                                 })
                                 .ok() // This will convert the Result to Option
                         })
@@ -305,7 +300,7 @@ impl Triedb for TriedbEnv {
             },
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(ArchiveError::custom_error("error reading from db".into()))
+                bail!("Error awaiting result: {e}");
             }
         }
     }
@@ -329,9 +324,7 @@ impl Triedb for TriedbEnv {
             }))
         {
             error!("Polling thread channel full: {e}");
-            return Err(ArchiveError::custom_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            bail!("Polling thread channel full: {e}");
         }
 
         // await the result using request_receiver
@@ -340,16 +333,15 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(ArchiveError::custom_error("error reading from db".into()));
+                    bail!("Unexpected completed_counter value");
                 }
 
                 match result {
                     Some(rlp_block_header) => {
                         let block_hash = keccak256(&rlp_block_header);
                         let mut rlp_buf = rlp_block_header.as_slice();
-                        let block_header = Header::decode(&mut rlp_buf).map_err(|e| {
-                            ArchiveError::custom_error(format!("decode block header failed: {}", e))
-                        })?;
+                        let block_header =
+                            Header::decode(&mut rlp_buf).wrap_err("decode block header failed")?;
                         Ok(Some(BlockHeader {
                             hash: block_hash,
                             header: block_header,
@@ -360,7 +352,7 @@ impl Triedb for TriedbEnv {
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(ArchiveError::custom_error("error reading from db".into()))
+                bail!("Error awaiting result: {e}");
             }
         }
     }
@@ -381,9 +373,7 @@ impl Triedb for TriedbEnv {
             }))
         {
             error!("Polling thread channel full: {e}");
-            return Err(ArchiveError::custom_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            bail!("Polling thread channel full: {e}");
         }
 
         match request_receiver.await {
@@ -393,7 +383,7 @@ impl Triedb for TriedbEnv {
             },
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(ArchiveError::custom_error("error reading from db".into()))
+                bail!("Error awaiting result: {e}");
             }
         }
     }
