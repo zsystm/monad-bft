@@ -6,7 +6,7 @@ use clap::Parser;
 use cli::Cli;
 use eyre::bail;
 use futures::future::join_all;
-use kv_interface::{KVStore, S3Store};
+use kv_interface::{kv_store_from_args, KVStore, S3Store};
 use reth_primitives::ReceiptWithBloom;
 use tokio::{
     sync::Semaphore,
@@ -27,19 +27,14 @@ async fn main() -> Result<(), ArchiveError> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = Cli::parse();
-
-    // TODO: support other store types for testing
-    let cli_base::StorageType::S3(s3_config) = args.storage else {
-        bail!("Only s3 storage supported currently");
-    };
-
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(s3_config.max_concurrent_blocks));
+    let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_connections()));
 
     // This will spin off a polling thread
     let triedb = TriedbEnv::new(&args.triedb_path.unwrap());
 
     // Construct an s3 instance
-    let store = S3Store::new(s3_config).await?;
+    let store = kv_store_from_args(args.storage).await?;
+    // let store = S3Store::new(s3_config).await?;
     let archive_writer = ArchiveWriter::new(store);
 
     let mut latest_processed_block =

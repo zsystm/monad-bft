@@ -26,7 +26,7 @@ async fn main() -> Result {
     let archive = ArchiveWriter::new(store.clone());
     let dynamodb_archive = DynamoDBArchive::new(&args).await?;
     // todo: combine TxIndex and dynamodb archive
-    let tx_index = TxIndex::new(store);
+    // let tx_index = TxIndex::new(store);
 
     // Construct an s3 instance
     let mut latest_indexed = archive.get_latest_indexed().await.unwrap_or(0);
@@ -39,7 +39,7 @@ async fn main() -> Result {
         sleep(Duration::from_millis(10)).await;
         if let Err(e) = process(
             &archive,
-            &tx_index,
+            &dynamodb_archive,
             &mut latest_indexed,
             &mut latest_uploaded,
         )
@@ -54,7 +54,7 @@ async fn main() -> Result {
 async fn process(
     //
     archive: &Archive,
-    index: &TxIndex,
+    dynamodb: &DynamoDBArchive,
     last_indexed: &mut u64,
     last_uploaded: &mut u64,
 ) -> Result {
@@ -70,8 +70,9 @@ async fn process(
 
     let block = archive.read_block(*last_indexed + 1).await?;
 
-    let tx_hashes = block.body.iter().map(|tx| tx.hash());
-    index.upload_batch(tx_hashes, block.number).await?;
+    let hashes = block.body.iter().map(|tx| tx.hash()).collect();
+    dynamodb.index_block(hashes, block.number).await?;
+    // index.upload_batch(tx_hashes, block.number).await?;
 
     Ok(())
 }

@@ -11,3 +11,13 @@ pub struct Cli {
     #[command(subcommand)]
     pub storage: StorageType,
 }
+
+impl Cli {
+    pub fn max_concurrent_connections(&self) -> usize {
+        match &self.storage {
+            StorageType::S3(s3_args) => s3_args.max_concurrent_connections,
+            StorageType::Memory => 5,
+            StorageType::Fs { .. } => 5,
+        }
+    }
+}
