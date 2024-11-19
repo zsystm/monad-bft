@@ -272,12 +272,24 @@ async fn run(
         node_state.node_config.chain_id,
     );
 
+    let state_backend = move || {
+        StateBackendCache::new(
+            TriedbReader::try_new(node_state.triedb_path.as_path())
+                .expect("triedb should exist in path"),
+            SeqNum(node_state.node_config.consensus.execution_delay),
+        )
+    };
+
     let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
     let builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
-        transaction_pool: EthTxPool::new(&block_policy, !cfg!(feature = "full-node")),
+        transaction_pool: EthTxPool::new(
+            &block_policy,
+            state_backend.clone(),
+            !cfg!(feature = "full-node"),
+        ),
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
@@ -286,11 +298,7 @@ async fn run(
         // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only
         // mode
         block_policy,
-        state_backend: StateBackendCache::new(
-            TriedbReader::try_new(node_state.triedb_path.as_path())
-                .expect("triedb should exist in path"),
-            SeqNum(node_state.node_config.consensus.execution_delay),
-        ),
+        state_backend: state_backend(),
         state_root_validator: StateRoot::new(SeqNum(
             node_state.node_config.consensus.execution_delay,
         )),

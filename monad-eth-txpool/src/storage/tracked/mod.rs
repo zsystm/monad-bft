@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use heapless::BinaryHeap;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
-use itertools::{Either, Itertools};
+use itertools::Either;
 use monad_consensus_types::{
     block::BlockType, payload::FullTransactionList, signature_collection::SignatureCollection,
     txpool::TxPoolInsertionError,
@@ -15,16 +15,12 @@ use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
 
 use self::list::TrackedTxList;
-pub use super::pending::EthTxPendingList;
-use super::{PendingEthTxMap, ValidEthTransaction};
+pub use super::pending::PendingTxList;
+use super::ValidEthTransaction;
 
 mod list;
 
 const MAX_ADDRESSES: usize = 1024 * 16;
-
-// TODO(andr-dev): This currently limits the number of unique addresses in a
-// proposal. This will be removed once we move the txpool into its own thread.
-const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 8;
 
 #[derive(Clone, Debug)]
 pub struct TrackedEthTxMap {
@@ -35,7 +31,7 @@ pub struct TrackedEthTxMap {
 impl Default for TrackedEthTxMap {
     fn default() -> Self {
         Self {
-            txs: IndexMap::with_capacity(MAX_ADDRESSES),
+            txs: IndexMap::default(),
             last_commit_seq_num: SeqNum::MIN,
         }
     }
@@ -48,6 +44,10 @@ impl TrackedEthTxMap {
 
     pub fn num_txs(&self) -> usize {
         self.txs.values().map(TrackedTxList::num_txs).sum()
+    }
+
+    pub fn last_commit_seq_num(&self) -> SeqNum {
+        self.last_commit_seq_num
     }
 
     pub fn try_add_tx(
@@ -68,7 +68,6 @@ impl TrackedEthTxMap {
         block_policy: &EthBlockPolicy,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
-        pending: &mut PendingEthTxMap,
     ) -> Result<FullTransactionList, StateBackendError>
     where
         SCT: SignatureCollection,
@@ -92,13 +91,6 @@ impl TrackedEthTxMap {
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
             debug!(?elapsed, "txpool create_proposal");
         });
-
-        self.promote_pending::<SCT, SBT>(
-            block_policy,
-            state_backend,
-            pending,
-            MAX_PROMOTABLE_ON_CREATE_PROPOSAL,
-        )?;
 
         let account_balances = block_policy.compute_account_base_balances(
             proposed_seq_num,
@@ -128,68 +120,6 @@ impl TrackedEthTxMap {
         );
 
         Ok(FullTransactionList::new(proposal_rlp_tx_list))
-    }
-
-    pub fn promote_pending<SCT, SBT>(
-        &mut self,
-        block_policy: &EthBlockPolicy,
-        state_backend: &SBT,
-        pending: &mut PendingEthTxMap,
-        max_promotable: usize,
-    ) -> Result<(), StateBackendError>
-    where
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-    {
-        let Some(insertable) = MAX_ADDRESSES.checked_sub(self.txs.len()) else {
-            return Ok(());
-        };
-
-        let insertable = insertable.min(max_promotable);
-
-        if insertable == 0 {
-            return Ok(());
-        }
-
-        let to_insert = pending.split_off(insertable);
-
-        if to_insert.is_empty() {
-            return Ok(());
-        }
-
-        let addresses = to_insert.len();
-        let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
-            debug!(?elapsed, addresses, "txpool promote_pending")
-        });
-
-        let addresses = to_insert.keys().cloned().collect_vec();
-
-        let account_nonces = block_policy.get_account_base_nonces(
-            block_policy.get_last_commit(),
-            state_backend,
-            &Vec::<&EthValidatedBlock<SCT>>::default(),
-            addresses.iter(),
-        )?;
-
-        for (address, tx_list) in to_insert {
-            let account_nonce = account_nonces
-                .get(&address)
-                .expect("address exists in nonce map");
-
-            match self.txs.entry(address) {
-                IndexMapEntry::Occupied(_) => {
-                    unreachable!("pending address present in tracked map")
-                }
-                IndexMapEntry::Vacant(v) => {
-                    v.insert(TrackedTxList::new_from_account_nonce_and_pending(
-                        *account_nonce,
-                        tx_list,
-                    ));
-                }
-            }
-        }
-
-        Ok(())
     }
 
     fn create_proposal_tx_list(
@@ -347,5 +277,36 @@ impl TrackedEthTxMap {
 
     pub fn clear(&mut self) {
         self.txs.clear();
+    }
+
+    pub(super) fn insert(
+        &mut self,
+        address: EthAddress,
+        account_nonce: u64,
+        pending: PendingTxList,
+    ) {
+        match self.txs.entry(address) {
+            IndexMapEntry::Occupied(mut o) => {
+                // TODO(andr-dev): Warnings?
+
+                assert_eq!(
+                    o.get().account_nonce(),
+                    account_nonce,
+                    "account nonces match"
+                );
+
+                for tx in pending.into_map().into_values() {
+                    if let Err(_) = o.get_mut().try_add_tx(tx) {
+                        // TODO(andr-dev): txpool metrics
+                    }
+                }
+            }
+            IndexMapEntry::Vacant(v) => {
+                v.insert(TrackedTxList::new_from_account_nonce_and_pending(
+                    account_nonce,
+                    pending,
+                ));
+            }
+        }
     }
 }

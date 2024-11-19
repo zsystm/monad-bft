@@ -5,9 +5,10 @@ use monad_consensus_types::{
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::EthTransaction;
+use monad_eth_types::{EthAccount, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
-use tracing::error;
+use tracing::{error, warn};
 
 use self::{pending::PendingEthTxMap, tracked::TrackedEthTxMap, transaction::ValidEthTransaction};
 
@@ -46,22 +47,12 @@ impl EthTxPoolStorage {
             .expect("pool size does not overflow")
     }
 
-    pub fn promote_pending<SCT, SBT>(
-        &mut self,
-        block_policy: &EthBlockPolicy,
-        state_backend: &SBT,
-        max_promotable: usize,
-    ) -> Result<(), StateBackendError>
-    where
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-    {
-        self.tracked.promote_pending::<SCT, SBT>(
-            block_policy,
-            state_backend,
-            &mut self.pending,
-            max_promotable,
-        )
+    pub fn last_commit_seq_num(&self) -> SeqNum {
+        self.tracked.last_commit_seq_num()
+    }
+
+    pub fn iter_pending_addresses(&self) -> impl Iterator<Item = &EthAddress> {
+        self.pending.addresses()
     }
 
     pub fn insert_tx(&mut self, tx: EthTransaction) -> Result<(), TxPoolInsertionError> {
@@ -70,6 +61,32 @@ impl EthTxPoolStorage {
         match self.tracked.try_add_tx(tx) {
             Either::Left(tx) => self.pending.try_add_tx(tx),
             Either::Right(result) => result,
+        }
+    }
+
+    pub fn insert_tracked(
+        &mut self,
+        seqnum: SeqNum,
+        tracked: impl Iterator<Item = (EthAddress, Option<EthAccount>)>,
+    ) {
+        let current_seqnum = self.tracked.last_commit_seq_num();
+
+        if current_seqnum != seqnum {
+            warn!(?current_seqnum, ?seqnum, "txpool tracked insert delayed");
+            return;
+        }
+
+        for (address, account) in tracked {
+            let Some(pending) = self.pending.remove(&address) else {
+                warn!("txpool pending account dissapeared :(");
+                continue;
+            };
+
+            let Some(account) = account else {
+                continue;
+            };
+
+            self.tracked.insert(address, account.nonce, pending);
         }
     }
 
@@ -98,7 +115,6 @@ impl EthTxPoolStorage {
             block_policy,
             extending_blocks,
             state_backend,
-            &mut self.pending,
         )
     }
 

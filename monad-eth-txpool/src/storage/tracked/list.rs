@@ -3,7 +3,7 @@ use std::collections::{btree_map, BTreeMap};
 use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::{EthAddress, Nonce};
 
-use super::{EthTxPendingList, ValidEthTransaction};
+use super::{PendingTxList, ValidEthTransaction};
 
 #[derive(Clone, Debug, Default)]
 pub struct TrackedTxList {
@@ -12,10 +12,7 @@ pub struct TrackedTxList {
 }
 
 impl TrackedTxList {
-    pub fn new_from_account_nonce_and_pending(
-        account_nonce: u64,
-        tx_list: EthTxPendingList,
-    ) -> Self {
+    pub fn new_from_account_nonce_and_pending(account_nonce: u64, tx_list: PendingTxList) -> Self {
         Self {
             account_nonce,
             txs: tx_list.into_map().split_off(&account_nonce),
@@ -24,6 +21,10 @@ impl TrackedTxList {
 
     pub fn num_txs(&self) -> usize {
         self.txs.len()
+    }
+
+    pub fn account_nonce(&self) -> Nonce {
+        self.account_nonce
     }
 
     pub fn get_queued(
@@ -59,6 +60,8 @@ impl TrackedTxList {
                 v.insert(tx);
             }
             btree_map::Entry::Occupied(mut existing_tx) => {
+                // TODO(andr-dev): Handle dupliate case for metrics
+
                 if &tx < existing_tx.get() {
                     return Err(TxPoolInsertionError::ExistingHigherPriority);
                 }

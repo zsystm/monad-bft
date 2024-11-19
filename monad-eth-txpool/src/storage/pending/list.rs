@@ -6,11 +6,11 @@ use monad_eth_types::Nonce;
 use super::ValidEthTransaction;
 
 #[derive(Clone, Debug, Default)]
-pub struct EthTxPendingList {
+pub struct PendingTxList {
     nonce_map: BTreeMap<Nonce, ValidEthTransaction>,
 }
 
-impl EthTxPendingList {
+impl PendingTxList {
     pub fn new(tx: ValidEthTransaction) -> Self {
         let mut nonce_map = BTreeMap::new();
 

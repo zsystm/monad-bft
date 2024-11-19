@@ -6,12 +6,16 @@ use std::{
 use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Error, PartialEq)]
 pub enum StateBackendError {
     /// not available yet
+    #[error("NotAvailableYet")]
     NotAvailableYet,
+
     /// will never be available
+    #[error("NeverAvailable")]
     NeverAvailable,
 }
 
