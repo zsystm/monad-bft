@@ -2,33 +2,18 @@ cmake_minimum_required(VERSION 3.20)
 
 project(triedb-driver)
 
-# triedb_driver_mock
-add_library(
-  triedb_driver_mock SHARED "${PROJECT_SOURCE_DIR}/include/triedb.h"
-                            "${PROJECT_SOURCE_DIR}/src/triedb_mock.cpp")
+# triedb_driver
 
-target_include_directories(triedb_driver_mock
-                           PUBLIC ${PROJECT_SOURCE_DIR}/include)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set_property(TARGET triedb_driver_mock PROPERTY C_STANDARD 17)
-set_property(TARGET triedb_driver_mock PROPERTY C_STANDARD_REQUIRED ON)
-set_property(TARGET triedb_driver_mock PROPERTY CXX_STANDARD 17)
-set_property(TARGET triedb_driver_mock PROPERTY CXX_STANDARD_REQUIRED ON)
+add_subdirectory("../../monad-cxx/monad-execution" "monad-execution-build"
+)# needed for monad-trie
 
-if(CMAKE_BUILD_TARGET STREQUAL "triedb_driver")
-  # triedb_driver
+add_library(triedb_driver SHARED "${PROJECT_SOURCE_DIR}/include/triedb.h"
+                                 "${PROJECT_SOURCE_DIR}/src/triedb.cpp")
 
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+target_include_directories(triedb_driver PUBLIC ${PROJECT_SOURCE_DIR}/include)
 
-  add_subdirectory("../../monad-cxx/monad-execution" "monad-execution-build"
-  )# needed for monad-trie
+target_link_libraries(triedb_driver PUBLIC monad_trie)
 
-  add_library(triedb_driver SHARED "${PROJECT_SOURCE_DIR}/include/triedb.h"
-                                   "${PROJECT_SOURCE_DIR}/src/triedb.cpp")
-
-  target_include_directories(triedb_driver PUBLIC ${PROJECT_SOURCE_DIR}/include)
-
-  target_link_libraries(triedb_driver PUBLIC monad_trie)
-
-  monad_compile_options(triedb_driver)
-endif()
+monad_compile_options(triedb_driver)
