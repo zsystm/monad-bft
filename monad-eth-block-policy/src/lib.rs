@@ -515,9 +515,9 @@ impl EthBlockPolicy {
 
         let addresses = addresses.unique().collect_vec();
         let account_balances = state_backend
-            .get_account_statuses(base_seq_num, addresses.iter().copied())?
+            .get_account_balances(base_seq_num, addresses.iter().copied())?
             .into_iter()
-            .map(|maybe_status| maybe_status.map_or(0, |status| status.balance))
+            .map(|maybe_balance| maybe_balance.unwrap_or(0))
             .collect_vec();
 
         let account_balances = addresses
@@ -611,6 +611,10 @@ impl EthBlockPolicy {
 
     pub fn get_chain_id(&self) -> u64 {
         self.chain_id
+    }
+
+    pub fn get_execution_delay(&self) -> SeqNum {
+        self.execution_delay
     }
 }
 

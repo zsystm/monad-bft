@@ -42,8 +42,28 @@ where
         self.storage.last_commit_seq_num()
     }
 
+    pub fn predict_next_leader_seqnum(&self) -> Option<SeqNum> {
+        let round_diff = self
+            .next_leader_round?
+            .0
+            .checked_sub(self.current_round.0)
+            .expect("next leader round is greater than current round");
+
+        Some(SeqNum(
+            self.last_commit_seq_num()
+                .0
+                .checked_add(round_diff)
+                .expect("seqnum does not overflow")
+                .saturating_sub(self.storage.get_execution_delay().0),
+        ))
+    }
+
     pub fn iter_pending_addresses(&self) -> impl Iterator<Item = &EthAddress> {
         self.storage.iter_pending_addresses()
+    }
+
+    pub fn get_account_balance_addresses(&self, seqnum: SeqNum, limit: usize) -> Vec<EthAddress> {
+        self.storage.get_account_balance_addresses(seqnum, limit)
     }
 
     pub fn insert_tracked(
@@ -52,6 +72,15 @@ where
         tracked: impl Iterator<Item = (EthAddress, Option<EthAccount>)>,
     ) {
         self.storage.insert_tracked(seqnum, tracked);
+    }
+
+    pub fn insert_account_balances(
+        &mut self,
+        seqnum: SeqNum,
+        account_balances: impl Iterator<Item = (EthAddress, Option<u128>)>,
+    ) {
+        self.storage
+            .insert_account_balances(seqnum, account_balances);
     }
 
     pub fn add_event(&mut self, event: EthTxPoolEventLoopEvent<SCT>) {

@@ -23,9 +23,12 @@ impl MockEthTxPool {
         }
     }
 
-    pub fn new_with_chain_id(chain_id: u64) -> Self {
+    pub fn new_with_chain_id_and_execution_delay(chain_id: u64, execution_delay: SeqNum) -> Self {
         Self {
-            storage: EthTxPoolStorage::new_with_chain_id(chain_id),
+            storage: EthTxPoolStorage::new_with_chain_id_and_execution_delay(
+                chain_id,
+                execution_delay,
+            ),
         }
     }
 

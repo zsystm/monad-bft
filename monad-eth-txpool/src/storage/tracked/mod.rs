@@ -16,7 +16,8 @@ use tracing::{debug, error, info, trace};
 
 use self::list::TrackedTxList;
 pub use super::pending::PendingTxList;
-use super::ValidEthTransaction;
+use super::{account_balance::AccountBalanceCache, ValidEthTransaction};
+use crate::storage::account_balance::AccountBalanceCacheStateBackend;
 
 mod list;
 
@@ -50,6 +51,10 @@ impl TrackedEthTxMap {
         self.last_commit_seq_num
     }
 
+    pub fn iter_addresses(&self) -> impl Iterator<Item = &EthAddress> {
+        self.txs.keys()
+    }
+
     pub fn try_add_tx(
         &mut self,
         tx: ValidEthTransaction,
@@ -68,6 +73,7 @@ impl TrackedEthTxMap {
         block_policy: &EthBlockPolicy,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
+        account_balance_cache: &AccountBalanceCache,
     ) -> Result<FullTransactionList, StateBackendError>
     where
         SCT: SignatureCollection,
@@ -92,9 +98,12 @@ impl TrackedEthTxMap {
             debug!(?elapsed, "txpool create_proposal");
         });
 
+        let state_backend =
+            AccountBalanceCacheStateBackend::new(&account_balance_cache, state_backend);
+
         let account_balances = block_policy.compute_account_base_balances(
             proposed_seq_num,
-            state_backend,
+            &state_backend,
             Some(&extending_blocks),
             self.txs.keys(),
         )?;

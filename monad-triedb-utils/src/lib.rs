@@ -43,7 +43,7 @@ impl TriedbReader {
         let result = self.handle.read(&triedb_key, key_len_nibbles, block_id);
 
         let Some(account_rlp) = result else {
-            debug!("account {:?} not found at {:?}", eth_address, block_id);
+            // debug!("account {:?} not found at {:?}", eth_address, block_id);
             return None;
         };
 

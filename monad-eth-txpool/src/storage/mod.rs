@@ -10,8 +10,12 @@ use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use tracing::{error, warn};
 
-use self::{pending::PendingEthTxMap, tracked::TrackedEthTxMap, transaction::ValidEthTransaction};
+use self::{
+    account_balance::AccountBalanceCache, pending::PendingEthTxMap, tracked::TrackedEthTxMap,
+    transaction::ValidEthTransaction,
+};
 
+mod account_balance;
 mod pending;
 mod tracked;
 mod transaction;
@@ -19,21 +23,35 @@ mod transaction;
 #[derive(Clone, Debug)]
 pub struct EthTxPoolStorage {
     chain_id: u64,
+    execution_delay: SeqNum,
     pending: PendingEthTxMap,
     tracked: TrackedEthTxMap,
+    account_balance: AccountBalanceCache,
 }
 
 impl EthTxPoolStorage {
     pub fn new(block_policy: &EthBlockPolicy) -> Self {
-        Self::new_with_chain_id(block_policy.get_chain_id())
+        Self::new_with_chain_id_and_execution_delay(
+            block_policy.get_chain_id(),
+            block_policy.get_execution_delay(),
+        )
     }
 
-    pub(super) fn new_with_chain_id(chain_id: u64) -> Self {
+    pub(super) fn new_with_chain_id_and_execution_delay(
+        chain_id: u64,
+        execution_delay: SeqNum,
+    ) -> Self {
         Self {
             chain_id,
+            execution_delay,
             pending: PendingEthTxMap::default(),
             tracked: TrackedEthTxMap::default(),
+            account_balance: AccountBalanceCache::default(),
         }
+    }
+
+    pub fn get_execution_delay(&self) -> SeqNum {
+        self.execution_delay
     }
 
     pub fn is_empty(&self) -> bool {
@@ -53,6 +71,19 @@ impl EthTxPoolStorage {
 
     pub fn iter_pending_addresses(&self) -> impl Iterator<Item = &EthAddress> {
         self.pending.addresses()
+    }
+
+    pub fn get_account_balance_addresses(&self, seqnum: SeqNum, limit: usize) -> Vec<EthAddress> {
+        let Some(account_balance_map) = self.account_balance.get(&seqnum) else {
+            return self.tracked.iter_addresses().take(limit).cloned().collect();
+        };
+
+        self.tracked
+            .iter_addresses()
+            .filter(|address| !account_balance_map.contains_address(address))
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     pub fn insert_tx(&mut self, tx: EthTransaction) -> Result<(), TxPoolInsertionError> {
@@ -90,6 +121,17 @@ impl EthTxPoolStorage {
         }
     }
 
+    pub fn insert_account_balances(
+        &mut self,
+        seqnum: SeqNum,
+        account_balances: impl Iterator<Item = (EthAddress, Option<u128>)>,
+    ) {
+        for (address, account_balance) in account_balances {
+            self.account_balance
+                .update(seqnum, address, account_balance);
+        }
+    }
+
     pub fn create_proposal<SCT, SBT>(
         &mut self,
         proposed_seq_num: SeqNum,
@@ -115,6 +157,7 @@ impl EthTxPoolStorage {
             block_policy,
             extending_blocks,
             state_backend,
+            &self.account_balance,
         )
     }
 
@@ -122,6 +165,9 @@ impl EthTxPoolStorage {
     where
         SCT: SignatureCollection,
     {
+        self.account_balance
+            .update_committed_block(&committed_block, self.execution_delay);
+
         self.tracked.update_committed_block(committed_block);
     }
 

@@ -22,7 +22,8 @@ mod state;
 const NEW_EVENT_TIMEOUT_MS: u64 = 8;
 
 const PROMOTE_PENDING_INTERVAL_MS: u64 = 32;
-const PROMOTE_PENDING_MAX_ADDRESSES: usize = 256;
+const PROMOTE_PENDING_MAX_ADDRESSES: usize = 128;
+const ACCOUNT_BALANCE_MAX_ADDRESSES: usize = 128;
 
 #[derive(Debug)]
 pub struct EthTxPoolEventLoop<SCT, SBT>
@@ -98,6 +99,7 @@ where
             }
 
             state = self.try_promote_pending(state)?;
+            state = self.try_account_balance(state)?;
 
             promote_pending_timer = Instant::now();
         }
@@ -148,6 +150,56 @@ where
                 state.insert_tracked(
                     seqnum,
                     pending_addresses.into_iter().zip(accounts.into_iter()),
+                );
+            }
+        }
+
+        Ok(state)
+    }
+
+    fn try_account_balance<'a>(
+        &'a self,
+        state: MutexGuard<'a, EthTxPoolEventLoopState<SCT>>,
+    ) -> Result<MutexGuard<'a, EthTxPoolEventLoopState<SCT>>, EthTxPoolEventLoopError> {
+        let Some(seqnum) = state.predict_next_leader_seqnum() else {
+            return Ok(state);
+        };
+
+        let addresses = state.get_account_balance_addresses(seqnum, ACCOUNT_BALANCE_MAX_ADDRESSES);
+
+        let (mut state, account_balances_result) = {
+            drop(state);
+
+            let result = self
+                .state_backend
+                .get_account_balances(seqnum, addresses.iter());
+
+            (
+                self.state
+                    .lock()
+                    .map_err(|_| EthTxPoolEventLoopError::PoisonError)?,
+                result,
+            )
+        };
+
+        match account_balances_result {
+            Err(StateBackendError::NotAvailableYet) => {
+                warn!("txpool state backend error not available yet");
+            }
+            Err(StateBackendError::NeverAvailable) => {
+                error!("txpool state backend error never available");
+                return Err(StateBackendError::NeverAvailable.into());
+            }
+            Ok(account_balances) => {
+                assert_eq!(
+                    addresses.len(),
+                    account_balances.len(),
+                    "account_balances is same length as addresses"
+                );
+
+                state.insert_account_balances(
+                    seqnum,
+                    addresses.into_iter().zip(account_balances.into_iter()),
                 );
             }
         }

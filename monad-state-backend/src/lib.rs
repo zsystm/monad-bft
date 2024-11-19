@@ -21,11 +21,12 @@ pub enum StateBackendError {
 
 /// Backend provider of account data: balance and nonce
 pub trait StateBackend {
-    fn get_account_statuses<'a>(
+    fn get_account_property<'a, T>(
         &self,
         block: SeqNum,
         addresses: impl Iterator<Item = &'a EthAddress>,
-    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
+        f: impl Fn(&Self, SeqNum, &EthAddress) -> T,
+    ) -> Result<Vec<T>, StateBackendError> {
         let latest = self.raw_read_latest_block();
         if latest < block {
             // latest < block
@@ -33,9 +34,7 @@ pub trait StateBackend {
         }
         // block <= latest
 
-        let statuses = addresses
-            .map(|address| self.raw_read_account(block, address))
-            .collect();
+        let statuses = addresses.map(|address| f(self, block, address)).collect();
 
         let earliest = self.raw_read_earliest_block();
         if block < earliest {
@@ -47,9 +46,31 @@ pub trait StateBackend {
         Ok(statuses)
     }
 
+    fn get_account_statuses<'a>(
+        &self,
+        block: SeqNum,
+        addresses: impl Iterator<Item = &'a EthAddress>,
+    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
+        self.get_account_property(block, addresses, Self::raw_read_account)
+    }
+
+    fn get_account_balances<'a>(
+        &self,
+        block: SeqNum,
+        addresses: impl Iterator<Item = &'a EthAddress>,
+    ) -> Result<Vec<Option<u128>>, StateBackendError> {
+        self.get_account_property(block, addresses, Self::raw_read_balance)
+    }
+
     /// Fetches account from storage backend
     /// Must be sequentially consistent
     fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount>;
+    /// Fetches balance from storage backend
+    /// Must be sequentially consistent
+    fn raw_read_balance(&self, block: SeqNum, address: &EthAddress) -> Option<u128> {
+        self.raw_read_account(block, address)
+            .map(|account| account.balance)
+    }
     /// Fetches earliest block from storage backend
     /// Must be sequentially consistent
     fn raw_read_earliest_block(&self) -> SeqNum;

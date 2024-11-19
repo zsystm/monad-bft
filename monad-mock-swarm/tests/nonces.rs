@@ -106,7 +106,7 @@ mod test {
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || MockEthTxPool::new_with_chain_id(CHAIN_ID),
+            || MockEthTxPool::new_with_chain_id_and_execution_delay(CHAIN_ID),
             || EthValidator::new(10_000, 1_000_000, 1337),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, CHAIN_ID),
             || {
