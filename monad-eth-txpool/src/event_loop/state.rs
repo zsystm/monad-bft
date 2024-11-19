@@ -4,6 +4,7 @@ use monad_consensus_types::{
     payload::FullTransactionList, signature_collection::SignatureCollection,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_types::{EthAccount, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{Round, SeqNum};
 use tracing::info;
@@ -35,6 +36,22 @@ where
             current_round: Round(0),
             next_leader_round: None,
         }))
+    }
+
+    pub fn last_commit_seq_num(&self) -> SeqNum {
+        self.storage.last_commit_seq_num()
+    }
+
+    pub fn iter_pending_addresses(&self) -> impl Iterator<Item = &EthAddress> {
+        self.storage.iter_pending_addresses()
+    }
+
+    pub fn insert_tracked(
+        &mut self,
+        seqnum: SeqNum,
+        tracked: impl Iterator<Item = (EthAddress, Option<EthAccount>)>,
+    ) {
+        self.storage.insert_tracked(seqnum, tracked);
     }
 
     pub fn add_event(&mut self, event: EthTxPoolEventLoopEvent<SCT>) {

@@ -10,3 +10,4 @@ bench = false
 monad-eth-types = { path = "../monad-eth-types" }
 monad-types = { path = "../monad-types" }
 serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }

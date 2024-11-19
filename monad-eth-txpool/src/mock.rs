@@ -37,20 +37,6 @@ impl MockEthTxPool {
         self.storage.num_txs()
     }
 
-    pub fn promote_pending<SCT, SBT>(
-        &mut self,
-        block_policy: &EthBlockPolicy,
-        state_backend: &SBT,
-        max_promotable: usize,
-    ) -> Result<(), StateBackendError>
-    where
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-    {
-        self.storage
-            .promote_pending::<SCT, SBT>(block_policy, state_backend, max_promotable)
-    }
-
     pub fn clear(&mut self) {
         self.storage.clear();
     }

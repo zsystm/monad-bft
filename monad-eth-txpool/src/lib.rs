@@ -31,8 +31,15 @@ impl<SCT> EthTxPool<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn new(block_policy: &EthBlockPolicy, do_local_insert: bool) -> Self {
-        let event_loop_client = EthTxPoolEventLoop::start(block_policy);
+    pub fn new<SBT>(
+        block_policy: &EthBlockPolicy,
+        state_backend: impl Fn() -> SBT + Send + 'static,
+        do_local_insert: bool,
+    ) -> Self
+    where
+        SBT: StateBackend,
+    {
+        let event_loop_client = EthTxPoolEventLoop::start(block_policy, state_backend);
 
         Self {
             event_loop_client,

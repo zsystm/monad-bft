@@ -4303,6 +4303,7 @@ dependencies = [
  "monad-eth-types",
  "monad-types",
  "serde",
+ "thiserror",
 ]
 
 [[package]]

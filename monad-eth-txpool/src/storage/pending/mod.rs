@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::EthAddress;
 
-pub use self::list::EthTxPendingList;
+pub use self::list::PendingTxList;
 use super::ValidEthTransaction;
 
 mod list;
@@ -12,7 +12,7 @@ const MAX_TXS: usize = 32 * 1024;
 
 #[derive(Clone, Debug, Default)]
 pub struct PendingEthTxMap {
-    txs: IndexMap<EthAddress, EthTxPendingList>,
+    txs: IndexMap<EthAddress, PendingTxList>,
     num_txs: usize,
 }
 
@@ -23,6 +23,10 @@ impl PendingEthTxMap {
 
     pub fn num_txs(&self) -> usize {
         self.num_txs
+    }
+
+    pub fn addresses(&self) -> impl Iterator<Item = &EthAddress> {
+        self.txs.keys()
     }
 
     pub fn try_add_tx(&mut self, tx: ValidEthTransaction) -> Result<(), TxPoolInsertionError> {
@@ -44,7 +48,7 @@ impl PendingEthTxMap {
                     return Err(TxPoolInsertionError::PoolFull);
                 }
 
-                v.insert(EthTxPendingList::new(tx));
+                v.insert(PendingTxList::new(tx));
                 self.num_txs += 1;
             }
         }
@@ -52,21 +56,8 @@ impl PendingEthTxMap {
         Ok(())
     }
 
-    pub fn split_off(&mut self, count: usize) -> IndexMap<EthAddress, EthTxPendingList> {
-        if count >= self.txs.len() {
-            self.num_txs = 0;
-            return std::mem::take(&mut self.txs);
-        }
-
-        let mut split = self.txs.split_off(count);
-        std::mem::swap(&mut split, &mut self.txs);
-
-        self.num_txs = self
-            .num_txs
-            .checked_sub(split.values().map(EthTxPendingList::num_txs).sum())
-            .expect("num txs does not underflow");
-
-        split
+    pub fn remove(&mut self, address: &EthAddress) -> Option<PendingTxList> {
+        self.txs.swap_remove(address)
     }
 
     pub fn clear(&mut self) {
