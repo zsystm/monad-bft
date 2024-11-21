@@ -1,15 +1,15 @@
 use core::str;
 use std::sync::Arc;
 
-use alloy_rlp::Encodable;
-use aws_config::meta::region::RegionProviderChain;
+use alloy_rlp::{Decodable, Encodable};
+use aws_config::{meta::region::RegionProviderChain, SdkConfig};
 use aws_sdk_s3::{
     config::{BehaviorVersion, Region},
     primitives::ByteStream,
     Client,
 };
 use bytes::Bytes;
-use eyre::Context;
+use eyre::{Context, Result};
 use futures::try_join;
 use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 use tokio::time::Duration;
@@ -17,8 +17,12 @@ use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     Retry,
 };
+use tracing::info;
 
-use crate::{archive_interface::ArchiveWriterInterface, errors::ArchiveError, triedb::BlockHeader};
+use crate::{
+    archive_interface::{ArchiveWriterInterface, LatestKind},
+    triedb::BlockHeader,
+};
 
 const BLOCK_PADDING_WIDTH: usize = 12;
 
@@ -27,7 +31,8 @@ pub struct S3Archive {
     pub client: Client,
     pub bucket: String,
 
-    pub latest_table_key: &'static str,
+    pub latest_uploaded_table_key: &'static str,
+    pub latest_indexed_table_key: &'static str,
 
     // key =  {block}/{block_number}, value = {RLP(Block)}
     pub block_table_prefix: &'static str,
@@ -42,31 +47,46 @@ pub struct S3Archive {
     pub traces_table_prefix: &'static str,
 }
 
+pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
+    let region_provider = RegionProviderChain::default_provider().or_else(
+        region
+            .map(Region::new)
+            .unwrap_or_else(|| Region::new("us-east-2")),
+    );
+
+    info!(
+        "Running in region: {}",
+        region_provider
+            .region()
+            .await
+            .map(|r| r.to_string())
+            .unwrap_or("No region found".into())
+    );
+
+    aws_config::defaults(BehaviorVersion::latest())
+        .region(region_provider)
+        .load()
+        .await
+}
+
 impl S3Archive {
-    pub async fn new(bucket: String, region: Option<String>) -> Result<Self, ArchiveError> {
-        let region_provider = RegionProviderChain::default_provider().or_else(
-            region
-                .map(Region::new)
-                .unwrap_or_else(|| Region::new("us-east-2")),
-        );
-        let config = aws_config::defaults(BehaviorVersion::latest())
-            .region(region_provider)
-            .load()
-            .await;
-        let client = Client::new(&config);
+    pub async fn new(bucket: String, sdk_config: &SdkConfig) -> Result<Self> {
+        let s3_client = Client::new(sdk_config);
+
         Ok(S3Archive {
-            client,
+            client: s3_client,
             bucket,
             block_table_prefix: "block",
             block_hash_table_prefix: "block_hash",
             receipts_table_prefix: "receipts",
             traces_table_prefix: "traces",
-            latest_table_key: "latest",
+            latest_uploaded_table_key: "latest",
+            latest_indexed_table_key: "latest_indexed",
         })
     }
 
     // Upload rlp-encoded bytes with retry
-    pub async fn upload(&self, key: &str, data: Vec<u8>) -> Result<(), ArchiveError> {
+    pub async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()> {
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .max_delay(Duration::from_secs(1))
             .map(jitter);
@@ -95,7 +115,7 @@ impl S3Archive {
         Ok(())
     }
 
-    pub async fn read(&self, key: &str) -> Result<Bytes, ArchiveError> {
+    pub async fn read(&self, key: &str) -> Result<Bytes> {
         let resp = self
             .client
             .get_object()
@@ -121,16 +141,35 @@ pub struct S3ArchiveWriter {
 }
 
 impl S3ArchiveWriter {
-    pub async fn new(archive: S3Archive) -> Result<Self, ArchiveError> {
+    pub async fn new(archive: S3Archive) -> Result<Self> {
         Ok(S3ArchiveWriter {
             archive: Arc::new(archive),
         })
     }
+
+    pub async fn read_block(&self, block_num: u64) -> Result<Block> {
+        let bytes = self.archive.read(&self.block_key(block_num)).await?;
+        let mut bytes: &[u8] = &bytes;
+        let block = Block::decode(&mut bytes)?;
+        Ok(block)
+    }
+
+    pub fn block_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            self.archive.block_table_prefix,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
+    }
 }
 
 impl ArchiveWriterInterface for S3ArchiveWriter {
-    async fn get_latest(&self) -> Result<u64, ArchiveError> {
-        let key = &self.archive.latest_table_key;
+    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
+        let key = match latest_kind {
+            LatestKind::Uploaded => &self.archive.latest_uploaded_table_key,
+            LatestKind::Indexed => &self.archive.latest_indexed_table_key,
+        };
 
         let value = self.archive.read(key).await?;
 
@@ -142,8 +181,11 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         })
     }
 
-    async fn update_latest(&self, block_num: u64) -> Result<(), ArchiveError> {
-        let key = &self.archive.latest_table_key;
+    async fn update_latest(&self, block_num: u64, latest_kind: LatestKind) -> Result<()> {
+        let key = match latest_kind {
+            LatestKind::Uploaded => &self.archive.latest_uploaded_table_key,
+            LatestKind::Indexed => &self.archive.latest_indexed_table_key,
+        };
         let latest_value = format!("{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
         self.archive
             .upload(key, latest_value.as_bytes().to_vec())
@@ -155,14 +197,9 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         block_header: BlockHeader,
         transactions: Vec<TransactionSigned>,
         block_num: u64,
-    ) -> Result<(), ArchiveError> {
+    ) -> Result<()> {
         // 1) Insert into block table
-        let block_key = format!(
-            "{}/{:0width$}",
-            self.archive.block_table_prefix,
-            block_num,
-            width = BLOCK_PADDING_WIDTH
-        );
+        let block_key = self.block_key(block_num);
 
         let block = make_block(block_header.clone(), transactions.clone());
         let mut rlp_block = Vec::with_capacity(8096);
@@ -183,7 +220,6 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
             self.archive
                 .upload(&block_hash_key, block_hash_value.to_vec())
         )?;
-
         Ok(())
     }
 
@@ -191,7 +227,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         &self,
         receipts: Vec<ReceiptWithBloom>,
         block_num: u64,
-    ) -> Result<(), ArchiveError> {
+    ) -> Result<()> {
         // 1) Prepare the receipts upload
         let receipts_key = format!(
             "{}/{:0width$}",
@@ -205,11 +241,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         self.archive.upload(&receipts_key, rlp_receipts).await
     }
 
-    async fn archive_traces(
-        &self,
-        traces: Vec<Vec<u8>>,
-        block_num: u64,
-    ) -> Result<(), ArchiveError> {
+    async fn archive_traces(&self, traces: Vec<Vec<u8>>, block_num: u64) -> Result<()> {
         let traces_key = format!(
             "{}/{:0width$}",
             self.archive.traces_table_prefix,

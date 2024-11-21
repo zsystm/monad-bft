@@ -1,26 +1,30 @@
+#![allow(async_fn_in_trait, clippy::async_trait)]
+
 use std::{sync::Arc, time::Instant};
 
 use clap::Parser;
 use futures::future::join_all;
-use monad_archive::{
-    archive_interface::ArchiveWriterInterface,
-    cli::Cli,
-    errors::ArchiveError,
-    s3_archive::{S3Archive, S3ArchiveWriter},
-    triedb::{Triedb, TriedbEnv},
-};
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
     try_join,
 };
-use tracing::{debug, error, info, warn, Level};
+use tracing::{error, info, warn, Level};
+use eyre::Result;
+
+use monad_archive::{
+    archive_interface::{ArchiveWriterInterface, LatestKind},
+    s3_archive::{get_aws_config, S3Archive, S3ArchiveWriter},
+    triedb::{Triedb, TriedbEnv},
+};
+
+mod cli;
 
 #[tokio::main]
-async fn main() -> Result<(), ArchiveError> {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let args = Cli::parse();
+    let args = cli::Cli::parse();
 
     let max_concurrent_blocks = args.max_concurrent_blocks;
     let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
@@ -28,8 +32,9 @@ async fn main() -> Result<(), ArchiveError> {
     // This will spin off a polling thread
     let triedb = TriedbEnv::new(&args.triedb_path);
 
-    // Construct an s3 instance
-    let s3_archive = S3Archive::new(args.s3_bucket, args.s3_region).await?;
+    // Construct s3 and dynamodb connections
+    let sdk_config = get_aws_config(args.region).await;
+    let s3_archive = S3Archive::new(args.s3_bucket, &sdk_config).await?;
     let s3_archive_writer = S3ArchiveWriter::new(s3_archive).await?;
 
     // Check for new blocks every 100 ms
@@ -42,10 +47,11 @@ async fn main() -> Result<(), ArchiveError> {
             Err(e) => return Err(e),
         };
 
-        let latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or_default();
+        let latest_processed_block =
+            (s3_archive_writer.get_latest(LatestKind::Uploaded).await).unwrap_or_default();
 
         if trie_db_block_number <= latest_processed_block {
-            debug!(
+            info!(
                 "Nothing to process. S3 archive progress: {}, triedb progress: {}",
                 latest_processed_block, trie_db_block_number
             );
@@ -91,7 +97,7 @@ async fn main() -> Result<(), ArchiveError> {
                 Ok(Err(e)) => {
                     if current_join_block != 0 {
                         if let Err(e) = s3_archive_writer
-                            .update_latest(current_join_block - 1)
+                            .update_latest(current_join_block - 1, LatestKind::Uploaded)
                             .await
                         {
                             error!("Error setting latest after handle_block failure: {e}");
@@ -103,7 +109,7 @@ async fn main() -> Result<(), ArchiveError> {
                 Err(e) => {
                     if current_join_block != 0 {
                         if let Err(e) = s3_archive_writer
-                            .update_latest(current_join_block - 1)
+                            .update_latest(current_join_block - 1, LatestKind::Uploaded)
                             .await
                         {
                             error!("Error setting latest after handle_block failure: {e}");
@@ -115,7 +121,9 @@ async fn main() -> Result<(), ArchiveError> {
             }
         }
 
-        s3_archive_writer.update_latest(end_block_number).await?;
+        s3_archive_writer
+            .update_latest(current_join_block, LatestKind::Uploaded)
+            .await?;
 
         let duration = start.elapsed();
         info!("Time spent = {:?}", duration);
@@ -126,7 +134,7 @@ async fn handle_block(
     triedb: &TriedbEnv,
     current_block: u64,
     s3_archive: &S3ArchiveWriter,
-) -> Result<(), ArchiveError> {
+) -> Result<()> {
     /*  Store Blocks */
     let block_header = match triedb.get_block_header(current_block).await? {
         Some(header) => header,
