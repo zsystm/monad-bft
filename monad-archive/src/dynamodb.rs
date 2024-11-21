@@ -164,7 +164,7 @@ impl DynamoDBArchive {
         let results = join_all(batch_write_handles).await;
 
         for (idx, batch_write_result) in results.into_iter().enumerate() {
-            batch_write_result.wrap_err_with(|| format!("Failed to upload index {idx}"))?;
+            batch_write_result.wrap_err_with(|| format!("Failed to upload index {idx}"))??;
         }
         Ok(())
     }

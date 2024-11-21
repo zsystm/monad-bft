@@ -44,21 +44,24 @@ async fn main() -> Result<()> {
         info!("Latest indexed block is : {latest_indexed}");
         info!("Latest uploaded block is : {latest_uploaded}");
     }
+    let mut latest_indexed = if let Some(start_block) = args.start_block {
+        start_block
+    } else {
+        archive.get_latest(Indexed).await.unwrap_or(0)
+    };
 
     loop {
         sleep(Duration::from_millis(100)).await;
         let start = Instant::now();
 
         // get latest uploaded and indexed from s3
-        let (uploaded, indexed) = join!(archive.get_latest(Uploaded), archive.get_latest(Indexed));
-        let latest_uploaded = match uploaded {
+        let latest_uploaded = match archive.get_latest(Uploaded).await {
             Ok(number) => number,
             Err(e) => {
-                warn!("Error getting latest uploaded block: {e}");
+                warn!("Error getting latest uploaded block: {e:?}");
                 continue;
             }
         };
-        let latest_indexed = indexed.unwrap_or(0);
 
         if latest_uploaded <= latest_indexed {
             info!(latest_indexed, latest_uploaded, "Nothing to process");
@@ -106,14 +109,14 @@ async fn main() -> Result<()> {
                         if let Err(e) = archive.update_latest(current_join_block - 1, Indexed).await
                         {
                             error!(
-                                "Failed to update latest indexed s3 object, continuing. Error: {e}"
+                                "Failed to update latest indexed s3 object, continuing. Error: {e:?}"
                             );
                             return false;
                         };
                     }
                     error!(
                         current_join_block,
-                        latest_uploaded, start_block_number, "Error indexing block: {e}"
+                        latest_uploaded, start_block_number, "Error indexing block: {e:?}"
                     );
                     true
                 }
@@ -137,6 +140,7 @@ async fn main() -> Result<()> {
         }
 
         archive.update_latest(end_block_number, Indexed).await?;
+        latest_indexed = end_block_number;
 
         let duration = start.elapsed();
         info!(num_txs_indexed, "Time spent = {:?}", duration);

@@ -19,13 +19,17 @@ pub struct Cli {
     pub max_response_size: u32,
 
     /// Set the concurrent connections
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 30)]
     pub max_concurrent_connections: usize,
 
     /// Number of blocks to handle per loop iteration
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 10)]
     pub max_blocks_per_iteration: u64,
 
     #[arg(long, default_value_t = false)]
     pub reset_index: bool,
+
+    /// Block number to start at
+    #[arg(long)]
+    pub start_block: Option<u64>,
 }
