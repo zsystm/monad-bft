@@ -1,28 +1,31 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "monad-archive", about, long_about = None)]
+#[command(name = "monad-indexer", about, long_about = None)]
 pub struct Cli {
-    #[arg(long)]
-    pub triedb_path: PathBuf,
-
     #[arg(long)]
     pub s3_bucket: String,
 
     #[arg(long)]
-    pub s3_region: Option<String>,
+    pub region: Option<String>,
+
+    #[arg(long)]
+    pub db_table: String,
 
     /// Set the max response size in bytes (the same as monad-rpc)
     #[arg(long, default_value_t = 25_000_000)]
     pub max_response_size: u32,
 
-    /// Set the concurrent blocks
+    /// Set the concurrent connections
     #[arg(long, default_value_t = 10)]
-    pub max_concurrent_blocks: usize,
+    pub max_concurrent_connections: usize,
 
-    /// Set max block processed per iter
+    /// Number of blocks to handle per loop iteration
     #[arg(long, default_value_t = 100)]
     pub max_blocks_per_iteration: u64,
+
+    #[arg(long, default_value_t = false)]
+    pub reset_index: bool,
 }
