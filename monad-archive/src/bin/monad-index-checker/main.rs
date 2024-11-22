@@ -99,6 +99,24 @@ pub struct BlockCheckResult {
     pub faults: Vec<Fault>,
 }
 
+impl BlockCheckResult {
+    pub fn valid(block_num: u64) -> BlockCheckResult {
+        BlockCheckResult {
+            timestamp: get_timestamp(),
+            block_num,
+            faults: vec![],
+        }
+    }
+
+    pub fn new(block_num: u64, faults: Vec<Fault>) -> BlockCheckResult {
+        BlockCheckResult {
+            timestamp: get_timestamp(),
+            block_num,
+            faults,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Fault {
     ErrorChecking {
@@ -156,6 +174,10 @@ async fn handle_block(
     let block = archive.read_block(block_num).await?;
     info!(num_txs = block.body.len(), block_num, "Handling block");
 
+    if block.body.is_empty() {
+        return Ok(BlockCheckResult::valid(block_num));
+    }
+
     let hashes = block
         .body
         .iter()
@@ -178,19 +200,16 @@ async fn handle_block(
         .collect::<Vec<_>>();
 
     // reduce all txhash case
-    if faults
-        .iter()
-        .all(|f| matches!(f, Fault::MissingTxhash { .. }))
+    if faults.len() == block.body.len()
+        && faults
+            .iter()
+            .all(|f| matches!(f, Fault::MissingTxhash { .. }))
     {
         faults.clear();
         faults.push(Fault::MissingAllTxHash);
     }
 
-    Ok(BlockCheckResult {
-        timestamp: get_timestamp(),
-        block_num,
-        faults,
-    })
+    Ok(BlockCheckResult::new(block_num, faults))
 }
 
 struct FaultWriter {
@@ -199,10 +218,14 @@ struct FaultWriter {
 
 impl FaultWriter {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            // .append(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .wrap_err_with(|| format!("Failed to create Fault Writer. Path {:?}", path.as_ref()))?;
         Ok(Self {
-            file: std::io::BufWriter::new(std::fs::File::open(&path).wrap_err_with(|| {
-                format!("Failed to create Fault Writer. Path {:?}", path.as_ref())
-            })?),
+            file: std::io::BufWriter::new(file),
         })
     }
 
@@ -212,6 +235,7 @@ impl FaultWriter {
     ) -> Result<()> {
         for fault in block_faults {
             serde_json::to_writer(&mut self.file, fault)?;
+            self.file.write(b"\n")?;
         }
         self.file.flush()?;
         Ok(())
@@ -219,6 +243,7 @@ impl FaultWriter {
 
     pub fn write_fault(&mut self, block_fault: BlockCheckResult) -> Result<()> {
         serde_json::to_writer(&mut self.file, &block_fault)?;
+        self.file.write(b"\n")?;
         self.file.flush().map_err(Into::into)
     }
 }

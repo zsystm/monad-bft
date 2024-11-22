@@ -2,7 +2,11 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
-    operation::get_item::GetItemOutput,
+    error::SdkError,
+    operation::{
+        batch_get_item::{builders::BatchGetItemFluentBuilder, BatchGetItemOutput},
+        get_item::GetItemOutput,
+    },
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
     Client,
 };
@@ -15,7 +19,6 @@ use tokio_retry::{
     Retry,
 };
 use tracing::{error, warn};
-
 
 #[derive(Clone)]
 pub struct DynamoDBArchive {
@@ -37,10 +40,7 @@ impl DynamoDBArchive {
         }
     }
 
-    pub async fn batch_get_block_nums(
-        &self,
-        keys: &[String],
-    ) -> Result<Vec<Option<u64>>> {
+    pub async fn batch_get_block_nums(&self, keys: &[String]) -> Result<Vec<Option<u64>>> {
         let mut results = Vec::new();
         let batches = keys.chunks(Self::READ_BATCH_SIZE);
 
@@ -63,13 +63,15 @@ impl DynamoDBArchive {
                     .build()?,
             );
 
-            // Execute the batch_get_item API
-            let response = self
-                .client
-                .batch_get_item()
-                .set_request_items(Some(request_items))
-                .send()
-                .await?;
+            let response = Retry::spawn(retry_strategy(), || async {
+                self.client
+                    .batch_get_item()
+                    .set_request_items(Some(request_items.clone()))
+                    .send()
+                    .await
+                    .wrap_err_with(|| format!("Request keys (0x stripped in req): {:?}", &batch))
+            })
+            .await?;
 
             // Collect retrieved items
             if let Some(responses) = response.responses {
@@ -81,12 +83,17 @@ impl DynamoDBArchive {
             // Retry unprocessed keys
             let mut unprocessed_keys = response.unprocessed_keys;
             while let Some(unprocessed) = unprocessed_keys {
-                let response_retry = self
-                    .client
-                    .batch_get_item()
-                    .set_request_items(Some(unprocessed))
-                    .send()
-                    .await?;
+                if unprocessed.is_empty() {
+                    break;
+                }
+                let response_retry = Retry::spawn(retry_strategy(), || async {
+                    self.client
+                        .batch_get_item()
+                        .set_request_items(Some(unprocessed.clone()))
+                        .send()
+                        .await
+                })
+                .await?;
 
                 if let Some(responses_retry) = response_retry.responses {
                     if let Some(items_retry) = responses_retry.get(&self.table) {
@@ -100,10 +107,7 @@ impl DynamoDBArchive {
         Ok(results)
     }
 
-    pub async fn get_block_number_by_tx_hash(
-        &self,
-        tx_hash: &str,
-    ) -> Result<Option<u64>> {
+    pub async fn get_block_number_by_tx_hash(&self, tx_hash: &str) -> Result<Option<u64>> {
         // Create the key map
         let tx_hash = tx_hash.trim_start_matches("0x");
         let mut key = HashMap::new();
@@ -125,11 +129,7 @@ impl DynamoDBArchive {
         Ok(block_number_from_resp(result))
     }
 
-    pub async fn index_block(
-        &self,
-        hashes: Vec<TxHash>,
-        block_num: u64,
-    ) -> Result<()> {
+    pub async fn index_block(&self, hashes: Vec<TxHash>, block_num: u64) -> Result<()> {
         let mut requests = Vec::new();
 
         for hash in hashes {
@@ -247,4 +247,10 @@ fn block_number_from_resp(result: GetItemOutput) -> Option<u64> {
         dbg!("no item in result");
     }
     None
+}
+
+pub fn retry_strategy() -> std::iter::Map<ExponentialBackoff, fn(Duration) -> Duration> {
+    ExponentialBackoff::from_millis(10)
+        .max_delay(Duration::from_secs(1))
+        .map(jitter)
 }
