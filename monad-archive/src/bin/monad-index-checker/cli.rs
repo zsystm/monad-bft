@@ -3,10 +3,13 @@ use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "monad-indexer", about, long_about = None)]
+#[command(name = "monad-index-checker", about, long_about = None)]
 pub struct Cli {
     #[arg(long)]
-    pub s3_bucket: String,
+    pub checker_path: PathBuf,
+
+    #[arg(long)]
+    pub archive_bucket: String,
 
     #[arg(long)]
     pub region: Option<String>,
@@ -25,9 +28,6 @@ pub struct Cli {
     /// Number of blocks to handle per loop iteration
     #[arg(long, default_value_t = 20)]
     pub max_blocks_per_iteration: u64,
-
-    #[arg(long, default_value_t = false)]
-    pub reset_index: bool,
 
     /// Block number to start at
     #[arg(long)]
