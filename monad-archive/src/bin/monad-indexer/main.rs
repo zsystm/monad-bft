@@ -11,7 +11,7 @@ use dynamodb::DynamoDBArchive;
 use eyre::Result;
 use futures::{executor::block_on, future::join_all};
 use monad_archive::*;
-use s3_archive::{get_aws_config, S3Archive, S3ArchiveWriter};
+use s3_archive::{get_aws_config, S3ArchiveWriter, S3Bucket};
 use tokio::{join, sync::Semaphore, time::sleep};
 use tracing::{error, info, warn, Level};
 
@@ -29,8 +29,7 @@ async fn main() -> Result<()> {
     let sdk_config = get_aws_config(args.region).await;
     let dynamodb_archive =
         DynamoDBArchive::new(args.db_table, &sdk_config, args.max_concurrent_connections);
-    let s3_archive = S3Archive::new(args.s3_bucket, &sdk_config).await?;
-    let archive = S3ArchiveWriter::new(s3_archive).await?;
+    let archive = S3ArchiveWriter::new(S3Bucket::new(args.s3_bucket, &sdk_config)).await?;
 
     // for testing
     if args.reset_index {

@@ -3,6 +3,7 @@
 use std::{sync::Arc, time::Instant};
 
 use clap::Parser;
+use eyre::Result;
 use futures::future::join_all;
 use tokio::{
     sync::Semaphore,
@@ -10,11 +11,10 @@ use tokio::{
     try_join,
 };
 use tracing::{error, info, warn, Level};
-use eyre::Result;
 
 use monad_archive::{
     archive_interface::{ArchiveWriterInterface, LatestKind},
-    s3_archive::{get_aws_config, S3Archive, S3ArchiveWriter},
+    s3_archive::{get_aws_config, S3ArchiveWriter, S3Bucket},
     triedb::{Triedb, TriedbEnv},
 };
 
@@ -34,8 +34,8 @@ async fn main() -> Result<()> {
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
-    let s3_archive = S3Archive::new(args.s3_bucket, &sdk_config).await?;
-    let s3_archive_writer = S3ArchiveWriter::new(s3_archive).await?;
+    let s3_archive_writer =
+        S3ArchiveWriter::new(S3Bucket::new(args.s3_bucket, &sdk_config)).await?;
 
     // Check for new blocks every 100 ms
     // Issue requests to triedb, poll data and push to relevant tables

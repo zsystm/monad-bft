@@ -12,6 +12,10 @@ bench = false
 name = "monad-indexer"
 bench = false
 
+[[bin]]
+name = "monad-index-checker"
+bench = false
+
 [lib]
 bench = false
 
@@ -26,9 +30,12 @@ aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+chrono = { workspace = true }
 eyre = { workspace = true }
 hex = { workspace = true }
 schemars = "0.8.21"
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs", "sync"] }
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }

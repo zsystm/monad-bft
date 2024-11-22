@@ -27,24 +27,9 @@ use crate::{
 const BLOCK_PADDING_WIDTH: usize = 12;
 
 #[derive(Clone)]
-pub struct S3Archive {
+pub struct S3Bucket {
     pub client: Client,
     pub bucket: String,
-
-    pub latest_uploaded_table_key: &'static str,
-    pub latest_indexed_table_key: &'static str,
-
-    // key =  {block}/{block_number}, value = {RLP(Block)}
-    pub block_table_prefix: &'static str,
-
-    // key = {block_hash}/{$block_hash}, value = {str(block_number)}
-    pub block_hash_table_prefix: &'static str,
-
-    // key = {receipts}/{block_number}, value = {RLP(Vec<Receipt>)}
-    pub receipts_table_prefix: &'static str,
-
-    // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
-    pub traces_table_prefix: &'static str,
 }
 
 pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
@@ -69,20 +54,13 @@ pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
         .await
 }
 
-impl S3Archive {
-    pub async fn new(bucket: String, sdk_config: &SdkConfig) -> Result<Self> {
-        let s3_client = Client::new(sdk_config);
+impl S3Bucket {
+    pub fn new(bucket: String, sdk_config: &SdkConfig) -> Self {
+        S3Bucket::from_client(bucket, Client::new(sdk_config))
+    }
 
-        Ok(S3Archive {
-            client: s3_client,
-            bucket,
-            block_table_prefix: "block",
-            block_hash_table_prefix: "block_hash",
-            receipts_table_prefix: "receipts",
-            traces_table_prefix: "traces",
-            latest_uploaded_table_key: "latest",
-            latest_indexed_table_key: "latest_indexed",
-        })
+    pub fn from_client(bucket: String, client: Client) -> Self {
+        S3Bucket { bucket, client }
     }
 
     // Upload rlp-encoded bytes with retry
@@ -137,18 +115,39 @@ impl S3Archive {
 
 #[derive(Clone)]
 pub struct S3ArchiveWriter {
-    archive: Arc<S3Archive>,
+    bucket: Arc<S3Bucket>,
+
+    pub latest_uploaded_table_key: &'static str,
+    pub latest_indexed_table_key: &'static str,
+
+    // key =  {block}/{block_number}, value = {RLP(Block)}
+    pub block_table_prefix: &'static str,
+
+    // key = {block_hash}/{$block_hash}, value = {str(block_number)}
+    pub block_hash_table_prefix: &'static str,
+
+    // key = {receipts}/{block_number}, value = {RLP(Vec<Receipt>)}
+    pub receipts_table_prefix: &'static str,
+
+    // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
+    pub traces_table_prefix: &'static str,
 }
 
 impl S3ArchiveWriter {
-    pub async fn new(archive: S3Archive) -> Result<Self> {
+    pub async fn new(archive: S3Bucket) -> Result<Self> {
         Ok(S3ArchiveWriter {
-            archive: Arc::new(archive),
+            bucket: Arc::new(archive),
+            block_table_prefix: "block",
+            block_hash_table_prefix: "block_hash",
+            receipts_table_prefix: "receipts",
+            traces_table_prefix: "traces",
+            latest_uploaded_table_key: "latest",
+            latest_indexed_table_key: "latest_indexed",
         })
     }
 
     pub async fn read_block(&self, block_num: u64) -> Result<Block> {
-        let bytes = self.archive.read(&self.block_key(block_num)).await?;
+        let bytes = self.bucket.read(&self.block_key(block_num)).await?;
         let mut bytes: &[u8] = &bytes;
         let block = Block::decode(&mut bytes)?;
         Ok(block)
@@ -157,7 +156,7 @@ impl S3ArchiveWriter {
     pub fn block_key(&self, block_num: u64) -> String {
         format!(
             "{}/{:0width$}",
-            self.archive.block_table_prefix,
+            self.block_table_prefix,
             block_num,
             width = BLOCK_PADDING_WIDTH
         )
@@ -167,11 +166,11 @@ impl S3ArchiveWriter {
 impl ArchiveWriterInterface for S3ArchiveWriter {
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
         let key = match latest_kind {
-            LatestKind::Uploaded => &self.archive.latest_uploaded_table_key,
-            LatestKind::Indexed => &self.archive.latest_indexed_table_key,
+            LatestKind::Uploaded => &self.latest_uploaded_table_key,
+            LatestKind::Indexed => &self.latest_indexed_table_key,
         };
 
-        let value = self.archive.read(key).await?;
+        let value = self.bucket.read(key).await?;
 
         let value_str = String::from_utf8(value.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
 
@@ -183,11 +182,11 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
 
     async fn update_latest(&self, block_num: u64, latest_kind: LatestKind) -> Result<()> {
         let key = match latest_kind {
-            LatestKind::Uploaded => &self.archive.latest_uploaded_table_key,
-            LatestKind::Indexed => &self.archive.latest_indexed_table_key,
+            LatestKind::Uploaded => &self.latest_uploaded_table_key,
+            LatestKind::Indexed => &self.latest_indexed_table_key,
         };
         let latest_value = format!("{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
-        self.archive
+        self.bucket
             .upload(key, latest_value.as_bytes().to_vec())
             .await
     }
@@ -207,17 +206,14 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
 
         // 2) Insert into block_hash table
         let block_hash_key_suffix = hex::encode(block_header.hash);
-        let block_hash_key = format!(
-            "{}/{}",
-            self.archive.block_hash_table_prefix, block_hash_key_suffix
-        );
+        let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
         let block_hash_value_string = block_num.to_string();
         let block_hash_value = block_hash_value_string.as_bytes();
 
         // 3) Join futures
         try_join!(
-            self.archive.upload(&block_key, rlp_block),
-            self.archive
+            self.bucket.upload(&block_key, rlp_block),
+            self.bucket
                 .upload(&block_hash_key, block_hash_value.to_vec())
         )?;
         Ok(())
@@ -231,20 +227,20 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         // 1) Prepare the receipts upload
         let receipts_key = format!(
             "{}/{:0width$}",
-            self.archive.receipts_table_prefix,
+            self.receipts_table_prefix,
             block_num,
             width = BLOCK_PADDING_WIDTH
         );
 
         let mut rlp_receipts = Vec::new();
         receipts.encode(&mut rlp_receipts);
-        self.archive.upload(&receipts_key, rlp_receipts).await
+        self.bucket.upload(&receipts_key, rlp_receipts).await
     }
 
     async fn archive_traces(&self, traces: Vec<Vec<u8>>, block_num: u64) -> Result<()> {
         let traces_key = format!(
             "{}/{:0width$}",
-            self.archive.traces_table_prefix,
+            self.traces_table_prefix,
             block_num,
             width = BLOCK_PADDING_WIDTH
         );
@@ -252,7 +248,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         let mut rlp_traces = vec![];
         traces.encode(&mut rlp_traces);
 
-        self.archive.upload(&traces_key, rlp_traces).await
+        self.bucket.upload(&traces_key, rlp_traces).await
     }
 }
 
