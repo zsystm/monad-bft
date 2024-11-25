@@ -19,7 +19,12 @@ use futures::{executor::block_on, future::join_all, stream, StreamExt};
 use monad_archive::*;
 use s3_archive::{get_aws_config, S3ArchiveWriter, S3Bucket};
 use serde::{Deserialize, Serialize};
-use tokio::{join, sync::Semaphore, time::sleep};
+use tokio::{
+    io::AsyncWriteExt,
+    join,
+    sync::{Mutex, Semaphore},
+    time::sleep,
+};
 use tracing::{error, info, warn, Level};
 
 mod cli;
@@ -38,7 +43,7 @@ async fn main() -> Result<()> {
 
     let mut latest_checked = args.start_block.unwrap_or(0);
 
-    let mut fault_writer = FaultWriter::new(&args.checker_path)?;
+    let mut fault_writer = FaultWriter::new(&args.checker_path).await?;
 
     loop {
         sleep(Duration::from_millis(100)).await;
@@ -142,12 +147,25 @@ async fn handle_blocks(
     concurrency: usize,
     fault_writer: &mut FaultWriter,
 ) -> Result<()> {
-    let faults = stream::iter(start_block_num..=end_block_num)
+    let faults: Vec<_> = stream::iter(start_block_num..=end_block_num)
         .map(|block_num| async move {
-            let check_result = handle_block(archive, dynamodb, block_num).await;
+            let archive = archive.clone();
+            let dynamodb = dynamodb.clone();
+            let check_result = tokio::spawn(handle_block(archive, dynamodb, block_num)).await;
+            // let mut fault_writer = fault_writer.clone();
 
-            match check_result {
-                Ok(fault) => fault,
+            let check = match check_result {
+                Ok(Ok(fault)) => fault,
+                Ok(Err(e)) => {
+                    error!("Encountered error handling block: {e:?}");
+                    BlockCheckResult {
+                        timestamp: get_timestamp(),
+                        block_num,
+                        faults: vec![Fault::ErrorChecking {
+                            err: format!("{e:?}"),
+                        }],
+                    }
+                }
                 Err(e) => {
                     error!("Encountered error handling block: {e:?}");
                     BlockCheckResult {
@@ -158,17 +176,21 @@ async fn handle_blocks(
                         }],
                     }
                 }
-            }
+            };
+            check
+            // todo: write per item instead of after joining
+            // e.g.:
+            // fault_writer.write_fault(check).await
         })
-        .buffered(concurrency)
-        .collect::<Vec<BlockCheckResult>>()
+        .buffer_unordered(concurrency)
+        .collect()
         .await;
-    fault_writer.write_faults(&faults)
+    fault_writer.write_faults(&faults).await
 }
 
 async fn handle_block(
-    archive: &S3ArchiveWriter,
-    dynamodb: &DynamoDBArchive,
+    archive: S3ArchiveWriter,
+    dynamodb: DynamoDBArchive,
     block_num: u64,
 ) -> Result<BlockCheckResult> {
     let block = archive.read_block(block_num).await?;
@@ -212,39 +234,48 @@ async fn handle_block(
     Ok(BlockCheckResult::new(block_num, faults))
 }
 
+#[derive(Clone)]
 struct FaultWriter {
-    file: std::io::BufWriter<std::fs::File>,
+    file: Arc<Mutex<tokio::io::BufWriter<tokio::fs::File>>>,
 }
 
 impl FaultWriter {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let file = std::fs::OpenOptions::new()
+    pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let file = tokio::fs::OpenOptions::new()
             // .append(true)
             .write(true)
             .create(true)
             .open(&path)
+            .await
             .wrap_err_with(|| format!("Failed to create Fault Writer. Path {:?}", path.as_ref()))?;
         Ok(Self {
-            file: std::io::BufWriter::new(file),
+            file: Arc::new(Mutex::new(tokio::io::BufWriter::new(file))),
         })
     }
 
-    pub fn write_faults<'a>(
+    pub async fn write_faults<'a>(
         &mut self,
         block_faults: impl IntoIterator<Item = &'a BlockCheckResult>,
     ) -> Result<()> {
+        let mut buf = Vec::with_capacity(1024);
+        let mut file = self.file.lock().await;
         for fault in block_faults {
-            serde_json::to_writer(&mut self.file, fault)?;
-            self.file.write(b"\n")?;
+            serde_json::to_writer(&mut buf, fault)?;
+            file.write_all(&buf).await?;
+            file.write(b"\n").await?;
+            buf.clear();
         }
-        self.file.flush()?;
+        file.flush().await?;
         Ok(())
     }
 
-    pub fn write_fault(&mut self, block_fault: BlockCheckResult) -> Result<()> {
-        serde_json::to_writer(&mut self.file, &block_fault)?;
-        self.file.write(b"\n")?;
-        self.file.flush().map_err(Into::into)
+    pub async fn write_fault(&mut self, block_fault: BlockCheckResult) -> Result<()> {
+        // serde_json::to_writer(&mut self.file, &block_fault)?;
+        let buf = serde_json::to_vec(&block_fault)?;
+        let mut file = self.file.lock().await;
+        file.write_all(&buf).await?;
+        file.write(b"\n").await?;
+        file.flush().await.map_err(Into::into)
     }
 }
 
