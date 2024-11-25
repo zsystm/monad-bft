@@ -4,7 +4,7 @@ use alloy_rlp::Encodable;
 use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use alloy_sol_types::SolCall;
-use eyre::Result;
+use eyre::{bail, Result};
 use reth_primitives::{
     hex::FromHex, keccak256, AccessList, Address, Bytes, Transaction, TransactionKind,
     TransactionSigned, TxEip1559, U256,
@@ -12,7 +12,7 @@ use reth_primitives::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::time::sleep;
-use tracing::info;
+use tracing::{info, trace};
 
 use crate::{
     shared::{eth_json_rpc::EthJsonRpc, private_key::PrivateKey},
@@ -32,16 +32,28 @@ impl ERC20 {
         let nonce = client.get_transaction_count(&deployer.0).await?;
         let tx = Self::deploy_tx(nonce, &deployer.1);
 
+        trace!("Deploying erc20...");
+
         // make compiler happy, actually parse string : (
         let _: String = client
             .request("eth_sendRawTransaction", [tx.envelope_encoded()])
             .await?;
 
-        sleep(Duration::from_secs(1)).await;
-
         let addr = calculate_contract_addr(&deployer.0, nonce);
-        info!(addr = addr.to_string(), "Deployed erc20 contract");
-        Ok(Self { addr })
+
+        let mut delay = Duration::from_millis(100);
+        for _ in 0..5 {
+            sleep(delay).await;
+            delay *= 2;
+            if let Ok(code) = client.get_code(&addr).await {
+                if code != "0x" {
+                    info!(addr = addr.to_string(), "Deployed erc20 contract");
+                    return Ok(Self { addr });
+                }
+            }
+        }
+
+        bail!("Failed to dpeloy erc20")
     }
 
     pub fn deploy_tx(nonce: u64, deployer: &PrivateKey) -> TransactionSigned {
