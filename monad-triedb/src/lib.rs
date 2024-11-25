@@ -19,6 +19,10 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
 }
 
+// Proposed and finalized subtries. Active on all tables
+const PROPOSAL_NIBBLE: u8 = 0x0;
+const FINALIZED_NIBBLE: u8 = 0x1;
+// Table nibbles
 const STATE_NIBBLE: u8 = 0x0;
 
 #[derive(Clone, Debug)]
@@ -224,10 +228,11 @@ impl TriedbHandle {
     }
 
     pub fn get_state_root(&self, block_id: u64) -> Option<Vec<u8>> {
-        let key: Vec<u8> = vec![STATE_NIBBLE];
+        // FIXME: revisit after async execution changes
+        let key: Vec<u8> = vec![FINALIZED_NIBBLE << 4 | STATE_NIBBLE];
         let mut value_ptr = null();
         let result = unsafe {
-            bindings::triedb_read_data(self.db_ptr, key.as_ptr(), 1, &mut value_ptr, block_id)
+            bindings::triedb_read_data(self.db_ptr, key.as_ptr(), 2, &mut value_ptr, block_id)
         };
         if result == -1 {
             return None;

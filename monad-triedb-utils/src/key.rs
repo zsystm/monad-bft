@@ -2,6 +2,10 @@ use alloy_primitives::keccak256;
 use alloy_rlp::Encodable;
 use tracing::warn;
 
+// Proposed and finalized subtries. Active on all tables
+const PROPOSAL_NIBBLE: u8 = 0;
+const FINALIZED_NIBBLE: u8 = 1;
+// Table nibbles
 const STATE_NIBBLE: u8 = 0;
 const CODE_NIBBLE: u8 = 1;
 const RECEIPT_NIBBLE: u8 = 2;
@@ -24,7 +28,8 @@ pub enum KeyInput<'a> {
 }
 
 pub fn create_triedb_key(key: KeyInput) -> (Vec<u8>, u8) {
-    let mut key_nibbles: Vec<u8> = vec![];
+    // FIXME: revisit after async execution changes
+    let mut key_nibbles: Vec<u8> = vec![FINALIZED_NIBBLE];
 
     match key {
         KeyInput::Address(addr) => {
