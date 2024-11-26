@@ -16,8 +16,9 @@ use monad_archive::{
     archive_interface::{ArchiveReader, ArchiveWriter, LatestKind},
     metrics::Metrics,
     s3_archive::{get_aws_config, S3Archive, S3Bucket},
-    triedb::{Triedb, TriedbEnv},
 };
+
+use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
 
 mod cli;
 
@@ -36,7 +37,10 @@ async fn main() -> Result<()> {
     let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
 
     // This will spin off a polling thread
-    let triedb = TriedbEnv::new(&args.triedb_path);
+    let triedb = TriedbEnv::new(
+        &args.triedb_path,
+        args.triedb_max_concurrent_requests as usize,
+    );
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
