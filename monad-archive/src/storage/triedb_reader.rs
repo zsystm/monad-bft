@@ -62,11 +62,11 @@ impl BlockDataReader for TriedbReader {
         "TriedbBucket"
     }
 
-    async fn get_block_by_hash(&self, block_hash: BlockHash) -> Result<Block> {
+    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
         let latest_block_num = self.db.get_latest_block().await.map_err(|e| eyre!("{e}"))?;
         let block_num = self
             .db
-            .get_block_number_by_hash(*block_hash, latest_block_num)
+            .get_block_number_by_hash(block_hash.0, latest_block_num)
             .await
             .map_err(|e| eyre!("{e:?}"))?
             .ok_or_eyre("Block number for hash not found in triedb")?;

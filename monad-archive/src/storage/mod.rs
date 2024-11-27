@@ -35,7 +35,7 @@ pub trait BlockDataReader: Clone {
     fn get_bucket(&self) -> &str;
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64>;
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block>;
-    async fn get_block_by_hash(&self, block_hash: BlockHash) -> Result<Block>;
+    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block>;
     async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>>;
     async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>>;
 }

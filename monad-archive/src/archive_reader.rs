@@ -29,23 +29,25 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> ArchiveReader<BStore, IS
         }
     }
 
-    // TODO: move this to monad_rpc 
-    // pub async fn for_rpc(
-    //     bucket: String,
-    //     region: Option<String>,
-    //     url: Url,
-    //     api_key: &str,
-    //     concurrency: usize,
-    // ) -> Result<ArchiveReader<BlockDataArchive, CloudProxyReader>> {
-    //     let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket.clone(), concurrency)?;
-    //     let block_data_reader = BlockDataArchive::new(S3Bucket::new(
-    //         bucket,
-    //         &get_aws_config(region).await,
-    //         Metrics::none(),
-    //     ));
+    pub async fn initialize_reader(
+        bucket: String,
+        region: Option<String>,
+        url: &str,
+        api_key: &str,
+        concurrency: usize,
+    ) -> Result<ArchiveReader<BlockDataArchive, CloudProxyReader>> {
+        let url = url::Url::parse(url)?;
+        let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket.clone(), concurrency)?;
+        let block_data_reader = BlockDataArchive::new(BlobStoreErased::S3Bucket(
+            S3Bucket::new(
+                bucket,
+                &get_aws_config(region).await,
+                Metrics::none(),
+            )
+        ));
 
-    //     Ok(Self::new(block_data_reader, cloud_proxy_reader))
-    // }
+        Ok(ArchiveReader::new(block_data_reader, cloud_proxy_reader))
+    }
 }
 
 impl<BStore: BlockDataReader, IStore: IndexStoreReader> IndexStoreReader
@@ -75,7 +77,7 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> BlockDataReader
         self.block_data_reader.get_block_by_number(block_num).await
     }
 
-    async fn get_block_by_hash(&self, block_hash: BlockHash) -> Result<Block> {
+    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
         self.block_data_reader.get_block_by_hash(block_hash).await
     }
 
