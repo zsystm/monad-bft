@@ -9,6 +9,7 @@ use actix_web::{
 use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
+use monad_archive::archive_reader::ArchiveReader;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
@@ -37,6 +38,7 @@ use crate::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
         monad_debug_getRawTransaction, monad_debug_traceCall,
     },
+    eth_json_types::ArchiveReaderType,
     eth_txn_handlers::{
         monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
         monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
@@ -194,14 +196,14 @@ async fn rpc_select(
         "debug_traceBlockByHash" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByHash(triedb_env, params)
+            monad_debug_traceBlockByHash(triedb_env, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_traceBlockByNumber" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByNumber(triedb_env, params)
+            monad_debug_traceBlockByNumber(triedb_env, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
@@ -215,7 +217,7 @@ async fn rpc_select(
         "debug_traceTransaction" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceTransaction(triedb_env, params)
+            monad_debug_traceTransaction(triedb_env, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
@@ -257,14 +259,14 @@ async fn rpc_select(
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getLogs(triedb_env, params)
+            monad_eth_getLogs(triedb_env, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
         "eth_getTransactionByHash" => {
             if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByHash(triedb_env, params)
+                monad_eth_getTransactionByHash(triedb_env, &app_state.archive_reader, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -272,9 +274,9 @@ async fn rpc_select(
             }
         }
         "eth_getBlockByHash" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
+            if let Some(triedb_env) = &app_state.triedb_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByHash(triedb_env, params)
+                monad_eth_getBlockByHash(triedb_env, &app_state.archive_reader, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -284,7 +286,7 @@ async fn rpc_select(
         "eth_getBlockByNumber" => {
             if let Some(reader) = &app_state.triedb_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByNumber(reader, params)
+                monad_eth_getBlockByNumber(reader, &app_state.archive_reader, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -294,9 +296,13 @@ async fn rpc_select(
         "eth_getTransactionByBlockHashAndIndex" => {
             if let Some(triedb_env) = &app_state.triedb_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockHashAndIndex(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
+                monad_eth_getTransactionByBlockHashAndIndex(
+                    triedb_env,
+                    &app_state.archive_reader,
+                    params,
+                )
+                .await
+                .map(serialize_result)?
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
@@ -304,9 +310,13 @@ async fn rpc_select(
         "eth_getTransactionByBlockNumberAndIndex" => {
             if let Some(triedb_env) = &app_state.triedb_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockNumberAndIndex(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
+                monad_eth_getTransactionByBlockNumberAndIndex(
+                    triedb_env,
+                    &app_state.archive_reader,
+                    params,
+                )
+                .await
+                .map(serialize_result)?
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
@@ -314,9 +324,13 @@ async fn rpc_select(
         "eth_getBlockTransactionCountByHash" => {
             if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByHash(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
+                monad_eth_getBlockTransactionCountByHash(
+                    triedb_env,
+                    &app_state.archive_reader,
+                    params,
+                )
+                .await
+                .map(serialize_result)?
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
@@ -324,9 +338,13 @@ async fn rpc_select(
         "eth_getBlockTransactionCountByNumber" => {
             if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByNumber(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
+                monad_eth_getBlockTransactionCountByNumber(
+                    triedb_env,
+                    &app_state.archive_reader,
+                    params,
+                )
+                .await
+                .map(serialize_result)?
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
@@ -439,14 +457,14 @@ async fn rpc_select(
             };
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getTransactionReceipt(triedb_reader, params)
+            monad_eth_getTransactionReceipt(triedb_reader, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
         "eth_getBlockReceipts" => {
             let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getBlockReceipts(triedb_reader, params)
+            monad_eth_getBlockReceipts(triedb_reader, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
@@ -504,6 +522,7 @@ struct ExecutionLedgerPath(pub Option<PathBuf>);
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TransactionSigned>,
     triedb_reader: Option<TriedbEnv>,
+    archive_reader: Option<ArchiveReaderType>,
     execution_ledger_path: ExecutionLedgerPath,
     chain_id: u64,
     batch_request_limit: u16,
@@ -525,6 +544,7 @@ impl MonadRpcResources {
     pub fn new(
         mempool_sender: flume::Sender<TransactionSigned>,
         triedb_reader: Option<TriedbEnv>,
+        archive_reader: Option<ArchiveReaderType>,
         execution_ledger_path: Option<PathBuf>,
         chain_id: u64,
         batch_request_limit: u16,
@@ -536,6 +556,7 @@ impl MonadRpcResources {
         Self {
             mempool_sender,
             triedb_reader,
+            archive_reader,
             execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
             chain_id,
             batch_request_limit,
@@ -643,6 +664,33 @@ async fn main() -> std::io::Result<()> {
         .as_deref()
         .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
 
+    // Initialize archive reader if specified. If not specified, RPC can only read the latest <history_length> blocks from chain tip
+    let archive_reader = match (
+        args.s3_bucket,
+        args.region,
+        args.archive_url,
+        args.archive_api_key,
+    ) {
+        (Some(s3_bucket), Some(region), Some(archive_url), Some(archive_api_key)) => {
+            match ArchiveReader::<ArchiveReaderType>::initialize_reader(
+                s3_bucket,
+                Some(region),
+                &archive_url,
+                &archive_api_key,
+                5,
+            )
+            .await
+            {
+                Ok(reader) => Some(reader),
+                Err(e) => {
+                    warn!("Unable to initialize archive reader {e}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
     // We need to spawn a task to handle changes to the base fee, and block updates
     let tx_pool2 = tx_pool.clone();
     let triedb_env2 = triedb_env.clone();
@@ -657,6 +705,7 @@ async fn main() -> std::io::Result<()> {
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
         triedb_env,
+        archive_reader,
         Some(args.execution_ledger_path),
         args.chain_id,
         args.batch_request_limit,
@@ -753,6 +802,7 @@ mod tests {
         let app = test::init_service(create_app(MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
+            archive_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 1337,
             batch_request_limit: 5,

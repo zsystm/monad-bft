@@ -57,4 +57,20 @@ pub struct Cli {
     /// This capacity is set for each sub-pool, and entries are dropped once the capacity is reached.
     #[arg(long, default_value_t = 20_000)]
     pub vpool_capacity: usize,
+
+    /// Set the s3 bucket name to read archive data from
+    #[arg(long)]
+    pub s3_bucket: Option<String>,
+
+    /// Set the s3 region to read archive data from
+    #[arg(long)]
+    pub region: Option<String>,
+
+    /// Set the archive URL to read archive data from
+    #[arg(long)]
+    pub archive_url: Option<String>,
+
+    /// Set the API key to read archive data from
+    #[arg(long)]
+    pub archive_api_key: Option<String>,
 }

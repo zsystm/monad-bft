@@ -109,7 +109,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
         Ok(traces)
     }
 
-    async fn get_block_by_hash(&self, block_hash: BlockHash) -> Result<Block> {
+    async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
         let block_hash_key_suffix = hex::encode(block_hash);
         let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
 
