@@ -154,7 +154,13 @@ elif [ "$mode" == "test" ]; then
 
     docker compose build $build_services &&
     docker compose up --detach --build $node_services
-    sleep 30
+    sleep 40
+    echo "RPC Logs"
+    docker compose logs monad_rpc
+    echo "BFT Logs"
+    docker compose logs monad_node
+    echo "Execution Logs"
+    docker compose logs monad_execution
     docker compose down $node_services
 
     popd # $vol_root

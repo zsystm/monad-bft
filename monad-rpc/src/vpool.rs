@@ -5,7 +5,7 @@ use reth_primitives::{Address, TransactionSigned, TransactionSignedEcRecovered};
 use scc::{ebr::Guard, HashIndex, HashMap, TreeIndex};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{
     block_watcher::BlockWithReceipts,
@@ -89,10 +89,12 @@ impl SubPool {
                 let tree = entry.get();
                 match tree.contains(&txn.nonce()) {
                     true if overwrite => {
+                        debug!("RPCBUG11: overwrite Pending {:?}", &txn.nonce());
                         entry.get_mut().remove(&txn.nonce());
                         entry.get_mut().insert(txn.nonce(), txn.clone());
                     }
                     false => {
+                        debug!("RPCBUG10: insert new Pending {:?}", &txn.nonce());
                         entry.get_mut().insert(txn.nonce(), txn.clone());
                     }
                     _ => {}
@@ -118,6 +120,7 @@ impl SubPool {
     fn clear_included(&self, txs: &[(Address, u64)]) {
         for (sender, nonce) in txs {
             if let Some(mut entry) = self.pool.get(sender) {
+                debug!("RPCBUG12: remove {:?}", nonce);
                 entry.get_mut().remove(nonce);
                 if entry.len() == 0 {
                     let _ = entry.remove();
@@ -317,26 +320,30 @@ impl VirtualPool {
                     .map(|v| v == nonce)
                     .unwrap_or(false)
                 {
+                    debug!("RPCBUG1: adding to Pending {:?}", nonce);
                     return TxPoolType::Pending;
                 }
             }
-
+            debug!("RPCBUG2: adding to Queue {:?}", nonce);
             return TxPoolType::Queue;
         }
 
         let queued = self.queued_pool.by_addr(&sender);
         if let Some(true) = queued.first().map(|tx| tx.nonce() < nonce) {
+            debug!("RPCBUG8: adding to Queue {:?}", nonce);
             return TxPoolType::Queue;
         }
 
         let pending = self.pending_pool.by_addr(&sender);
         let Some(entry) = pending.last() else {
+            debug!("RPCBUG9: adding to Pending {:?}", nonce);
             return TxPoolType::Pending;
         };
 
         let last_pending_nonce = entry.nonce();
 
         if last_pending_nonce + 1 == nonce {
+            debug!("RPCBUG3: adding to Pending {:?}", nonce);
             TxPoolType::Pending
         } else if last_pending_nonce == nonce {
             if let Some(entry) = self.pending_pool.get(&txn.signer(), &txn.nonce()) {
@@ -344,14 +351,18 @@ impl VirtualPool {
                 let current_gas_price = entry.transaction.max_fee_per_gas();
                 let new_gas_price = txn.transaction.max_fee_per_gas();
                 if new_gas_price >= current_gas_price + (current_gas_price / 10) {
+                    debug!("RPCBUG7: adding to Replace {:?}", nonce);
                     TxPoolType::Replace
                 } else {
+                    debug!("RPCBUG4: adding to Discard {:?}", nonce);
                     TxPoolType::Discard
                 }
             } else {
+                debug!("RPCBUG5: adding to Discard {:?}", nonce);
                 TxPoolType::Discard
             }
         } else {
+            debug!("RPCBUG6: adding to Pending {:?}", nonce);
             TxPoolType::Pending
         }
     }
@@ -364,6 +375,7 @@ impl VirtualPool {
                 }
                 TxPoolType::Pending => {
                     self.pending_pool.add(txn.clone(), false).await;
+                    debug!("RPCBUG13: publish Pending {:?}", txn.nonce());
                     if self.publisher.send(txn.into()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
@@ -391,6 +403,7 @@ impl VirtualPool {
                     })
                     .collect::<Vec<_>>();
 
+                debug!("RPCBUG14: block update {:?}", txs);
                 self.pending_pool.clear_included(&txs);
                 self.queued_pool.clear_included(&txs);
 

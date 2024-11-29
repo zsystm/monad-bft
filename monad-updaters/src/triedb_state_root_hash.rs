@@ -81,8 +81,11 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
                         break 'poll_triedb;
                     }
 
-                    if num_tries > 1 {
-                        warn!(?seq_num, ?num_tries, "no state root");
+                    if num_tries > 100 {
+                        error!(?seq_num, ?num_tries, "no state root giving up");
+                        break 'poll_triedb;
+                    } else if num_tries > 1 {
+                        warn!(?seq_num, ?num_tries, "no state root keep trying");
                     } else {
                         debug!(?seq_num, ?num_tries, "no state root");
                     }
