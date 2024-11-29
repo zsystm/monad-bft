@@ -31,6 +31,6 @@ rm -rf logs && mkdir -p logs
 nets/devnet-integration/scripts/net-run.sh test --output-dir logs --net-dir nets/devnet-integration/ --image-root images --monad-bft-root ../..
 
 # remove artifacts if test succeeds
-# rm -rf logs
+rm -rf logs
 
 popd # docker/flexnet
