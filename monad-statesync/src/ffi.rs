@@ -15,7 +15,10 @@ use monad_executor_glue::{
 use monad_types::{NodeId, SeqNum};
 use rand::seq::SliceRandom;
 
-use crate::{bindings, outbound_requests::OutboundRequests};
+use crate::{
+    bindings::{self},
+    outbound_requests::OutboundRequests,
+};
 
 type StateSyncContext = Box<dyn FnMut(bindings::monad_sync_request)>;
 
@@ -46,6 +49,15 @@ pub(crate) struct Target {
     pub state_root: [u8; 32],
 }
 
+impl From<Target> for bindings::monad_sync_target {
+    fn from(target: Target) -> Self {
+        Self {
+            n: target.n.0,
+            state_root: target.state_root,
+        }
+    }
+}
+
 /// This name is confusing, but I can't think of a better name. This is basically an output event
 /// from the perspective of this module. OutputEvent would also be a confusing name, because from
 /// the perspetive of the caller, this is an input event.
@@ -63,6 +75,8 @@ pub(crate) enum SyncResponse {
 }
 
 const NUM_PREFIXES: u64 = 256;
+
+const INVALID_SEQ_NUM: SeqNum = SeqNum(u64::MAX);
 
 #[derive(Clone, Copy, Default)]
 struct Progress {
@@ -133,6 +147,20 @@ impl Progress {
     }
 }
 
+fn to_monad_sync_type(upsert_type: StateSyncUpsertType) -> bindings::monad_sync_type {
+    match upsert_type {
+        StateSyncUpsertType::Code => bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE,
+        StateSyncUpsertType::Account => bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT,
+        StateSyncUpsertType::Storage => bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE,
+        StateSyncUpsertType::AccountDelete => {
+            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE
+        }
+        StateSyncUpsertType::StorageDelete => {
+            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE
+        }
+    }
+}
+
 impl<PT: PubKey> StateSync<PT> {
     pub fn start(
         db_paths: &[String],
@@ -162,35 +190,7 @@ impl<PT: PubKey> StateSync<PT> {
             let db_paths_ptr = db_paths_ptrs.as_ptr();
             let num_db_paths = db_paths_ptrs.len();
 
-            // callback function must be kept alive until statesync_client_context_destroy is
-            // called
-            let mut request_ctx: Box<StateSyncContext> = Box::new(Box::new({
-                let request_tx = request_tx.clone();
-                move |request| {
-                    let result = request_tx.send(SyncRequest::Request(StateSyncRequest {
-                        version: SELF_STATESYNC_VERSION,
-                        prefix: request.prefix,
-                        prefix_bytes: request.prefix_bytes,
-                        target: request.target,
-                        from: request.from,
-                        until: request.until,
-                        old_target: request.old_target,
-                    }));
-                    if result.is_err() {
-                        eprintln!("invariant broken: send_request called after destroy");
-                        // we can't panic because that's not safe in a C callback
-                        std::process::exit(1)
-                    }
-                }
-            }));
-
-            let mut sync_ctx = SyncCtx::create(
-                db_paths_ptr,
-                num_db_paths,
-                genesis_path.as_ptr(),
-                &mut *request_ctx as *mut _ as *mut bindings::monad_statesync_client,
-                Some(statesync_send_request),
-            );
+            let mut sync_ctx = SyncCtx::create(db_paths_ptr, num_db_paths, genesis_path.as_ptr());
             let mut current_target = None;
 
             while let Ok(response) = response_rx.recv() {
@@ -201,17 +201,31 @@ impl<PT: PubKey> StateSync<PT> {
                             new_target =? target,
                             "updating statesync target"
                         );
-                        unsafe {
-                            bindings::monad_statesync_client_handle_target(
-                                sync_ctx.ctx,
-                                bindings::monad_sync_target {
-                                    n: target.n.0,
-                                    state_root: target.state_root,
-                                },
-                            )
-                        };
                         current_target = Some(target);
-                        progress.lock().unwrap().update_target(target)
+                        progress.lock().unwrap().update_target(target);
+                        let from = if sync_ctx.current == INVALID_SEQ_NUM {
+                            0
+                        } else {
+                            sync_ctx.current.0 + 1
+                        };
+                        if from != target.n.0 {
+                            for prefix in 0..NUM_PREFIXES {
+                                sync_ctx.done[prefix as usize] = false;
+                                request_tx
+                                    .send(SyncRequest::Request(StateSyncRequest {
+                                        version: SELF_STATESYNC_VERSION,
+                                        prefix,
+                                        prefix_bytes: 1,
+                                        target: target.n.0,
+                                        from,
+                                        until: target.n.0,
+                                        old_target: sync_ctx.current.0,
+                                    }))
+                                    .expect("request_rx dropped mid UpdateTarget");
+                            }
+                        } else if target.n == SeqNum(0) {
+                            unsafe { bindings::monad_statesync_client_read_genesis(sync_ctx.ctx) };
+                        }
                     }
                     SyncResponse::Response(response) => {
                         assert!(current_target.is_some());
@@ -220,23 +234,7 @@ impl<PT: PubKey> StateSync<PT> {
                                 let upsert_result = bindings::monad_statesync_client_handle_upsert(
                                     sync_ctx.ctx,
                                     response.request.prefix,
-                                    match upsert_type {
-                                        StateSyncUpsertType::Code => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE
-                                        }
-                                        StateSyncUpsertType::Account => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT
-                                        }
-                                        StateSyncUpsertType::Storage => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE
-                                        }
-                                        StateSyncUpsertType::AccountDelete => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE
-                                        }
-                                        StateSyncUpsertType::StorageDelete => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE
-                                        }
-                                    },
+                                    to_monad_sync_type(*upsert_type),
                                     upsert_data.as_ptr(),
                                     upsert_data.len() as u64,
                                 );
@@ -246,14 +244,9 @@ impl<PT: PubKey> StateSync<PT> {
                                     &response
                                 );
                             }
-                            bindings::monad_statesync_client_handle_done(
-                                sync_ctx.ctx,
-                                bindings::monad_sync_done {
-                                    success: true,
-                                    prefix: response.request.prefix,
-                                    n: response.response_n,
-                                },
-                            )
+                        }
+                        if response.response_n != 0 {
+                            sync_ctx.done[response.request.prefix as usize] = true;
                         }
                         progress
                             .lock()
@@ -262,7 +255,7 @@ impl<PT: PubKey> StateSync<PT> {
                     }
                 }
                 let target = current_target.expect("current_target must have been set");
-                if sync_ctx.try_finalize() {
+                if sync_ctx.try_finalize(target) {
                     tracing::debug!(?target, "done statesync");
                     request_tx
                         .send(SyncRequest::DoneSync(target))
@@ -387,15 +380,9 @@ struct SyncCtx {
     dbname_paths: *const *const ::std::os::raw::c_char,
     len: usize,
     genesis_file: *const ::std::os::raw::c_char,
-    request_ctx: *mut bindings::monad_statesync_client,
-    statesync_send_request: ::std::option::Option<
-        unsafe extern "C" fn(
-            arg1: *mut bindings::monad_statesync_client,
-            arg2: bindings::monad_sync_request,
-        ),
-    >,
-
     ctx: *mut bindings::monad_statesync_client_context,
+    done: Vec<bool>,
+    current: SeqNum,
 }
 impl SyncCtx {
     /// Initialize SyncCtx. There should only ever be *one* SyncCtx at any given time.
@@ -403,58 +390,53 @@ impl SyncCtx {
         dbname_paths: *const *const ::std::os::raw::c_char,
         len: usize,
         genesis_file: *const ::std::os::raw::c_char,
-        request_ctx: *mut bindings::monad_statesync_client,
-        statesync_send_request: ::std::option::Option<
-            unsafe extern "C" fn(
-                arg1: *mut bindings::monad_statesync_client,
-                arg2: bindings::monad_sync_request,
-            ),
-        >,
     ) -> Self {
+        let num_prefixes = unsafe { bindings::monad_statesync_client_prefixes() };
+        let ctx = unsafe {
+            bindings::monad_statesync_client_context_create(dbname_paths, len, genesis_file)
+        };
+        let client_version = unsafe { bindings::monad_statesync_version() };
+        assert!(unsafe { bindings::monad_statesync_client_compatible(client_version) });
+        for prefix in 0..num_prefixes {
+            unsafe {
+                bindings::monad_statesync_client_handle_new_peer(
+                    ctx,
+                    prefix as u64,
+                    client_version,
+                );
+            }
+        }
         Self {
             dbname_paths,
             len,
             genesis_file,
-            request_ctx,
-            statesync_send_request,
 
-            ctx: unsafe {
-                let ctx = bindings::monad_statesync_client_context_create(
-                    dbname_paths,
-                    len,
-                    genesis_file,
-                    request_ctx,
-                    statesync_send_request,
-                );
-                let client_version = bindings::monad_statesync_version();
-                assert!(bindings::monad_statesync_client_compatible(client_version));
-                let num_prefixes = bindings::monad_statesync_client_prefixes();
-                for prefix in 0..num_prefixes {
-                    bindings::monad_statesync_client_handle_new_peer(
-                        ctx,
-                        prefix as u64,
-                        client_version,
-                    );
-                }
-                ctx
-            },
+            ctx,
+            done: vec![false; num_prefixes],
+            current: SeqNum(unsafe { bindings::monad_statesync_client_get_latest_block_id(ctx) }),
         }
     }
 
     /// Returns true if reached target and successfully finalized
-    fn try_finalize(&mut self) -> bool {
-        if unsafe { bindings::monad_statesync_client_has_reached_target(self.ctx) } {
-            let root_matches = unsafe { bindings::monad_statesync_client_finalize(self.ctx) };
-            assert!(root_matches, "state root doesn't match, are peers trusted?");
+    fn try_finalize(&mut self, target: Target) -> bool {
+        let done = self.done.iter().all(|done| *done);
+        tracing::info!("try_finalize: {:?} {:?} {}", self.current, target.n, done);
+        if target.n == SeqNum(0) || self.current == target.n || done {
+            if done {
+                unsafe {
+                    bindings::monad_statesync_client_commit(self.ctx);
+                }
+            }
 
+            let root_matches =
+                unsafe { bindings::monad_statesync_client_finalize(self.ctx, target.into()) };
+            assert!(root_matches, "state root doesn't match, are peers trusted?");
             unsafe { bindings::monad_statesync_client_context_destroy(self.ctx) }
             self.ctx = unsafe {
                 let ctx = bindings::monad_statesync_client_context_create(
                     self.dbname_paths,
                     self.len,
                     self.genesis_file,
-                    self.request_ctx,
-                    self.statesync_send_request,
                 );
                 let client_version = bindings::monad_statesync_version();
                 assert!(bindings::monad_statesync_client_compatible(client_version));
