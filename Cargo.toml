@@ -30,6 +30,7 @@ members = [
     "monad-ipc",
     "monad-keystore",
     "monad-ledger",
+    "monad-metrics",
     "monad-mock-swarm",
     "monad-multi-sig",
     "monad-node",
@@ -123,6 +124,7 @@ hex = "0.4"
 hex-literal = "0.4"
 inventory = "0.3"
 itertools = "0.10"
+lazy_static = "1.5.0"
 libc = "0.2.153"
 lru = "0.12"
 lz4 = "1.24"

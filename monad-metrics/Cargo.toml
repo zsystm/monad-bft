@@ -1,0 +1,8 @@
+[package]
+name = "monad-metrics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+lazy_static = { workspace = true }

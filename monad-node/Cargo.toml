@@ -29,6 +29,7 @@ monad-executor-glue = { path = "../monad-executor-glue" }
 monad-ipc = { path = "../monad-ipc" }
 monad-keystore = { path = "../monad-keystore" }
 monad-ledger = { path = "../monad-ledger" }
+monad-metrics = { path = "../monad-metrics" }
 monad-raptorcast = { path = "../monad-raptorcast" }
 monad-router-filter = { path = "../monad-router-filter", optional = true }
 monad-secp = { path = "../monad-secp" }

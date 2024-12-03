@@ -8,6 +8,7 @@ use std::{
 
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use monad_eth_types::{EthAccount, EthAddress};
+use monad_metrics::METRICS;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
 use monad_types::SeqNum;
@@ -41,6 +42,11 @@ impl TriedbReader {
     pub fn get_account(&self, eth_address: &[u8; 20], block_id: u64) -> Option<EthAccount> {
         let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::Address(eth_address));
 
+        if let Ok(mut global_metrics) = METRICS.try_write() {
+            let metrics = global_metrics.metrics();
+            metrics.backendcache_events.db_sync_account_reads += 1;
+        }
+
         let result = self.handle.read(&triedb_key, key_len_nibbles, block_id);
 
         let Some(account_rlp) = result else {
@@ -59,7 +65,7 @@ impl TriedbReader {
         // Counter which is updated when TrieDB processes a single async read to completion
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
-        let mut num_accounts = 0;
+        let mut num_accounts: usize = 0;
         let eth_account_receivers = eth_addresses.map(|eth_address| {
             num_accounts += 1;
             let (triedb_key, key_len_nibbles) =
@@ -82,6 +88,11 @@ impl TriedbReader {
 
         // Join all futures of receivers
         let eth_account_receivers = join_all(eth_account_receivers);
+
+        if let Ok(mut global_metrics) = METRICS.try_write() {
+            let metrics = global_metrics.metrics();
+            metrics.backendcache_events.db_sync_account_reads += num_accounts as u64;
+        }
 
         let mut poll_count = 0;
         // Poll TrieDB until the completed_counter reaches num_accounts

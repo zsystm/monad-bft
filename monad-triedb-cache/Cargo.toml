@@ -9,6 +9,7 @@ bench = false
 [dependencies]
 monad-state-backend = { path = "../monad-state-backend" }
 monad-eth-types = { path = "../monad-eth-types" }
+monad-metrics = { path = "../monad-metrics" }
 monad-types = { path = "../monad-types" }
 itertools = { workspace = true }
 tracing = { workspace = true }

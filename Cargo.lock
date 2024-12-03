@@ -4498,6 +4498,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-metrics"
+version = "0.1.0"
+dependencies = [
+ "lazy_static",
+ "monad-consensus-types",
+]
+
+[[package]]
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
@@ -4582,6 +4590,7 @@ dependencies = [
  "monad-ipc",
  "monad-keystore",
  "monad-ledger",
+ "monad-metrics",
  "monad-raptorcast",
  "monad-router-filter",
  "monad-secp",
@@ -4917,6 +4926,7 @@ version = "0.1.0"
 dependencies = [
  "itertools 0.10.5",
  "monad-eth-types",
+ "monad-metrics",
  "monad-state-backend",
  "monad-types",
  "tracing",
@@ -4933,6 +4943,7 @@ dependencies = [
  "hex",
  "monad-eth-testutil",
  "monad-eth-types",
+ "monad-metrics",
  "monad-state-backend",
  "monad-triedb",
  "monad-types",

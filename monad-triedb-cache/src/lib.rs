@@ -6,9 +6,10 @@ use std::{
 
 use itertools::Itertools;
 use monad_eth_types::{EthAccount, EthAddress};
+use monad_metrics::METRICS;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
-use tracing::warn;
+use tracing::{trace, warn};
 
 #[derive(Debug)]
 pub struct StateBackendCache<SBT> {
@@ -58,6 +59,7 @@ where
                 .collect(),
         };
 
+        let unique_addresses_cnt = addresses.iter().unique().count();
         if !cache_misses.is_empty() {
             // hydrate cache with missing accounts
             let cache_misses_data = {
@@ -77,6 +79,37 @@ where
                     .map(|&&address| address)
                     .zip_eq(cache_misses_data),
             )
+        }
+
+        if let Ok(mut global_metrics) = METRICS.try_write() {
+            let metrics = global_metrics.metrics();
+
+            let cur_cache_misses_cnt = cache_misses.len();
+
+            let cache_misses_cnt = metrics
+                .backendcache_events
+                .cache_misses
+                .checked_add(cur_cache_misses_cnt.try_into().unwrap());
+
+            let cache_hit_cnt = metrics.backendcache_events.cache_hits.checked_add(
+                (unique_addresses_cnt - cur_cache_misses_cnt)
+                    .try_into()
+                    .unwrap(),
+            );
+            if cache_hit_cnt.is_none() || cache_misses_cnt.is_none() {
+                // overflow reset counters
+                metrics.backendcache_events.cache_hits = 0;
+                metrics.backendcache_events.cache_misses = 0;
+                trace!("Updated metrics cache_hits or cache_misses overflow");
+            } else {
+                metrics.backendcache_events.cache_hits = cache_hit_cnt.unwrap();
+                metrics.backendcache_events.cache_misses = cache_misses_cnt.unwrap();
+                trace!(
+                    "Updated metrics cache_hits: {:?} , cache_misses: {:?}",
+                    cache_hit_cnt.unwrap(),
+                    cache_misses_cnt.unwrap()
+                );
+            }
         }
 
         let block_cache = cache

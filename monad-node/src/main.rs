@@ -11,7 +11,10 @@ use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig}
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, payload::StateRoot};
+use monad_consensus_types::{
+    metrics::{GlobalMetrics, Metrics},
+    payload::StateRoot,
+};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -24,6 +27,7 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
+use monad_metrics::METRICS;
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 #[cfg(feature = "full-node")]
 use monad_router_filter::FullNodeRouterFilter;
@@ -51,7 +55,7 @@ use opentelemetry::{
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::TracerProvider;
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{event, info, warn, Instrument, Level};
+use tracing::{event, info, trace, warn, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -386,7 +390,12 @@ async fn run(
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
                 let state_metrics = state.metrics();
                 let executor_metrics = executor.metrics();
-                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics);
+                if let Ok(global_metrics)  = METRICS.try_read() {
+                    send_metrics(otel_meter, &mut gauge_cache, state_metrics, Some(global_metrics.read_metrics()), executor_metrics);
+                }
+                else {
+                    send_metrics(otel_meter, &mut gauge_cache, state_metrics, None, executor_metrics);
+                }
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -557,17 +566,26 @@ fn send_metrics(
     meter: &opentelemetry::metrics::Meter,
     gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
     state_metrics: &Metrics,
+    global_metrics: Option<&GlobalMetrics>,
     executor_metrics: ExecutorMetricsChain,
 ) {
+    trace!("Sending Metrics:");
+
     for (k, v) in state_metrics
         .metrics()
         .into_iter()
+        .chain(
+            global_metrics
+                .into_iter()
+                .flat_map(|entries| entries.global_metrics().into_iter()),
+        )
         .chain(executor_metrics.into_inner())
     {
         let gauge = gauge_cache
             .entry(k)
             .or_insert_with(|| meter.u64_gauge(k).try_init().unwrap());
         gauge.record(v, &[]);
+        trace!("{:?}:{:?}", k, v);
     }
 }
 
