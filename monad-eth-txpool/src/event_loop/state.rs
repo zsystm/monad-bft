@@ -1,12 +1,13 @@
 use std::sync::{Arc, Mutex};
 
-use itertools::Either;
+use itertools::{Either, Itertools};
 use monad_consensus_types::{
     payload::FullTransactionList, signature_collection::SignatureCollection,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
+use rtrb::{Consumer, Producer};
 
 use super::{event::EthTxPoolEventLoopEvent, pending::PendingEthTxMap};
 use crate::storage::EthTxPoolStorage;
@@ -20,33 +21,33 @@ where
 {
     storage: EthTxPoolStorage,
     pending: PendingEthTxMap,
-    events: Vec<EthTxPoolEventLoopEvent<SCT>>,
+    events: Consumer<EthTxPoolEventLoopEvent<SCT>>,
 }
 
 impl<SCT> EthTxPoolEventLoopState<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn new_shared(block_policy: &EthBlockPolicy) -> SharedEthTxPoolEventLoopState<SCT> {
+    pub fn new_shared(
+        block_policy: &EthBlockPolicy,
+        events: Consumer<EthTxPoolEventLoopEvent<SCT>>,
+    ) -> SharedEthTxPoolEventLoopState<SCT> {
         Arc::new(Mutex::new(Self {
             storage: EthTxPoolStorage::new(block_policy),
             pending: PendingEthTxMap::default(),
-            events: Vec::default(),
+            events,
         }))
     }
 
-    pub fn add_event(&mut self, event: EthTxPoolEventLoopEvent<SCT>) {
-        self.events.push(event);
-    }
-
     pub fn process_all_events(&mut self) {
-        self.process_filtered_events(|_| true);
-
-        assert!(self.events.is_empty());
+        while let Ok(event) = self.events.pop() {
+            self.process_event(event);
+        }
     }
 
     pub fn create_proposal<SBT>(
         &mut self,
+        events_tx: &mut Producer<EthTxPoolEventLoopEvent<SCT>>,
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -57,10 +58,23 @@ where
     where
         SBT: StateBackend,
     {
-        self.process_filtered_events(|event| match event {
-            EthTxPoolEventLoopEvent::CommittedBlock(_) => true,
-            EthTxPoolEventLoopEvent::TxBatch(_) | EthTxPoolEventLoopEvent::Clear => false,
-        });
+        for event in self
+            .events
+            .read_chunk(self.events.slots())
+            .expect("read chunk never fails")
+            .into_iter()
+            .collect_vec()
+        {
+            match event {
+                event @ EthTxPoolEventLoopEvent::CommittedBlock(_) => {
+                    self.process_event(event);
+                }
+                event @ EthTxPoolEventLoopEvent::TxBatch(_)
+                | event @ EthTxPoolEventLoopEvent::Clear => {
+                    events_tx.push(event).expect("channel never overflows");
+                }
+            }
+        }
 
         self.storage.create_proposal(
             proposed_seq_num,
@@ -71,16 +85,6 @@ where
             state_backend,
             &mut self.pending,
         )
-    }
-
-    fn process_filtered_events(&mut self, f: fn(&EthTxPoolEventLoopEvent<SCT>) -> bool) {
-        for event in std::mem::take(&mut self.events) {
-            if f(&event) {
-                self.process_event(event);
-            } else {
-                self.events.push(event);
-            }
-        }
     }
 
     fn process_event(&mut self, event: EthTxPoolEventLoopEvent<SCT>) {

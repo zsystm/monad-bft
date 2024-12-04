@@ -4399,6 +4399,7 @@ dependencies = [
  "rand_chacha",
  "rayon",
  "reth-primitives",
+ "rtrb",
  "thiserror",
  "tracing",
  "tracing-test",

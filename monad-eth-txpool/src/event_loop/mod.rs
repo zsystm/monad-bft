@@ -20,6 +20,7 @@ mod event;
 mod pending;
 mod state;
 
+const EVENTS_CAPACITY: usize = 1024;
 const NEW_EVENT_TIMEOUT_US: u64 = 8;
 
 #[derive(Debug)]
@@ -36,7 +37,9 @@ where
     SCT: SignatureCollection,
 {
     pub fn start(block_policy: &EthBlockPolicy) -> EthTxPoolEventLoopClient<SCT> {
-        let state = EthTxPoolEventLoopState::new_shared(block_policy);
+        let (events_tx, events_rx) = rtrb::RingBuffer::new(EVENTS_CAPACITY);
+
+        let state = EthTxPoolEventLoopState::new_shared(block_policy, events_rx);
 
         let new_event = Arc::new(Condvar::default());
 
@@ -51,7 +54,7 @@ where
             })
         };
 
-        EthTxPoolEventLoopClient::new(handle, state, new_event)
+        EthTxPoolEventLoopClient::new(handle, state, events_tx, new_event)
     }
 
     fn run(self) -> Result<(), EthTxPoolEventLoopError>
