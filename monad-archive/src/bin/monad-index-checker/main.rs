@@ -38,7 +38,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
-    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
+
+    let metrics = match args.otel_endpoint {
+        Some(otel_endpoint) => Some(Metrics::new(
+            &otel_endpoint,
+            "monad-index-checker",
+            Duration::from_secs(15),
+        )?),
+        None => None,
+    };
 
     // Construct s3 and dynamodb connections
     let reader = ArchiveReader::new(
@@ -46,7 +54,7 @@ async fn main() -> Result<()> {
         args.db_table,
         args.region,
         args.max_concurrent_connections,
-        &metrics,
+        metrics.clone(),
     )
     .await;
 
@@ -91,7 +99,7 @@ async fn main() -> Result<()> {
             end_block_num,
             args.max_concurrent_connections,
             &mut fault_writer,
-            &metrics,
+            metrics.clone(),
         )
         .await
         {
@@ -112,7 +120,7 @@ async fn handle_blocks(
     end_block_num: u64,
     concurrency: usize,
     fault_writer: &mut FaultWriter,
-    metrics: &Metrics,
+    metrics: Option<Metrics>,
 ) -> Result<()> {
     let faults: Vec<_> = stream::iter(start_block_num..=end_block_num)
         .map(|block_num| async move {
@@ -151,22 +159,24 @@ async fn handle_blocks(
         .await;
 
     for block_check in &faults {
-        if block_check.faults.len() > 0 {
-            metrics.counter("faults_blocks_with_faults", 1);
-        }
-        for fault in &block_check.faults {
-            match fault {
-                Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
-                Fault::CorruptedBlock => metrics.counter("faults_corrupted_blocks", 1),
-                Fault::MissingAllTxHash { num_txs } => {
-                    metrics.counter("faults_blocks_missing_all_txhash", 1);
-                    metrics.counter("faults_missing_txhash", *num_txs as u64);
-                }
-                Fault::MissingTxhash { .. } => metrics.counter("faults_missing_txhash", 1),
-                Fault::IncorrectTxData { .. } => metrics.counter("faults_incorrect_tx_data", 1),
+        if let Some(metrics) = &metrics {
+            if block_check.faults.len() > 0 {
+                metrics.counter("faults_blocks_with_faults", 1);
+            }
+            for fault in &block_check.faults {
+                match fault {
+                    Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
+                    Fault::CorruptedBlock => metrics.counter("faults_corrupted_blocks", 1),
+                    Fault::MissingAllTxHash { num_txs } => {
+                        metrics.counter("faults_blocks_missing_all_txhash", 1);
+                        metrics.counter("faults_missing_txhash", *num_txs as u64);
+                    }
+                    Fault::MissingTxhash { .. } => metrics.counter("faults_missing_txhash", 1),
+                    Fault::IncorrectTxData { .. } => metrics.counter("faults_incorrect_tx_data", 1),
 
-                // Other faults are not DynamoDB faults
-                _ => (),
+                    // Other faults are not DynamoDB faults
+                    _ => (),
+                }
             }
         }
     }

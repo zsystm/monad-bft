@@ -59,7 +59,7 @@ pub struct DynamoDBArchive {
     pub client: Client,
     pub table: String,
     pub semaphore: Arc<Semaphore>,
-    pub metrics: Metrics,
+    pub metrics: Option<Metrics>,
 }
 
 impl DynamoDBArchive {
@@ -193,7 +193,12 @@ impl DynamoDBArchive {
     const READ_BATCH_SIZE: usize = 100;
     const WRITE_BATCH_SIZE: usize = 25;
 
-    pub fn new(table: String, config: &SdkConfig, concurrency: usize, metrics: Metrics) -> Self {
+    pub fn new(
+        table: String,
+        config: &SdkConfig,
+        concurrency: usize,
+        metrics: Option<Metrics>,
+    ) -> Self {
         let client = Client::new(config);
         Self {
             client,
@@ -236,7 +241,9 @@ impl DynamoDBArchive {
                     .send()
                     .await
                     .wrap_err_with(|| {
-                        inc_err(&self.metrics);
+                        if let Some(metrics) = &self.metrics {
+                            inc_err(metrics);
+                        }
                         format!("Request keys (0x stripped in req): {:?}", &batch)
                     })
             })
@@ -262,7 +269,9 @@ impl DynamoDBArchive {
                         .send()
                         .await
                         .wrap_err_with(|| {
-                            inc_err(&self.metrics);
+                            if let Some(metrics) = &self.metrics {
+                                inc_err(metrics);
+                            }
                             "Failed to get unprocessed keys"
                         })
                 })
@@ -276,8 +285,9 @@ impl DynamoDBArchive {
                 unprocessed_keys = response_retry.unprocessed_keys;
             }
         }
-
-        self.metrics.counter(AWS_DYNAMODB_READS, keys.len() as u64);
+        if let Some(metrics) = &self.metrics {
+            metrics.counter(AWS_DYNAMODB_READS, keys.len() as u64);
+        }
         Ok(results)
     }
 
@@ -311,7 +321,9 @@ impl DynamoDBArchive {
                     .send()
                     .await
                     .wrap_err_with(|| {
-                        inc_err(metrics);
+                        if let Some(metrics) = &metrics {
+                            inc_err(metrics);
+                        }
                         format!("Failed to upload to table {}. Retrying...", table)
                     })?;
 
@@ -331,8 +343,9 @@ impl DynamoDBArchive {
         })
         .await
         .wrap_err_with(|| format!("Failed to upload to table {} after retries", self.table))?;
-
-        self.metrics.counter(AWS_DYNAMODB_WRITES, num_writes as u64);
+        if let Some(metrics) = &self.metrics {
+            metrics.counter(AWS_DYNAMODB_WRITES, num_writes as u64);
+        }
         Ok(())
     }
 }

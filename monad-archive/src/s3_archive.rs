@@ -32,7 +32,7 @@ const BLOCK_PADDING_WIDTH: usize = 12;
 pub struct S3Bucket {
     pub client: Client,
     pub bucket: String,
-    pub metrics: Metrics,
+    pub metrics: Option<Metrics>,
 }
 
 pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
@@ -58,11 +58,11 @@ pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
 }
 
 impl S3Bucket {
-    pub fn new(bucket: String, sdk_config: &SdkConfig, metrics: Metrics) -> Self {
+    pub fn new(bucket: String, sdk_config: &SdkConfig, metrics: Option<Metrics>) -> Self {
         S3Bucket::from_client(bucket, Client::new(sdk_config), metrics)
     }
 
-    pub fn from_client(bucket: String, client: Client, metrics: Metrics) -> Self {
+    pub fn from_client(bucket: String, client: Client, metrics: Option<Metrics>) -> Self {
         S3Bucket {
             bucket,
             client,
@@ -92,7 +92,9 @@ impl S3Bucket {
                     .send()
                     .await
                     .wrap_err_with(|| {
-                        metrics.inc_counter(AWS_S3_ERRORS);
+                        if let Some(metrics) = &self.metrics {
+                            metrics.inc_counter(AWS_S3_ERRORS);
+                        }
                         format!("Failed to upload {}. Retrying...", key)
                     })
             }
@@ -100,8 +102,9 @@ impl S3Bucket {
         .await
         .map(|_| ())
         .wrap_err_with(|| format!("Failed to upload {}. Retrying...", key))?;
-
-        self.metrics.counter(AWS_S3_WRITES, 1);
+        if let Some(metrics) = &self.metrics {
+            metrics.counter(AWS_S3_WRITES, 1);
+        }
         Ok(())
     }
 
@@ -114,16 +117,21 @@ impl S3Bucket {
             .send()
             .await
             .wrap_err_with(|| {
-                self.metrics.inc_counter(AWS_S3_ERRORS);
+                if let Some(metrics) = &self.metrics {
+                    metrics.inc_counter(AWS_S3_ERRORS);
+                }
                 format!("Failed to read key from s3 {key}")
             })?;
 
         let data = resp.body.collect().await.wrap_err_with(|| {
-            self.metrics.inc_counter(AWS_S3_ERRORS);
+            if let Some(metrics) = &self.metrics {
+                metrics.inc_counter(AWS_S3_ERRORS);
+            }
             "Unable to collect response data"
         })?;
-
-        self.metrics.counter(AWS_S3_READS, 1);
+        if let Some(metrics) = &self.metrics {
+            metrics.counter(AWS_S3_READS, 1);
+        }
         Ok(data.into_bytes())
     }
 }

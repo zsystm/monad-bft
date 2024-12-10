@@ -17,7 +17,7 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new(
-        otel_endpoint: Option<impl AsRef<str>>,
+        otel_endpoint: &str,
         service_name: impl Into<String>,
         interval: Duration,
     ) -> Result<Metrics> {
@@ -55,7 +55,7 @@ impl Metrics {
 }
 
 fn build_otel_meter_provider(
-    otel_endpoint: Option<impl AsRef<str>>,
+    otel_endpoint: &str,
     service_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
@@ -67,27 +67,25 @@ fn build_otel_meter_provider(
             ),
         ]));
 
-    if let Some(otel_endpoint) = otel_endpoint {
-        let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(otel_endpoint.as_ref()),
-        )
-        .build_metrics_exporter(
-            Box::<opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector>::default(),
-            Box::<opentelemetry_sdk::metrics::reader::DefaultAggregationSelector>::default(),
-        )?;
+    let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
+        opentelemetry_otlp::new_exporter()
+            .tonic()
+            .with_endpoint(otel_endpoint),
+    )
+    .build_metrics_exporter(
+        Box::<opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector>::default(),
+        Box::<opentelemetry_sdk::metrics::reader::DefaultAggregationSelector>::default(),
+    )?;
 
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
-            exporter,
-            opentelemetry_sdk::runtime::Tokio,
-        )
-        .with_interval(interval / 2)
-        .with_timeout(interval * 2)
-        .build();
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
+        exporter,
+        opentelemetry_sdk::runtime::Tokio,
+    )
+    .with_interval(interval / 2)
+    .with_timeout(interval * 2)
+    .build();
 
-        provider_builder = provider_builder.with_reader(reader)
-    }
+    provider_builder = provider_builder.with_reader(reader);
 
     Ok(provider_builder.build())
 }

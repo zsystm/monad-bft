@@ -25,11 +25,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
-    let metrics = Metrics::new(
-        args.otel_endpoint,
-        "monad-archiver",
-        Duration::from_secs(15),
-    )?;
+
+    let metrics = match args.otel_endpoint {
+        Some(otel_endpoint) => Some(Metrics::new(
+            &otel_endpoint,
+            "monad-archive-checker",
+            Duration::from_secs(15),
+        )?),
+        None => None,
+    };
 
     let mut s3_archive_readers = Vec::new();
 
@@ -107,7 +111,7 @@ async fn main() -> Result<()> {
                     .await
                     .expect("Got permit to check a new block");
                 let blocks_data = get_block_data(&s3_archive_readers, current_block).await;
-                pairwise_check(&blocks_data, current_block, &mut fault_writer, &metrics).await
+                pairwise_check(&blocks_data, current_block, &mut fault_writer, metrics).await
             })
         });
 
@@ -234,7 +238,7 @@ async fn pairwise_check(
     blocks_data: &[BlockData],
     block_number: u64,
     fault_writer: &mut FaultWriter,
-    metrics: &Metrics,
+    metrics: Option<Metrics>,
 ) -> usize {
     let mut faults = Vec::new();
 
@@ -334,50 +338,52 @@ async fn pairwise_check(
 
     let faults_cnt = faults.len();
 
-    if !faults.is_empty() {
-        metrics.counter("faults_blocks_with_faults", 1);
+    if let Some(metrics) = &metrics {
+        if !faults.is_empty() {
+            metrics.counter("faults_blocks_with_faults", 1);
 
-        let block_check_result = BlockCheckResult::new(block_number, faults);
-        for fault in &block_check_result.faults {
-            match fault {
-                Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
-                Fault::S3MissingBlock { buckets } => {
-                    metrics.counter("faults_s3_missing_block", 1);
-                    metrics.counter("faults_s3_missing_block_buckets", buckets.len() as u64);
-                }
-                Fault::S3MissingReceipts { buckets } => {
-                    metrics.counter("faults_s3_missing_receipts", 1);
-                    metrics.counter("faults_s3_missing_receipts_buckets", buckets.len() as u64);
-                }
-                Fault::S3MissingTraces { buckets } => {
-                    metrics.counter("faults_s3_missing_traces", 1);
-                    metrics.counter("faults_s3_missing_traces_buckets", buckets.len() as u64);
-                }
-                // TODO: Should we use increment?
-                Fault::S3InconsistentBlock { .. } => {
-                    metrics.counter("faults_s3_inconsistent_block", 1)
-                }
-                Fault::S3InconsistentReceipts { .. } => {
-                    metrics.counter("faults_s3_inconsistent_receipts", 1)
-                }
-                Fault::S3InconsistentTraces { .. } => {
-                    metrics.counter("faults_s3_inconsistent_traces", 1)
-                }
+            let block_check_result = BlockCheckResult::new(block_number, faults);
+            for fault in &block_check_result.faults {
+                match fault {
+                    Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
+                    Fault::S3MissingBlock { buckets } => {
+                        metrics.counter("faults_s3_missing_block", 1);
+                        metrics.counter("faults_s3_missing_block_buckets", buckets.len() as u64);
+                    }
+                    Fault::S3MissingReceipts { buckets } => {
+                        metrics.counter("faults_s3_missing_receipts", 1);
+                        metrics.counter("faults_s3_missing_receipts_buckets", buckets.len() as u64);
+                    }
+                    Fault::S3MissingTraces { buckets } => {
+                        metrics.counter("faults_s3_missing_traces", 1);
+                        metrics.counter("faults_s3_missing_traces_buckets", buckets.len() as u64);
+                    }
+                    // TODO: Should we use increment?
+                    Fault::S3InconsistentBlock { .. } => {
+                        metrics.counter("faults_s3_inconsistent_block", 1)
+                    }
+                    Fault::S3InconsistentReceipts { .. } => {
+                        metrics.counter("faults_s3_inconsistent_receipts", 1)
+                    }
+                    Fault::S3InconsistentTraces { .. } => {
+                        metrics.counter("faults_s3_inconsistent_traces", 1)
+                    }
 
-                // Other faults are not S3 faults
-                _ => (),
+                    // Other faults are not S3 faults
+                    _ => (),
+                }
             }
-        }
 
-        if let Err(e) = fault_writer.write_fault(block_check_result.clone()).await {
-            error!(
-                "Failed to write results for block {}: {:?}",
-                block_number, e
-            );
-            error!(
-                "BlockCheckResults should be written: {:?}",
-                block_check_result
-            );
+            if let Err(e) = fault_writer.write_fault(block_check_result.clone()).await {
+                error!(
+                    "Failed to write results for block {}: {:?}",
+                    block_number, e
+                );
+                error!(
+                    "BlockCheckResults should be written: {:?}",
+                    block_check_result
+                );
+            }
         }
     }
 

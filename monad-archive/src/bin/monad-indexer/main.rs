@@ -25,7 +25,14 @@ async fn main() -> Result<()> {
     let args = cli::Cli::parse();
 
     let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_connections));
-    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
+    let metrics = match args.otel_endpoint {
+        Some(otel_endpoint) => Some(Metrics::new(
+            &otel_endpoint,
+            "monad-indexer",
+            Duration::from_secs(15),
+        )?),
+        None => None,
+    };
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
@@ -67,7 +74,9 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
-        metrics.gauge("latest_uploaded", latest_uploaded);
+        if let Some(metrics) = &metrics {
+            metrics.gauge("latest_uploaded", latest_uploaded);
+        }
 
         if latest_uploaded <= latest_indexed {
             info!(latest_indexed, latest_uploaded, "Nothing to process");
@@ -131,8 +140,10 @@ async fn main() -> Result<()> {
 
         latest_indexed = current_join_block - 1;
         archive.update_latest(latest_indexed, Indexed).await?;
-        metrics.gauge("latest_indexed", latest_indexed);
-        metrics.counter("txs_indexed", num_txs_indexed as u64);
+        if let Some(metrics) = &metrics {
+            metrics.gauge("latest_indexed", latest_indexed);
+            metrics.counter("txs_indexed", num_txs_indexed as u64);
+        }
 
         let duration = start.elapsed();
         info!(num_txs_indexed, "Time spent = {:?}", duration);
