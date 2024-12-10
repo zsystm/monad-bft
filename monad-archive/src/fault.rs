@@ -86,6 +86,7 @@ impl FaultWriter {
             // .append(true)
             .write(true)
             .create(true)
+            .append(true)
             .open(&path)
             .await
             .wrap_err_with(|| format!("Failed to create Fault Writer. Path {:?}", path.as_ref()))?;
@@ -103,7 +104,7 @@ impl FaultWriter {
         for fault in block_faults {
             serde_json::to_writer(&mut buf, fault)?;
             file.write_all(&buf).await?;
-            file.write(b"\n").await?;
+            file.write_all(b"\n").await?;
             buf.clear();
         }
         file.flush().await?;
@@ -115,7 +116,7 @@ impl FaultWriter {
         let buf = serde_json::to_vec(&block_fault)?;
         let mut file = self.file.lock().await;
         file.write_all(&buf).await?;
-        file.write(b"\n").await?;
+        file.write_all(b"\n").await?;
         file.flush().await.map_err(Into::into)
     }
 }

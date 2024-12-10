@@ -1,4 +1,4 @@
-#![allow(async_fn_in_trait, clippy::async_trait)]
+#![allow(async_fn_in_trait)]
 
 use std::sync::Arc;
 
@@ -26,21 +26,18 @@ async fn main() -> Result<()> {
 
     let args = cli::Cli::parse();
 
-    let metrics = match args.otel_endpoint {
-        Some(otel_endpoint) => Some(Metrics::new(
-            &otel_endpoint,
-            "monad-archive-checker",
-            Duration::from_secs(15),
-        )?),
-        None => None,
-    };
+    let metrics = Metrics::new(
+        args.otel_endpoint,
+        "monad-archive-checker",
+        Duration::from_secs(15),
+    )?;
 
     let mut s3_archive_readers = Vec::new();
 
     let s3_buckets = args.s3_buckets.clone();
     let regions = args.regions.clone();
 
-    if s3_buckets.len() == 0 {
+    if s3_buckets.is_empty() {
         panic!("Need to specify at least 1 bucket");
     }
 
@@ -60,13 +57,10 @@ async fn main() -> Result<()> {
     let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
 
     // Configure all archive checkers
-    for idx in 0..s3_buckets.len() {
+    for (idx, bucket_name) in s3_buckets.iter().enumerate() {
         let config = get_aws_config(Some(args.regions[idx].clone())).await;
-        let s3_archive_reader = S3Archive::new(S3Bucket::new(
-            s3_buckets[idx].clone(),
-            &config,
-            metrics.clone(),
-        ));
+        let s3_archive_reader =
+            S3Archive::new(S3Bucket::new(bucket_name.clone(), &config, metrics.clone()));
 
         s3_archive_readers.push(s3_archive_reader);
     }
@@ -134,7 +128,7 @@ async fn main() -> Result<()> {
                     error!("Critical: Unable to join futures!, {e}");
                 }
             }
-            current_block = current_block + 1;
+            current_block += 1;
         }
 
         start_block_number = end_block_number;
@@ -238,7 +232,7 @@ async fn pairwise_check(
     blocks_data: &[BlockData],
     block_number: u64,
     fault_writer: &mut FaultWriter,
-    metrics: Option<Metrics>,
+    metrics: Metrics,
 ) -> usize {
     let mut faults = Vec::new();
 
@@ -338,52 +332,50 @@ async fn pairwise_check(
 
     let faults_cnt = faults.len();
 
-    if let Some(metrics) = &metrics {
-        if !faults.is_empty() {
-            metrics.counter("faults_blocks_with_faults", 1);
+    if !faults.is_empty() {
+        metrics.counter("faults_blocks_with_faults", 1);
 
-            let block_check_result = BlockCheckResult::new(block_number, faults);
-            for fault in &block_check_result.faults {
-                match fault {
-                    Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
-                    Fault::S3MissingBlock { buckets } => {
-                        metrics.counter("faults_s3_missing_block", 1);
-                        metrics.counter("faults_s3_missing_block_buckets", buckets.len() as u64);
-                    }
-                    Fault::S3MissingReceipts { buckets } => {
-                        metrics.counter("faults_s3_missing_receipts", 1);
-                        metrics.counter("faults_s3_missing_receipts_buckets", buckets.len() as u64);
-                    }
-                    Fault::S3MissingTraces { buckets } => {
-                        metrics.counter("faults_s3_missing_traces", 1);
-                        metrics.counter("faults_s3_missing_traces_buckets", buckets.len() as u64);
-                    }
-                    // TODO: Should we use increment?
-                    Fault::S3InconsistentBlock { .. } => {
-                        metrics.counter("faults_s3_inconsistent_block", 1)
-                    }
-                    Fault::S3InconsistentReceipts { .. } => {
-                        metrics.counter("faults_s3_inconsistent_receipts", 1)
-                    }
-                    Fault::S3InconsistentTraces { .. } => {
-                        metrics.counter("faults_s3_inconsistent_traces", 1)
-                    }
-
-                    // Other faults are not S3 faults
-                    _ => (),
+        let block_check_result = BlockCheckResult::new(block_number, faults);
+        for fault in &block_check_result.faults {
+            match fault {
+                Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
+                Fault::S3MissingBlock { buckets } => {
+                    metrics.counter("faults_s3_missing_block", 1);
+                    metrics.counter("faults_s3_missing_block_buckets", buckets.len() as u64);
                 }
-            }
+                Fault::S3MissingReceipts { buckets } => {
+                    metrics.counter("faults_s3_missing_receipts", 1);
+                    metrics.counter("faults_s3_missing_receipts_buckets", buckets.len() as u64);
+                }
+                Fault::S3MissingTraces { buckets } => {
+                    metrics.counter("faults_s3_missing_traces", 1);
+                    metrics.counter("faults_s3_missing_traces_buckets", buckets.len() as u64);
+                }
+                // TODO: Should we use increment?
+                Fault::S3InconsistentBlock { .. } => {
+                    metrics.counter("faults_s3_inconsistent_block", 1)
+                }
+                Fault::S3InconsistentReceipts { .. } => {
+                    metrics.counter("faults_s3_inconsistent_receipts", 1)
+                }
+                Fault::S3InconsistentTraces { .. } => {
+                    metrics.counter("faults_s3_inconsistent_traces", 1)
+                }
 
-            if let Err(e) = fault_writer.write_fault(block_check_result.clone()).await {
-                error!(
-                    "Failed to write results for block {}: {:?}",
-                    block_number, e
-                );
-                error!(
-                    "BlockCheckResults should be written: {:?}",
-                    block_check_result
-                );
+                // Other faults are not S3 faults
+                _ => (),
             }
+        }
+
+        if let Err(e) = fault_writer.write_fault(block_check_result.clone()).await {
+            error!(
+                "Failed to write results for block {}: {:?}",
+                block_number, e
+            );
+            error!(
+                "BlockCheckResults should be written: {:?}",
+                block_check_result
+            );
         }
     }
 

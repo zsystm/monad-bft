@@ -1,4 +1,4 @@
-#![allow(async_fn_in_trait, clippy::async_trait)]
+#![allow(async_fn_in_trait)]
 
 use std::{sync::Arc, time::Instant};
 
@@ -25,14 +25,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
-    let metrics = match args.otel_endpoint {
-        Some(otel_endpoint) => Some(Metrics::new(
-            &otel_endpoint,
-            "monad-archiver",
-            Duration::from_secs(15),
-        )?),
-        None => None,
-    };
+    let metrics = Metrics::new(
+        args.otel_endpoint,
+        "monad-archiver",
+        Duration::from_secs(15),
+    )?;
 
     let max_concurrent_blocks = args.max_concurrent_blocks;
     let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
@@ -54,15 +51,11 @@ async fn main() -> Result<()> {
         sleep(Duration::from_millis(100)).await;
 
         let trie_db_block_number = triedb.get_latest_block().await.map_err(|e| eyre!("{e}"))?;
-        if let Some(metrics) = &metrics {
-            metrics.gauge("triedb_block_number", trie_db_block_number);
-        }
+        metrics.gauge("triedb_block_number", trie_db_block_number);
 
         let latest_processed_block =
             (s3_archive_writer.get_latest(LatestKind::Uploaded).await).unwrap_or_default();
-        if let Some(metrics) = &metrics {
-            metrics.gauge("latest_uploaded", latest_processed_block);
-        }
+        metrics.gauge("latest_uploaded", latest_processed_block);
 
         if trie_db_block_number <= latest_processed_block {
             info!(
@@ -80,9 +73,7 @@ async fn main() -> Result<()> {
 
         let end_block_number =
             trie_db_block_number.min(start_block_number + args.max_blocks_per_iteration - 1);
-        if let Some(metrics) = &metrics {
-            metrics.gauge("end_block_number", end_block_number);
-        }
+        metrics.gauge("end_block_number", end_block_number);
 
         let start = Instant::now();
         info!(

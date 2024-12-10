@@ -8,7 +8,7 @@ use aws_sdk_dynamodb::{
 };
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned, U128, U256};
+use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_retry::{
@@ -19,9 +19,9 @@ use tracing::error;
 
 use crate::metrics::Metrics;
 
-const AWS_DYNAMODB_ERRORS: &'static str = "aws_dynamodb_errors";
-const AWS_DYNAMODB_WRITES: &'static str = "aws_dynamodb_writes";
-const AWS_DYNAMODB_READS: &'static str = "aws_dynamodb_reads";
+const AWS_DYNAMODB_ERRORS: &str = "aws_dynamodb_errors";
+const AWS_DYNAMODB_WRITES: &str = "aws_dynamodb_writes";
+const AWS_DYNAMODB_READS: &str = "aws_dynamodb_reads";
 
 pub trait TxIndexArchiver {
     async fn index_block(
@@ -50,8 +50,8 @@ pub struct HeaderSubset {
     pub block_hash: BlockHash,
     pub block_number: u64,
     pub tx_index: u64,
-    pub gas_used: U256,
-    pub base_fee_per_gas: Option<U128>,
+    pub gas_used: u64,
+    pub base_fee_per_gas: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -59,7 +59,7 @@ pub struct DynamoDBArchive {
     pub client: Client,
     pub table: String,
     pub semaphore: Arc<Semaphore>,
-    pub metrics: Option<Metrics>,
+    pub metrics: Metrics,
 }
 
 impl DynamoDBArchive {
@@ -104,7 +104,7 @@ impl TxIndexArchiver for DynamoDBArchive {
         let mut requests = Vec::new();
         let block_number = block.number;
         let block_hash = block.hash_slow();
-        let base_fee_per_gas = block.base_fee_per_gas.map(U128::from);
+        let base_fee_per_gas = block.base_fee_per_gas;
 
         let gas_used_vec: Vec<_> = {
             let mut last = 0;
@@ -135,7 +135,7 @@ impl TxIndexArchiver for DynamoDBArchive {
                 block_hash,
                 block_number,
                 tx_index: idx as u64,
-                gas_used: U256::from(gas_used_vec[idx]),
+                gas_used: gas_used_vec[idx],
                 base_fee_per_gas,
             }
             .encode(&mut rlp_header_subset);
@@ -193,12 +193,7 @@ impl DynamoDBArchive {
     const READ_BATCH_SIZE: usize = 100;
     const WRITE_BATCH_SIZE: usize = 25;
 
-    pub fn new(
-        table: String,
-        config: &SdkConfig,
-        concurrency: usize,
-        metrics: Option<Metrics>,
-    ) -> Self {
+    pub fn new(table: String, config: &SdkConfig, concurrency: usize, metrics: Metrics) -> Self {
         let client = Client::new(config);
         Self {
             client,
@@ -241,9 +236,7 @@ impl DynamoDBArchive {
                     .send()
                     .await
                     .wrap_err_with(|| {
-                        if let Some(metrics) = &self.metrics {
-                            inc_err(metrics);
-                        }
+                        inc_err(&self.metrics);
                         format!("Request keys (0x stripped in req): {:?}", &batch)
                     })
             })
@@ -269,9 +262,7 @@ impl DynamoDBArchive {
                         .send()
                         .await
                         .wrap_err_with(|| {
-                            if let Some(metrics) = &self.metrics {
-                                inc_err(metrics);
-                            }
+                            inc_err(&self.metrics);
                             "Failed to get unprocessed keys"
                         })
                 })
@@ -285,9 +276,7 @@ impl DynamoDBArchive {
                 unprocessed_keys = response_retry.unprocessed_keys;
             }
         }
-        if let Some(metrics) = &self.metrics {
-            metrics.counter(AWS_DYNAMODB_READS, keys.len() as u64);
-        }
+        self.metrics.counter(AWS_DYNAMODB_READS, keys.len() as u64);
         Ok(results)
     }
 
@@ -321,9 +310,7 @@ impl DynamoDBArchive {
                     .send()
                     .await
                     .wrap_err_with(|| {
-                        if let Some(metrics) = &metrics {
-                            inc_err(metrics);
-                        }
+                        inc_err(metrics);
                         format!("Failed to upload to table {}. Retrying...", table)
                     })?;
 
@@ -343,9 +330,7 @@ impl DynamoDBArchive {
         })
         .await
         .wrap_err_with(|| format!("Failed to upload to table {} after retries", self.table))?;
-        if let Some(metrics) = &self.metrics {
-            metrics.counter(AWS_DYNAMODB_WRITES, num_writes as u64);
-        }
+        self.metrics.counter(AWS_DYNAMODB_WRITES, num_writes as u64);
         Ok(())
     }
 }

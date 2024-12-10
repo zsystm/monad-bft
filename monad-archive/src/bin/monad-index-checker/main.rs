@@ -39,14 +39,11 @@ async fn main() -> Result<()> {
 
     let args = cli::Cli::parse();
 
-    let metrics = match args.otel_endpoint {
-        Some(otel_endpoint) => Some(Metrics::new(
-            &otel_endpoint,
-            "monad-index-checker",
-            Duration::from_secs(15),
-        )?),
-        None => None,
-    };
+    let metrics = Metrics::new(
+        args.otel_endpoint,
+        "monad-index-checker",
+        Duration::from_secs(15),
+    )?;
 
     // Construct s3 and dynamodb connections
     let reader = ArchiveReader::new(
@@ -120,13 +117,13 @@ async fn handle_blocks(
     end_block_num: u64,
     concurrency: usize,
     fault_writer: &mut FaultWriter,
-    metrics: Option<Metrics>,
+    metrics: Metrics,
 ) -> Result<()> {
     let faults: Vec<_> = stream::iter(start_block_num..=end_block_num)
         .map(|block_num| async move {
             let check_result = tokio::spawn(handle_block(reader.clone(), block_num)).await;
 
-            let check = match check_result {
+            match check_result {
                 Ok(Ok(fault)) => fault,
                 Ok(Err(e)) => {
                     error!("Encountered error handling block: {e:?}");
@@ -148,35 +145,29 @@ async fn handle_blocks(
                         }],
                     }
                 }
-            };
-            check
-            // todo: write per item instead of after joining
-            // e.g.:
-            // fault_writer.write_fault(check).await
+            }
         })
         .buffer_unordered(concurrency)
         .collect()
         .await;
 
     for block_check in &faults {
-        if let Some(metrics) = &metrics {
-            if block_check.faults.len() > 0 {
-                metrics.counter("faults_blocks_with_faults", 1);
-            }
-            for fault in &block_check.faults {
-                match fault {
-                    Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
-                    Fault::CorruptedBlock => metrics.counter("faults_corrupted_blocks", 1),
-                    Fault::MissingAllTxHash { num_txs } => {
-                        metrics.counter("faults_blocks_missing_all_txhash", 1);
-                        metrics.counter("faults_missing_txhash", *num_txs as u64);
-                    }
-                    Fault::MissingTxhash { .. } => metrics.counter("faults_missing_txhash", 1),
-                    Fault::IncorrectTxData { .. } => metrics.counter("faults_incorrect_tx_data", 1),
-
-                    // Other faults are not DynamoDB faults
-                    _ => (),
+        if !block_check.faults.is_empty() {
+            metrics.counter("faults_blocks_with_faults", 1);
+        }
+        for fault in &block_check.faults {
+            match fault {
+                Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
+                Fault::CorruptedBlock => metrics.counter("faults_corrupted_blocks", 1),
+                Fault::MissingAllTxHash { num_txs } => {
+                    metrics.counter("faults_blocks_missing_all_txhash", 1);
+                    metrics.counter("faults_missing_txhash", *num_txs as u64);
                 }
+                Fault::MissingTxhash { .. } => metrics.counter("faults_missing_txhash", 1),
+                Fault::IncorrectTxData { .. } => metrics.counter("faults_incorrect_tx_data", 1),
+
+                // Other faults are not DynamoDB faults
+                _ => (),
             }
         }
     }
@@ -215,7 +206,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
     };
 
     let block_hash = block.hash_slow();
-    let base_fee_per_gas = block.base_fee_per_gas.map(reth_primitives::U128::from);
+    let base_fee_per_gas = block.base_fee_per_gas;
     let expected = block
         .body
         .into_iter()
@@ -224,10 +215,10 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         .enumerate()
         .map(|(idx, ((tx, trace), receipt))| TxIndexedData {
             header_subset: HeaderSubset {
-                block_hash: block_hash,
+                block_hash,
                 block_number: block_num,
                 tx_index: idx as u64,
-                gas_used: reth_primitives::U256::from(gas_used_vec[idx]),
+                gas_used: gas_used_vec[idx],
                 base_fee_per_gas,
             },
             tx,
@@ -293,9 +284,7 @@ async fn get_block_data(
     );
 
     match (block, traces, receipts) {
-        (Ok(b), Ok(traces), Ok(receipts)) => {
-            return Ok((b, traces, receipts));
-        }
+        (Ok(b), Ok(traces), Ok(receipts)) => Ok((b, traces, receipts)),
         (block, traces, receipts) => {
             let mut check_result = BlockCheckResult::new(block_num, Vec::new());
             if let Err(e) = block {

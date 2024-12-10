@@ -26,7 +26,7 @@ impl ArchiveReader {
         table: String,
         region: Option<String>,
         concurrency: usize,
-        metrics: Option<Metrics>,
+        metrics: Metrics,
     ) -> ArchiveReader {
         let sdk_config = get_aws_config(region).await;
         ArchiveReader {
