@@ -1,9 +1,9 @@
 use std::marker::PhantomData;
 
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockType},
+    block::{Block, BlockType},
     ledger::CommitResult,
-    payload::{ExecutionProtocol, Payload, PayloadId, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, PayloadId, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
@@ -16,7 +16,8 @@ use monad_crypto::{
     },
     hasher::{Hash, Hasher, HasherType},
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, MonadVersion, NodeId, Round, SeqNum};
+use reth_primitives::Header;
 
 // test utility if you only wish for simple block
 #[derive(Clone, PartialEq, Eq)]
@@ -88,16 +89,12 @@ impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
         SeqNum(0)
     }
 
-    fn get_state_root(&self) -> StateRootHash {
-        StateRootHash(Hash([1_u8; 32]))
+    fn get_delayed_execution_result(&self) -> &Header {
+        unimplemented!()
     }
 
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
         vec![]
-    }
-
-    fn is_empty_block(&self) -> bool {
-        true
     }
 
     fn get_txn_list_len(&self) -> usize {
@@ -136,7 +133,7 @@ pub fn setup_block<ST, SCT>(
     block_round: Round,
     qc_round: Round,
     parent_id: BlockId,
-    txns: TransactionPayload,
+    txns: FullTransactionList,
     execution: ExecutionProtocol,
     certkeys: &[SignatureCollectionKeyPairType<SCT>],
     validator_mapping: &ValidatorMapping<
@@ -156,6 +153,7 @@ where
         parent_round: Round(0),
         seq_num: SeqNum(0),
         timestamp: 0,
+        version: MonadVersion::version(),
     };
     let qcinfo = QcInfo {
         vote: Vote {
@@ -179,10 +177,6 @@ where
     let sig_col = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
     let qc = QuorumCertificate::<SCT>::new(qcinfo, sig_col);
 
-    let block_kind = match txns {
-        TransactionPayload::List(_) => BlockKind::Executable,
-        TransactionPayload::Null => BlockKind::Null,
-    };
     let payload = Payload { txns };
 
     (
@@ -196,7 +190,6 @@ where
                 ..execution
             },
             payload.get_id(),
-            block_kind,
             &qc,
         ),
         payload,

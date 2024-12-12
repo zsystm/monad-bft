@@ -19,6 +19,7 @@ monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
 
 bytes = { workspace = true }
+reth-primitives = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

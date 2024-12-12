@@ -12,6 +12,7 @@ bench = false
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 
+alloy-rlp = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 zerocopy = { workspace = true }

@@ -64,7 +64,7 @@ pub struct VirtualPool {
     // Cache of chain state and account nonces
     chain_cache: ChainCache,
     // Publish transactions to validator
-    publisher: flume::Sender<TransactionSigned>,
+    pub publisher: flume::Sender<TransactionSigned>,
 }
 
 struct SubPool {
@@ -72,14 +72,16 @@ struct SubPool {
     pool: HashMap<Address, TreeIndex<u64, TransactionSignedEcRecovered>>,
     evict: RwLock<VecDeque<Address>>,
     capacity: usize,
+    name: &'static str,
 }
 
 impl SubPool {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, name: &'static str) -> Self {
         Self {
             pool: HashMap::new(),
             evict: RwLock::new(VecDeque::new()),
             capacity,
+            name,
         }
     }
 
@@ -110,7 +112,15 @@ impl SubPool {
         let mut lock = self.evict.write().await;
         if lock.len() > self.capacity {
             if let Some(evicted) = lock.pop_back() {
-                self.pool.remove(&evicted);
+                let evicted = self.pool.remove(&evicted);
+                if let Some((evicted_address, evicted_tree)) = evicted {
+                    tracing::warn!(
+                        "evicted name={}, address={:?}, num_tx={:?}",
+                        self.name,
+                        evicted_address,
+                        evicted_tree.len()
+                    );
+                }
             }
         }
     }
@@ -284,8 +294,8 @@ pub enum TxPoolEvent {
 impl VirtualPool {
     pub fn new(publisher: flume::Sender<TransactionSigned>, capacity: usize) -> Self {
         Self {
-            pending_pool: SubPool::new(capacity),
-            queued_pool: SubPool::new(capacity),
+            pending_pool: SubPool::new(capacity, "pending"),
+            queued_pool: SubPool::new(capacity, "queued"),
             chain_cache: ChainCache::new(capacity),
             publisher,
         }
@@ -399,6 +409,12 @@ impl VirtualPool {
                 // Check for available promotions
                 let promote_queued = self.queued_pool.filter_by_nonce_gap(&senders);
 
+                if !promote_queued.is_empty() {
+                    tracing::info!(
+                        num_promoted =? promote_queued.len(),
+                        "promote_queued",
+                    );
+                }
                 // Add promoted transactions to the pending pool
                 for promoted in promote_queued.into_iter() {
                     self.pending_pool.add(promoted.clone(), false).await;

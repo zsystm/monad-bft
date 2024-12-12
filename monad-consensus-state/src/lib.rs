@@ -1,6 +1,9 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 
-use monad_blocktree::blocktree::{BlockTree, BlockTreeError};
+use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -11,17 +14,14 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockPolicy, BlockRange, BlockType, FullBlock},
+    block::{Block, BlockPolicy, BlockRange, BlockType, FullBlock},
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, RootInfo},
+    ledger::OptimisticCommit,
     metrics::Metrics,
-    payload::{
-        ExecutionProtocol, Payload, RandaoReveal, StateRootResult, StateRootValidator,
-        TransactionPayload,
-    },
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHash,
     timeout::TimeoutCertificate,
     txpool::TxPool,
     validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
@@ -39,6 +39,7 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use reth_primitives::Header;
 use tracing::{debug, info, trace, warn};
 
 use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
@@ -69,8 +70,8 @@ where
     block_sync_requests: BTreeMap<BlockId, (Round, BlockRange)>,
     last_proposed_round: Round,
 
-    /// Set to true once consensus has kicked off execution
-    started_execution: bool,
+    execution_results: BTreeMap<Round, ExecutionResult>,
+
     /// Set to true once consensus has kicked off stastesync
     /// This is a bit janky; because initiating statesync is asynchronous (via loopback executor)
     /// Ideally we can delete this and initiate statesync synchronously... needs some thought
@@ -115,7 +116,15 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionResult {
+    pub block_id: BlockId,
+    pub seq_num: SeqNum,
+    pub round: Round,
+    pub result: Header,
+}
+
+pub struct ConsensusStateWrapper<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -125,7 +134,6 @@ where
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
 {
     pub consensus: &'a mut ConsensusState<SCT, BPT, SBT>,
 
@@ -139,10 +147,8 @@ where
 
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     pub election: &'a LT,
-    pub version: &'a str,
+    pub version: u32,
 
-    /// Policy for validating the state root hashes included in proposals
-    pub state_root_validator: &'a SVT,
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
     /// Track local timestamp and validate proposal timestamps
@@ -164,6 +170,7 @@ where
 /// Consensus algorithm's configurable parameters
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct ConsensusConfig {
+    pub execution_delay: SeqNum,
     /// Maximum number of transactions allowed in a proposal
     pub proposal_txn_limit: usize,
     /// Maximum cumulative gas allowed for all transactions in a proposal
@@ -189,14 +196,6 @@ pub struct ConsensusConfig {
     pub start_execution_threshold: SeqNum,
 
     pub timestamp_latency_estimate_ms: u64,
-}
-
-/// Possible actions a leader node can take when entering a new round
-pub enum ConsensusAction {
-    /// Create a proposal with this state-root-hash
-    Propose(StateRootHash),
-    /// Create an empty block proposal
-    ProposeNull,
 }
 
 /// Actions after state root validation
@@ -274,7 +273,8 @@ where
             // on our first proposal, we will set this to the appropriate value
             last_proposed_round: Round(0),
 
-            started_execution: false,
+            execution_results: Default::default(),
+
             started_statesync: false,
         }
     }
@@ -304,8 +304,8 @@ where
     }
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
-    ConsensusStateWrapper<'_, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+    ConsensusStateWrapper<'_, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -315,8 +315,6 @@ where
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-
-    SVT: StateRootValidator,
 {
     /// handles the local timeout expiry event
     pub fn handle_timeout_expiry(&mut self) -> Vec<ConsensusCommand<ST, SCT>> {
@@ -342,6 +340,18 @@ where
                 }),
         );
         cmds
+    }
+
+    #[must_use]
+    pub fn add_execution_result(
+        &mut self,
+        execution_result: ExecutionResult,
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        let block_id = execution_result.block_id;
+        self.consensus
+            .execution_results
+            .insert(execution_result.round, execution_result);
+        self.try_update_coherency(block_id)
     }
 
     /// handles proposal messages from other nodes
@@ -406,6 +416,15 @@ where
             return cmds;
         }
 
+        if self
+            .consensus
+            .pending_block_tree
+            .round_exists(&p.block.get_round())
+        {
+            // TODO emit evidence if this is a *different* block for the same round
+            return cmds;
+        }
+
         let author_pubkey = self
             .val_epoch_map
             .get_cert_pubkeys(&epoch)
@@ -443,32 +462,28 @@ where
                 return cmds;
             }
         };
+        let block_round = block.get_round();
 
         if let Some(ts_delta) = self
             .block_timestamp
             .valid_block_timestamp(block.get_qc().get_timestamp(), block.get_timestamp())
         {
             // only update timestamp if the block advanced us our round
-            if block.get_round() > original_round {
+            if block_round > original_round {
                 cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
             }
         }
 
         // at this point, block is valid and can be added to the blocktree
-        if let Ok(res_cmds) = self.try_add_and_commit_blocktree(&block, Some(state_root_action)) {
-            cmds.extend(res_cmds);
-        } else {
-            warn!("Transaction validation failed");
-            self.metrics.consensus_events.failed_txn_validation += 1;
-            return cmds;
-        }
+        let res_cmds = self.try_add_and_commit_blocktree(block, Some(state_root_action));
+        cmds.extend(res_cmds);
 
         // out-of-order proposals are possible if some round R+1 proposal arrives
         // before R because of network conditions. The proposals are still valid
-        if block.get_round() != round {
+        if block_round != round {
             debug!(
                 expected_round = ?round,
-                round = ?block.get_round(),
+                round = ?block_round,
                 "out-of-order proposal"
             );
             self.metrics.consensus_events.out_of_order_proposals += 1;
@@ -665,9 +680,7 @@ where
                     .block_validator
                     .validate(full_block.block, full_block.payload, Some(author_pubkey))
                     .expect("majority extended invalid block");
-                let res_cmds = self
-                    .try_add_and_commit_blocktree(&block, None)
-                    .expect("majority extend incoherent block");
+                let res_cmds = self.try_add_and_commit_blocktree(block, None);
                 cmds.extend(res_cmds);
             }
         }
@@ -710,7 +723,7 @@ where
         };
         let next_leader = self.election.get_leader(next_round, next_validator_set);
         let msg = ConsensusMessage {
-            version: self.version.into(),
+            version: self.version,
             message: ProtocolMessage::Vote(vote_msg),
         }
         .sign(self.keypair);
@@ -766,14 +779,15 @@ where
             cmds.push(ConsensusCommand::CancelSync(block_range));
         }
 
-        // statesync if too far from tip && have close enough committed block to statesync to
+        // statesync if too far from tip
         cmds.extend(self.maybe_statesync());
 
-        // start execution if close enough to tip
-        cmds.extend(self.maybe_start_execution());
-
         // any time high_qc is updated, we generate a new checkpoint
-        cmds.push(ConsensusCommand::CheckpointSave(self.checkpoint()));
+        cmds.push(ConsensusCommand::CheckpointSave {
+            root_seq_num: self.consensus.pending_block_tree.root().seq_num,
+            high_qc_round: self.consensus.high_qc.get_round(),
+            checkpoint: self.checkpoint(),
+        });
         cmds
     }
 
@@ -812,7 +826,7 @@ where
 
         let base_epoch = self.consensus.pending_block_tree.root().epoch;
         Checkpoint {
-            root: self.consensus.pending_block_tree.root().clone(),
+            root: self.consensus.pending_block_tree.root().block_id,
             high_qc: self.consensus.high_qc.clone(),
             validator_sets: vec![
                 val_set_data(base_epoch)
@@ -854,29 +868,34 @@ where
             );
 
             if !blocks_to_commit.is_empty() {
+                let mut committed_seq_nums = HashMap::new();
                 for block in blocks_to_commit.iter() {
                     // when epoch boundary block is committed, this updates
                     // epoch manager records
                     self.metrics.consensus_events.commit_block += 1;
                     self.block_policy.update_committed_block(block);
                     self.tx_pool.update_committed_block(block);
-                    if !block.is_empty_block() {
-                        self.epoch_manager
-                            .schedule_epoch_start(block.get_seq_num(), block.get_round());
-                    } else {
-                        self.metrics.consensus_events.commit_empty_block += 1;
-                    }
+                    self.epoch_manager
+                        .schedule_epoch_start(block.get_seq_num(), block.get_round());
                     self.metrics.consensus_events.committed_bytes +=
                         block.get_txn_list_len() as u64;
+
+                    cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(
+                        OptimisticCommit::Committed(block.get_id()),
+                    ));
+
+                    committed_seq_nums.insert(block.get_seq_num(), block.get_id());
                 }
 
-                let unvalidated_blocks = blocks_to_commit
-                    .into_iter()
-                    .map(|b| b.get_full_block())
-                    .collect();
-                cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(
-                    unvalidated_blocks,
-                ));
+                let last_block = blocks_to_commit.last().expect("asserted nonempty");
+                self.consensus.execution_results.retain(|_, result| {
+                    let is_invalid = committed_seq_nums
+                        .get(&result.seq_num)
+                        .is_some_and(|committed| &result.block_id != committed);
+
+                    (result.seq_num + self.config.execution_delay > last_block.get_seq_num())
+                        && !is_invalid
+                });
 
                 // enter new pacemaker epoch if committing the boundary block
                 // bumps the current epoch
@@ -937,33 +956,14 @@ where
 
     fn try_add_and_commit_blocktree(
         &mut self,
-        block: &BPT::ValidatedBlock,
+        block: BPT::ValidatedBlock,
         state_root_action: Option<StateRootAction>,
-    ) -> Result<Vec<ConsensusCommand<ST, SCT>>, BlockTreeError> {
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
         trace!(?block, "adding block to blocktree");
-        if let Err(err) = self.consensus.pending_block_tree.add(
-            block.clone(),
-            self.block_policy,
-            self.state_backend,
-        ) {
-            match err {
-                BlockTreeError::StateBackendError(err) => {
-                    // Block is still inserted into the tree, with is_coherent = false
-                }
-                BlockTreeError::BlockNotCoherent(bid) => {
-                    return Err(BlockTreeError::BlockNotCoherent(bid));
-                }
-            }
-        }
-
         let mut cmds = Vec::new();
+        self.consensus.pending_block_tree.add(block.clone());
 
-        // commit any committable blocks to set the epoch manager correctly,
-        // then try propose
-        let high_commit_qc = self.consensus.pending_block_tree.get_high_committable_qc();
-        if let Some(qc) = high_commit_qc {
-            cmds.extend(self.try_commit(&qc));
-        }
+        cmds.extend(self.try_update_coherency(block.get_id()));
 
         // if the current round is the same as block round, try to vote. else, try to propose
         if block.get_round() == self.consensus.pacemaker.get_current_round() {
@@ -971,34 +971,39 @@ where
             // this round and try to vote for that
             let state_root_action =
                 state_root_action.expect("should exist if proposal was handled this round");
-            cmds.extend(self.try_vote(block, state_root_action));
+            cmds.extend(self.try_vote(&block, state_root_action));
         } else {
             cmds.extend(self.try_propose());
         }
 
-        // statesync if too far from tip && have close enough committed block to statesync to
+        // statesync if too far from tip
         cmds.extend(self.maybe_statesync());
 
-        Ok(cmds)
+        cmds
     }
 
     #[must_use]
-    fn maybe_start_execution(&mut self) -> Vec<ConsensusCommand<ST, SCT>> {
+    fn try_update_coherency(
+        &mut self,
+        updated_block_id: BlockId,
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = Vec::new();
-        if !self.consensus.started_execution
-            && self.consensus.pending_block_tree.get_root_seq_num()
-                + self.config.start_execution_threshold
-                > self.consensus.high_qc.get_seq_num()
-        {
-            tracing::info!(
-                root =? self.consensus.pending_block_tree.root(),
-                high_qc =? self.consensus.high_qc,
-                start_execution_threshold =? self.config.start_execution_threshold,
-                "starting execution - close enough to tip",
-            );
-            cmds.push(ConsensusCommand::StartExecution);
-            self.consensus.started_execution = true;
+        for newly_coherent_block in self.consensus.pending_block_tree.try_update_coherency(
+            updated_block_id,
+            self.block_policy,
+            self.state_backend,
+        ) {
+            // optimistically commit any block that has been added to the blocktree and is coherent
+            cmds.push(ConsensusCommand::LedgerCommit(OptimisticCommit::Proposed(
+                newly_coherent_block.get_full_block(),
+            )));
         }
+
+        let high_commit_qc = self.consensus.pending_block_tree.get_high_committable_qc();
+        if let Some(qc) = high_commit_qc {
+            cmds.extend(self.try_commit(&qc));
+        }
+
         cmds
     }
 
@@ -1013,72 +1018,10 @@ where
             + self.config.live_to_statesync_threshold
             > high_qc_seq_num
         {
-            return Vec::new();
+            Vec::new()
+        } else {
+            panic!("high qc too far ahead of block tree root, restart client and statesync. highqc: {:?}, block-tree root {:?}", high_qc_seq_num, self.consensus.pending_block_tree.get_root_seq_num());
         }
-
-        let connected_blocks = self
-            .consensus
-            .pending_block_tree
-            .get_parent_block_chain(&self.consensus.high_qc.get_block_id());
-
-        // set consensus_root N-delay
-        // set high_qc to N
-        // execution will sync to N-2*delay using state_root in consensus_root
-
-        assert!(self.config.live_to_statesync_threshold > self.state_root_validator.get_delay());
-        let max_committed_seq_num = high_qc_seq_num - self.state_root_validator.get_delay();
-
-        let earliest_block_exists_and_is_not_empty = connected_blocks
-            .first()
-            .is_some_and(|block| !block.is_empty_block());
-        if connected_blocks
-            .first()
-            .map(|block| block.get_seq_num())
-            .unwrap_or(SeqNum::MAX)
-            > max_committed_seq_num
-            || !earliest_block_exists_and_is_not_empty
-        {
-            info!(
-                branch_len = connected_blocks.len(),
-                live_to_statesync_threshold =? self.config.live_to_statesync_threshold,
-                ?high_qc_seq_num,
-                "waiting for enough blocks to trigger statesync",
-            );
-            return Vec::new();
-        }
-
-        info!(
-            branch_len = connected_blocks.len(),
-            live_to_statesync_threshold =? self.config.live_to_statesync_threshold,
-            ?high_qc_seq_num,
-            "triggering statesync",
-        );
-        self.metrics.consensus_events.trigger_state_sync += 1;
-
-        // Execution doesn't support resyncing upon falling behind
-        assert!(
-            !self.consensus.started_execution,
-            "can't statesync after execution has been started, root={:?}, high_qc={:?}",
-            self.consensus.pending_block_tree.root(),
-            self.consensus.high_qc
-        );
-
-        let root_block = connected_blocks
-            .iter()
-            .find(|block| block.get_seq_num() == max_committed_seq_num)
-            .expect("statesync block should exist");
-
-        self.consensus.started_statesync = true;
-        vec![ConsensusCommand::RequestStateSync {
-            root: RootInfo {
-                round: root_block.get_round(),
-                seq_num: root_block.get_seq_num(),
-                epoch: root_block.get_epoch(),
-                block_id: root_block.get_id(),
-                state_root: root_block.get_state_root(),
-            },
-            high_qc: self.consensus.high_qc.clone(),
-        }]
     }
 
     #[must_use]
@@ -1243,9 +1186,8 @@ where
         let try_propose_seq_num = seq_num_qc + SeqNum(1);
 
         let proposer_builder =
-            |block_kind: BlockKind,
-             txns: TransactionPayload,
-             hash: StateRootHash,
+            |txns: FullTransactionList,
+             execution_result: &ExecutionResult,
              seq_num: SeqNum,
              last_round_tc: Option<TimeoutCertificate<SCT>>| {
                 let payload = Payload { txns };
@@ -1256,7 +1198,7 @@ where
                     epoch,
                     round,
                     &ExecutionProtocol {
-                        state_root: hash,
+                        delayed_execution_result: execution_result.result.clone(),
                         seq_num,
                         beneficiary: *self.beneficiary,
                         randao_reveal: RandaoReveal::new::<SCT::SignatureType>(
@@ -1265,7 +1207,6 @@ where
                         ),
                     },
                     payload.get_id(),
-                    block_kind,
                     &high_qc,
                 );
 
@@ -1275,7 +1216,7 @@ where
                     last_round_tc,
                 };
                 let msg = ConsensusMessage {
-                    version: self.version.into(),
+                    version: self.version,
                     message: ProtocolMessage::Proposal(p),
                 }
                 .sign(self.keypair);
@@ -1289,110 +1230,70 @@ where
                 ]
             };
 
-        match self.proposal_policy(try_propose_seq_num) {
-            ConsensusAction::Propose(propose_state_root_hash) => {
-                let _create_proposal_span =
-                    tracing::info_span!("create_proposal_span", ?round).entered();
+        // Propose when there's a path to root
+        let pending_blocktree_blocks = self
+            .consensus
+            .pending_block_tree
+            .get_blocks_on_path_from_root(&parent_bid)
+            .expect("there should be a path to root");
 
-                // Propose when there's a path to root
-                let pending_blocktree_blocks = self
-                    .consensus
-                    .pending_block_tree
-                    .get_blocks_on_path_from_root(&parent_bid)
-                    .expect("there should be a path to root");
+        let execution_result_seq_num =
+            try_propose_seq_num.max(self.config.execution_delay) - self.config.execution_delay;
 
-                debug!(
-                    ?node_id,
-                    ?round,
-                    ?high_qc,
-                    ?try_propose_seq_num,
-                    ?last_round_tc,
-                    "Creating Proposal"
-                );
+        let execution_result = if let Some(block) = pending_blocktree_blocks
+            .iter()
+            .find(|block| block.get_seq_num() == execution_result_seq_num)
+        {
+            self.consensus
+                .execution_results
+                .values()
+                .find(|result| result.block_id == block.get_id())
+        } else {
+            assert!(execution_result_seq_num <= self.consensus.pending_block_tree.root().seq_num);
+            self.consensus
+                .execution_results
+                .values()
+                .find(|result| result.seq_num == execution_result_seq_num)
+        };
 
-                match self.tx_pool.create_proposal(
-                    try_propose_seq_num,
-                    self.config.proposal_txn_limit,
-                    self.config.proposal_gas_limit,
-                    self.block_policy,
-                    pending_blocktree_blocks,
-                    self.state_backend,
-                ) {
-                    Ok(prop_txns) => {
-                        self.metrics.consensus_events.creating_proposal += 1;
-                        proposer_builder(
-                            BlockKind::Executable,
-                            TransactionPayload::List(prop_txns),
-                            propose_state_root_hash,
-                            try_propose_seq_num,
-                            last_round_tc,
-                        )
-                    }
-                    Err(err) => {
-                        // TODO: add metrics for different transaction fee validation errors
-                        debug!(?err, "Creating Proposal error, proposing empty block");
-                        self.metrics.consensus_events.creating_empty_block_proposal += 1;
-                        // An empty block uses the same SeqNum and state root as its
-                        // parent to facilitate consensus commit
-                        let srh_qc = self
-                            .consensus
-                            .pending_block_tree
-                            .get_block_state_root(&high_qc.get_block_id())
-                            .expect("parent block is coherent");
-                        proposer_builder(
-                            BlockKind::Null,
-                            TransactionPayload::Null,
-                            srh_qc,
-                            seq_num_qc,
-                            last_round_tc,
-                        )
-                    }
-                }
-            }
-            ConsensusAction::ProposeNull => {
-                tracing::info_span!("create_proposal_empty_span", ?round);
-                // Don't have the necessary state root hash ready so propose
-                // a NULL block
-                self.metrics.consensus_events.creating_empty_block_proposal += 1;
-                debug!(
-                    ?node_id,
-                    ?round,
-                    ?high_qc,
-                    ?seq_num_qc,
-                    ?last_round_tc,
-                    "Creating Empty Proposal"
-                );
+        let Some(execution_result) = execution_result else {
+            // no state root
+            return Vec::new();
+        };
+        let _create_proposal_span = tracing::info_span!("create_proposal_span", ?round).entered();
 
-                // An empty block uses the same SeqNum and state root as its
-                // parent to facilitate consensus commit
-                let srh_qc = self
-                    .consensus
-                    .pending_block_tree
-                    .get_block_state_root(&high_qc.get_block_id())
-                    .expect("parent block is coherent");
+        debug!(
+            ?node_id,
+            ?round,
+            ?high_qc,
+            ?try_propose_seq_num,
+            ?last_round_tc,
+            "Creating Proposal"
+        );
+
+        match self.tx_pool.create_proposal(
+            try_propose_seq_num,
+            self.config.proposal_txn_limit,
+            self.config.proposal_gas_limit,
+            self.block_policy,
+            pending_blocktree_blocks,
+            self.state_backend,
+        ) {
+            Ok(prop_txns) => {
+                self.metrics.consensus_events.creating_proposal += 1;
                 proposer_builder(
-                    BlockKind::Null,
-                    TransactionPayload::Null,
-                    srh_qc,
-                    seq_num_qc,
+                    prop_txns,
+                    execution_result,
+                    try_propose_seq_num,
                     last_round_tc,
                 )
             }
+            Err(err) => {
+                // TODO: add metrics for different transaction fee validation errors
+                debug!(?err, "Creating Proposal error, timing out");
+                vec![]
+            }
         }
-    }
-
-    #[must_use]
-    fn proposal_policy(&self, proposed_seq_num: SeqNum) -> ConsensusAction {
-        // Can't propose txs without state root hash
-        let Some(h) = self
-            .state_root_validator
-            .get_next_state_root(proposed_seq_num)
-        else {
-            // propose empty also needs a state root hash with it
-            return ConsensusAction::ProposeNull;
-        };
-
-        ConsensusAction::Propose(h)
     }
 
     #[must_use]
@@ -1416,39 +1317,22 @@ where
             return Vec::new();
         }
 
-        let mut root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
+        let root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
         let high_qc_seq_num = self.consensus.high_qc.get_seq_num();
         let request_range =
             if root_seq_num + self.config.live_to_statesync_threshold <= high_qc_seq_num {
-                // should statesync at this point
-                // request only upto delay blocks to trigger statesync
-                let delay = self.state_root_validator.get_delay();
-                let blocksync_root = high_qc_seq_num - delay;
-                let request_range = BlockRange {
-                    last_block_id: qc.get_block_id(),
-                    root_seq_num: blocksync_root,
-                };
-                debug!(
-                    ?request_range,
-                    min_requested_blocks =? qc.get_seq_num() - blocksync_root,
-                    "consensus blocksyncing enough blocks to trigger statesync"
+                // crash the client to move into statesync mode and recover
+                panic!(
+                    "blocksync request range is outside statesync threshold, range: {:?}",
+                    high_qc_seq_num - root_seq_num
                 );
-
-                request_range
             } else {
-                // request upto root of blocktree
-                // don't request genesis block
-                // NOTE: this only works because there will be no NULL blocks with SeqNum(0)
-                root_seq_num = root_seq_num.max(SeqNum(1));
+                let max_blocks = qc.get_seq_num().max(root_seq_num) - root_seq_num;
                 let request_range = BlockRange {
                     last_block_id: qc.get_block_id(),
-                    root_seq_num,
+                    max_blocks,
                 };
-                debug!(
-                    ?request_range,
-                    min_requested_blocks =? qc.get_seq_num().max(root_seq_num) - root_seq_num,
-                    "consensus blocksyncing blocks up to root"
-                );
+                debug!(?request_range, "consensus blocksyncing blocks up to root");
 
                 request_range
             };
@@ -1462,45 +1346,47 @@ where
 
     #[must_use]
     fn state_root_hash_validation(&mut self, p: &ProposalMessage<SCT>) -> StateRootAction {
-        if p.block.is_empty_block() {
-            debug!(block = ?p.block, "Received empty block");
-            self.metrics.consensus_events.rx_empty_block += 1;
-            return StateRootAction::Proceed;
-        }
-        match self
-            .state_root_validator
-            .validate(p.block.get_seq_num(), p.block.get_state_root())
+        // Propose when there's a path to root
+        let Some(pending_blocktree_blocks) = self
+            .consensus
+            .pending_block_tree
+            .get_blocks_on_path_from_root(&p.block.get_parent_id())
+        else {
+            debug!("no path to root, unable to verify");
+            return StateRootAction::Defer;
+        };
+
+        let execution_result_seq_num =
+            p.block.get_seq_num().max(self.config.execution_delay) - self.config.execution_delay;
+
+        let execution_result = if let Some(block) = pending_blocktree_blocks
+            .iter()
+            .find(|block| block.get_seq_num() == execution_result_seq_num)
         {
-            // TODO-1 execution lagging too far behind should be a trigger for
-            // something to try and catch up faster. For now, just wait
-            StateRootResult::OutOfRange => {
-                debug!(
-                    "Proposal Message carries state root hash for a block higher than highest locally known, unable to verify"
-                );
-                self.metrics.consensus_events.rx_execution_lagging += 1;
-                StateRootAction::Defer
-            }
-            // Don't vote and locally timeout if the proposed state root does
-            // not match
-            StateRootResult::Mismatch => {
-                debug!("State root hash in proposal conflicts with local value");
-                self.metrics.consensus_events.rx_bad_state_root += 1;
-                StateRootAction::Reject
-            }
-            // Don't vote and locally timeout if we don't have enough
-            // information to decide whether the state root is valid. It's still
-            // safe to insert to the block tree if other checks passes. So we
-            // don't need to request block sync if other blocks forms a QC on it
-            StateRootResult::Missing => {
-                debug!("Missing state root hash value locally, unable to verify");
-                self.metrics.consensus_events.rx_missing_state_root += 1;
-                StateRootAction::Defer
-            }
-            StateRootResult::Success => {
-                debug!("Received Proposal Message with valid state root hash");
-                self.metrics.consensus_events.rx_proposal += 1;
-                StateRootAction::Proceed
-            }
+            self.consensus
+                .execution_results
+                .values()
+                .find(|result| result.block_id == block.get_id())
+        } else {
+            assert!(execution_result_seq_num <= self.consensus.pending_block_tree.root().seq_num);
+            self.consensus
+                .execution_results
+                .values()
+                .find(|result| result.seq_num == execution_result_seq_num)
+        };
+
+        let Some(execution_result) = execution_result else {
+            // no state root
+            debug!("Missing state root hash value locally, unable to verify");
+            return StateRootAction::Defer;
+        };
+
+        if &execution_result.result == p.block.get_delayed_execution_result() {
+            debug!("Received Proposal Message with valid state root hash");
+            StateRootAction::Proceed
+        } else {
+            debug!("State root hash in proposal conflicts with local value");
+            StateRootAction::Reject
         }
     }
 
@@ -1551,17 +1437,12 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::{
-            Block, BlockKind, BlockPolicy, BlockRange, BlockType, FullBlock, PassthruBlockPolicy,
-        },
+        block::{Block, BlockPolicy, BlockRange, BlockType, FullBlock, PassthruBlockPolicy},
         block_validator::{BlockValidator, MockValidator},
         checkpoint::RootInfo,
-        ledger::CommitResult,
+        ledger::{CommitResult, OptimisticCommit},
         metrics::Metrics,
-        payload::{
-            FullTransactionList, MissingNextStateRoot, NopStateRoot, StateRoot, StateRootValidator,
-            TransactionPayload, INITIAL_DELAY_STATE_ROOT_HASH,
-        },
+        payload::FullTransactionList,
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         state_root_hash::StateRootHash,
@@ -1592,7 +1473,8 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::{
-        BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
+        BlockId, Epoch, MonadVersion, NodeId, Round, RouterTarget, SeqNum, Stake, GENESIS_BLOCK_ID,
+        GENESIS_SEQ_NUM,
     };
     use monad_validator::{
         epoch_manager::EpochManager,
@@ -1607,7 +1489,7 @@ mod test {
 
     use crate::{
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
-        ConsensusStateWrapper, OutgoingVoteStatus,
+        ConsensusStateWrapper, ExecutionResult, OutgoingVoteStatus,
     };
 
     const BASE_FEE: u128 = 1000;
@@ -1618,9 +1500,8 @@ mod test {
     type BlockPolicyType = PassthruBlockPolicy;
     type StateBackendType = InMemoryState;
     type BlockValidatorType = MockValidator;
-    type StateRootValidatorType = NopStateRoot;
 
-    struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT>
+    struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT, TT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1628,7 +1509,6 @@ mod test {
         BPT: BlockPolicy<SCT, SBT>,
         SBT: StateBackend,
         BVT: BlockValidator<SCT, BPT, SBT>,
-        SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool<SCT, BPT, SBT>,
     {
@@ -1640,9 +1520,8 @@ mod test {
 
         val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
         election: LT,
-        version: &'static str,
+        version: u32,
 
-        state_root_validator: SVT,
         block_validator: BVT,
         block_policy: BPT,
         state_backend: SBT,
@@ -1655,7 +1534,7 @@ mod test {
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     }
 
-    impl<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT> NodeContext<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT>
+    impl<ST, SCT, BPT, SBT, BVT, VTF, LT, TT> NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT, TT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1663,13 +1542,10 @@ mod test {
         BPT: BlockPolicy<SCT, SBT>,
         SBT: StateBackend,
         BVT: BlockValidator<SCT, BPT, SBT>,
-        SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool<SCT, BPT, SBT>,
     {
-        fn wrapped_state(
-            &mut self,
-        ) -> ConsensusStateWrapper<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT> {
+        fn wrapped_state(&mut self) -> ConsensusStateWrapper<ST, SCT, BPT, SBT, VTF, LT, TT, BVT> {
             ConsensusStateWrapper {
                 consensus: &mut self.consensus_state,
 
@@ -1681,7 +1557,6 @@ mod test {
                 election: &self.election,
                 version: self.version,
 
-                state_root_validator: &self.state_root_validator,
                 block_validator: &self.block_validator,
                 block_policy: &mut self.block_policy,
                 state_backend: &self.state_backend,
@@ -1753,15 +1628,7 @@ mod test {
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         fn next_proposal_empty(&mut self) -> Verified<ST, ProposalMessage<SCT>> {
-            self.proposal_gen.next_proposal(
-                &self.keys,
-                &self.cert_keys,
-                &self.epoch_manager,
-                &self.val_epoch_map,
-                &self.election,
-                TransactionPayload::Null,
-                StateRootHash::default(),
-            )
+            self.next_proposal(FullTransactionList::empty(), StateRootHash::default())
         }
 
         fn next_proposal(
@@ -1775,7 +1642,7 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                TransactionPayload::List(txn_list),
+                txn_list,
                 state_root,
             )
         }
@@ -1788,7 +1655,7 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                TransactionPayload::List(FullTransactionList::new(vec![5].into())),
+                FullTransactionList::new(vec![5].into()),
                 StateRootHash::default(),
             )
         }
@@ -1805,7 +1672,7 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                TransactionPayload::List(txn_list),
+                txn_list,
                 state_root,
             )
         }
@@ -1830,7 +1697,6 @@ mod test {
         SBT: StateBackend,
         BVT: BlockValidator<SCT, BPT, SBT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-        SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         TT: TxPool<SCT, BPT, SBT> + Clone,
     >(
@@ -1841,10 +1707,10 @@ mod test {
         state_backend: impl Fn() -> SBT,
         block_validator: impl Fn() -> BVT,
         txpool: TT,
-        state_root: impl Fn() -> SVT,
+        execution_delay: SeqNum,
     ) -> (
         EnvContext<ST, SCT, VTF, LT>,
-        Vec<NodeContext<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT>>,
+        Vec<NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT, TT>>,
     ) {
         let (keys, cert_keys, valset, _valmap) =
             create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
@@ -1857,7 +1723,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<ST, SCT, BPT, SBT, BVT, _, _, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<ST, SCT, BPT, SBT, BVT, _, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -1881,6 +1747,7 @@ mod test {
                     )
                     .unwrap();
                 let consensus_config = ConsensusConfig {
+                    execution_delay,
                     proposal_txn_limit: 5000,
                     proposal_gas_limit: 8_000_000,
                     delta: Duration::from_secs(1),
@@ -1913,9 +1780,8 @@ mod test {
 
                     val_epoch_map,
                     election: election.clone(),
-                    version: "TEST",
+                    version: 0,
 
-                    state_root_validator: state_root(),
                     block_validator: block_validator(),
                     block_policy: block_policy(),
                     state_backend: state_backend(),
@@ -2036,6 +1902,21 @@ mod test {
             .collect()
     }
 
+    fn extract_proposal_commit_rounds<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<Round>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
+        cmds.iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
+                    Some(block.get_round())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     fn find_vote_message<ST, SCT>(
         cmds: &[ConsensusCommand<ST, SCT>],
     ) -> Option<&ConsensusCommand<ST, SCT>>
@@ -2063,15 +1944,19 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::RequestSync { .. }))
     }
 
-    fn find_commit_cmd<ST, SCT>(
-        cmds: &[ConsensusCommand<ST, SCT>],
-    ) -> Option<&ConsensusCommand<ST, SCT>>
+    fn find_commit_cmds<ST, SCT>(cmds: &[ConsensusCommand<ST, SCT>]) -> Vec<&BlockId>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         cmds.iter()
-            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)))
+            .filter_map(|c| match c {
+                ConsensusCommand::LedgerCommit(OptimisticCommit::Committed(committed)) => {
+                    Some(committed)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn find_timestamp_update_cmd<ST, SCT>(
@@ -2103,7 +1988,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2114,7 +1998,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2130,6 +2014,7 @@ mod test {
             parent_round: expected_qc_high_round - Round(1),
             seq_num: GENESIS_SEQ_NUM + SeqNum(1),
             timestamp: 0,
+            version: MonadVersion::version(),
         };
         let v = Vote {
             vote_info: vi,
@@ -2169,7 +2054,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2180,7 +2064,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
         let p1 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
@@ -2214,7 +2098,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2225,7 +2108,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2267,7 +2150,7 @@ mod test {
     }
 
     #[test]
-    fn duplicate_proposals() {
+    fn scheduled_vote_round() {
         let num_state = 4;
         let (mut env, mut ctx) = setup::<
             SignatureType,
@@ -2276,7 +2159,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2287,22 +2169,19 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
         let p1 = env.next_proposal_empty();
-        let (author, _, verified_message) = p1.clone().destructure();
+        let (author, _, verified_message) = p1.destructure();
         let _ = wrapped_state.handle_proposal_message(author, verified_message);
         assert!(
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
         );
-
-        // send duplicate of p1, expect it to be ignored and no output commands
-        let (author, _, verified_message) = p1.destructure();
-        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(cmds.is_empty());
     }
+
+    // TODO test for duplicate proposal
 
     #[test]
     fn timestamp_update_only_for_higher_round() {
@@ -2314,7 +2193,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2325,7 +2203,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2378,7 +2256,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2389,7 +2266,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2459,8 +2336,9 @@ mod test {
             perms
         );
     }
+
     #[test]
-    fn test_commit_rule_consecutive() {
+    fn test_out_of_order_optimistic_commit() {
         let num_state = 4;
         let (mut env, mut ctx) = setup::<
             SignatureType,
@@ -2469,7 +2347,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2480,7 +2357,90 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
+        );
+        let mut wrapped_state = ctx[0].wrapped_state();
+
+        // first proposal
+        let p1 = env.next_proposal_empty();
+        let (author, _, verified_message) = p1.destructure();
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+
+        assert_eq!(
+            wrapped_state.consensus.pacemaker.get_current_round(),
+            Round(1)
+        );
+        assert!(
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+        );
+
+        let rounds = extract_proposal_commit_rounds(cmds);
+        assert_eq!(rounds, vec![Round(1)]);
+
+        // second proposal
+        let p2 = env.next_proposal_empty();
+        let (author, _, verified_message) = p2.destructure();
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+
+        let rounds = extract_proposal_commit_rounds(cmds);
+        assert_eq!(rounds, vec![Round(2)]);
+
+        let mut missing_proposals = Vec::new();
+        for _ in 0..5 {
+            missing_proposals.push(env.next_proposal_empty());
+        }
+        //
+        // last proposal arrvies
+        let p_fut = env.next_proposal_empty();
+        let (author, _, verified_message) = p_fut.destructure();
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+        let rounds = extract_proposal_commit_rounds(cmds);
+        assert_eq!(rounds, vec![]);
+
+        // was in Round(2) and skipped over 5 proposals. Handling
+        // p_fut should be at Round(3+5)
+        assert_eq!(
+            wrapped_state.consensus.pacemaker.get_current_round(),
+            Round(3 + 5)
+        );
+
+        // missed proposals now arrive
+        let mut cmds = Vec::new();
+        for p in missing_proposals {
+            let (author, _, verified_message) = p.clone().destructure();
+            cmds.extend(wrapped_state.handle_proposal_message(author, verified_message));
+        }
+        let rounds = extract_proposal_commit_rounds(cmds);
+        assert_eq!(
+            rounds,
+            vec![3, 4, 5, 6, 7, 8]
+                .into_iter()
+                .map(Round)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_commit_rule_consecutive() {
+        let num_state = 4;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || MockValidator,
+            MockTxPool::default(),
+            SeqNum(4),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2500,7 +2460,7 @@ mod test {
         let p2 = env.next_proposal_empty();
         let (author, _, verified_message) = p2.destructure();
         let p2_cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(find_commit_cmd(&p2_cmds).is_none());
+        assert!(find_commit_cmds(&p2_cmds).is_empty());
 
         assert!(
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
@@ -2513,7 +2473,7 @@ mod test {
         let (author, _, verified_message) = p3.destructure();
 
         let p2_cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(find_commit_cmd(&p2_cmds).is_some());
+        assert!(!find_commit_cmds(&p2_cmds).is_empty());
     }
     #[test]
     fn test_commit_rule_non_consecutive() {
@@ -2525,7 +2485,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2536,7 +2495,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2603,7 +2562,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2614,7 +2572,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let (n1, xs) = ctx.split_first_mut().unwrap();
         let (n2, xs) = xs.split_first_mut().unwrap();
@@ -2732,11 +2690,11 @@ mod test {
         // second_state has the malicious block in the blocktree, so it will not be able to
         // commit anything
         assert_eq!(n2.consensus_state.pending_block_tree.size(), 3);
-        assert!(find_commit_cmd(&cmds2).is_none());
+        assert!(find_commit_cmds(&cmds2).is_empty());
 
         // first_state has the correct blocks, so expect to see a commit
         assert_eq!(n1.consensus_state.pending_block_tree.size(), 2);
-        assert!(find_commit_cmd(&cmds1).is_some());
+        assert!(!find_commit_cmds(&cmds1).is_empty());
 
         // a block sync request arrived, helping second state to recover
         let full_block_1 = FullBlock {
@@ -2755,13 +2713,13 @@ mod test {
 
         // second_state has the correct blocks, so expect to see a commit
         assert_eq!(n2.consensus_state.pending_block_tree.size(), 2);
-        assert!(find_commit_cmd(&cmds2).is_some());
+        assert!(!find_commit_cmds(&cmds2).is_empty());
 
         let cmds1 = n1.handle_proposal_message(author_4, proposal_message_4.clone());
 
         // first_state has the correct blocks, so expect to see a commit
         assert_eq!(n1.consensus_state.pending_block_tree.size(), 2);
-        assert!(find_commit_cmd(&cmds1).is_some());
+        assert!(!find_commit_cmds(&cmds1).is_empty());
 
         // third_state only received proposal for round 1, and is missing proposal for round 2, 3, 4
         // feeding third_state with a proposal from round 4 should trigger a blocksync for the missing range
@@ -2796,13 +2754,8 @@ mod test {
         // the blocksync repairs path to root and block4.qc commits block 1 and 2
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         assert!(find_blocksync_request(&cmds3).is_none());
-        let commit_cmds = find_commit_cmd(&cmds3);
-        assert!(commit_cmds.is_some());
-        if let Some(ConsensusCommand::LedgerCommit(blocks)) = commit_cmds {
-            assert_eq!(blocks.len(), 2);
-        } else {
-            unreachable!();
-        }
+        let commit_cmds = find_commit_cmds(&cmds3);
+        assert_eq!(commit_cmds.len(), 2);
 
         // duplicate blocksync event should be ignored.
         let cmds3 = n3.handle_block_sync(
@@ -2811,40 +2764,6 @@ mod test {
         );
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         assert!(find_blocksync_request(&cmds3).is_none());
-    }
-
-    #[test]
-    fn test_receive_empty_block() {
-        let num_state = 4;
-        let (mut env, mut ctx) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            BlockPolicyType,
-            StateBackendType,
-            BlockValidatorType,
-            _,
-            StateRoot,
-            _,
-            _,
-        >(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
-            || MockValidator,
-            MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
-        );
-        let mut wrapped_state = ctx[0].wrapped_state();
-
-        let p1 = env.next_proposal_empty();
-        let (author, _, verified_message) = p1.destructure();
-        let _ = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
-        );
-        assert_eq!(wrapped_state.metrics.consensus_events.rx_empty_block, 1);
     }
 
     /// Test the behaviour of consensus when execution is lagging. This is tested
@@ -2859,7 +2778,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRoot,
             _,
             _,
         >(
@@ -2870,7 +2788,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
             || MockValidator,
             MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
+            SeqNum(1),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2919,7 +2837,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRoot,
             _,
             _,
         >(
@@ -2930,30 +2847,49 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(5)),
             || MockValidator,
             MockTxPool::default(),
-            || StateRoot::new(SeqNum(5)),
+            SeqNum(5),
         );
 
         // add state root for the genesis block
         ctx[0]
-            .state_root_validator
-            .add_state_root(GENESIS_SEQ_NUM, StateRootHash::default());
+            .consensus_state
+            .add_execution_result(ExecutionResult {
+                block_id: GENESIS_BLOCK_ID,
+                seq_num: GENESIS_SEQ_NUM,
+                round: Round(0),
+                state_root: StateRootHash::default(),
+            });
 
         let mut wrapped_state = ctx[0].wrapped_state();
 
         // prepare 5 blocks
         for _ in 0..5 {
             let p = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
+            let execution_result = ExecutionResult {
+                block_id: p.block.get_id(),
+                seq_num: p.block.get_seq_num(),
+                round: p.block.get_round(),
+                state_root: StateRootHash(Hash([0x08_u8; 32])),
+            };
             let (author, _, p) = p.destructure();
             let _cmds = wrapped_state.handle_proposal_message(author, p);
+
+            if execution_result.seq_num == SeqNum(3) {
+                // only execution update for block 3 comes
+                wrapped_state
+                    .consensus
+                    .add_execution_result(ExecutionResult {
+                        block_id: GENESIS_BLOCK_ID,
+                        seq_num: GENESIS_SEQ_NUM,
+                        round: Round(0),
+                        state_root: StateRootHash::default(),
+                    });
+            }
         }
 
         assert_eq!(wrapped_state.metrics.consensus_events.rx_proposal, 5);
         assert_eq!(wrapped_state.consensus.get_current_round(), Round(5));
 
-        // only execution update for block 3 comes
-        ctx[0]
-            .state_root_validator
-            .add_state_root(SeqNum(3), StateRootHash(Hash([0x08_u8; 32])));
         let mut wrapped_state = ctx[0].wrapped_state();
 
         // Block 11 carries the state root hash from executing block 6 the state
@@ -2971,8 +2907,11 @@ mod test {
             wrapped_state.metrics.consensus_events.rx_missing_state_root,
             1
         );
-        assert_eq!(cmds.len(), 5);
-        assert!(matches!(cmds[0], ConsensusCommand::LedgerCommit(_)));
+        assert_eq!(cmds.len(), 6);
+        assert!(matches!(
+            cmds[0],
+            ConsensusCommand::LedgerCommit(OptimisticCommit::Committed(_))
+        ));
         assert!(matches!(cmds[1], ConsensusCommand::CheckpointSave(_)));
         assert!(matches!(cmds[2], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
@@ -2980,116 +2919,10 @@ mod test {
             ConsensusCommand::Schedule { duration: _ }
         ));
         assert!(matches!(cmds[4], ConsensusCommand::TimestampUpdate(_)));
-    }
-
-    /// Test consensus behaviour of a leader who is supposed to propose
-    /// the next round but does not have a recent enough state root hash
-    #[traced_test]
-    #[test]
-    fn test_unavailable_state_root_during_proposal() {
-        let num_state = 4;
-        // MissingNextStateRoot forces the proposer's state root hash
-        // to be unavailable
-        let (mut env, mut ctx) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            BlockPolicyType,
-            StateBackendType,
-            BlockValidatorType,
-            _,
-            MissingNextStateRoot,
-            _,
-            _,
-        >(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-            || MockValidator,
-            MockTxPool::default(),
-            MissingNextStateRoot::default,
-        );
-        let (n1, xs) = ctx.split_first_mut().unwrap();
-        let (n2, xs) = xs.split_first_mut().unwrap();
-        let (n3, xs) = xs.split_first_mut().unwrap();
-        let n4 = &mut xs[0];
-
-        let p1 = env.next_proposal_empty();
-        let (author, _, verified_message) = p1.destructure();
-        let _ = n1.handle_proposal_message(author, verified_message.clone());
-        let p1_vote = match n1.consensus_state.scheduled_vote.clone().unwrap() {
-            OutgoingVoteStatus::VoteReady(v) => v,
-            _ => panic!(),
-        };
-        let cmds1 = n1
-            .wrapped_state()
-            .send_vote_and_reset_timer(p1_vote.vote_info.round, p1_vote);
-        let p1_votes = extract_vote_msgs(cmds1)[0];
-
-        let _ = n2.handle_proposal_message(author, verified_message.clone());
-        let p2_vote = match n2.consensus_state.scheduled_vote.clone().unwrap() {
-            OutgoingVoteStatus::VoteReady(v) => v,
-            _ => panic!(),
-        };
-        let cmds2 = n2
-            .wrapped_state()
-            .send_vote_and_reset_timer(p2_vote.vote_info.round, p2_vote);
-        let p2_votes = extract_vote_msgs(cmds2)[0];
-
-        let _ = n3.handle_proposal_message(author, verified_message.clone());
-        let p3_vote = match n3.consensus_state.scheduled_vote.clone().unwrap() {
-            OutgoingVoteStatus::VoteReady(v) => v,
-            _ => panic!(),
-        };
-        let cmds3 = n3
-            .wrapped_state()
-            .send_vote_and_reset_timer(p3_vote.vote_info.round, p3_vote);
-        let p3_votes = extract_vote_msgs(cmds3)[0];
-
-        let _ = n4.handle_proposal_message(author, verified_message);
-        let p4_vote = match n4.consensus_state.scheduled_vote.clone().unwrap() {
-            OutgoingVoteStatus::VoteReady(v) => v,
-            _ => panic!(),
-        };
-        let cmds4 = n4
-            .wrapped_state()
-            .send_vote_and_reset_timer(p4_vote.vote_info.round, p4_vote);
-        let p4_votes = extract_vote_msgs(cmds4)[0];
-
-        let next_leader = {
-            let node_id = *env.next_proposal_empty().author();
-            if node_id == n1.nodeid {
-                n1
-            } else if node_id == n2.nodeid {
-                n2
-            } else if node_id == n3.nodeid {
-                n3
-            } else if node_id == n4.nodeid {
-                n4
-            } else {
-                unreachable!("next leader should be one of the 4 nodes")
-            }
-        };
-
-        let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
-        for (i, vote) in votes.iter().enumerate().take(4) {
-            let v = Verified::<SignatureType, VoteMessage<_>>::new(*vote, &env.keys[i]);
-            let cmds = next_leader.handle_vote_message(*v.author(), *v);
-
-            // after 2f + 1 votes, we expect that an empty proposal is created
-            if i == 2 {
-                let p = extract_proposal_broadcast(cmds);
-                assert_eq!(p.payload.txns, TransactionPayload::Null);
-                assert_eq!(
-                    next_leader
-                        .metrics
-                        .consensus_events
-                        .creating_empty_block_proposal,
-                    1
-                );
-            }
-        }
+        assert!(matches!(
+            cmds[5],
+            ConsensusCommand::LedgerCommit(OptimisticCommit::Proposed(_))
+        ));
     }
 
     #[test]
@@ -3102,7 +2935,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRoot,
             _,
             _,
         >(
@@ -3113,7 +2945,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
             || MockValidator,
             MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
+            SeqNum(1),
         );
         let node = &mut ctx[0];
 
@@ -3131,8 +2963,12 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         // p1 has seq_num 1 and therefore requires state_root 0
         // the state_root 0's hash should be Hash([0x99; 32])
-        node.state_root_validator
-            .add_state_root(SeqNum(0), StateRootHash(Hash([0x99; 32])));
+        node.consensus_state.add_execution_result(ExecutionResult {
+            block_id: verified_message.block.get_id(),
+            seq_num: verified_message.block.get_seq_num(),
+            round: verified_message.block.get_round(),
+            state_root: verified_message.block.get_state_root(),
+        });
 
         let _ = node.handle_proposal_message(author, verified_message);
 
@@ -3145,10 +2981,14 @@ mod test {
 
         let (author, _, verified_message) = p2.destructure();
         // p2 should have seqnum 2 and therefore only require state_root 1
-        node.state_root_validator
-            .add_state_root(SeqNum(1), StateRootHash(Hash([0xbb; 32])));
+        node.consensus_state.add_execution_result(ExecutionResult {
+            block_id: verified_message.block.get_id(),
+            seq_num: verified_message.block.get_seq_num(),
+            round: verified_message.block.get_round(),
+            state_root: verified_message.block.get_state_root(),
+        });
         let p2_cmds = node.handle_proposal_message(author, verified_message);
-        assert!(find_commit_cmd(&p2_cmds).is_some());
+        assert!(!find_commit_cmds(&p2_cmds).is_empty());
 
         let p3 = env.next_proposal(
             FullTransactionList::new(vec![0xaa].into()),
@@ -3156,21 +2996,21 @@ mod test {
         );
 
         let (author, _, verified_message) = p3.destructure();
-        node.state_root_validator
-            .add_state_root(SeqNum(2), StateRootHash(Hash([0xcc; 32])));
+        node.consensus_state.add_execution_result(ExecutionResult {
+            block_id: verified_message.block.get_id(),
+            seq_num: verified_message.block.get_seq_num(),
+            round: verified_message.block.get_round(),
+            state_root: verified_message.block.get_state_root(),
+        });
         let p3_cmds = node.handle_proposal_message(author, verified_message);
-        assert!(find_commit_cmd(&p3_cmds).is_some());
+        assert!(!find_commit_cmds(&p3_cmds).is_empty());
 
         // Delay gap is 1 and we have received proposals with seq num 0, 1, 2, 3
         // state_root_validator had updates for 0, 1, 2
         //
         // Proposals with seq num 1 and 2 are committed, so expect 2 to remain
         // in the state_root_validator
-        assert_eq!(2, node.state_root_validator.root_hashes.len());
-        assert!(node
-            .state_root_validator
-            .root_hashes
-            .contains_key(&SeqNum(2)));
+        assert_eq!(2, node.consensus_state.execution_results.len());
     }
 
     #[test]
@@ -3183,7 +3023,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3194,7 +3033,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let node = &mut ctx[0];
 
@@ -3230,11 +3069,6 @@ mod test {
         );
 
         let _ = node.handle_proposal_message(author, verified_message);
-        let full_block = node
-            .consensus_state
-            .fetch_uncommitted_block(&bid_branch)
-            .unwrap();
-        assert_eq!(full_block.get_id(), bid_branch);
 
         let mut ledger_blocks = Vec::new();
         // if a certain commit is triggered, then fetching block would fail
@@ -3250,15 +3084,15 @@ mod test {
             let cmds = node.handle_proposal_message(author, verified_message);
 
             for cmd in cmds {
-                if let ConsensusCommand::LedgerCommit(blocks) = cmd {
-                    ledger_blocks.extend(blocks);
+                if let ConsensusCommand::LedgerCommit(OptimisticCommit::Committed(block_id)) = cmd {
+                    ledger_blocks.push(block_id);
                 }
             }
             let full_block = node.consensus_state.fetch_uncommitted_block(&bid).unwrap();
             assert_eq!(full_block.get_id(), bid);
         }
-        assert!(ledger_blocks.iter().any(|x| x.get_id() == bid_correct));
-        assert!(ledger_blocks.iter().all(|x| x.get_id() != bid_branch));
+        assert!(ledger_blocks.iter().any(|x| x == &bid_correct));
+        assert!(ledger_blocks.iter().all(|x| x != &bid_branch));
     }
 
     #[test_case(4; "4 participants")]
@@ -3274,7 +3108,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3285,7 +3118,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         for i in 0..8 {
@@ -3381,7 +3214,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3392,7 +3224,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -3452,7 +3284,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3463,7 +3294,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -3500,7 +3331,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3511,7 +3341,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let missing_round = 9;
@@ -3624,7 +3454,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3635,7 +3464,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let node = &mut ctx[0];
 
@@ -3662,7 +3491,6 @@ mod test {
             p2.block.round,
             &p2.block.execution,
             p2.payload.get_id(),
-            BlockKind::Executable,
             &p2.block.qc,
         );
         let invalid_p2 = ProposalMessage {
@@ -3691,7 +3519,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3702,7 +3529,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut blocks = vec![];
 
@@ -3760,7 +3587,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3771,7 +3597,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut blocks = vec![];
 
@@ -3867,7 +3693,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3878,7 +3703,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut blocks = vec![];
 
@@ -3965,7 +3790,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3976,7 +3800,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut blocks = vec![];
 
@@ -4080,7 +3904,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4091,7 +3914,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let mut blocks = vec![];
@@ -4236,7 +4059,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4247,7 +4069,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
         let mut blocks = vec![];
 
@@ -4358,7 +4180,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4369,9 +4190,9 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
-        let p1 = env.next_proposal(FullTransactionList::empty(), INITIAL_DELAY_STATE_ROOT_HASH);
+        let p1 = env.next_proposal(FullTransactionList::empty(), StateRootHash(Hash([0; 32])));
         // there's no child block in the blocktree, so this must be ignored
         // (because invariant is broken)
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -4407,7 +4228,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4418,7 +4238,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let val_stakes: Vec<(NodeId<_>, Stake)> = env
@@ -4516,7 +4336,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4527,7 +4346,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4642,7 +4461,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4653,7 +4471,7 @@ mod test {
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4737,14 +4555,7 @@ mod test {
                 matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(3))
             );
             assert!(find_blocksync_request(&cmds).is_none());
-            assert!(find_commit_cmd(&cmds).is_some());
-            if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {
-                assert_eq!(commit.len(), 2);
-                // Commit block 1
-                assert_eq!(commit[0].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(1));
-                // Commit block 2
-                assert_eq!(commit[1].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(2));
-            }
+            assert_eq!(find_commit_cmds(&cmds).len(), 2);
         } else {
             let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
             // should not vote for block or blocksync
@@ -4777,14 +4588,7 @@ mod test {
                 matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(2))
             );
             assert!(find_blocksync_request(&cmds).is_none());
-            assert!(find_commit_cmd(&cmds).is_some());
-            if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {
-                assert_eq!(commit.len(), 2);
-                // Commit block 1
-                assert_eq!(commit[0].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(1));
-                // Commit block 2
-                assert_eq!(commit[1].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(2));
-            }
+            assert_eq!(find_commit_cmds(&cmds).len(), 2);
         }
 
         // block 3 should be in the blocktree as coherent
@@ -4816,18 +4620,17 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthBlockPolicy,
+            EthBlockPolicy<SignatureCollectionType>,
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, 4, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -4837,7 +4640,7 @@ mod test {
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4877,18 +4680,17 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthBlockPolicy,
+            EthBlockPolicy<SignatureCollectionType>,
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, 4, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -4898,7 +4700,7 @@ mod test {
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4937,18 +4739,17 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthBlockPolicy,
+            EthBlockPolicy<SignatureCollectionType>,
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, 4, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -4958,7 +4759,7 @@ mod test {
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -5024,18 +4825,17 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthBlockPolicy,
+            EthBlockPolicy<SignatureCollectionType>,
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, 4, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -5045,7 +4845,7 @@ mod test {
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -5107,7 +4907,7 @@ mod test {
             matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(3))
         );
         // should commit block 1
-        assert!(find_commit_cmd(&cmds).is_some());
+        assert!(!find_commit_cmds(&cmds).is_empty());
         // block 3 should be in the blocktree as coherent
         let block_3_blocktree_entry = n1
             .consensus_state
@@ -5146,18 +4946,17 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthBlockPolicy,
+            EthBlockPolicy<SignatureCollectionType>,
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, 4, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -5167,7 +4966,7 @@ mod test {
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -5261,22 +5060,21 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthBlockPolicy,
+            EthBlockPolicy<SignatureCollectionType>,
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, 4, 1337),
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            SeqNum(4),
         );
 
         let epoch_length = ctx[0].epoch_manager.val_set_update_interval;

@@ -350,7 +350,7 @@ where
 }
 
 #[derive(Debug)]
-struct UnknownMessageError;
+struct UnknownMessageError(String);
 fn handle_message<
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
@@ -361,10 +361,10 @@ fn handle_message<
     let Ok(inbound) = InboundRouterMessage::<M, CertificateSignaturePubKey<ST>>::deserialize(bytes)
     else {
         // if that fails, try to deserialize as an old message instead
-        let Ok(old_message) = M::deserialize(bytes) else {
-            return Err(UnknownMessageError);
+        return match M::deserialize(bytes) {
+            Ok(old_message) => Ok(InboundRouterMessage::Application(old_message)),
+            Err(err) => Err(UnknownMessageError(format!("{:?}", err))),
         };
-        return Ok(InboundRouterMessage::Application(old_message));
     };
     Ok(inbound)
 }
@@ -444,8 +444,13 @@ where
                             None
                         }
                     },
-                    Err(_) => {
-                        tracing::warn!(?from, "failed to deserialize message");
+                    Err(err) => {
+                        tracing::warn!(
+                            ?from,
+                            ?err,
+                            decoded = hex::encode(&decoded),
+                            "failed to deserialize message"
+                        );
                         None
                     }
                 },

@@ -1,37 +1,38 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fs::{self, File},
-    io::{ErrorKind, Write},
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
     marker::PhantomData,
-    ops::{Deref, Div},
     path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use alloy_primitives::{Bloom, FixedBytes, U256};
 use alloy_rlp::{Decodable, Encodable};
+use executable_block::{format_block_id, ExecutableBlock};
 use futures::Stream;
 use monad_block_persist::{BlockPersist, FileBlockPersist};
 use monad_blocksync::messages::message::{
     BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
 };
 use monad_consensus_types::{
-    block::{Block, BlockRange, BlockType, FullBlock as MonadBlock},
-    payload::{ExecutionProtocol, FullTransactionList, Payload, PayloadId, TransactionPayload},
-    quorum_certificate::GENESIS_BLOCK_ID,
+    block::{BlockRange, BlockType, FullBlock as MonadBlock},
+    ledger::OptimisticCommit,
+    payload::{Payload, PayloadId},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hasher, HasherType},
 };
-use monad_eth_tx::EthSignedTransaction;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_types::{BlockId, Round, SeqNum};
-use reth_primitives::{Block as EthBlock, BlockBody, Header};
+use monad_types::Hash;
+use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID};
+use reth_primitives::TransactionSigned;
 use tracing::{info, trace};
+
+pub mod executable_block;
 
 /// Protocol parameters that go into Eth block header
 pub struct EthHeaderParam {
@@ -51,12 +52,15 @@ where
     header_param: EthHeaderParam,
 
     metrics: ExecutorMetrics,
-    last_commit: Option<SeqNum>,
+    last_commit: Option<(SeqNum, Round)>,
 
     block_cache_size: usize,
-    block_header_cache: HashMap<BlockId, Block<SCT>>,
+    block_cache: HashMap<BlockId, MonadBlock<SCT>>,
     block_payload_cache: HashMap<PayloadId, Payload>,
     block_cache_index: BTreeMap<Round, (BlockId, PayloadId)>,
+
+    wal: File,
+    wal_path: PathBuf,
 
     fetches_tx: tokio::sync::mpsc::UnboundedSender<BlockSyncResponseMessage<SCT>>,
     fetches: tokio::sync::mpsc::UnboundedReceiver<BlockSyncResponseMessage<SCT>>,
@@ -94,19 +98,70 @@ where
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
             Err(e) => panic!("{}", e),
         }
+
+        let wal_path = {
+            let mut wal_path = eth_block_path.clone();
+            wal_path.push("wal");
+            wal_path
+        };
+        let mut wal = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&wal_path)
+            .expect("failed to open WAL");
+        let wal_len = wal.metadata().expect("failed to get wal metadata").len();
+        const event_len: u64 = 33; // FIXME don't hardcode
+        wal.set_len(wal_len / event_len * event_len)
+            .expect("failed to set wal len");
+        let num_events = wal_len / event_len;
+
+        let bft_block_persist = FileBlockPersist::new(bft_block_path, payload_path);
+
+        let mut last_commit = None;
+        for event_idx in (0..num_events).rev() {
+            wal.seek(SeekFrom::Start(event_idx * event_len))
+                .expect("failed to seek to event in wal");
+            let mut buf = [0_u8; event_len as usize];
+            wal.read_exact(&mut buf)
+                .expect("failed to read event from wal");
+            let block_id = BlockId(Hash(buf[1..].try_into().expect("blockid not 32 bytes")));
+
+            if buf[0] == 1
+            // committed, FIXME const
+            {
+                let bft_block = bft_block_persist
+                    .read_bft_block(&block_id)
+                    .expect("failed to find bft block");
+                last_commit = Some((bft_block.get_seq_num(), bft_block.get_round()));
+                break;
+            }
+        }
+
+        wal.seek(SeekFrom::End(0))
+            .expect("failed to seek to end of wal");
+
         let (fetches_tx, fetches) = tokio::sync::mpsc::unbounded_channel();
         Self {
             eth_block_path: eth_block_path.clone(),
-            bft_block_persist: FileBlockPersist::new(bft_block_path, payload_path, eth_block_path),
+            bft_block_persist,
             header_param,
 
             metrics: Default::default(),
-            last_commit: Default::default(),
+            last_commit,
 
-            block_cache_size: 100, // TODO configurable
-            block_header_cache: Default::default(),
+            // FIXME this currently needs to be bigger than max statesync
+            // buffer size, cuz committed proposed block must exist in
+            // cache
+            block_cache_size: 1_000, // TODO configurable
+
+            block_cache: Default::default(),
             block_payload_cache: Default::default(),
             block_cache_index: Default::default(),
+
+            wal,
+            wal_path,
 
             fetches_tx,
             fetches,
@@ -116,7 +171,8 @@ where
     }
 
     pub fn last_commit(&self) -> Option<SeqNum> {
-        self.last_commit
+        let (last_commit_seq_num, _) = self.last_commit?;
+        Some(last_commit_seq_num)
     }
 
     fn update_cache(&mut self, monad_block: MonadBlock<SCT>) {
@@ -124,142 +180,134 @@ where
         let payload_id = monad_block.get_payload_id();
         let block_round = monad_block.get_round();
 
-        self.block_header_cache.insert(block_id, monad_block.block);
-        self.block_payload_cache
-            .insert(payload_id, monad_block.payload);
-        self.block_cache_index
+        let maybe_removed = self
+            .block_cache_index
             .insert(block_round, (block_id, payload_id));
-
-        if self.block_cache_index.len() > self.block_cache_size {
-            let (_, (block_id, payload_id)) = self.block_cache_index.pop_first().expect("nonempty");
-            self.block_header_cache.remove(&block_id);
+        if let Some((block_id, payload_id)) = maybe_removed {
+            self.block_cache.remove(&block_id);
             self.block_payload_cache.remove(&payload_id);
         }
+
+        if self.block_cache_index.len() > self.block_cache_size {
+            let (evicted_round, (block_id, payload_id)) =
+                self.block_cache_index.pop_first().expect("nonempty");
+            let last_commit_round = self
+                .last_commit
+                .map(|(_, last_commit_round)| last_commit_round);
+            assert!(evicted_round < last_commit_round.unwrap_or(Round(u64::MAX)));
+            self.block_cache.remove(&block_id);
+            self.block_payload_cache.remove(&payload_id);
+        }
+
+        // insert at the end in case payload got evicted
+        self.block_payload_cache
+            .insert(payload_id, monad_block.payload.clone());
+        self.block_cache.insert(block_id, monad_block);
     }
 
-    fn write_eth_block(&self, seq_num: SeqNum, buf: &[u8]) -> std::io::Result<()> {
+    fn ledger_block_file_path(&self, bft_block_id: &[u8; 32]) -> PathBuf {
         let mut file_path = PathBuf::from(&self.eth_block_path);
-        file_path.push(format!("{}", seq_num.0));
+        file_path.push(format_block_id(bft_block_id));
+        file_path
+    }
 
-        let mut f = File::create(file_path).unwrap();
-        f.write_all(buf).unwrap();
+    fn try_write_executable_block(&self, block: &ExecutableBlock) -> std::io::Result<()> {
+        let file_path = self.ledger_block_file_path(block.bft_block_id());
 
+        if file_path.exists() {
+            return Ok(());
+        }
+
+        let mut block_bytes = Vec::default();
+        block.encode(&mut block_bytes);
+
+        let mut file_path_wip = file_path.clone();
+        file_path_wip.set_extension("wip");
+        std::fs::write(&file_path_wip, &block_bytes)?;
+        std::fs::rename(&file_path_wip, &file_path)?;
         Ok(())
     }
 
-    fn create_eth_block(&mut self, block: &MonadBlock<SCT>) -> EthBlock {
-        assert!(!block.is_empty_block());
-        if let TransactionPayload::List(txns) = &block.payload.txns {
-            // use the full transactions to create the eth block body
-            let block_body = generate_block_body(txns);
-
-            // the payload inside the monad block will be used to generate the eth header
-
-            let header = generate_header(&self.header_param, block, &block_body);
-
-            let mut header_bytes = Vec::default();
-            header.encode(&mut header_bytes);
-
-            block_body.create_block(header)
-        } else {
-            unreachable!()
-        }
+    fn mark_proposed(&mut self, bft_block_id: &[u8; 32]) -> std::io::Result<()> {
+        let mut event: [u8; 33] = [0_u8; 33]; // FIXME
+        event[0] = 0; // FIXME
+        event[1..].copy_from_slice(bft_block_id);
+        self.wal.write_all(&event)?;
+        self.wal.flush()?;
+        Ok(())
     }
 
-    fn encode_eth_blocks(
-        &self,
-        full_blocks: &[(SeqNum, Option<EthBlock>, MonadBlock<SCT>)],
-    ) -> Vec<(SeqNum, Vec<u8>)> {
-        full_blocks
-            .iter()
-            .filter_map(|(seqnum, maybe_eth_block, _)| {
-                maybe_eth_block
-                    .as_ref()
-                    .map(|eth_block| (*seqnum, encode_eth_block(eth_block)))
-            })
-            .collect()
+    fn mark_committed(&mut self, bft_block_id: &[u8; 32]) -> std::io::Result<()> {
+        let mut event: [u8; 33] = [0_u8; 33]; // FIXME
+        event[0] = 1; // FIXME
+        event[1..].copy_from_slice(bft_block_id);
+        self.wal.write_all(&event)?;
+        self.wal.flush()?;
+        Ok(())
     }
 
-    fn create_and_zip_with_eth_blocks(
-        &mut self,
-        full_bft_blocks: Vec<MonadBlock<SCT>>,
-    ) -> Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)> {
-        full_bft_blocks
-            .into_iter()
-            .map(|b| {
-                if b.is_empty_block() {
-                    (b.get_seq_num(), None, b)
-                } else {
-                    self.update_cache(b.clone());
-                    (b.get_seq_num(), Some(self.create_eth_block(&b)), b)
-                }
-            })
-            .collect()
+    fn mark_verified(&mut self, bft_block_id: &[u8; 32]) -> std::io::Result<()> {
+        let mut event: [u8; 33] = [0_u8; 33]; // FIXME
+        event[0] = 2; // FIXME
+        event[1..].copy_from_slice(bft_block_id);
+        self.wal.write_all(&event)?;
+        self.wal.flush()?;
+        Ok(())
     }
 
-    fn write_bft_blocks(&self, full_blocks: &Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)>) {
+    fn create_executable_block(&self, block: &MonadBlock<SCT>) -> ExecutableBlock {
+        let mix_hash = {
+            let mut randao_reveal_hasher = HasherType::new();
+            randao_reveal_hasher.update(&block.block.execution.randao_reveal);
+            randao_reveal_hasher.hash()
+        };
+
+        let transactions =
+            Vec::<TransactionSigned>::decode(&mut block.payload.txns.bytes().as_ref()).unwrap();
+
+        ExecutableBlock::new(
+            block.get_id(),                      // bft_block_id
+            block.get_round(),                   // round
+            block.get_parent_round(),            // parent_round
+            block.block.execution.beneficiary.0, // beneficiary
+            transactions,                        // transactions
+            block.get_seq_num(),                 // seq_num
+            self.header_param.gas_limit,         // gas_limit
+            block.get_timestamp() / 1_000,       // timestamp (seconds)
+            mix_hash,                            // mix_hash
+            1_000,                               // base_fee_per_gas
+        )
+    }
+
+    fn write_bft_block(&self, full_block: &MonadBlock<SCT>) {
         // unwrap because failure to persist a finalized block is fatal error
-        for (_, _, bft_full_block) in full_blocks {
-            // write payload first so that header always points to payload that exists
-            self.bft_block_persist
-                .write_bft_payload(&bft_full_block.payload)
-                .unwrap();
-            self.bft_block_persist
-                .write_bft_block(&bft_full_block.block)
-                .unwrap();
-        }
-    }
 
-    fn trace_and_metrics(
-        &mut self,
-        full_blocks: &Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)>,
-    ) {
-        for block in full_blocks {
-            if let (_, Some(eth_block), _) = block {
-                self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
-                self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] += eth_block.body.len() as u64;
-                self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
-                info!(
-                    num_tx = eth_block.body.len(),
-                    block_num = eth_block.number,
-                    "committed block"
-                );
-
-                for t in &eth_block.body {
-                    trace!(txn_hash = ?t.hash(), "txn committed");
-                }
-            }
-        }
+        // write payload first so that header always points to payload that exists
+        self.bft_block_persist
+            .write_bft_payload(&full_block.payload)
+            .unwrap();
+        self.bft_block_persist
+            .write_bft_block(&full_block.block)
+            .unwrap();
     }
 
     fn ledger_fetch_headers(&self, block_range: BlockRange) -> BlockSyncHeadersResponse<SCT> {
         let mut next_block_id = block_range.last_block_id;
 
         let mut headers = VecDeque::new();
-        loop {
+        while (headers.len() as u64) < block_range.max_blocks.0 {
             // TODO add max number of headers to read
-            let block_header =
-                if let Some(cached_header) = self.block_header_cache.get(&next_block_id) {
-                    cached_header.clone()
-                } else if let Ok(block) = self.bft_block_persist.read_bft_block(&next_block_id) {
-                    block
-                } else {
-                    trace!(?block_range, "requested headers not available in ledger");
-                    return BlockSyncHeadersResponse::NotAvailable(block_range);
-                };
-
-            if block_header.get_seq_num() < block_range.root_seq_num {
-                // if headers is empty here, then block range is invalid
-                break;
-            }
+            let block_header = if let Some(cached_block) = self.block_cache.get(&next_block_id) {
+                cached_block.block.clone()
+            } else if let Ok(block) = self.bft_block_persist.read_bft_block(&next_block_id) {
+                block
+            } else {
+                trace!(?block_range, "requested headers not available in ledger");
+                return BlockSyncHeadersResponse::NotAvailable(block_range);
+            };
 
             next_block_id = block_header.get_parent_id();
             headers.push_front(block_header);
-
-            if next_block_id == GENESIS_BLOCK_ID {
-                // don't try fetching genesis block
-                break;
-            }
         }
 
         trace!(?block_range, "found requested headers in ledger");
@@ -295,22 +343,85 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerCommit(full_blocks) => {
-                    let full_blocks = self.create_and_zip_with_eth_blocks(full_blocks);
-                    self.trace_and_metrics(&full_blocks);
+                LedgerCommand::LedgerClearWal => {
+                    if self.wal.metadata().expect("can't read meta").len() > 0 {
+                        let timestamp = std::time::UNIX_EPOCH
+                            .elapsed()
+                            .expect("failed to get duration since epoch");
+                        let _ = std::fs::rename(
+                            &self.wal_path,
+                            format!(
+                                "{}.{}",
+                                self.wal_path
+                                    .to_str()
+                                    .expect("wal_path is not valid unicode"),
+                                timestamp.as_millis()
+                            ),
+                        );
+                    }
+                    self.wal = File::options()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&self.wal_path)
+                        .expect("failed to open WAL");
+                }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
+                    let block_id = block.get_id();
+                    let block_round = block.get_round();
+                    let executable_block = self.create_executable_block(&block);
 
-                    let encoded_eth_blocks = self.encode_eth_blocks(&full_blocks);
-                    // this can panic because failure to persist a finalized block is fatal error
-                    self.write_bft_blocks(&full_blocks);
+                    // this can panic because failure to persist a block is fatal error
+                    self.write_bft_block(&block);
 
-                    for (seqnum, b) in encoded_eth_blocks {
-                        self.write_eth_block(seqnum, &b).unwrap();
-                        self.last_commit = Some(seqnum);
+                    self.update_cache(block);
+
+                    if self
+                        .last_commit
+                        .is_some_and(|(_last_commit_seq_num, last_commit_round)| {
+                            block_round <= last_commit_round
+                        })
+                    {
+                        // we can't repropose stuff that's already finalized
+                        continue;
+                    }
+                    // write executable block to ledger
+                    self.try_write_executable_block(&executable_block).unwrap();
+
+                    self.mark_proposed(&block_id.0 .0).unwrap();
+                }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Committed(block_id)) => {
+                    self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
+
+                    let block = self
+                        .block_cache
+                        .get(&block_id)
+                        .expect("must have committed proposed block (in cache)");
+                    let block_round = block.get_round();
+                    let executable_block = self.create_executable_block(block);
+                    let num_tx = executable_block.num_tx() as u64;
+                    let block_num = executable_block.number();
+                    info!(num_tx, block_num, "committed block");
+                    self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] += num_tx;
+                    self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = executable_block.number();
+
+                    if self
+                        .last_commit
+                        .is_some_and(|(_last_commit_seq_num, last_commit_round)| {
+                            block_round <= last_commit_round
+                        })
+                    {
+                        // we can't recommit stuff that's already finalized
+                        continue;
                     }
 
-                    for (_, _, full_block) in full_blocks {
-                        self.update_cache(full_block);
-                    }
+                    self.last_commit = Some((block.get_seq_num(), block.get_round()));
+
+                    self.mark_committed(&block_id.0 .0).unwrap();
+                }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Verified(block_id)) => {
+                    self.mark_verified(&block_id.0 .0).unwrap();
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     // TODO cap max concurrent LedgerFetch? DOS vector
@@ -354,69 +465,5 @@ where
                 response,
             }))
         })
-    }
-}
-
-fn encode_eth_block(block: &EthBlock) -> Vec<u8> {
-    let mut buf = Vec::default();
-    block.encode(&mut buf);
-    buf
-}
-
-/// Produce the body of an Ethereum Block from a list of full transactions
-fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
-    let transactions =
-        Vec::<EthSignedTransaction>::decode(&mut monad_full_txs.bytes().as_ref()).unwrap();
-
-    BlockBody {
-        transactions,
-        ommers: Vec::default(),
-        withdrawals: Some(Vec::default()),
-    }
-}
-
-// TODO-2: Review integration with execution team
-/// Use data from the MonadBlock to generate an Ethereum Header
-fn generate_header<SCT: SignatureCollection>(
-    header_param: &EthHeaderParam,
-    monad_block: &MonadBlock<SCT>,
-    block_body: &BlockBody,
-) -> Header {
-    let ExecutionProtocol {
-        state_root,
-        seq_num,
-        beneficiary,
-        randao_reveal,
-    } = monad_block.block.execution.clone();
-
-    let mut randao_reveal_hasher = HasherType::new();
-    randao_reveal_hasher.update(randao_reveal);
-
-    Header {
-        parent_hash: monad_block.get_parent_id().0 .0.into(),
-        ommers_hash: block_body.calculate_ommers_root(),
-        beneficiary: beneficiary.0,
-        state_root: FixedBytes(*state_root.deref()),
-        transactions_root: FixedBytes::default(),
-        receipts_root: FixedBytes::default(),
-        withdrawals_root: block_body.calculate_withdrawals_root(),
-        logs_bloom: Bloom(FixedBytes::default()),
-        difficulty: U256::ZERO,
-        number: seq_num.0,
-        gas_limit: header_param.gas_limit,
-        gas_used: 0,
-        // timestamp in consensus proposal is in Unix milliseconds
-        // but we commit the block in Unix seconds for integration compatibility
-        timestamp: monad_block.get_timestamp().div(1000),
-        mix_hash: randao_reveal_hasher.hash().0.into(),
-        nonce: 0,
-        // TODO: calculate base fee according to EIP1559
-        // Remember to remove hardcoded value in monad-eth-block-validator
-        // and in monad-eth-txpool
-        base_fee_per_gas: Some(1000),
-        blob_gas_used: None,
-        excess_blob_gas: None,
-        parent_beacon_block_root: None,
-        extra_data: monad_block.get_id().0 .0.into(),
     }
 }

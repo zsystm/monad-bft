@@ -1,11 +1,15 @@
+use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use monad_consensus_types::{
     block::{Block, BlockRange},
     payload::{Payload, PayloadId},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::hasher::{Hashable, Hasher};
-use monad_types::EnumDiscriminant;
-use zerocopy::AsBytes;
+
+const BLOCK_SYNC_REQUEST_MESSAGE_NAME: &str = "BlockSyncRequestMessage";
+const BLOCK_SYNC_RESPONSE_MESSAGE_NAME: &str = "BlockSyncResponseMessage";
+const BLOCK_SYNC_HEADERS_RESPONSE_NAME: &str = "BlockSyncHeadersResponse";
+const BLOCK_SYNC_PAYLOAD_RESPONSE_NAME: &str = "BlockSyncPayloadResponse";
 
 /// Request block sync message sent to a peer
 ///
@@ -17,19 +21,44 @@ pub enum BlockSyncRequestMessage {
     Payload(PayloadId),
 }
 
-impl Hashable for BlockSyncRequestMessage {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
+impl Encodable for BlockSyncRequestMessage {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_REQUEST_MESSAGE_NAME;
         match self {
-            BlockSyncRequestMessage::Headers(block_range) => {
-                EnumDiscriminant(1).hash(state);
-                block_range.hash(state);
+            Self::Headers(b) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &b];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
-            BlockSyncRequestMessage::Payload(payload_id) => {
-                EnumDiscriminant(2).hash(state);
-                state.update(payload_id.0.as_bytes());
+            Self::Payload(id) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &id];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
+    }
+}
+
+impl Decodable for BlockSyncRequestMessage {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_REQUEST_MESSAGE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncRequestMessage",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Headers(BlockRange::decode(&mut payload)?)),
+            2 => Ok(Self::Payload(PayloadId::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncRequestMessage",
+            )),
+        }
+    }
+}
+
+impl Hashable for BlockSyncRequestMessage {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -48,22 +77,47 @@ impl<SCT: SignatureCollection> BlockSyncHeadersResponse<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> Hashable for BlockSyncHeadersResponse<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
+impl<SCT: SignatureCollection> Encodable for BlockSyncHeadersResponse<SCT> {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_HEADERS_RESPONSE_NAME;
         match self {
-            BlockSyncHeadersResponse::Found((block_range, blocks)) => {
-                EnumDiscriminant(1).hash(state);
-                block_range.hash(state);
-                for block in blocks {
-                    block.hash(state);
-                }
+            Self::Found((block_range, blocks)) => {
+                let enc: [&dyn Encodable; 4] = [&name, &1u8, &block_range, &blocks];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
-            BlockSyncHeadersResponse::NotAvailable(block_range) => {
-                EnumDiscriminant(2).hash(state);
-                block_range.hash(state);
+            Self::NotAvailable(block_range) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &block_range];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
+    }
+}
+
+impl<SCT: SignatureCollection> Decodable for BlockSyncHeadersResponse<SCT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_HEADERS_RESPONSE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncHeaderResponse",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Found((
+                BlockRange::decode(&mut payload)?,
+                Vec::<_>::decode(&mut payload)?,
+            ))),
+            2 => Ok(Self::NotAvailable(BlockRange::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncHeadersResponse",
+            )),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> Hashable for BlockSyncHeadersResponse<SCT> {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -82,19 +136,44 @@ impl BlockSyncPayloadResponse {
     }
 }
 
-impl Hashable for BlockSyncPayloadResponse {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
+impl Encodable for BlockSyncPayloadResponse {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_PAYLOAD_RESPONSE_NAME;
         match self {
-            BlockSyncPayloadResponse::Found(payload) => {
-                EnumDiscriminant(1).hash(state);
-                payload.hash(state);
+            Self::Found(payload) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &payload];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
-            BlockSyncPayloadResponse::NotAvailable(payload_id) => {
-                EnumDiscriminant(2).hash(state);
-                state.update(payload_id.0.as_bytes());
+            Self::NotAvailable(payload_id) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &payload_id];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
+    }
+}
+
+impl Decodable for BlockSyncPayloadResponse {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_PAYLOAD_RESPONSE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncPayloadResponse",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Found(Payload::decode(&mut payload)?)),
+            2 => Ok(Self::NotAvailable(PayloadId::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncPayloadResponse",
+            )),
+        }
+    }
+}
+
+impl Hashable for BlockSyncPayloadResponse {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -132,18 +211,47 @@ impl<SCT: SignatureCollection> BlockSyncResponseMessage<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> Hashable for BlockSyncResponseMessage<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
+impl<SCT: SignatureCollection> Encodable for BlockSyncResponseMessage<SCT> {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_RESPONSE_MESSAGE_NAME;
         match self {
-            BlockSyncResponseMessage::HeadersResponse(headers_response) => {
-                EnumDiscriminant(1).hash(state);
-                headers_response.hash(state);
+            Self::HeadersResponse(resp) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &resp];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
-            BlockSyncResponseMessage::PayloadResponse(payload_response) => {
-                EnumDiscriminant(2).hash(state);
-                payload_response.hash(state)
+            Self::PayloadResponse(resp) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &resp];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
+    }
+}
+
+impl<SCT: SignatureCollection> Decodable for BlockSyncResponseMessage<SCT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_RESPONSE_MESSAGE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncResponseMessage",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::HeadersResponse(BlockSyncHeadersResponse::decode(
+                &mut payload,
+            )?)),
+            2 => Ok(Self::PayloadResponse(BlockSyncPayloadResponse::decode(
+                &mut payload,
+            )?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncResponseMessage",
+            )),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> Hashable for BlockSyncResponseMessage<SCT> {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
     }
 }

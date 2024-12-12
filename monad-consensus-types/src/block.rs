@@ -1,32 +1,31 @@
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
 use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::{BlockId, EnumDiscriminant, Epoch, NodeId, Round, SeqNum};
-use zerocopy::AsBytes;
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use reth_primitives::Header;
 
 use crate::{
-    payload::{ExecutionProtocol, Payload, PayloadId, TransactionPayload},
+    payload::{ExecutionProtocol, Payload, PayloadId},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash,
 };
 
 /// Represent a range of blocks the last of which is `last_block_id` and includes
 /// all blocks upto to `root_seq_num`
 /// For a valid block range, the seq num of block `last_block_id` >= `root_seq_num`
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct BlockRange {
     pub last_block_id: BlockId,
-    pub root_seq_num: SeqNum,
+    pub max_blocks: SeqNum,
 }
 
 impl Hashable for BlockRange {
     fn hash(&self, state: &mut impl Hasher) {
-        self.last_block_id.hash(state);
-        state.update(self.root_seq_num.as_bytes());
+        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -63,13 +62,10 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     /// Sequence number when this block was proposed
     fn get_seq_num(&self) -> SeqNum;
 
-    /// State root hash included in the block
-    fn get_state_root(&self) -> StateRootHash;
+    fn get_delayed_execution_result(&self) -> &Header;
 
     /// get list of all txn hashes in this block
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash>;
-
-    fn is_empty_block(&self) -> bool;
 
     fn get_txn_list_len(&self) -> usize;
 
@@ -85,29 +81,10 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     fn get_full_block(self) -> FullBlock<SCT>;
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum BlockKind {
-    Executable,
-    Null,
-}
-
-impl Hashable for BlockKind {
-    fn hash(&self, state: &mut impl Hasher) {
-        match self {
-            BlockKind::Executable => {
-                EnumDiscriminant(1).hash(state);
-            }
-            BlockKind::Null => {
-                EnumDiscriminant(2).hash(state);
-            }
-        }
-    }
-}
-
 /// structure of the consensus block
 /// the payload field is used to carry the data of the block
 /// which is agnostic to the actual protocol of consensus
-#[derive(Clone)]
+#[derive(Clone, RlpDecodable, RlpEncodable)]
 pub struct Block<SCT: SignatureCollection> {
     /// proposer of this block
     pub author: NodeId<SCT::NodeIdPubKey>,
@@ -124,20 +101,15 @@ pub struct Block<SCT: SignatureCollection> {
     /// identifier for the transaction payload of this block
     pub payload_id: PayloadId,
 
-    pub block_kind: BlockKind,
-
     /// Certificate of votes for the parent block
     pub qc: QuorumCertificate<SCT>,
 
     pub timestamp: u64,
-
-    /// Unique hash used to identify the block
-    id: BlockId,
 }
 
 impl<SCT: SignatureCollection> PartialEq for Block<SCT> {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.get_id() == other.get_id()
     }
 }
 impl<SCT: SignatureCollection> Eq for Block<SCT> {}
@@ -150,18 +122,20 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
             .field("round", &self.round)
             .field("timestamp", &self.timestamp)
             .field("qc", &self.qc)
-            .field("id", &self.id)
+            .field("id", &self.get_id())
             .field("payload_id", &self.payload_id)
-            .field("block_kind", &self.block_kind)
             .field("seq_num", &self.execution.seq_num)
-            .field("execution_state_root", &self.execution.state_root)
+            .field(
+                "execution_state_root",
+                &self.execution.delayed_execution_result.state_root.0,
+            )
             .finish_non_exhaustive()
     }
 }
 
 impl<SCT: SignatureCollection> Hashable for Block<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
-        self.id.hash(state);
+        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -174,7 +148,6 @@ impl<SCT: SignatureCollection> Block<SCT> {
         round: Round,
         execution: &ExecutionProtocol,
         payload_id: PayloadId,
-        block_kind: BlockKind,
         qc: &QuorumCertificate<SCT>,
     ) -> Self {
         Self {
@@ -184,33 +157,8 @@ impl<SCT: SignatureCollection> Block<SCT> {
             round,
             execution: execution.clone(),
             payload_id,
-            block_kind,
             qc: qc.clone(),
-            id: {
-                let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
-                let mut state = HasherType::new();
-                author.hash(&mut state);
-                state.update(timestamp.as_bytes());
-                state.update(epoch.as_bytes());
-                state.update(round.as_bytes());
-                execution.hash(&mut state);
-                //payload.hash(&mut state);
-                state.update(payload_id.0.as_bytes());
-                block_kind.hash(&mut state);
-                state.update(qc.get_block_id().0.as_bytes());
-                state.update(qc.get_hash().as_bytes());
-
-                BlockId(state.hash())
-            },
         }
-    }
-
-    /// Check if the block is a consensus protocol empty block. Note there's a
-    /// distinction between a block with no transactions
-    /// `TransactionPayload::List(FullTransactionList::empty())` and a consensus
-    /// protocol empty block `TransactionPayload::Empty`
-    pub fn is_empty_block(&self) -> bool {
-        matches!(self.block_kind, BlockKind::Null)
     }
 }
 
@@ -222,7 +170,13 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     type TxnHash = ();
 
     fn get_id(&self) -> BlockId {
-        self.id
+        let mut state = HasherType::new();
+
+        let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
+        let rlp_encode = alloy_rlp::encode(self);
+        state.update(rlp_encode);
+
+        BlockId(state.hash())
     }
 
     fn get_round(&self) -> Round {
@@ -257,25 +211,16 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
         self.execution.seq_num
     }
 
-    fn get_state_root(&self) -> StateRootHash {
-        self.execution.state_root
+    fn get_delayed_execution_result(&self) -> &Header {
+        &self.execution.delayed_execution_result
     }
 
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
         vec![]
     }
 
-    fn is_empty_block(&self) -> bool {
-        self.is_empty_block()
-    }
-
     fn get_txn_list_len(&self) -> usize {
-        /*
-        match &self.payload.txns {
-            TransactionPayload::List(list) => list.bytes().len(),
-            TransactionPayload::Null => 0,
-        }
-        */
+        // FIXME
         0
     }
 
@@ -375,7 +320,7 @@ pub struct FullBlock<SCT: SignatureCollection> {
 
 impl<SCT: SignatureCollection> PartialEq for FullBlock<SCT> {
     fn eq(&self, other: &Self) -> bool {
-        self.block.id == other.block.id
+        self.block.get_id() == other.block.get_id()
     }
 }
 impl<SCT: SignatureCollection> Eq for FullBlock<SCT> {}
@@ -385,7 +330,7 @@ impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
     type TxnHash = ();
 
     fn get_id(&self) -> BlockId {
-        self.block.id
+        self.block.get_id()
     }
 
     fn get_round(&self) -> Round {
@@ -420,23 +365,16 @@ impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
         self.block.execution.seq_num
     }
 
-    fn get_state_root(&self) -> StateRootHash {
-        self.block.execution.state_root
+    fn get_delayed_execution_result(&self) -> &Header {
+        &self.block.execution.delayed_execution_result
     }
 
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
         vec![]
     }
 
-    fn is_empty_block(&self) -> bool {
-        self.block.is_empty_block()
-    }
-
     fn get_txn_list_len(&self) -> usize {
-        match &self.payload.txns {
-            TransactionPayload::List(list) => list.bytes().len(),
-            TransactionPayload::Null => 0,
-        }
+        self.payload.txns.bytes().len()
     }
 
     fn get_qc(&self) -> &QuorumCertificate<SCT> {
@@ -462,7 +400,7 @@ impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
 
 impl<SCT: SignatureCollection> Hashable for FullBlock<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
-        self.block.id.hash(state);
+        self.block.hash(state);
         self.payload.hash(state);
     }
 }

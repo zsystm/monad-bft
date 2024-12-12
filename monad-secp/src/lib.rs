@@ -1,4 +1,5 @@
 mod secp;
+use alloy_rlp::{Decodable, Encodable, Header};
 use monad_crypto::{
     certificate_signature::{
         self, CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
@@ -12,8 +13,7 @@ pub use secp::{Error, KeyPair, PubKey, SecpSignature};
 /// library versions
 impl Hashable for SecpSignature {
     fn hash(&self, state: &mut impl Hasher) {
-        let slice = unsafe { std::mem::transmute::<Self, [u8; 65]>(*self) };
-        state.update(slice)
+        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -44,6 +44,23 @@ impl certificate_signature::PubKey for PubKey {
 
     fn bytes(&self) -> Vec<u8> {
         Self::bytes_compressed(self)
+    }
+}
+
+impl Encodable for PubKey {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.bytes().encode(out);
+    }
+}
+
+impl Decodable for PubKey {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let b = <Vec<u8>>::decode(buf)?;
+
+        match <Self as certificate_signature::PubKey>::from_bytes(&b) {
+            Ok(pk) => Ok(pk),
+            Err(_) => Err(alloy_rlp::Error::Custom("invalid pubkey")),
+        }
     }
 }
 

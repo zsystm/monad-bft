@@ -10,7 +10,6 @@ mod test {
         block::{BlockType, PassthruBlockPolicy},
         block_validator::MockValidator,
         metrics::Metrics,
-        payload::StateRoot,
         txpool::MockTxPool,
     };
     use monad_crypto::{
@@ -57,7 +56,6 @@ mod test {
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
         type BlockValidator = MockValidator;
-        type StateRootValidator = StateRoot;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -175,12 +173,8 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
             PeerAsyncStateVerify::new,
+            SeqNum(10_000_000),      // state_root_delay
             delta,                   // delta
             vote_pace,               // vote pace
             0,                       // proposal_tx_limit
@@ -285,12 +279,8 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
             PeerAsyncStateVerify::new,
+            SeqNum(10_000_000),      // state_root_delay
             delta,                   // delta
             vote_pace,               // vote pace
             0,                       // proposal_tx_limit
@@ -467,12 +457,8 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
             PeerAsyncStateVerify::new,
+            SeqNum(10_000_000),           // state_root_delay
             Duration::from_millis(delta), // delta
             Duration::from_millis(0),     // vote pace
             0,                            // proposal_tx_limit
@@ -682,12 +668,8 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-            || {
-                StateRoot::new(
-                    SeqNum(4), // state_root_delay
-                )
-            },
             PeerAsyncStateVerify::new,
+            SeqNum(4),               // state_root_delay
             delta,                   // delta
             vote_pace,               // vote pace
             10,                      // proposal_tx_limit

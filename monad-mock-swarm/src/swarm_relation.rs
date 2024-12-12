@@ -5,7 +5,6 @@ use monad_async_state_verify::{
 use monad_consensus_types::{
     block::{BlockPolicy, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
-    payload::{StateRoot, StateRootValidator},
     signature_collection::SignatureCollection,
     txpool::{MockTxPool, TxPool},
 };
@@ -41,7 +40,6 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::LeaderElection,
     <S as SwarmRelation>::TxPool,
     <S as SwarmRelation>::BlockValidator,
-    <S as SwarmRelation>::StateRootValidator,
     <S as SwarmRelation>::AsyncStateRootVerify,
 >;
 pub trait SwarmRelation
@@ -66,7 +64,6 @@ where
         + Send
         + Sync
         + Unpin;
-    type StateRootValidator: StateRootValidator + Send + Sync + Unpin;
     type ValidatorSetTypeFactory: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>>
         + Send
         + Sync
@@ -140,7 +137,6 @@ impl SwarmRelation for DebugSwarmRelation {
             > + Send
             + Sync,
     >;
-    type StateRootValidator = Box<dyn StateRootValidator + Send + Sync>;
     type ValidatorSetTypeFactory =
         BoxedValidatorSetTypeFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = Box<
@@ -216,7 +212,6 @@ impl SwarmRelation for NoSerSwarm {
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
     type BlockValidator = MockValidator;
-    type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -254,7 +249,6 @@ impl SwarmRelation for BytesSwarm {
     type TransportMessage = Bytes;
 
     type BlockValidator = MockValidator;
-    type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -293,7 +287,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
     type BlockValidator = MockValidator;
-    type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;

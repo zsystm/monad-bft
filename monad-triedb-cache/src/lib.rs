@@ -7,13 +7,20 @@ use std::{
 use itertools::Itertools;
 use monad_eth_types::{EthAccount, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{DropTimer, SeqNum};
-use tracing::warn;
+use monad_types::{BlockId, DropTimer, Round, SeqNum};
+use tracing::{trace, warn};
+
+#[derive(Debug)]
+struct RoundCache {
+    block_id: BlockId,
+    seq_num: SeqNum,
+    accounts: BTreeMap<EthAddress, Option<EthAccount>>,
+}
 
 #[derive(Debug)]
 pub struct StateBackendCache<SBT> {
     // used so that StateBackendCache can maintain a logically immutable interface
-    cache: Arc<Mutex<BTreeMap<SeqNum, BTreeMap<EthAddress, Option<EthAccount>>>>>,
+    cache: Arc<Mutex<BTreeMap<Round, RoundCache>>>,
     state_backend: SBT,
     execution_delay: SeqNum,
 }
@@ -37,7 +44,9 @@ where
 {
     fn get_account_statuses<'a>(
         &self,
-        block: SeqNum,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        round: &Round,
         addresses: impl Iterator<Item = &'a EthAddress>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         let addresses = addresses.collect_vec();
@@ -51,11 +60,19 @@ where
         // pass in a unique set of accounts
         let unique_addresses = addresses.iter().unique().copied();
         // find accounts that are missing from cache
-        let cache_misses: Vec<_> = match cache.get(&block) {
+        let cache_misses: Vec<_> = match cache.get(round) {
             None => unique_addresses.collect(),
-            Some(block_cache) => unique_addresses
-                .filter(|address| !block_cache.contains_key(address))
-                .collect(),
+            Some(round_cache) => {
+                if &round_cache.block_id != block_id {
+                    // drop cache, fetching new block_id for given round
+                    cache.remove(round);
+                    unique_addresses.collect()
+                } else {
+                    unique_addresses
+                        .filter(|address| !round_cache.accounts.contains_key(address))
+                        .collect()
+                }
+            }
         };
 
         if !cache_misses.is_empty() {
@@ -68,35 +85,72 @@ where
                         "long get_account_statuses"
                     )
                 });
-                self.state_backend
-                    .get_account_statuses(block, cache_misses.iter().copied())?
+                self.state_backend.get_account_statuses(
+                    block_id,
+                    seq_num,
+                    round,
+                    cache_misses.iter().copied(),
+                )?
             };
-            cache.entry(block).or_default().extend(
-                cache_misses
-                    .iter()
-                    .map(|&&address| address)
-                    .zip_eq(cache_misses_data),
-            )
+            let hydrated_cache: Vec<_> = cache_misses
+                .iter()
+                .map(|&&address| address)
+                .zip_eq(cache_misses_data)
+                .collect();
+            for (address, cache_miss) in &hydrated_cache {
+                trace!(
+                    ?block_id,
+                    ?seq_num,
+                    ?round,
+                    ?address,
+                    ?cache_miss,
+                    "hydrated account"
+                );
+            }
+            cache
+                .entry(*round)
+                .or_insert_with(|| RoundCache {
+                    block_id: *block_id,
+                    seq_num: *seq_num,
+                    accounts: Default::default(),
+                })
+                .accounts
+                .extend(hydrated_cache)
         }
 
-        let block_cache = cache
-            .get(&block)
+        let round_cache = cache
+            .get(round)
             .expect("cache must be populated... we asserted nonzero addresses at the start");
+
+        assert_eq!(&round_cache.block_id, block_id);
 
         let accounts_data = addresses
             .iter()
-            .map(|&address| block_cache.get(address).expect("cache was hydrated"))
+            .map(|&address| {
+                round_cache
+                    .accounts
+                    .get(address)
+                    .expect("cache was hydrated")
+            })
             .cloned()
             .collect();
 
-        if cache.len() > self.execution_delay.0 as usize * 2 {
+        let last_finalized_block = self
+            .raw_read_latest_finalized_block()
+            .unwrap_or(SeqNum::MAX);
+
+        while cache.first_entry().is_some_and(|entry| {
+            (entry.get().seq_num + self.execution_delay) < last_finalized_block
+        }) {
             let (evicted, _) = cache.pop_first().expect("nonempty");
-            if evicted == block {
-                let (latest, _) = cache.last_key_value().expect("nonempty");
+            if &evicted == round {
+                let (latest_round, _) = cache.last_key_value().expect("nonempty");
                 tracing::warn!(
                     ?evicted,
-                    ?latest,
-                    "unexpected cache thrashing? only expect queries on the 2*delay latest blocks"
+                    ?round,
+                    ?latest_round,
+                    ?last_finalized_block,
+                    "unexpected cache thrashing? only expect queries on the delay latest finalized blocks"
                 );
             }
         }
@@ -104,15 +158,11 @@ where
         Ok(accounts_data)
     }
 
-    fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
-        self.state_backend.raw_read_account(block, address)
+    fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
+        self.state_backend.raw_read_earliest_finalized_block()
     }
 
-    fn raw_read_earliest_block(&self) -> SeqNum {
-        self.state_backend.raw_read_earliest_block()
-    }
-
-    fn raw_read_latest_block(&self) -> SeqNum {
-        self.state_backend.raw_read_latest_block()
+    fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
+        self.state_backend.raw_read_latest_finalized_block()
     }
 }

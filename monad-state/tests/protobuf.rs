@@ -7,10 +7,13 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     ledger::CommitResult,
-    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
+    timeout::{
+        HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutDigest,
+        TimeoutInfo,
+    },
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
@@ -18,7 +21,7 @@ use monad_crypto::{
         CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
         CertificateSignatureRecoverable,
     },
-    hasher::{Hash, Hasher, HasherType},
+    hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_multi_sig::MultiSig;
 use monad_state::{
@@ -26,7 +29,7 @@ use monad_state::{
     MonadMessage, VerifiedMonadMessage,
 };
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
-use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, DontCare, Epoch, MonadVersion, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetFactory, ValidatorSetType},
@@ -45,9 +48,12 @@ fn make_tc<
     validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
 ) -> TimeoutCertificate<SCT> {
     let mut hasher = HasherType::new();
-    hasher.update(tc_epoch);
-    hasher.update(tc_round);
-    hasher.update(high_qc_round.qc_round);
+    let td = TimeoutDigest {
+        epoch: tc_epoch,
+        round: tc_round,
+        high_qc_round: high_qc_round.qc_round,
+    };
+    td.hash(&mut hasher);
 
     let tmo_digest = hasher.hash();
 
@@ -132,7 +138,7 @@ macro_rules! test_all_combination {
 test_all_combination!(test_vote_message, |num_keys| {
     let (keypairs, certkeys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
-    let version = "TEST";
+    let version = 1;
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
@@ -153,6 +159,7 @@ test_all_combination!(test_vote_message, |num_keys| {
         parent_round: Round(1),
         seq_num: SeqNum(0),
         timestamp: 0,
+        version: MonadVersion::version(),
     };
 
     let vote = Vote {
@@ -162,7 +169,7 @@ test_all_combination!(test_vote_message, |num_keys| {
 
     let votemsg = ProtocolMessage::Vote(VoteMessage::<SCT>::new(vote, &certkeys[0]));
     let conmsg = ConsensusMessage {
-        version: version.into(),
+        version,
         message: votemsg.clone(),
     };
 
@@ -197,7 +204,7 @@ test_all_combination!(test_vote_message, |num_keys| {
 test_all_combination!(test_timeout_message, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
-    let version = "TEST";
+    let version = 1;
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
@@ -222,6 +229,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
         parent_round: Round(0),
         seq_num: SeqNum(0),
         timestamp: 0,
+        version: MonadVersion::version(),
     };
 
     let qcinfo = QcInfo {
@@ -270,7 +278,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
     let tmo_message = ProtocolMessage::Timeout(TimeoutMessage::new(tmo, author_cert_key));
     let con_msg = ConsensusMessage {
-        version: version.into(),
+        version,
         message: tmo_message.clone(),
     };
 
@@ -303,7 +311,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
 test_all_combination!(test_proposal_qc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
-    let version = "TEST";
+    let version = 1;
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
@@ -323,7 +331,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         Round(233),
         Round(232),
         BlockId(Hash([43_u8; 32])),
-        TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into())),
+        FullTransactionList::new(vec![1, 2, 3, 4].into()),
         ExecutionProtocol::dont_care(),
         cert_keys.as_slice(),
         validator_mapping,
@@ -334,7 +342,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
-        version: version.into(),
+        version,
         message: proposal.clone(),
     };
     let verified_msg = Verified::<ST, _>::new(Validated::new(conmsg), author_keypair);
@@ -365,7 +373,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
 test_all_combination!(test_proposal_tc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
-    let version = "TEST";
+    let version = 1;
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
@@ -385,7 +393,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         Round(233),
         Round(231),
         BlockId(Hash([43_u8; 32])),
-        TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into())),
+        FullTransactionList::new(vec![1, 2, 3, 4].into()),
         ExecutionProtocol::dont_care(),
         cert_keys.as_slice(),
         validator_mapping,
@@ -411,7 +419,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         last_round_tc: Some(tc),
     });
     let con_msg = ConsensusMessage {
-        version: version.into(),
+        version,
         message: proposal_msg.clone(),
     };
     let verified_msg = Verified::<ST, _>::new(Validated::new(con_msg), author_keypair);

@@ -1,16 +1,18 @@
-use std::{collections::VecDeque, fmt, result::Result as StdResult};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    fmt,
+    result::Result as StdResult,
+};
 
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockPolicyError, BlockType},
+    block::{Block, BlockPolicy, BlockType},
     checkpoint::RootInfo,
     payload::{Payload, PayloadId},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash,
 };
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, SeqNum};
-use tracing::trace;
+use monad_types::{BlockId, Round, SeqNum};
 
 use crate::tree::{BlockTreeEntry, Tree};
 
@@ -54,6 +56,9 @@ where
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
     tree: Tree<SCT, BPT, SBT>,
+
+    // TODO delete this once tree is keyed by blocktree round
+    inserted_rounds: BTreeSet<Round>,
 }
 
 impl<SCT, BPT, SBT> fmt::Debug for BlockTree<SCT, BPT, SBT>
@@ -102,6 +107,8 @@ where
                 children_blocks: Vec::new(),
             },
             tree: Default::default(),
+
+            inserted_rounds: Default::default(),
         }
     }
 
@@ -183,13 +190,17 @@ where
         for block_to_delete in blocks_to_delete {
             self.tree.remove(&block_to_delete);
         }
+        while self.inserted_rounds.first().is_some_and(|inserted_round| {
+            inserted_round <= &new_root_entry.validated_block.get_round()
+        }) {
+            self.inserted_rounds.pop_first();
+        }
         self.root = Root {
             info: RootInfo {
                 round: new_root_entry.validated_block.get_round(),
                 seq_num: new_root_entry.validated_block.get_seq_num(),
                 epoch: new_root_entry.validated_block.get_epoch(),
                 block_id: new_root_entry.validated_block.get_id(),
-                state_root: new_root_entry.validated_block.get_state_root(),
             },
             children_blocks: new_root_entry.children_blocks,
         };
@@ -200,56 +211,48 @@ where
 
     /// Add a new block to the block tree if it's not in the tree and is higher
     /// than the root block's round number
-    pub fn add(
-        &mut self,
-        block: BPT::ValidatedBlock,
-        block_policy: &mut BPT,
-        state_backend: &SBT,
-    ) -> Result<()> {
+    ///
+    /// returns newly coherent blocks
+    pub fn add(&mut self, block: BPT::ValidatedBlock) {
         if !self.is_valid_to_insert(block.get_unvalidated_block_ref()) {
-            return Ok(());
+            return;
         }
 
         let new_block_id = block.get_id();
         let parent_id = block.get_parent_id();
 
+        self.inserted_rounds.insert(block.get_round());
         self.tree.insert(block);
 
         if parent_id == self.root.info.block_id {
             self.root.children_blocks.push(new_block_id);
-        };
-
-        // Update coherency
-        if let Some(path_to_root) = self.get_blocks_on_path_from_root(&new_block_id) {
-            let incoherent_parent_or_self = path_to_root
-                .iter()
-                .find(|block| {
-                    !self
-                        .tree
-                        .get(&block.get_id())
-                        .expect("block doesn't exist")
-                        .is_coherent
-                })
-                .expect("new_block is not coherent (yet)");
-
-            self.update_coherency(
-                incoherent_parent_or_self.get_id(),
-                block_policy,
-                state_backend,
-            )?
         }
-
-        Ok(())
     }
 
-    pub fn update_coherency(
+    pub fn try_update_coherency(
         &mut self,
         block_id: BlockId,
         block_policy: &mut BPT,
         state_backend: &SBT,
-    ) -> Result<()> {
-        let mut block_ids_to_update: VecDeque<BlockId> = vec![block_id].into();
+    ) -> Vec<BPT::ValidatedBlock> {
+        let Some(path_to_root) = self.get_blocks_on_path_from_root(&block_id) else {
+            return Vec::new();
+        };
+        let Some(incoherent_parent_or_self) = path_to_root.iter().find(|block| {
+            !self
+                .tree
+                .get(&block.get_id())
+                .expect("block doesn't exist")
+                .is_coherent
+        }) else {
+            // no incoherent_parent_or_self, already is coherent
+            return Vec::new();
+        };
 
+        let mut block_ids_to_update: VecDeque<BlockId> =
+            vec![incoherent_parent_or_self.get_id()].into();
+
+        let mut retval = vec![];
         while !block_ids_to_update.is_empty() {
             // Next block to check coherency
             let next_block = block_ids_to_update.pop_front().unwrap();
@@ -263,24 +266,25 @@ where
                 .get_blocks_on_path_from_root(&next_block)
                 .expect("path to root must exist");
             // Remove the block itself
-            extending_blocks.pop();
+            let optimistic_block = extending_blocks
+                .pop()
+                .expect("the block itself must be in extending")
+                .clone();
 
             // extending blocks are always coherent, because we only call
             // update_coherency on the first incoherent block in the chain
-            if let Err(err) = block_policy.check_coherency(block, extending_blocks, state_backend) {
-                trace!("check_coherency returned an error: {:?}", err);
-                return match err {
-                    BlockPolicyError::StateBackendError(err) => {
-                        Err(BlockTreeError::StateBackendError(err))
-                    }
-                    BlockPolicyError::BlockNotCoherent => {
-                        Err(BlockTreeError::BlockNotCoherent(block.get_id()))
-                    }
-                };
-            } else {
+            if block_policy
+                .check_coherency(block, extending_blocks, state_backend)
+                .is_ok()
+            {
+                // FIXME: make the set coherent helper return something to trigger the optimisitc
+                // commit
                 self.tree
                     .set_coherent(&next_block, true)
                     .expect("should be in tree");
+
+                assert_eq!(next_block, optimistic_block.get_id());
+                retval.push(optimistic_block);
 
                 // Can check coherency of children blocks now
                 block_ids_to_update.extend(
@@ -293,7 +297,7 @@ where
                 );
             }
         }
-        Ok(())
+        retval
     }
 
     /// Iterate the block tree and return highest QC that have path to block tree
@@ -408,22 +412,12 @@ where
     }
 
     /// Note that this returns None if the block_id is root!
-    /// Use get_block_state_root instead?
     pub fn get_block(&self, block_id: &BlockId) -> Option<&BPT::ValidatedBlock> {
         self.tree.get(block_id).map(|block| &block.validated_block)
     }
 
     pub fn get_payload(&self, payload_id: &PayloadId) -> Option<Payload> {
         self.tree.get_payload(payload_id).cloned()
-    }
-
-    pub fn get_block_state_root(&self, block_id: &BlockId) -> Option<StateRootHash> {
-        if &self.root.info.block_id == block_id {
-            return Some(self.root.info.state_root);
-        }
-        self.tree
-            .get(block_id)
-            .map(|block| block.validated_block.get_state_root())
     }
 
     pub fn get_entry(&self, block_id: &BlockId) -> Option<&BlockTreeEntry<SCT, BPT, SBT>> {
@@ -445,14 +439,18 @@ where
 
         chain
     }
+
+    pub fn round_exists(&self, round: &Round) -> bool {
+        self.inserted_rounds.contains(round)
+    }
 }
 
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::{Block as ConsensusBlock, BlockKind, BlockType, FullBlock, PassthruBlockPolicy},
+        block::{Block as ConsensusBlock, BlockType, FullBlock, PassthruBlockPolicy},
         ledger::CommitResult,
-        payload::{ExecutionProtocol, FullTransactionList, Payload, TransactionPayload},
+        payload::{ExecutionProtocol, FullTransactionList, Payload},
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
     };
@@ -465,7 +463,7 @@ mod test {
     };
     use monad_state_backend::{InMemoryState, InMemoryStateInner};
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum};
+    use monad_types::{BlockId, DontCare, Epoch, MonadVersion, NodeId, Round, SeqNum};
 
     use super::BlockTree;
     use crate::blocktree::RootInfo;
@@ -504,6 +502,7 @@ mod test {
                 parent_round: block.get_parent_round(),
                 seq_num: block.get_seq_num(),
                 timestamp: 0,
+                version: MonadVersion::version(),
             },
             ledger_commit_info,
         }
@@ -536,6 +535,7 @@ mod test {
                 parent_round: block.get_parent_round(),
                 seq_num: block.get_seq_num(),
                 timestamp: block.get_timestamp(),
+                version: MonadVersion::version(),
             },
             ledger_commit_info,
         };
@@ -560,7 +560,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -577,7 +576,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -595,7 +593,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -613,7 +610,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v3),
         );
 
@@ -631,7 +627,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v4),
         );
 
@@ -649,7 +644,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v5),
         );
 
@@ -667,7 +661,6 @@ mod test {
             Round(4),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v6),
         );
 
@@ -685,7 +678,6 @@ mod test {
             Round(7),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v7),
         );
 
@@ -703,7 +695,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -819,7 +810,6 @@ mod test {
             Round(8),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v8),
         );
 
@@ -844,7 +834,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -863,7 +852,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -882,7 +870,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -893,7 +880,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -950,7 +936,6 @@ mod test {
             Round(1),
             &execution,
             p0.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -963,7 +948,7 @@ mod test {
         };
 
         let p1 = Payload {
-            txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
+            txns: FullTransactionList::new(vec![1].into()),
         };
         let b1 = Block::new(
             node_id(),
@@ -972,12 +957,11 @@ mod test {
             Round(2),
             &execution,
             p1.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
         let p2 = Payload {
-            txns: TransactionPayload::List(FullTransactionList::new(vec![2].into())),
+            txns: FullTransactionList::new(vec![2].into()),
         };
         let b2 = Block::new(
             node_id(),
@@ -986,7 +970,6 @@ mod test {
             Round(2),
             &execution,
             p2.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -999,7 +982,7 @@ mod test {
         };
 
         let p3 = Payload {
-            txns: TransactionPayload::List(FullTransactionList::new(vec![3].into())),
+            txns: FullTransactionList::new(vec![3].into()),
         };
         let b3 = Block::new(
             node_id(),
@@ -1008,7 +991,6 @@ mod test {
             Round(3),
             &execution,
             p3.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1024,7 +1006,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -1069,7 +1050,6 @@ mod test {
             Round(1),
             &execution,
             p0.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1082,7 +1062,7 @@ mod test {
         };
 
         let p1 = Payload {
-            txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
+            txns: FullTransactionList::new(vec![1].into()),
         };
         let b1 = Block::new(
             node_id(),
@@ -1091,7 +1071,6 @@ mod test {
             Round(2),
             &execution,
             p1.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1101,7 +1080,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -1132,7 +1110,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1150,7 +1127,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1168,7 +1144,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b3 = Block::new(
@@ -1178,7 +1153,6 @@ mod test {
             Round(4),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b4 = Block::new(
@@ -1188,7 +1162,6 @@ mod test {
             Round(5),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1198,7 +1171,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -1277,7 +1249,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1295,7 +1266,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1313,7 +1283,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b3 = Block::new(
@@ -1323,7 +1292,6 @@ mod test {
             Round(4),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b4 = Block::new(
@@ -1333,7 +1301,6 @@ mod test {
             Round(5),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1343,7 +1310,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -1425,7 +1391,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1443,7 +1408,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1461,7 +1425,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1471,7 +1434,6 @@ mod test {
             epoch: genesis_qc.get_epoch(),
             seq_num: genesis_qc.get_seq_num(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -1531,7 +1493,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1549,7 +1510,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1567,7 +1527,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1577,7 +1536,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -1638,7 +1596,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1656,7 +1613,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1674,7 +1630,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1692,7 +1647,6 @@ mod test {
             Round(4),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v3),
         );
 
@@ -1702,7 +1656,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -1782,7 +1735,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1800,7 +1752,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1818,7 +1769,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1836,7 +1786,6 @@ mod test {
             Round(4),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v3),
         );
 
@@ -1846,7 +1795,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -1925,7 +1873,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1944,7 +1891,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1962,7 +1908,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b3 = Block::new(
@@ -1972,7 +1917,6 @@ mod test {
             Round(4),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1982,7 +1926,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -2057,7 +2000,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -2076,7 +2018,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -2094,7 +2035,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -2112,7 +2052,6 @@ mod test {
             Round(4),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -2130,7 +2069,6 @@ mod test {
             Round(5),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v3),
         );
         let b5 = Block::new(
@@ -2140,7 +2078,6 @@ mod test {
             Round(6),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v4),
         );
         let b6 = Block::new(
@@ -2150,7 +2087,6 @@ mod test {
             Round(7),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc(v4),
         );
 
@@ -2160,7 +2096,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -2266,7 +2201,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
         let b2 = Block::new(
@@ -2276,7 +2210,6 @@ mod test {
             Round(2),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&b1),
         );
 
@@ -2286,7 +2219,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
@@ -2343,7 +2275,6 @@ mod test {
             Round(1),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -2354,7 +2285,6 @@ mod test {
             Round(3),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&g),
         );
 
@@ -2365,7 +2295,6 @@ mod test {
             Round(4),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&b3),
         );
 
@@ -2376,7 +2305,6 @@ mod test {
             Round(5),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&b4),
         );
 
@@ -2387,7 +2315,6 @@ mod test {
             Round(6),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&b5),
         );
 
@@ -2398,7 +2325,6 @@ mod test {
             Round(7),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&b6),
         );
 
@@ -2409,7 +2335,6 @@ mod test {
             Round(9),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&b3),
         );
 
@@ -2420,7 +2345,6 @@ mod test {
             Round(10),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&b9),
         );
 
@@ -2431,7 +2355,6 @@ mod test {
             Round(11),
             &execution,
             payload.get_id(),
-            BlockKind::Executable,
             &mock_qc_for_block(&b10),
         );
 
@@ -2441,7 +2364,6 @@ mod test {
             seq_num: genesis_qc.get_seq_num(),
             epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
-            state_root: Default::default(),
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;

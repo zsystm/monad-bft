@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, PubKey},
     hasher::{Hashable, Hasher},
 };
 use monad_types::*;
 use serde::{Deserialize, Serialize};
-use zerocopy::AsBytes;
 
 use crate::ledger::CommitResult;
 
@@ -33,7 +33,7 @@ impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, 
 }
 
 /// Vote for consensus proposals
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, RlpDecodable, RlpEncodable)]
 pub struct Vote {
     /// contents of the vote over which the QC is eventually formed
     pub vote_info: VoteInfo,
@@ -52,12 +52,11 @@ impl std::fmt::Debug for Vote {
 
 impl Hashable for Vote {
     fn hash(&self, state: &mut impl Hasher) {
-        self.vote_info.hash(state);
-        self.ledger_commit_info.hash(state)
+        state.update(alloy_rlp::encode(self));
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Deserialize, Serialize, RlpEncodable, RlpDecodable)]
 pub struct VoteInfo {
     /// id of the proposed block
     pub id: BlockId,
@@ -73,6 +72,8 @@ pub struct VoteInfo {
     pub seq_num: SeqNum,
     /// timestamp of the proposed block
     pub timestamp: u64,
+    /// version info of consensus protocol that voted on the proposed block
+    pub version: MonadVersion,
 }
 
 impl std::fmt::Debug for VoteInfo {
@@ -91,13 +92,7 @@ impl std::fmt::Debug for VoteInfo {
 
 impl Hashable for VoteInfo {
     fn hash(&self, state: &mut impl Hasher) {
-        self.id.hash(state);
-        state.update(self.epoch.as_bytes());
-        state.update(self.round.as_bytes());
-        self.parent_id.hash(state);
-        state.update(self.parent_round.as_bytes());
-        state.update(self.seq_num.as_bytes());
-        state.update(self.timestamp.as_bytes());
+        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -111,72 +106,7 @@ impl DontCare for VoteInfo {
             parent_round: Round(0),
             seq_num: SeqNum(0),
             timestamp: 0,
+            version: MonadVersion::version(),
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
-    use monad_types::{BlockId, Epoch, Round, SeqNum};
-    use test_case::test_case;
-    use zerocopy::AsBytes;
-
-    use super::VoteInfo;
-    use crate::{ledger::CommitResult, voting::Vote};
-
-    #[test]
-    fn voteinfo_hash() {
-        let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
-            timestamp: 0,
-        };
-
-        let mut hasher = HasherType::new();
-        hasher.update(vi.id.0);
-        hasher.update(vi.epoch);
-        hasher.update(vi.round);
-        hasher.update(vi.parent_id.0);
-        hasher.update(vi.parent_round);
-        hasher.update(vi.seq_num.as_bytes());
-        hasher.update(vi.timestamp.as_bytes());
-
-        let h1 = hasher.hash();
-        let h2 = HasherType::hash_object(&vi);
-
-        assert_eq!(h1, h2);
-    }
-
-    #[test_case(CommitResult::NoCommit ; "NoCommit")]
-    #[test_case(CommitResult::Commit ; "Commit")]
-    fn vote_hash(cr: CommitResult) {
-        let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
-            timestamp: 0,
-        };
-
-        let v = Vote {
-            vote_info: vi,
-            ledger_commit_info: cr,
-        };
-
-        let mut hasher = HasherType::new();
-        vi.hash(&mut hasher);
-        cr.hash(&mut hasher);
-
-        let h1 = hasher.hash();
-        let h2 = HasherType::hash_object(&v);
-
-        assert_eq!(h1, h2);
     }
 }

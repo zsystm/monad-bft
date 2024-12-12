@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, str::FromStr};
 
-use bytes::Bytes;
+use alloy_rlp::{Decodable, Encodable};
+use bytes::{Bytes, BytesMut};
 use monad_consensus_types::{
     signature_collection::SignatureCollection, validator_data::ValidatorSetDataWithEpoch,
 };
@@ -9,11 +10,13 @@ use monad_proto::{
     error::ProtoError,
     proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
 };
+use reth_primitives::Header;
 
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, MempoolEvent,
-    MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, StateSyncVersion, UpdateFullNodes, UpdatePeers, ValidatorEvent,
+    MonadEvent, ProposedStateRoot, StateRootEvent, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsert, StateSyncUpsertType, StateSyncVersion,
+    UpdateFullNodes, UpdatePeers, ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -31,10 +34,8 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
                 proto_monad_event::Event::ValidatorEvent(event.into())
             }
             MonadEvent::MempoolEvent(event) => proto_monad_event::Event::MempoolEvent(event.into()),
-            MonadEvent::StateRootEvent(info) => {
-                proto_monad_event::Event::StateRootEvent(ProtoStateUpdateEvent {
-                    info: Some(info.into()),
-                })
+            MonadEvent::StateRootEvent(event) => {
+                proto_monad_event::Event::StateRootEvent(event.into())
             }
             MonadEvent::AsyncStateVerifyEvent(event) => {
                 proto_monad_event::Event::AsyncStateVerifyEvent(event.into())
@@ -74,14 +75,7 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
                 MonadEvent::MempoolEvent(event.try_into()?)
             }
             Some(proto_monad_event::Event::StateRootEvent(event)) => {
-                let info = event
-                    .info
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "StateUpdateEvent::info".to_owned(),
-                    ))?
-                    .try_into()?;
-
-                MonadEvent::StateRootEvent(info)
+                MonadEvent::StateRootEvent(event.try_into()?)
             }
             Some(proto_monad_event::Event::AsyncStateVerifyEvent(event)) => {
                 MonadEvent::AsyncStateVerifyEvent(event.try_into()?)
@@ -314,6 +308,82 @@ impl<PT: PubKey> TryFrom<ProtoMempoolEvent> for MempoolEvent<PT> {
     }
 }
 
+impl From<&StateRootEvent> for ProtoStateRootEvent {
+    fn from(value: &StateRootEvent) -> Self {
+        let event = match value {
+            StateRootEvent::Proposed(proposed) => {
+                proto_state_root_event::Event::Proposed(proposed.into())
+            }
+        };
+        Self { event: Some(event) }
+    }
+}
+
+impl TryFrom<ProtoStateRootEvent> for StateRootEvent {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoStateRootEvent) -> Result<Self, Self::Error> {
+        let event = match value.event {
+            Some(proto_state_root_event::Event::Proposed(proposed)) => {
+                Self::Proposed(proposed.try_into()?)
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "StateRootEvent.event".to_owned(),
+            ))?,
+        };
+
+        Ok(event)
+    }
+}
+
+impl From<&ProposedStateRoot> for ProtoProposedStateRoot {
+    fn from(event: &ProposedStateRoot) -> Self {
+        Self {
+            block_id: Some((&event.block_id).into()),
+            seq_num: Some((&event.seq_num).into()),
+            round: Some((&event.round).into()),
+            result: {
+                let mut buf = BytesMut::new();
+                event.result.encode(&mut buf);
+                buf.into()
+            },
+        }
+    }
+}
+
+impl TryFrom<ProtoProposedStateRoot> for ProposedStateRoot {
+    type Error = ProtoError;
+
+    fn try_from(event: ProtoProposedStateRoot) -> Result<Self, Self::Error> {
+        let block_id = event
+            .block_id
+            .ok_or(ProtoError::MissingRequiredField(
+                "StateRootEvent.block_id".to_owned(),
+            ))?
+            .try_into()?;
+        let seq_num = event
+            .seq_num
+            .ok_or(ProtoError::MissingRequiredField(
+                "StateRootEvent.seq_num".to_owned(),
+            ))?
+            .try_into()?;
+        let round = event
+            .round
+            .ok_or(ProtoError::MissingRequiredField(
+                "StateRootEvent.round".to_owned(),
+            ))?
+            .try_into()?;
+        let result = Header::decode(&mut event.result.as_ref())
+            .map_err(|_err| Self::Error::DeserializeError("StateRootEvent.result".to_owned()))?;
+        Ok(Self {
+            block_id,
+            seq_num,
+            round,
+            result,
+        })
+    }
+}
+
 impl<SCT: SignatureCollection> From<&AsyncStateVerifyEvent<SCT>> for ProtoAsyncStateVerifyEvent {
     fn from(value: &AsyncStateVerifyEvent<SCT>) -> Self {
         let event = match value {
@@ -326,10 +396,8 @@ impl<SCT: SignatureCollection> From<&AsyncStateVerifyEvent<SCT>> for ProtoAsyncS
                     message: Some(unvalidated_message.into()),
                 },
             ),
-            AsyncStateVerifyEvent::LocalStateRoot(info) => {
-                proto_async_state_verify_event::Event::LocalStateRoot(ProtoStateUpdateEvent {
-                    info: Some(info.into()),
-                })
+            AsyncStateVerifyEvent::LocalStateRoot(_info) => {
+                todo!()
             }
         };
         Self { event: Some(event) }
@@ -359,15 +427,8 @@ impl<SCT: SignatureCollection> TryFrom<ProtoAsyncStateVerifyEvent> for AsyncStat
                     unvalidated_message,
                 }
             }
-            Some(proto_async_state_verify_event::Event::LocalStateRoot(event)) => {
-                let info = event
-                    .info
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "AsyncStateVerifyEvent.LocalStateRoot.info".to_owned(),
-                    ))?
-                    .try_into()?;
-
-                AsyncStateVerifyEvent::LocalStateRoot(info)
+            Some(proto_async_state_verify_event::Event::LocalStateRoot(_event)) => {
+                todo!()
             }
             None => Err(ProtoError::MissingRequiredField(
                 "AsyncStateVerifyEvent.event".to_owned(),
@@ -734,6 +795,9 @@ impl From<&StateSyncUpsertType> for monad_proto::proto::message::ProtoStateSyncU
             StateSyncUpsertType::StorageDelete => {
                 monad_proto::proto::message::ProtoStateSyncUpsertType::StorageDelete
             }
+            StateSyncUpsertType::Header => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::Header
+            }
         }
     }
 }
@@ -749,12 +813,13 @@ impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncRes
                 .response
                 .iter()
                 .map(
-                    |(upsert_type, data)| monad_proto::proto::message::ProtoStateSyncUpsert {
+                    //|(upsert_type, data)| monad_proto::proto::message::ProtoStateSyncUpsert {
+                    |upsert| monad_proto::proto::message::ProtoStateSyncUpsert {
                         r#type: monad_proto::proto::message::ProtoStateSyncUpsertType::from(
-                            upsert_type,
+                            &upsert.upsert_type,
                         )
                         .into(),
-                        data: Bytes::copy_from_slice(data),
+                        data: Bytes::copy_from_slice(&upsert.data),
                     },
                 )
                 .collect(),
@@ -863,6 +928,9 @@ impl From<monad_proto::proto::message::ProtoStateSyncUpsertType> for StateSyncUp
             monad_proto::proto::message::ProtoStateSyncUpsertType::StorageDelete => {
                 StateSyncUpsertType::StorageDelete
             }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::Header => {
+                StateSyncUpsertType::Header
+            }
         }
     }
 }
@@ -905,7 +973,10 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                                     ProtoError::DeserializeError("unknown upsert type".to_owned())
                                 })?
                                 .into();
-                            Ok((upsert_type, Vec::from(upsert.data)))
+                            Ok(StateSyncUpsert {
+                                upsert_type,
+                                data: Vec::from(upsert.data),
+                            })
                         })
                         .collect::<Result<_, ProtoError>>()?,
                     response_n: response.n,

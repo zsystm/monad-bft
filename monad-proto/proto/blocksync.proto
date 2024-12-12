@@ -7,7 +7,7 @@ import "block.proto";
 
 message ProtoBlockRange {
   monad_proto.basic.ProtoBlockId last_block_id = 1;
-  monad_proto.basic.ProtoSeqNum root_seq_num = 2;
+  monad_proto.basic.ProtoSeqNum max_blocks = 2;
 }
 
 enum ProtoBlockSyncSelfRequester {

@@ -1,51 +1,37 @@
-use std::collections::{BTreeMap, BinaryHeap};
-
 use alloy_rlp::Decodable;
 use bytes::Bytes;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use monad_consensus_types::{
     payload::FullTransactionList,
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
 };
-use monad_eth_block_policy::{
-    compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
-};
-use monad_eth_tx::{EthFullTransactionList, EthTransaction};
+use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_tx::EthTransaction;
 use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use tracing::{info, trace, warn};
+use tracing::warn;
 
-use crate::{
-    pool::Pool,
-    transaction::{VirtualTimestamp, WrappedTransaction},
-    utils::effective_tip_per_gas,
-};
+use crate::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 
-mod pool;
+mod pending;
+mod tracked;
 mod transaction;
-mod utils;
 
-const MAX_TXPOOL_SIZE: usize = 30_000;
-const MAX_PROPOSAL_CHECKED_TXS: usize = 10_000;
+const MAX_PROPOSAL_SIZE: usize = 10_000;
 
 #[derive(Clone, Debug)]
 pub struct EthTxPool {
-    /// pool is transient, garbage collected after creating a proposal
-    pool: Pool,
-    garbage: Vec<Pool>,
     do_local_insert: bool,
+    pending: PendingTxMap,
+    tracked: TrackedTxMap,
 }
 
 impl Default for EthTxPool {
     fn default() -> Self {
-        Self {
-            pool: Default::default(),
-            garbage: Default::default(),
-            do_local_insert: true,
-        }
+        Self::new(true)
     }
 }
 
@@ -53,130 +39,78 @@ impl EthTxPool {
     pub fn new(do_local_insert: bool) -> Self {
         Self {
             do_local_insert,
-            ..Default::default()
+            pending: PendingTxMap::default(),
+            tracked: TrackedTxMap::default(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.pool.is_empty()
+        self.pending.is_empty() && self.tracked.is_empty()
     }
 
     pub fn num_txs(&self) -> usize {
-        self.pool.num_txs()
+        self.pending
+            .num_txs()
+            .checked_add(self.tracked.num_txs())
+            .expect("pool size does not overflow")
     }
 
-    /// Removes nonces that cannot extend the current block tree branch, as the
-    /// txpool is transient and garbage collected after proposal creation
-    fn validate_nonces_and_txn_fee<SCT>(
+    pub fn promote_pending<SCT, SBT>(
         &mut self,
-        proposed_seq_num: SeqNum,
-        block_policy: &EthBlockPolicy,
-        state_backend: &impl StateBackend,
-        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
+        block_policy: &EthBlockPolicy<SCT>,
+        state_backend: &SBT,
+        max_promotable: usize,
     ) -> Result<(), StateBackendError>
     where
         SCT: SignatureCollection,
+        SBT: StateBackend,
     {
-        // TODO don't copy all the addresses
-        let addresses = self.pool.iter_addresses().cloned().collect::<Vec<_>>();
-
-        let account_base_nonces = block_policy.get_account_base_nonces(
-            proposed_seq_num,
+        self.tracked.promote_pending::<SCT, SBT>(
+            block_policy,
             state_backend,
-            extending_blocks,
-            addresses.iter(),
-        )?;
-
-        let account_base_balances = block_policy.compute_account_base_balances(
-            proposed_seq_num,
-            state_backend,
-            Some(extending_blocks),
-            addresses.iter(),
-        )?;
-
-        self.pool.validate_nonces_and_txn_fee(
-            proposed_seq_num,
-            account_base_nonces,
-            account_base_balances,
-        );
-
-        Ok(())
+            &mut self.pending,
+            max_promotable,
+        )
     }
 
-    fn validate_and_insert_tx(
+    fn validate_and_insert_tx<SCT>(
         &mut self,
-        valid_chain_id: u64,
-        eth_tx: EthTransaction,
+        tx: EthTransaction,
+        block_policy: &EthBlockPolicy<SCT>,
         account_balance: &Balance,
-    ) -> Result<(), TxPoolInsertionError> {
-        // TODO(abenedito): Smarter tx eviction when pool is full
-        if self.pool.num_txs() > MAX_TXPOOL_SIZE {
-            return Err(TxPoolInsertionError::PoolFull);
+    ) -> Result<(), TxPoolInsertionError>
+    where
+        SCT: SignatureCollection,
+    {
+        if !self.do_local_insert {
+            return Ok(());
         }
 
-        let sender = EthAddress(eth_tx.signer());
-        let txn_hash = eth_tx.hash();
+        let tx = ValidEthTransaction::validate(tx, block_policy)?;
+        tx.apply_txn_fee(account_balance)?;
 
-        if static_validate_transaction(&eth_tx, valid_chain_id).is_err() {
-            return Err(TxPoolInsertionError::NotWellFormed);
+        // TODO(andr-dev): Should any additional tx validation occur before inserting into mempool
+
+        match self.tracked.try_add_tx(tx) {
+            Either::Left(tx) => self.pending.try_add_tx(tx),
+            Either::Right(result) => result,
         }
-
-        let ratio = (effective_tip_per_gas(&eth_tx) as f64) / (eth_tx.gas_limit() as f64);
-
-        if ratio.is_nan() {
-            return Err(TxPoolInsertionError::NotWellFormed);
-        }
-
-        // TODO nonce check
-
-        let txn_fee = compute_txn_max_value_to_u128(&eth_tx);
-
-        if &txn_fee > account_balance {
-            trace!(
-                "AccountBalance insert_tx 2 \
-                            do not add txn to the pool. insufficient balance: {:?} \
-                            txn_fee: {:?} \
-                            for address: {:?}",
-                account_balance,
-                txn_fee,
-                sender
-            );
-            return Err(TxPoolInsertionError::InsufficientBalance);
-        }
-
-        // TODO: this doesn't account for txns already in the mempool,
-        // an account can still send infinite transactions into the
-        // mempool
-
-        // TODO(rene): should any transaction validation occur here before inserting into mempool
-        if self.do_local_insert {
-            self.pool.add_tx(sender, eth_tx, ratio);
-        }
-        trace!(
-            "AccountBalance insert_tx 1 \
-                            account balance: {:?} \
-                            txn fee: {:?} \
-                            for address: {:?}",
-            account_balance,
-            txn_fee,
-            sender
-        );
-        trace!(txn_hash = ?txn_hash, ?sender, "txn inserted into txpool");
-        Ok(())
     }
 
-    fn validate_and_insert_txs<SCT>(
+    fn validate_and_insert_txs<SCT, SBT>(
         &mut self,
-        block_policy: &EthBlockPolicy,
-        state_backend: &impl StateBackend,
+        block_policy: &EthBlockPolicy<SCT>,
+        state_backend: &SBT,
         txs: Vec<EthTransaction>,
     ) -> Result<Vec<Result<(), TxPoolInsertionError>>, StateBackendError>
     where
         SCT: SignatureCollection,
+        SBT: StateBackend,
     {
         let senders = txs.iter().map(|tx| EthAddress(tx.signer())).collect_vec();
+
         let block_seq_num = block_policy.get_last_commit() + SeqNum(1); // ?????
-        let sender_account_balances = block_policy.compute_account_base_balances::<SCT>(
+        let sender_account_balances = block_policy.compute_account_base_balances(
             block_seq_num,
             state_backend,
             None,
@@ -186,13 +120,14 @@ impl EthTxPool {
         let results = txs
             .into_iter()
             .zip(senders.iter())
-            .map(|(eth_tx, sender)| {
+            .map(|(tx, sender)| {
                 self.validate_and_insert_tx(
-                    block_policy.get_chain_id(),
-                    eth_tx,
-                    sender_account_balances
-                        .get(sender)
-                        .expect("sender_account_balances should be populated"),
+                    tx,
+                    block_policy,
+                    &sender_account_balances
+                        .get(&sender)
+                        .cloned()
+                        .unwrap_or_default(),
                 )
             })
             .collect();
@@ -200,7 +135,7 @@ impl EthTxPool {
     }
 }
 
-impl<SCT, SBT> TxPool<SCT, EthBlockPolicy, SBT> for EthTxPool
+impl<SCT, SBT> TxPool<SCT, EthBlockPolicy<SCT>, SBT> for EthTxPool
 where
     SCT: SignatureCollection,
     SBT: StateBackend,
@@ -208,9 +143,22 @@ where
     fn insert_tx(
         &mut self,
         txns: Vec<Bytes>,
-        block_policy: &EthBlockPolicy,
+        block_policy: &EthBlockPolicy<SCT>,
         state_backend: &SBT,
     ) -> Vec<Bytes> {
+        if let Err(state_backend_error) = self.promote_pending::<SCT, SBT>(
+            block_policy,
+            state_backend,
+            txns.len().min(16).max(128),
+        ) {
+            if self.pending.is_at_promote_txs_watermark() {
+                warn!(
+                    ?state_backend_error,
+                    "txpool failed to promote at pending promote txs watermark"
+                );
+            }
+        }
+
         // TODO: unwrap can be removed when this is made generic over the actual
         // tx type rather than Bytes and decoding won't be necessary
         // TODO(rene): sender recovery is done inline here
@@ -224,7 +172,7 @@ where
             .unzip();
 
         let Ok(insertion_results) =
-            self.validate_and_insert_txs::<SCT>(block_policy, state_backend, decoded_txs)
+            self.validate_and_insert_txs::<SCT, SBT>(block_policy, state_backend, decoded_txs)
         else {
             // can't insert, state backend is delayed
             return Vec::new();
@@ -245,137 +193,35 @@ where
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
-        block_policy: &EthBlockPolicy,
+        block_policy: &EthBlockPolicy<SCT>,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
     ) -> Result<FullTransactionList, StateBackendError> {
-        for extending_block in &extending_blocks {
-            // note that this is a destructive operation
-            // it's a bit weird that this is done based on extending_blocks (which aren't committed)
-            //
-            // however, we anyway are emptying the txpool at the end of this function
-            self.pool.remove_stale_txs(extending_block)
-        }
-        let mut pool_len = self.pool.num_txs();
-        while pool_len > MAX_PROPOSAL_CHECKED_TXS {
-            pool_len -= self.pool.pop_last().expect("pool is not empty");
-        }
+        self.tracked.evict_expired_txs();
 
-        if let Err(err) = self.validate_nonces_and_txn_fee(
+        self.tracked.create_proposal(
             proposed_seq_num,
+            tx_limit.min(MAX_PROPOSAL_SIZE),
+            proposal_gas_limit,
             block_policy,
+            extending_blocks,
             state_backend,
-            &extending_blocks,
-        ) {
-            trace!("AccountBalance create_proposal returned error: {:?}", err);
-            return Err(err);
-        }
-
-        let mut txs = Vec::new();
-        let mut total_gas = 0;
-
-        let mut transaction_iters: BTreeMap<
-            EthAddress,
-            sorted_vector_map::map::Iter<u64, (reth_primitives::TransactionSignedEcRecovered, f64)>,
-        > = self
-            .pool
-            .iter()
-            .map(|(address, group)| (*address, group.iter()))
-            .collect::<BTreeMap<_, _>>();
-
-        let mut virtual_time: VirtualTimestamp = 0;
-
-        let mut max_heap = BinaryHeap::<WrappedTransaction>::new();
-
-        // queue one eligible transaction for each account (they will be the ones with the lowest nonce)
-        for (_, transaction_iter) in transaction_iters.iter_mut() {
-            match transaction_iter.next() {
-                None => {
-                    unreachable!()
-                }
-                Some((_, (transaction, price_gas_limit_ratio))) => {
-                    max_heap.push(WrappedTransaction {
-                        inner: transaction,
-                        insertion_time: virtual_time,
-                        price_gas_limit_ratio: *price_gas_limit_ratio,
-                    });
-                    virtual_time += 1;
-                }
-            }
-        }
-
-        // loop invariant: `max_heap` contains one transaction per account (lowest nonce).
-        // the root of the heap will be the best priced eligible transaction
-        while let Some(WrappedTransaction { inner: best_tx, .. }) = max_heap.pop() {
-            let address = EthAddress(best_tx.signer());
-
-            if txs.len() == tx_limit {
-                break;
-            }
-
-            // If this transaction will take us out of the block limit, we cannot include it.
-            // This will create a nonce gap, so we no longer want to consider this account, but
-            // we want to continue considering other accounts.
-            if (total_gas + best_tx.gas_limit()) > proposal_gas_limit {
-                transaction_iters.remove(&address);
-                continue;
-            }
-
-            // We also want to make sure that the transaction has max_fee_per_gas larger than base fee
-            // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
-            // update this when base fee is included in consensus proposal
-            if best_tx.max_fee_per_gas() < 1000 {
-                transaction_iters.remove(&address);
-                continue;
-            }
-
-            // maintain the loop invariant because we just removed one element from the heap
-            match transaction_iters.get_mut(&address).unwrap().next() {
-                None => {}
-                Some((_, (transaction, price_gas_limit_ratio))) => {
-                    max_heap.push(WrappedTransaction {
-                        inner: transaction,
-                        insertion_time: virtual_time,
-                        price_gas_limit_ratio: *price_gas_limit_ratio,
-                    });
-                    virtual_time += 1;
-                }
-            }
-
-            total_gas += best_tx.gas_limit();
-            trace!(txn_hash = ?best_tx.hash(), "txn included in proposal");
-            txs.push(best_tx.clone());
-        }
-
-        let proposal_num_tx = txs.len();
-        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
-
-        info!(
-            ?proposed_seq_num,
-            ?proposal_num_tx,
-            proposal_total_gas = total_gas,
-            proposal_tx_bytes = full_tx_list.len(),
-            "created proposal"
-        );
-
-        if !self.garbage.is_empty() {
-            warn!(
-                garbage_len = self.garbage.len(),
-                "we have received consecutive proposals without a mempool clear event in between"
-            );
-        }
-
-        let old_pool = std::mem::take(&mut self.pool);
-        self.garbage.push(old_pool);
-
-        Ok(FullTransactionList::new(full_tx_list))
+            &mut self.pending,
+        )
     }
 
     fn update_committed_block(&mut self, committed_block: &EthValidatedBlock<SCT>) {
-        self.pool.remove_stale_txs(committed_block);
+        self.tracked
+            .update_committed_block(committed_block, &mut self.pending);
+
+        self.tracked.evict_expired_txs();
     }
 
     fn clear(&mut self) {
-        self.garbage.clear();
+        self.tracked.evict_expired_txs();
+    }
+
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<SCT>>) {
+        self.tracked.reset(last_delay_committed_blocks);
     }
 }

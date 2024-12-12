@@ -1,12 +1,13 @@
 use std::{collections::BTreeMap, ops::Deref};
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     block::BlockType,
     convert::signing::certificate_signature_to_proto,
     ledger::CommitResult,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::TimeoutCertificate,
+    timeout::{TimeoutCertificate, TimeoutDigest},
     validation::Error,
     voting::{ValidatorMapping, Vote},
 };
@@ -98,7 +99,7 @@ impl<S: CertificateSignatureRecoverable, M> AsRef<Unverified<S, M>> for Verified
 /// An unverified message is a message with a signature, but the signature hasn't
 /// been verified. It does not allow access the message content. For safety, a
 /// message received on the wire is only deserializable to an unverified message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Unverified<S, M> {
     obj: M,
     author_signature: S,
@@ -237,7 +238,7 @@ impl<SCT: SignatureCollection> Hashable for Validated<ConsensusMessage<SCT>> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Unvalidated<M> {
     obj: M,
 }
@@ -265,7 +266,7 @@ impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-        version: &str,
+        version: u32,
     ) -> Result<Validated<ProtocolMessage<SCT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
@@ -337,16 +338,9 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
     }
 
     fn valid_seq_num(&self) -> Result<(), Error> {
-        if self.obj.block.is_empty_block() {
-            // Empty block doesn't occupy a sequence number
-            if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() {
-                return Err(Error::InvalidSeqNum);
-            }
-        } else {
-            // Non-empty blocks must extend their parent QC by 1
-            if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() + SeqNum(1) {
-                return Err(Error::InvalidSeqNum);
-            }
+        // Non-empty blocks must extend their parent QC by 1
+        if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() + SeqNum(1) {
+            return Err(Error::InvalidSeqNum);
         }
 
         Ok(())
@@ -558,9 +552,12 @@ where
         }
 
         let mut h = HasherType::new();
-        h.update(tc.epoch);
-        h.update(tc.round);
-        h.update(t.high_qc_round.qc_round);
+        let td = TimeoutDigest {
+            epoch: tc.epoch,
+            round: tc.round,
+            high_qc_round: t.high_qc_round.qc_round,
+        };
+        td.hash(&mut h);
         let msg = h.hash();
 
         // TODO-3: evidence collection
@@ -619,7 +616,10 @@ fn verify_author<ST: CertificateSignatureRecoverable>(
     msg: &Hash,
     sig: &ST,
 ) -> Result<CertificateSignaturePubKey<ST>, Error> {
-    let pubkey = get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)?;
+    let pubkey = get_pubkey(msg.as_ref(), sig)
+        .map_err(|e| e)?
+        .valid_pubkey(validators)
+        .map_err(|e| e)?;
     sig.verify(msg.as_ref(), &pubkey)
         .map_err(|_| Error::InvalidSignature)?;
     if sender != &pubkey {
@@ -662,7 +662,7 @@ impl<ST: CertificateSignature, SCT: SignatureCollection> From<&UnverifiedConsens
         Self {
             author_signature: Some(certificate_signature_to_proto(&value.author_signature)),
             oneof_message: Some(oneof_message),
-            version: value.obj.obj.version.clone(),
+            version: value.obj.obj.version,
         }
     }
 }
@@ -696,15 +696,16 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::{Block, BlockKind},
+        block::Block,
         ledger::CommitResult,
-        payload::{
-            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
-        },
+        payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         state_root_hash::StateRootHash,
-        timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
+        timeout::{
+            HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutDigest,
+            TimeoutInfo,
+        },
         validation::Error,
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
@@ -721,7 +722,9 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum, Stake, GENESIS_SEQ_NUM};
+    use monad_types::{
+        BlockId, DontCare, Epoch, MonadVersion, NodeId, Round, SeqNum, Stake, GENESIS_SEQ_NUM,
+    };
     use monad_validator::{
         epoch_manager::EpochManager,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
@@ -762,10 +765,14 @@ mod test {
         .zip(0..3)
         .map(|(x, i)| {
             let mut h = HasherType::new();
-            h.update(Epoch(1));
-            h.update(Round(5));
-            x.hash(&mut h);
+            let td = TimeoutDigest {
+                epoch: Epoch(1),
+                round: Round(5),
+                high_qc_round: x.qc_round,
+            };
+            td.hash(&mut h);
             let msg = h.hash();
+
 
             let sigs = vec![(NodeId::new(keypairs[i].pubkey()), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &certkeys[i]))];
 
@@ -896,9 +903,12 @@ mod test {
         .zip(certkeys[..2].iter())
         .map(|((x, keypair), certkey)| {
             let mut h = HasherType::new();
-            h.update(epoch);
-            h.update(round);
-            x.hash(&mut h);
+            let td = TimeoutDigest {
+                epoch: Epoch(1),
+                round: Round(5),
+                high_qc_round: x.qc_round,
+            };
+            td.hash(&mut h);
             let msg = h.hash();
 
             let sigs = vec![(NodeId::new(keypair.pubkey()), < <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), certkey))];
@@ -1154,7 +1164,7 @@ mod test {
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
         let payload = Payload {
-            txns: TransactionPayload::List(FullTransactionList::empty()),
+            txns: FullTransactionList::empty(),
         };
         let block = Block::<SignatureCollectionType>::new(
             NodeId::new(author.pubkey()),
@@ -1168,7 +1178,6 @@ mod test {
                 randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),
             },
             payload.get_id(),
-            BlockKind::Executable,
             &QuorumCertificate::genesis_qc(),
         );
         let proposal = ProposalMessage {
@@ -1205,6 +1214,7 @@ mod test {
                 parent_round: Round(9),
                 seq_num: SeqNum(10),
                 timestamp: 0,
+                version: MonadVersion::version(),
             },
             ledger_commit_info: CommitResult::Commit,
         };
@@ -1266,6 +1276,7 @@ mod test {
             parent_round: Round(9),
             seq_num: SeqNum(7),
             timestamp: 0,
+            version: MonadVersion::version(),
         };
 
         let qcinfo = QcInfo {
@@ -1317,6 +1328,7 @@ mod test {
             parent_round: Round(9),
             seq_num: SeqNum(7),
             timestamp: 0,
+            version: MonadVersion::version(),
         };
 
         let qcinfo = QcInfo {
@@ -1401,6 +1413,7 @@ mod test {
             parent_round: Round(8),
             seq_num: SeqNum(7),
             timestamp: 0,
+            version: MonadVersion::version(),
         };
 
         let qcinfo = QcInfo {

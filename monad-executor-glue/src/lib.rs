@@ -2,6 +2,7 @@ pub mod convert;
 
 use std::{fmt::Debug, net::SocketAddr};
 
+use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use monad_blocksync::{
@@ -13,20 +14,24 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::{BlockRange, FullBlock},
+    block::{Block, BlockRange, FullBlock},
     checkpoint::{Checkpoint, RootInfo},
+    ledger::OptimisticCommit,
     metrics::Metrics,
     payload::PayloadId,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHashInfo,
+    state_root_hash::{StateRootHash, StateRootHashInfo},
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake};
+use reth_primitives::Header;
 use serde::{Deserialize, Serialize};
+
+const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
 
 #[derive(Clone, Debug)]
 pub enum RouterCommand<PT: PubKey, OM> {
@@ -78,7 +83,8 @@ pub enum TimerCommand<E> {
 }
 
 pub enum LedgerCommand<SCT: SignatureCollection> {
-    LedgerCommit(Vec<FullBlock<SCT>>),
+    LedgerClearWal,
+    LedgerCommit(OptimisticCommit<SCT>),
     LedgerFetchHeaders(BlockRange),
     LedgerFetchPayload(PayloadId),
 }
@@ -86,9 +92,8 @@ pub enum LedgerCommand<SCT: SignatureCollection> {
 impl<SCT: SignatureCollection> std::fmt::Debug for LedgerCommand<SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LedgerCommand::LedgerCommit(blocks) => {
-                f.debug_tuple("LedgerCommit").field(blocks).finish()
-            }
+            LedgerCommand::LedgerClearWal => f.debug_tuple("LedgerClearWal").finish(),
+            LedgerCommand::LedgerCommit(x) => f.debug_tuple("LedgerCommit").field(x).finish(),
             LedgerCommand::LedgerFetchHeaders(block_range) => f
                 .debug_tuple("LedgerFetchHeaders")
                 .field(block_range)
@@ -101,15 +106,18 @@ impl<SCT: SignatureCollection> std::fmt::Debug for LedgerCommand<SCT> {
     }
 }
 
-pub enum CheckpointCommand<SCT: SignatureCollection> {
-    Save(Checkpoint<SCT>),
+#[derive(Clone)]
+pub struct CheckpointCommand<SCT: SignatureCollection> {
+    pub root_seq_num: SeqNum,
+    pub high_qc_round: Round,
+    pub checkpoint: Checkpoint<SCT>,
 }
 
 pub enum StateRootHashCommand<SCT>
 where
     SCT: SignatureCollection,
 {
-    Request(SeqNum),
+    Request(BlockId, SeqNum, Round),
     CancelBelow(SeqNum),
     UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
@@ -217,7 +225,7 @@ pub enum StateSyncCommand<PT: PubKey> {
     ///
     /// Note that if RequestSync(n') is invoked before receiving DoneSync(n), it is not guaranteed
     /// that DoneSync(n) will be received - so the caller should drop any DoneSync < n'
-    RequestSync(StateRootHashInfo),
+    RequestSync(Header),
     Message((NodeId<PT>, StateSyncNetworkMessage)),
     StartExecution,
 }
@@ -449,9 +457,30 @@ pub enum AsyncStateVerifyEvent<SCT: SignatureCollection> {
     LocalStateRoot(StateRootHashInfo),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateRootEvent {
+    Proposed(ProposedStateRoot),
+}
+
+impl StateRootEvent {
+    pub fn seq_num(&self) -> SeqNum {
+        match self {
+            StateRootEvent::Proposed(proposed) => proposed.seq_num,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedStateRoot {
+    pub block_id: BlockId,
+    pub seq_num: SeqNum,
+    pub round: Round,
+    pub result: Header,
+}
+
 pub const SELF_STATESYNC_VERSION: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
 pub struct StateSyncVersion {
     major: u16,
     minor: u16,
@@ -474,7 +503,7 @@ impl StateSyncVersion {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
 pub struct StateSyncRequest {
     pub version: StateSyncVersion,
 
@@ -493,9 +522,71 @@ pub enum StateSyncUpsertType {
     Storage,
     AccountDelete,
     StorageDelete,
+    Header,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+impl Encodable for StateSyncUpsertType {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Code => {
+                let enc: [&dyn Encodable; 1] = [&1u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Account => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Storage => {
+                let enc: [&dyn Encodable; 1] = [&3u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::AccountDelete => {
+                let enc: [&dyn Encodable; 1] = [&4u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::StorageDelete => {
+                let enc: [&dyn Encodable; 1] = [&5u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Header => {
+                let enc: [&dyn Encodable; 1] = [&6u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for StateSyncUpsertType {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Code),
+            2 => Ok(Self::Account),
+            3 => Ok(Self::Storage),
+            4 => Ok(Self::AccountDelete),
+            5 => Ok(Self::StorageDelete),
+            6 => Ok(Self::Header),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown StateSyncUpsertType",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct StateSyncUpsert {
+    pub upsert_type: StateSyncUpsertType,
+    pub data: Vec<u8>,
+}
+
+impl StateSyncUpsert {
+    pub fn new(upsert_type: StateSyncUpsertType, data: Vec<u8>) -> Self {
+        Self { upsert_type, data }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct StateSyncResponse {
     pub version: StateSyncVersion,
     pub nonce: u64,
@@ -503,7 +594,7 @@ pub struct StateSyncResponse {
 
     pub request: StateSyncRequest,
     // consensus state must validate that this sender is "trusted"
-    pub response: Vec<(StateSyncUpsertType, Vec<u8>)>,
+    pub response: Vec<StateSyncUpsert>,
     pub response_n: u64,
 }
 
@@ -526,6 +617,42 @@ pub enum StateSyncNetworkMessage {
     Response(StateSyncResponse),
 }
 
+impl Encodable for StateSyncNetworkMessage {
+    fn encode(&self, out: &mut dyn BufMut) {
+        let name = STATESYNC_NETWORK_MESSAGE_NAME;
+        match self {
+            Self::Request(req) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &req];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Response(resp) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &resp];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for StateSyncNetworkMessage {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != STATESYNC_NETWORK_MESSAGE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type StateSyncNetworkMessage",
+            ));
+        }
+
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Request(StateSyncRequest::decode(&mut payload)?)),
+            2 => Ok(Self::Response(StateSyncResponse::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown StateSyncNetworkMessage",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateSyncEvent<SCT: SignatureCollection> {
     Inbound(NodeId<SCT::NodeIdPubKey>, StateSyncNetworkMessage),
@@ -540,9 +667,9 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
         full_blocks: Vec<FullBlock<SCT>>,
     },
 
-    /// Consensus request sync
+    // Statesync re-sync request
     RequestSync {
-        root: RootInfo,
+        root: Block<SCT>,
         high_qc: QuorumCertificate<SCT>,
     },
 }
@@ -579,7 +706,7 @@ where
     /// Events to mempool
     MempoolEvent(MempoolEvent<CertificateSignaturePubKey<ST>>),
     /// State Root updates
-    StateRootEvent(StateRootHashInfo),
+    StateRootEvent(StateRootEvent),
     /// Events to async state verification
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
     /// Events for the debug control panel

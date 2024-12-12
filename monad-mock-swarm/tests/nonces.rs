@@ -8,7 +8,6 @@ mod test {
     use alloy_rlp::Decodable;
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-    use monad_consensus_types::payload::{StateRoot, TransactionPayload};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -54,13 +53,12 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type StateBackendType = InMemoryState;
-        type BlockPolicyType = EthBlockPolicy;
+        type BlockPolicyType = EthBlockPolicy<Self::SignatureCollectionType>;
 
         type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
         type BlockValidator = EthValidator;
-        type StateRootValidator = StateRoot;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -105,7 +103,7 @@ mod test {
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            EthTxPool::default,
+            || EthTxPool::new(true),
             || EthValidator::new(10_000, 1_000_000, 1337),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {
@@ -115,8 +113,8 @@ mod test {
                     InMemoryBlockState::genesis(existing_nonces.clone()),
                 )
             },
-            || StateRoot::new(execution_delay),
             PeerAsyncStateVerify::new,
+            execution_delay,          // state_root_delay
             CONSENSUS_DELTA,          // delta
             Duration::from_millis(0), // vote pace
             10,                       // proposal_tx_limit
@@ -175,12 +173,8 @@ mod test {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
             for (round, block) in state.executor.ledger().get_blocks() {
-                let decoded_txns = match &block.payload.txns {
-                    TransactionPayload::List(rlp) => {
-                        Vec::<EthSignedTransaction>::decode(&mut rlp.as_ref()).unwrap()
-                    }
-                    TransactionPayload::Null => Vec::new(),
-                };
+                let decoded_txns =
+                    Vec::<EthSignedTransaction>::decode(&mut block.payload.txns.as_ref()).unwrap();
 
                 let decoded_txn_hashes: HashSet<_> =
                     HashSet::from_iter(decoded_txns.iter().map(|t| t.hash()));
@@ -243,7 +237,7 @@ mod test {
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(5, CONSENSUS_DELTA),
+            happy_path_tick_by_block(4, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);
@@ -308,7 +302,7 @@ mod test {
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(8, CONSENSUS_DELTA),
+            happy_path_tick_by_block(7, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);
@@ -365,7 +359,7 @@ mod test {
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(10, CONSENSUS_DELTA),
+            happy_path_tick_by_block(9, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);
@@ -408,7 +402,7 @@ mod test {
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(20, CONSENSUS_DELTA),
+            happy_path_tick_by_block(19, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);

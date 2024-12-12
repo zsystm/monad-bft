@@ -1,5 +1,6 @@
 use ::serde::{Deserialize, Serialize};
 use alloy_primitives::{Address, FixedBytes, B256};
+use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 
 pub mod serde;
 
@@ -11,7 +12,19 @@ pub type Balance = u128;
 // FIXME reth types shouldn't be leaked
 /// A 20-byte Eth address
 #[derive(
-    Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize,
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Deserialize,
+    Serialize,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
 )]
 pub struct EthAddress(pub Address);
 

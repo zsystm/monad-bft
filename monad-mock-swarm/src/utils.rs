@@ -11,11 +11,9 @@ pub mod test_tool {
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     };
     use monad_consensus_types::{
-        block::{Block, BlockKind, BlockRange},
+        block::{Block, BlockRange},
         ledger::CommitResult,
-        payload::{
-            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
-        },
+        payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         state_root_hash::StateRootHash,
         timeout::{Timeout, TimeoutInfo},
@@ -74,13 +72,13 @@ pub mod test_tool {
 
     pub fn fake_block(round: Round) -> (Block<SC>, Payload) {
         let execution = ExecutionProtocol {
-            state_root: StateRootHash::default(),
+            delayed_execution_result: Default::default(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
         let payload = Payload {
-            txns: TransactionPayload::List(FullTransactionList::empty()),
+            txns: FullTransactionList::empty(),
         };
 
         (
@@ -91,7 +89,6 @@ pub mod test_tool {
                 round,
                 &execution,
                 payload.get_id(),
-                BlockKind::Executable,
                 &fake_qc(),
             ),
             payload,
@@ -106,7 +103,7 @@ pub mod test_tool {
             last_round_tc: None,
         };
         ConsensusMessage {
-            version: "TEST".into(),
+            version: 1,
             message: ProtocolMessage::Proposal(internal_msg),
         }
         .sign(kp)
@@ -126,7 +123,7 @@ pub mod test_tool {
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
         ConsensusMessage {
-            version: "TEST".into(),
+            version: 1,
             message: ProtocolMessage::Vote(internal_msg),
         }
         .sign(kp)
@@ -147,7 +144,7 @@ pub mod test_tool {
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
         ConsensusMessage {
-            version: "TEST".into(),
+            version: 1,
             message: ProtocolMessage::Timeout(internal_msg),
         }
         .sign(kp)
@@ -157,7 +154,7 @@ pub mod test_tool {
     pub fn fake_request_block_sync() -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = BlockSyncRequestMessage::Headers(BlockRange {
             last_block_id: BlockId(Hash([0x01_u8; 32])),
-            root_seq_num: SeqNum(1),
+            max_blocks: SeqNum(1),
         });
         VerifiedMonadMessage::BlockSyncRequest(internal_msg)
     }
@@ -166,7 +163,7 @@ pub mod test_tool {
         let internal_msg = BlockSyncResponseMessage::HeadersResponse(
             BlockSyncHeadersResponse::NotAvailable(BlockRange {
                 last_block_id: BlockId(Hash([0x01_u8; 32])),
-                root_seq_num: SeqNum(1),
+                max_blocks: SeqNum(1),
             }),
         );
         VerifiedMonadMessage::BlockSyncResponse(internal_msg)

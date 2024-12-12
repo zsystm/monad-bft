@@ -6,15 +6,12 @@ use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
     metrics::Metrics,
-    payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor_glue::{
-    AsyncStateVerifyEvent, Command, LoopbackCommand, MonadEvent, RouterCommand,
-};
+use monad_executor_glue::{AsyncStateVerifyEvent, Command, MonadEvent, RouterCommand};
 use monad_state_backend::StateBackend;
 use monad_types::{NodeId, Round, RouterTarget};
 use monad_validator::{
@@ -24,7 +21,7 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -43,18 +40,17 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, BPT, SBT)>,
+    _phantom: PhantomData<(ST, LT, TT, BVT, BPT, SBT)>,
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    AsyncStateVerifyChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, ASVT>
+    AsyncStateVerifyChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
     BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,
@@ -62,7 +58,7 @@ where
     >,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, ASVT>,
     ) -> Self {
         Self {
             async_state_verify: &mut monad_state.async_state_verify,
@@ -162,10 +158,8 @@ where
                     )),
                 })]
             }
-            AsyncStateVerifyCommand::StateRootUpdate(info) => {
-                vec![Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::<ST, SCT>::StateRootEvent(info),
-                ))]
+            AsyncStateVerifyCommand::StateRootUpdate(_info) => {
+                todo!()
             }
         }
     }

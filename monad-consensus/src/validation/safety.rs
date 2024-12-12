@@ -129,6 +129,7 @@ impl Safety {
                 parent_round: block.get_parent_round(),
                 seq_num: block.get_seq_num(),
                 timestamp: block.get_timestamp(),
+                version: MonadVersion::version(),
             };
 
             let commit_result = if commit_condition(block.get_round(), block.get_qc().info) {
@@ -162,6 +163,6 @@ fn safe_to_extend<SCT>(
     }
 }
 
-fn commit_condition(block_round: Round, qc_info: QcInfo) -> bool {
+pub fn commit_condition(block_round: Round, qc_info: QcInfo) -> bool {
     consecutive(block_round, qc_info.get_round())
 }

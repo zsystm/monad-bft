@@ -80,15 +80,13 @@ impl NodeState {
             toml::from_str(&std::fs::read_to_string(&cli.forkpoint_config)?)?;
 
         let wal_path = cli.wal_path.with_file_name(format!(
-            "{}_{}_{}_{}",
+            "{}_{}",
             cli.wal_path
                 .file_name()
                 .expect("no wal file name")
                 .to_owned()
                 .into_string()
                 .expect("invalid wal path"),
-            forkpoint_config.root.round.0,
-            forkpoint_config.root.block_id.0,
             std::time::UNIX_EPOCH
                 .elapsed()
                 .expect("time went backwards")

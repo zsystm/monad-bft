@@ -1,3 +1,5 @@
+use alloy_rlp::{Decodable, Encodable};
+use bytes::BytesMut;
 use monad_eth_types::EthAddress;
 use monad_proto::{
     error::ProtoError,
@@ -7,43 +9,21 @@ use monad_proto::{
         blocksync::ProtoBlockRange,
     },
 };
+use reth_primitives::Header;
 
 use crate::{
-    block::{Block, BlockKind, BlockRange, FullBlock},
+    block::{Block, BlockRange, FullBlock},
     payload::{
         Bloom, ExecutionProtocol, FullTransactionList, Gas, Payload, PayloadId, RandaoReveal,
-        TransactionPayload,
     },
     signature_collection::SignatureCollection,
 };
-
-impl From<&BlockKind> for i32 {
-    fn from(kind: &BlockKind) -> Self {
-        match kind {
-            BlockKind::Executable => 0,
-            BlockKind::Null => 1,
-        }
-    }
-}
-
-impl TryFrom<i32> for BlockKind {
-    type Error = ProtoError;
-    fn try_from(kind: i32) -> Result<Self, Self::Error> {
-        match kind {
-            0 => Ok(BlockKind::Executable),
-            1 => Ok(BlockKind::Null),
-            _ => Err(ProtoError::DeserializeError(
-                "unknown block kind".to_owned(),
-            )),
-        }
-    }
-}
 
 impl From<&BlockRange> for ProtoBlockRange {
     fn from(value: &BlockRange) -> Self {
         Self {
             last_block_id: Some((&value.last_block_id).into()),
-            root_seq_num: Some((&value.root_seq_num).into()),
+            max_blocks: Some((&value.max_blocks).into()),
         }
     }
 }
@@ -59,10 +39,10 @@ impl TryFrom<ProtoBlockRange> for BlockRange {
                     "BlockRange.last_block_id".to_owned(),
                 ))?
                 .try_into()?,
-            root_seq_num: value
-                .root_seq_num
+            max_blocks: value
+                .max_blocks
                 .ok_or(Self::Error::MissingRequiredField(
-                    "BlockRange.root_seq_num".to_owned(),
+                    "BlockRange.max_blocks".to_owned(),
                 ))?
                 .try_into()?,
         })
@@ -100,7 +80,6 @@ impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
             round: Some((&value.round).into()),
             execution: Some((&value.execution).into()),
             payload_id: Some((&value.payload_id).into()),
-            block_kind: (&value.block_kind).into(),
             qc: Some((&value.qc).into()),
             timestamp: value.timestamp,
         }
@@ -143,7 +122,6 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                     "Block<AggregateSignatures>.payload_id".to_owned(),
                 ))?
                 .try_into()?,
-            value.block_kind.try_into()?,
             &value
                 .qc
                 .ok_or(Self::Error::MissingRequiredField(
@@ -217,7 +195,11 @@ impl TryFrom<ProtoBloom> for Bloom {
 impl From<&ExecutionProtocol> for ProtoExecutionProtocol {
     fn from(value: &ExecutionProtocol) -> Self {
         Self {
-            state_root: Some((&(value.state_root)).into()),
+            delayed_execution_result: {
+                let mut buf = BytesMut::new();
+                value.delayed_execution_result.encode(&mut buf);
+                buf.into()
+            },
             seq_num: Some((&(value.seq_num)).into()),
             beneficiary: value.beneficiary.0.to_vec().into(),
             randao_reveal: value.randao_reveal.0.to_vec().into(),
@@ -229,12 +211,12 @@ impl TryFrom<ProtoExecutionProtocol> for ExecutionProtocol {
     type Error = ProtoError;
     fn try_from(value: ProtoExecutionProtocol) -> Result<Self, Self::Error> {
         Ok(Self {
-            state_root: value
-                .state_root
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionProtocol.state_root".to_owned(),
-                ))?
-                .try_into()?,
+            delayed_execution_result: Header::decode(&mut value.delayed_execution_result.as_ref())
+                .map_err(|_err| {
+                    Self::Error::DeserializeError(
+                        "ExecutionProtocol.delayed_execution_result".to_owned(),
+                    )
+                })?,
             seq_num: value
                 .seq_num
                 .ok_or(Self::Error::MissingRequiredField(
@@ -253,41 +235,10 @@ impl TryFrom<ProtoExecutionProtocol> for ExecutionProtocol {
     }
 }
 
-impl From<&TransactionPayload> for ProtoTransactionPayload {
-    fn from(value: &TransactionPayload) -> Self {
-        let txns = Some(match value {
-            TransactionPayload::List(txns) => {
-                proto_transaction_payload::Txns::List(txns.bytes().clone())
-            }
-            TransactionPayload::Null => {
-                proto_transaction_payload::Txns::Empty(ProtoEmptyBlockTransactionList {})
-            }
-        });
-        Self { txns }
-    }
-}
-
-impl TryFrom<ProtoTransactionPayload> for TransactionPayload {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoTransactionPayload) -> Result<Self, Self::Error> {
-        let txns = value.txns.ok_or(Self::Error::MissingRequiredField(
-            "TransactionPayload.txns".to_owned(),
-        ))?;
-        let txn_payload = match txns {
-            proto_transaction_payload::Txns::List(txns) => {
-                TransactionPayload::List(FullTransactionList::new(txns))
-            }
-            proto_transaction_payload::Txns::Empty(_) => TransactionPayload::Null,
-        };
-        Ok(txn_payload)
-    }
-}
-
 impl From<&Payload> for ProtoPayload {
     fn from(value: &Payload) -> Self {
         ProtoPayload {
-            txns: Some((&(value.txns)).into()),
+            txns: value.txns.bytes().clone(),
         }
     }
 }
@@ -296,10 +247,7 @@ impl TryFrom<ProtoPayload> for Payload {
     type Error = ProtoError;
     fn try_from(value: ProtoPayload) -> Result<Self, Self::Error> {
         Ok(Self {
-            txns: value
-                .txns
-                .ok_or(Self::Error::MissingRequiredField("Payload.txns".to_owned()))?
-                .try_into()?,
+            txns: FullTransactionList::new(value.txns),
         })
     }
 }

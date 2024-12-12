@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-use monad_consensus_types::{block::BlockType, payload::StateRoot};
+use monad_consensus_types::block::BlockType;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
@@ -38,13 +38,12 @@ impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type StateBackendType = InMemoryState;
-    type BlockPolicyType = EthBlockPolicy;
+    type BlockPolicyType = EthBlockPolicy<Self::SignatureCollectionType>;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
     type BlockValidator = EthValidator;
-    type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -84,6 +83,7 @@ fn test_forkpoint_restart_f_simple_blocksync() {
         recovery_time,
         epoch_length,
         statesync_threshold,
+        false,
     );
 }
 
@@ -99,6 +99,7 @@ fn test_forkpoint_restart_f_simple_statesync() {
         recovery_time,
         epoch_length,
         statesync_threshold,
+        true,
     );
 }
 
@@ -114,6 +115,7 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
         recovery_time,
         epoch_length,
         statesync_threshold,
+        false,
     );
 }
 
@@ -140,6 +142,7 @@ fn test_forkpoint_restart_f() {
                     recovery_time,
                     epoch_length,
                     statesync_threshold,
+                    false,
                 );
             })
         });
@@ -155,6 +158,7 @@ fn forkpoint_restart_f(
     recovery_time: SeqNum,
     epoch_length: SeqNum,
     statesync_threshold: SeqNum,
+    fresh_forkpoint: bool,
 ) {
     let delta = Duration::from_millis(100);
     let vote_pace = Duration::from_millis(0);
@@ -173,8 +177,8 @@ fn forkpoint_restart_f(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-        || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
+        state_root_delay,    // state_root_delay
         delta,               // delta
         vote_pace,           // vote pace
         10,                  // proposal_tx_limit
@@ -208,8 +212,8 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
+            state_root_delay,    // state_root_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
@@ -232,8 +236,8 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
+            state_root_delay,    // state_root_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
@@ -308,7 +312,11 @@ fn forkpoint_restart_f(
         {}
 
         // Restart node from forkpoint and join network
-        let forkpoint = failed_node.get_forkpoint();
+        let forkpoint = if fresh_forkpoint {
+            swarm.states().first_key_value().unwrap().1.get_forkpoint()
+        } else {
+            failed_node.get_forkpoint()
+        };
         assert_eq!(
             forkpoint.validate(
                 state_root_delay,
@@ -492,8 +500,8 @@ fn forkpoint_restart_below_all(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-        || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
+        state_root_delay,    // state_root_delay
         delta,               // delta
         vote_pace,           // vote pace
         10,                  // proposal_tx_limit
@@ -537,8 +545,8 @@ fn forkpoint_restart_below_all(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
+            state_root_delay,    // state_root_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
@@ -561,8 +569,8 @@ fn forkpoint_restart_below_all(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
+            state_root_delay,    // state_root_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit

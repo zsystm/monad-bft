@@ -11,7 +11,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     ledger::CommitResult,
-    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -29,7 +29,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum, Serializable};
+use monad_types::{BlockId, DontCare, Epoch, MonadVersion, NodeId, Round, SeqNum, Serializable};
 use monad_validator::validator_set::ValidatorSetFactory;
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
@@ -74,7 +74,7 @@ impl MonadEventBencher {
 }
 
 fn bench_proposal(c: &mut Criterion) {
-    let txns = TransactionPayload::List(FullTransactionList::new(vec![0x23_u8; 32 * 10000].into()));
+    let txns = FullTransactionList::new(vec![0x23_u8; 32 * 10000].into());
     let validator_factory = ValidatorSetFactory::default();
     let (keypairs, _certkeypairs, _validators, validator_mapping) =
         create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(1, validator_factory);
@@ -97,7 +97,7 @@ fn bench_proposal(c: &mut Criterion) {
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let msg_hash = HasherType::hash_object(&conmsg);
@@ -127,6 +127,7 @@ fn bench_vote(c: &mut Criterion) {
         parent_round: Round(2),
         seq_num: SeqNum(0),
         timestamp: 0,
+        version: MonadVersion::version(),
     };
 
     let v = Vote {
@@ -138,7 +139,7 @@ fn bench_vote(c: &mut Criterion) {
 
     let vote = ProtocolMessage::Vote(vm);
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: vote,
     };
 
@@ -179,6 +180,7 @@ fn bench_timeout(c: &mut Criterion) {
         parent_round: Round(2),
         seq_num: SeqNum(0),
         timestamp: 0,
+        version: MonadVersion::version(),
     };
 
     let qcinfo = QcInfo {
@@ -243,7 +245,7 @@ fn bench_timeout(c: &mut Criterion) {
 
     let tmo = ProtocolMessage::Timeout(TimeoutMessage::new(timeout, author_certkey));
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: tmo,
     };
     let msg_hash = HasherType::hash_object(&conmsg);

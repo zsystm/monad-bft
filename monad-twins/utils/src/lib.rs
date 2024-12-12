@@ -2,7 +2,7 @@ pub mod twin_reader;
 
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_consensus_types::{payload::StateRoot, signature_collection::SignatureCollection};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -41,7 +41,6 @@ where
             MonadMessage<ST, SCT>,
             VerifiedMonadMessage<ST, SCT>,
         >,
-        StateRootValidator = StateRoot,
         StateRootHashExecutor = MockStateRootHashNop<ST, SCT>,
         StateSyncExecutor = MockStateSyncExecutor<ST, SCT>,
         Ledger = MockLedger<ST, SCT>,

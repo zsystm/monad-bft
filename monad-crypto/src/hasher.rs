@@ -1,11 +1,25 @@
 use std::{fmt::Debug, ops::Deref};
 
+use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::Digest;
 use zerocopy::AsBytes;
 
 /// A 32-byte/256-bit hash
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct Hash(
     #[serde(serialize_with = "serialize_hash")]
     #[serde(deserialize_with = "deserialize_hash")]

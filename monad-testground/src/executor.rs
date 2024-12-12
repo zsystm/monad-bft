@@ -3,7 +3,7 @@ use std::time::Duration;
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::NopStateRoot,
+    block::PassthruBlockPolicy, block_validator::MockValidator,
     signature_collection::SignatureCollection, state_root_hash::StateRootHash, txpool::MockTxPool,
     validator_data::ValidatorSetData,
 };
@@ -15,9 +15,7 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
 use monad_ipc::IpcReceiver;
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
-use monad_state::{
-    Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
-};
+use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
@@ -183,14 +181,12 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     MonadStateBuilder {
-        version: MonadVersion::new("TESTGROUND"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: MockTxPool::default(),
         block_validator: MockValidator {},
         block_policy: PassthruBlockPolicy {},
         state_backend,
-        state_root_validator: NopStateRoot,
         async_state_verify: PeerAsyncStateVerify::default(),
         key: config.key,
         certkey: config.cert_key,

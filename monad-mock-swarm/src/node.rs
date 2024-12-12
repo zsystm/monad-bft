@@ -15,7 +15,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
-use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_transformer::{LinkMessage, Pipeline, ID};
 use monad_validator::validator_set::{
     BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
@@ -40,7 +40,6 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::LeaderElection,
         S::TxPool,
         S::BlockValidator,
-        S::StateRootValidator,
         S::AsyncStateRootVerify,
     >,
     pub router_scheduler: S::RouterScheduler,
@@ -64,7 +63,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::LeaderElection,
             S::TxPool,
             S::BlockValidator,
-            S::StateRootValidator,
             S::AsyncStateRootVerify,
         >,
         router_scheduler: S::RouterScheduler,
@@ -106,7 +104,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         NodeBuilder {
             id: self.id,
             state_builder: MonadStateBuilder {
-                version: MonadVersion::new("MOCK_SWARM"),
                 validator_set_factory: BoxedValidatorSetTypeFactory::new(
                     self.state_builder.validator_set_factory,
                 ),
@@ -115,7 +112,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 block_validator: Box::new(self.state_builder.block_validator),
                 block_policy: self.state_builder.block_policy,
                 state_backend: self.state_builder.state_backend,
-                state_root_validator: Box::new(self.state_builder.state_root_validator),
                 async_state_verify: BoxedAsyncStateVerifyProcess::new(
                     self.state_builder.async_state_verify,
                 ),

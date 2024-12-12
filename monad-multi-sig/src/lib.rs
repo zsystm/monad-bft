@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -18,7 +19,7 @@ use tracing::{error, warn};
 
 mod convert;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct MultiSig<S> {
     pub sigs: Vec<S>,
 }
@@ -31,9 +32,7 @@ impl<S: CertificateSignatureRecoverable> Default for MultiSig<S> {
 
 impl<S: CertificateSignatureRecoverable> Hashable for MultiSig<S> {
     fn hash(&self, state: &mut impl Hasher) {
-        for s in self.sigs.iter() {
-            Hashable::hash(s, state);
-        }
+        state.update(alloy_rlp::encode(self));
     }
 }
 

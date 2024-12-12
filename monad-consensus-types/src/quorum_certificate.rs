@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_crypto::hasher::{Hash, Hasher, HasherType};
 use monad_types::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -10,13 +11,12 @@ use crate::{
     voting::*,
 };
 
-pub const GENESIS_BLOCK_ID: BlockId = BlockId(Hash([0xAA; 32]));
-
 #[non_exhaustive]
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 #[serde(deny_unknown_fields)]
 pub struct QuorumCertificate<SCT> {
     pub info: QcInfo,
+
     #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
     #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
     #[serde(bound(
@@ -24,6 +24,7 @@ pub struct QuorumCertificate<SCT> {
         deserialize = "SCT: SignatureCollection",
     ))]
     pub signatures: SCT,
+
     signature_hash: Hash,
 }
 
@@ -65,7 +66,7 @@ where
     SCT::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, RlpDecodable, RlpEncodable)]
 pub struct QcInfo {
     pub vote: Vote,
 }
@@ -129,6 +130,7 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
             parent_round: Round(0),
             seq_num: GENESIS_SEQ_NUM,
             timestamp: 0,
+            version: MonadVersion::version(),
         };
 
         let sigs = SCT::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])

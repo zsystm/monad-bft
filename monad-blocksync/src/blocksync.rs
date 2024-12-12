@@ -1,4 +1,7 @@
-use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
+use std::{
+    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
+    usize,
+};
 
 use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
@@ -12,7 +15,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, NodeId, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -249,23 +252,15 @@ where
                     BlockCache::BlockTree(blocktree) => blocktree
                         .get_parent_block_chain(&block_range.last_block_id)
                         .into_iter()
-                        .filter_map(|validated_block| {
-                            if validated_block.get_seq_num() >= block_range.root_seq_num {
-                                Some(validated_block.get_unvalidated_block_ref().clone())
-                            } else {
-                                None
-                            }
-                        })
+                        .map(|block| block.get_unvalidated_block_ref().clone())
+                        .take(block_range.max_blocks.0 as usize)
                         .collect_vec(),
                     BlockCache::BlockBuffer(_) => Vec::new(), // TODO
                 };
 
                 // all blocks are cached if the first block is the non-empty block of requested
                 // root_seq_num.
-                if !cached_blocks.is_empty()
-                    && cached_blocks.first().unwrap().get_seq_num() == block_range.root_seq_num
-                    && !cached_blocks.first().unwrap().is_empty_block()
-                {
+                if cached_blocks.len() == block_range.max_blocks.0 as usize {
                     // reply with the cached blocks
                     cmds.push(BlockSyncCommand::SendResponse {
                         to: sender,
@@ -281,7 +276,7 @@ where
                         .unwrap_or(block_range.last_block_id);
                     let ledger_fetch_range = BlockRange {
                         last_block_id: last_block_id_to_fetch,
-                        root_seq_num: block_range.root_seq_num,
+                        max_blocks: block_range.max_blocks - SeqNum(cached_blocks.len() as u64),
                     };
 
                     let entry = self
@@ -344,20 +339,9 @@ where
 
     // TODO return more informative errors instead of bool
     fn verify_block_headers(block_range: BlockRange, block_headers: &[Block<SCT>]) -> bool {
-        let num_blocks = block_headers.len() as u32;
+        let num_blocks = block_headers.len();
 
-        // atleast one block header was received
-        if num_blocks == 0 {
-            return false;
-        }
-
-        // The seq num of the first header must be equal to the requested root seq num
-        if block_range.root_seq_num != block_headers.first().unwrap().get_seq_num() {
-            return false;
-        }
-
-        // The first header should not a be NULL block
-        if block_headers.first().unwrap().is_empty_block() {
+        if num_blocks != block_range.max_blocks.0 as usize {
             return false;
         }
 
@@ -776,7 +760,7 @@ where
                             .last()
                             .map(|block| block.get_id())
                             .unwrap_or(block_range.last_block_id),
-                        root_seq_num: block_range.root_seq_num,
+                        max_blocks: block_range.max_blocks,
                     };
                     let headers_response = match headers_response.clone() {
                         BlockSyncHeadersResponse::Found((_, mut requested_blocks)) => {
@@ -929,16 +913,11 @@ mod test {
     use itertools::Itertools;
     use monad_blocktree::blocktree::BlockTree;
     use monad_consensus_types::{
-        block::{
-            Block, BlockKind, BlockPolicy, BlockRange, BlockType, FullBlock, PassthruBlockPolicy,
-        },
+        block::{Block, BlockPolicy, BlockRange, BlockType, FullBlock, PassthruBlockPolicy},
         checkpoint::RootInfo,
         ledger::CommitResult,
         metrics::Metrics,
-        payload::{
-            ExecutionProtocol, FullTransactionList, Payload, PayloadId, RandaoReveal,
-            TransactionPayload,
-        },
+        payload::{ExecutionProtocol, FullTransactionList, Payload, PayloadId, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate, GENESIS_BLOCK_ID},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         state_root_hash::StateRootHash,
@@ -956,7 +935,7 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
     use monad_testutil::validators::create_keys_w_validators;
-    use monad_types::{BlockId, Epoch, Hash, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{BlockId, Epoch, Hash, MonadVersion, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
@@ -1087,9 +1066,7 @@ mod test {
             let mut full_blocks = Vec::new();
 
             for i in 0..num_blocks {
-                let txns = TransactionPayload::List(FullTransactionList::new(
-                    Bytes::copy_from_slice(i.as_bytes()),
-                ));
+                let txns = FullTransactionList::new(Bytes::copy_from_slice(i.as_bytes()));
 
                 let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");
                 let validators = self
@@ -1105,12 +1082,7 @@ mod test {
                     .find(|(k, _)| k.pubkey() == leader)
                     .expect("key not in valset");
 
-                let (seq_num, block_kind) = match txns {
-                    TransactionPayload::List(_) => {
-                        (qc.get_seq_num() + SeqNum(1), BlockKind::Executable)
-                    }
-                    TransactionPayload::Null => (qc.get_seq_num(), BlockKind::Null),
-                };
+                let seq_num = qc.get_seq_num() + SeqNum(1);
                 let payload = Payload { txns };
                 let block = Block::new(
                     NodeId::new(leader_key.pubkey()),
@@ -1127,7 +1099,6 @@ mod test {
                         ),
                     },
                     payload.get_id(),
-                    block_kind,
                     &qc,
                 );
 
@@ -1163,6 +1134,7 @@ mod test {
                 parent_round: block.qc.get_round(),
                 seq_num: block.execution.seq_num,
                 timestamp: block.timestamp,
+                version: MonadVersion::version(),
             };
             let qcinfo = QcInfo {
                 vote: Vote {

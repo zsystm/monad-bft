@@ -13,8 +13,8 @@ use monad_blocksync::messages::message::{
 };
 use monad_consensus_types::{
     block::{BlockRange, BlockType, FullBlock},
-    payload::{PayloadId, TransactionPayload},
-    quorum_certificate::GENESIS_BLOCK_ID,
+    ledger::OptimisticCommit,
+    payload::PayloadId,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -69,7 +69,7 @@ where
         let mut next_block_id = block_range.last_block_id;
 
         let mut headers = VecDeque::new();
-        loop {
+        while (headers.len() as u64) < block_range.max_blocks.0 {
             // TODO add max number of headers to read
             let Some(block_round) = self.block_ids.get(&next_block_id) else {
                 return BlockSyncHeadersResponse::NotAvailable(block_range);
@@ -81,18 +81,8 @@ where
                 .expect("round to blockid invariant")
                 .get_unvalidated_block_ref();
 
-            if block_header.get_seq_num() < block_range.root_seq_num {
-                // if headers is empty here, then block range is invalid
-                break;
-            }
-
             headers.push_front(block_header.clone());
             next_block_id = block_header.get_parent_id();
-
-            if next_block_id == GENESIS_BLOCK_ID {
-                // don't try fetching genesis block
-                break;
-            }
         }
 
         BlockSyncHeadersResponse::Found((block_range, headers.into()))
@@ -122,37 +112,45 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerCommit(blocks) => {
-                    for block in blocks {
-                        if let TransactionPayload::List(eth_txns_rlp) = &block.payload.txns {
-                            // generate eth block and update the state backend with committed nonces
-                            let new_account_nonces =
-                                Vec::<EthTransaction>::decode(&mut eth_txns_rlp.bytes().as_ref())
-                                    .expect("invalid eth tx in block")
-                                    .into_iter()
-                                    .map(|tx| (EthAddress(tx.signer()), tx.nonce() + 1))
-                                    // collecting into a map will handle a sender sending multiple
-                                    // transactions gracefully
-                                    //
-                                    // this is because nonces are always increasing per account
-                                    .collect();
-                            let mut state = self.state.lock().unwrap();
-                            state.ledger_commit(block.get_seq_num(), new_account_nonces);
-                        }
+                LedgerCommand::LedgerClearWal => {}
+                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
+                    // generate eth block and update the state backend with committed nonces
+                    let new_account_nonces =
+                        Vec::<EthTransaction>::decode(&mut block.payload.txns.bytes().as_ref())
+                            .expect("invalid eth tx in block")
+                            .into_iter()
+                            .map(|tx| (EthAddress(tx.signer()), tx.nonce() + 1))
+                            // collecting into a map will handle a sender sending multiple
+                            // transactions gracefully
+                            //
+                            // this is because nonces are always increasing per account
+                            .collect();
+                    let mut state = self.state.lock().unwrap();
+                    state.ledger_propose(
+                        block.get_id(),
+                        block.get_seq_num(),
+                        block.get_round(),
+                        block.get_parent_round(),
+                        new_account_nonces,
+                    );
 
-                        match self.blocks.entry(block.get_round()) {
-                            std::collections::btree_map::Entry::Vacant(entry) => {
-                                let block_id = block.get_id();
-                                let round = block.get_round();
-                                entry.insert(block);
-                                self.block_ids.insert(block_id, round);
-                            }
-                            std::collections::btree_map::Entry::Occupied(entry) => {
-                                assert_eq!(entry.get(), &block, "two conflicting blocks committed")
-                            }
+                    match self.blocks.entry(block.get_round()) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            let block_id = block.get_id();
+                            let round = block.get_round();
+                            entry.insert(block);
+                            self.block_ids.insert(block_id, round);
+                        }
+                        std::collections::btree_map::Entry::Occupied(entry) => {
+                            assert_eq!(entry.get(), &block, "two conflicting blocks committed")
                         }
                     }
                 }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Committed(block_id)) => {
+                    let mut state = self.state.lock().unwrap();
+                    state.ledger_commit(&block_id);
+                }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Verified(_)) => {}
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
                         response: BlockSyncResponseMessage::HeadersResponse(

@@ -11,7 +11,7 @@ use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig}
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, payload::StateRoot};
+use monad_consensus_types::metrics::Metrics;
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -27,7 +27,7 @@ use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 #[cfg(feature = "full-node")]
 use monad_router_filter::FullNodeRouterFilter;
-use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
+use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
@@ -266,9 +266,12 @@ async fn run(
         return Err(());
     };
 
-    let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
+    let triedb_handle = TriedbReader::try_new(node_state.triedb_path.as_path())
+        .expect("triedb should exist in path");
+    let mut last_ledger_tip = triedb_handle
+        .get_latest_finalized_block()
+        .unwrap_or(SeqNum(0));
     let builder = MonadStateBuilder {
-        version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
         #[cfg(feature = "full-node")]
@@ -288,13 +291,9 @@ async fn run(
             node_state.node_config.chain_id,
         ),
         state_backend: StateBackendCache::new(
-            TriedbReader::try_new(node_state.triedb_path.as_path())
-                .expect("triedb should exist in path"),
+            triedb_handle,
             SeqNum(node_state.node_config.consensus.execution_delay),
         ),
-        state_root_validator: StateRoot::new(SeqNum(
-            node_state.node_config.consensus.execution_delay,
-        )),
         async_state_verify: PeerAsyncStateVerify::new(majority_threshold, statesync_threshold),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
@@ -303,6 +302,7 @@ async fn run(
         beneficiary: node_state.node_config.beneficiary,
         forkpoint: node_state.forkpoint_config.into(),
         consensus_config: ConsensusConfig {
+            execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),

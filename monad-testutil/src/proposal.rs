@@ -5,9 +5,9 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockType},
+    block::{Block, BlockType},
     ledger::CommitResult,
-    payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
@@ -22,13 +22,14 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_eth_types::EthAddress;
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{Epoch, MonadVersion, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use reth_primitives::Header;
 
 #[derive(Clone)]
 pub struct ProposalGen<ST, SCT> {
@@ -79,7 +80,7 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-        txns: TransactionPayload,
+        txns: FullTransactionList,
         srh: StateRootHash,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal
@@ -108,14 +109,7 @@ where
             })
             .expect("key not in valset");
 
-        let seq_num = match txns {
-            TransactionPayload::List(_) => qc.get_seq_num() + SeqNum(1),
-            TransactionPayload::Null => qc.get_seq_num(),
-        };
-        let block_kind = match txns {
-            TransactionPayload::List(_) => BlockKind::Executable,
-            TransactionPayload::Null => BlockKind::Null,
-        };
+        let seq_num = qc.get_seq_num() + SeqNum(1);
         let payload = Payload { txns };
         let block = Block::new(
             NodeId::new(leader_key.pubkey()),
@@ -123,13 +117,17 @@ where
             self.epoch,
             self.round,
             &ExecutionProtocol {
-                state_root: srh,
+                delayed_execution_result: {
+                    let mut header = Header::default();
+                    header.state_root = srh.0 .0.into();
+                    header.number = qc.get_seq_num().0 + 1;
+                    header
+                },
                 seq_num,
                 beneficiary: EthAddress::default(),
                 randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
             },
             payload.get_id(),
-            block_kind,
             qc,
         );
 
@@ -239,6 +237,7 @@ where
             parent_round: block.qc.get_round(),
             seq_num: block.execution.seq_num,
             timestamp: block.timestamp,
+            version: MonadVersion::version(),
         };
         let qcinfo = QcInfo {
             vote: Vote {

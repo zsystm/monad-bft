@@ -14,10 +14,11 @@ use monad_consensus_types::{
 };
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_executor_glue::{MonadEvent, ProposedStateRoot, StateRootEvent, StateRootHashCommand};
 use monad_types::{Epoch, SeqNum, Stake};
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
+use reth_primitives::Header;
 use tracing::{debug, error};
 
 pub trait MockableStateRootHash:
@@ -30,7 +31,7 @@ pub trait MockableStateRootHash:
 
     fn ready(&self) -> bool;
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection>;
-    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo;
+    fn compute_execution_result(&self, seq_num: &SeqNum) -> Header;
 }
 
 impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
@@ -45,8 +46,8 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
         (**self).get_validator_set_data(epoch)
     }
 
-    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
-        (**self).compute_state_root_hash(seq_num)
+    fn compute_execution_result(&self, seq_num: &SeqNum) -> Header {
+        (**self).compute_execution_result(seq_num)
     }
 }
 
@@ -64,13 +65,15 @@ pub(crate) struct ValidatorSetUpdate<SCT: SignatureCollection> {
 /// and generating the state root hash and updating the staking contract,
 /// and sending it back to consensus.
 pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
-    state_root_update: VecDeque<StateRootHashInfo>,
+    state_root_update: VecDeque<StateRootEvent>,
 
     // validator set updates
     genesis_validator_data: ValidatorSetData<SCT>,
     next_val_data: Option<ValidatorSetUpdate<SCT>>,
     val_set_update_interval: SeqNum,
     calc_state_root: fn(&SeqNum) -> StateRootHash,
+
+    last_sent_epoch: Option<SeqNum>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -96,6 +99,8 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
             next_val_data: None,
             val_set_update_interval,
             calc_state_root: Self::state_root_honest,
+
+            last_sent_epoch: None,
 
             waker: None,
             metrics: Default::default(),
@@ -125,7 +130,7 @@ where
         self.genesis_validator_data.clone()
     }
 
-    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
+    fn compute_execution_result(&self, seq_num: &SeqNum) -> Header {
         // hash is pseudorandom seeded by the block's seq num to ensure
         // that it is deterministic between nodes
         let state_root_hash = (self.calc_state_root)(seq_num);
@@ -133,10 +138,12 @@ where
             "block number {:?} state root hash {:?}",
             seq_num.0, state_root_hash
         );
-        StateRootHashInfo {
-            state_root_hash,
-            seq_num: *seq_num,
-        }
+
+        let mut header = Header::default();
+        header.number = seq_num.0;
+        header.state_root = state_root_hash.0 .0.into();
+
+        header
     }
 }
 
@@ -156,17 +163,23 @@ where
                     while self
                         .state_root_update
                         .front()
-                        .is_some_and(|state_root| state_root.seq_num < cancel_below)
+                        .is_some_and(|state_root| state_root.seq_num() < cancel_below)
                     {
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::Request(seq_num) => {
-                    debug!("commit block {:?}", seq_num);
+                StateRootHashCommand::Request(block_id, seq_num, round) => {
                     self.state_root_update
-                        .push_back(self.compute_state_root_hash(&seq_num));
+                        .push_back(StateRootEvent::Proposed(ProposedStateRoot {
+                            block_id,
+                            seq_num,
+                            round,
+                            result: self.compute_execution_result(&seq_num),
+                        }));
 
-                    if seq_num.is_epoch_end(self.val_set_update_interval) {
+                    if seq_num.is_epoch_end(self.val_set_update_interval)
+                        && self.last_sent_epoch != Some(seq_num)
+                    {
                         if self.next_val_data.is_some() {
                             error!("Validator set data is not consumed");
                         }
@@ -179,6 +192,7 @@ where
                             epoch: locked_epoch,
                             validator_data: self.genesis_validator_data.clone(),
                         });
+                        self.last_sent_epoch = Some(seq_num);
                     }
 
                     wake = true;
@@ -211,10 +225,8 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some(info) = this.state_root_update.pop_front() {
-            Poll::Ready(Some(MonadEvent::AsyncStateVerifyEvent(
-                monad_executor_glue::AsyncStateVerifyEvent::LocalStateRoot(info),
-            )))
+        let event = if let Some(event) = this.state_root_update.pop_front() {
+            Poll::Ready(Some(MonadEvent::StateRootEvent(event)))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
@@ -242,7 +254,7 @@ where
 /// between two sets of validators every epoch.
 /// Goal is to mimic new validators joining and old validators leaving.
 pub struct MockStateRootHashSwap<ST, SCT: SignatureCollection> {
-    state_root_update: VecDeque<StateRootHashInfo>,
+    state_root_update: VecDeque<StateRootEvent>,
 
     // validator set updates
     epoch: Epoch,
@@ -251,6 +263,8 @@ pub struct MockStateRootHashSwap<ST, SCT: SignatureCollection> {
     val_data_2: ValidatorSetData<SCT>,
     next_val_data: Option<ValidatorSetUpdate<SCT>>,
     val_set_update_interval: SeqNum,
+
+    last_sent_epoch: Option<SeqNum>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -285,6 +299,8 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashSwap<ST, SCT> {
             val_data_2: ValidatorSetData(val_data_2),
             next_val_data: None,
             val_set_update_interval,
+
+            last_sent_epoch: None,
 
             waker: None,
             metrics: Default::default(),
@@ -326,15 +342,16 @@ where
         }
     }
 
-    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
+    fn compute_execution_result(&self, seq_num: &SeqNum) -> Header {
         let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
-        let mut hash = StateRootHash(Hash([0; 32]));
-        gen.fill_bytes(&mut hash.0 .0);
+        let mut hash = [0; 32];
+        gen.fill_bytes(&mut hash);
 
-        StateRootHashInfo {
-            state_root_hash: hash,
-            seq_num: *seq_num,
-        }
+        let mut header = Header::default();
+        header.number = seq_num.0;
+        header.state_root = hash.into();
+
+        header
     }
 }
 
@@ -354,16 +371,23 @@ where
                     while self
                         .state_root_update
                         .front()
-                        .is_some_and(|state_root| state_root.seq_num < cancel_below)
+                        .is_some_and(|state_root| state_root.seq_num() < cancel_below)
                     {
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::Request(seq_num) => {
+                StateRootHashCommand::Request(block_id, seq_num, round) => {
                     self.state_root_update
-                        .push_back(self.compute_state_root_hash(&seq_num));
+                        .push_back(StateRootEvent::Proposed(ProposedStateRoot {
+                            block_id,
+                            seq_num,
+                            round,
+                            result: self.compute_execution_result(&seq_num),
+                        }));
 
-                    if seq_num.is_epoch_end(self.val_set_update_interval) {
+                    if seq_num.is_epoch_end(self.val_set_update_interval)
+                        && self.last_sent_epoch != Some(seq_num)
+                    {
                         if self.next_val_data.is_some() {
                             error!("Validator set data is not consumed");
                         }
@@ -384,6 +408,7 @@ where
                             })
                         };
                     }
+                    self.last_sent_epoch = Some(seq_num);
                     wake = true;
                 }
                 StateRootHashCommand::UpdateValidators(_) => {
@@ -414,8 +439,8 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some(info) = this.state_root_update.pop_front() {
-            Poll::Ready(Some(MonadEvent::StateRootEvent(info)))
+        let event = if let Some(event) = this.state_root_update.pop_front() {
+            Poll::Ready(Some(MonadEvent::StateRootEvent(event)))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((

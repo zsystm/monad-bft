@@ -8,7 +8,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     ledger::CommitResult,
-    payload::{FullTransactionList, TransactionPayload},
+    payload::FullTransactionList,
     state_root_hash::StateRootHash,
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
@@ -27,7 +27,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, MonadVersion, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     simple_round_robin::SimpleRoundRobin,
@@ -62,6 +62,7 @@ fn test_consensus_message_event_vote_multisig() {
         parent_round: Round(2),
         seq_num: SeqNum(0),
         timestamp: 0,
+        version: MonadVersion::version(),
     };
     let vote = Vote {
         vote_info: vi,
@@ -71,7 +72,7 @@ fn test_consensus_message_event_vote_multisig() {
     let votemsg: ProtocolMessage<SignatureCollectionType> =
         ProtocolMessage::Vote(VoteMessage::new(vote, &certkeypair));
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: votemsg,
     };
     let conmsg_hash = HasherType::hash_object(&conmsg);
@@ -116,13 +117,13 @@ fn test_consensus_message_event_proposal_bls() {
         &epoch_manager,
         &val_epoch_map,
         &election,
-        TransactionPayload::List(FullTransactionList::empty()),
+        FullTransactionList::empty(),
         StateRootHash::default(),
     );
 
     let consensus_proposal_msg = ProtocolMessage::Proposal((*proposal).clone());
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: consensus_proposal_msg,
     };
     let conmsg_hash = HasherType::hash_object(&conmsg);

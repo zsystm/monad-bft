@@ -7,7 +7,7 @@ use monad_consensus_types::{
 };
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
-use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_types::{Round, SeqNum, Stake};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::validator_set::ValidatorSetType;
@@ -23,9 +23,9 @@ pub fn make_state_configs<S: SwarmRelation>(
     block_validator: impl Fn() -> S::BlockValidator,
     block_policy: impl Fn() -> S::BlockPolicyType,
     state_backend: impl Fn() -> S::StateBackendType,
-    state_root_validator: impl Fn() -> S::StateRootValidator,
     async_state_verify: impl Fn(fn(Stake) -> Stake, usize) -> S::AsyncStateRootVerify,
 
+    execution_delay: SeqNum,
     delta: Duration,
     vote_pace: Duration,
     proposal_txn_limit: usize,
@@ -43,7 +43,6 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::LeaderElection,
         S::TxPool,
         S::BlockValidator,
-        S::StateRootValidator,
         S::AsyncStateRootVerify,
     >,
 > {
@@ -70,19 +69,17 @@ pub fn make_state_configs<S: SwarmRelation>(
     keys.into_iter()
         .zip(cert_keys)
         .map(|(key, certkey)| MonadStateBuilder {
-            version: MonadVersion::new("MOCK_SWARM"),
             validator_set_factory: validator_set_factory(),
             leader_election: leader_election(),
             transaction_pool: transaction_pool(),
             block_validator: block_validator(),
             block_policy: block_policy(),
             state_backend: state_backend(),
-            state_root_validator: state_root_validator(),
             async_state_verify: async_state_verify(
                 state_root_quorum_threshold,
                 statesync_threshold.0 as usize,
             ),
-            forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
+            forkpoint: Forkpoint::genesis(validator_data.clone()),
 
             key,
             certkey,
@@ -92,6 +89,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             beneficiary: EthAddress::default(),
 
             consensus_config: ConsensusConfig {
+                execution_delay,
                 proposal_txn_limit,
                 proposal_gas_limit: 30_000_000,
                 delta,

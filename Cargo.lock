@@ -455,21 +455,20 @@ dependencies = [
 
 [[package]]
 name = "alloy-rlp"
-version = "0.3.3"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc0fac0fc16baf1f63f78b47c3d24718f3619b0714076f6a02957d808d52cbef"
+checksum = "da0822426598f95e45dd1ea32a738dac057529a709ee645fcc516ffa4cbde08f"
 dependencies = [
  "alloy-rlp-derive",
  "arrayvec",
  "bytes",
- "smol_str",
 ]
 
 [[package]]
 name = "alloy-rlp-derive"
-version = "0.3.4"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a047897373be4bbb0224c1afdabca92648dc57a9c9ef6e7b0be3aff7a859c83"
+checksum = "2b09cae092c27b6f1bde952653a22708691802e57bfef4a2973b80bea21efd3f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3161,6 +3160,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3188,6 +3196,16 @@ dependencies = [
  "ring 0.16.20",
  "secp256k1 0.26.0",
  "thiserror",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -4022,6 +4040,7 @@ dependencies = [
 name = "monad-blocksync"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "itertools 0.10.5",
  "monad-blocktree",
@@ -4057,6 +4076,7 @@ dependencies = [
 name = "monad-bls"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bitvec",
  "blst",
  "criterion",
@@ -4099,11 +4119,14 @@ dependencies = [
 name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
+ "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
  "monad-multi-sig",
  "monad-proto",
+ "monad-secp",
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
@@ -4147,6 +4170,7 @@ dependencies = [
 name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "auto_impl",
  "bytes",
  "hex",
@@ -4158,6 +4182,7 @@ dependencies = [
  "prost 0.12.6",
  "rand",
  "rand_chacha",
+ "reth-primitives",
  "serde",
  "test-case",
  "tracing",
@@ -4184,6 +4209,7 @@ dependencies = [
 name = "monad-crypto"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "blake3",
  "criterion",
  "hex",
@@ -4392,6 +4418,8 @@ dependencies = [
  "alloy-rlp",
  "bytes",
  "criterion",
+ "heapless",
+ "indexmap 2.4.0",
  "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
@@ -4407,7 +4435,6 @@ dependencies = [
  "rand_chacha",
  "rayon",
  "reth-primitives",
- "sorted_vector_map",
  "tracing",
  "tracing-test",
 ]
@@ -4417,6 +4444,8 @@ name = "monad-eth-types"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives 0.6.0",
+ "alloy-rlp",
+ "reth-primitives",
  "serde",
 ]
 
@@ -4432,6 +4461,7 @@ dependencies = [
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bincode",
  "bytes",
  "chrono",
@@ -4500,15 +4530,14 @@ dependencies = [
 name = "monad-ledger"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives 0.6.0",
  "alloy-rlp",
  "clap 4.4.10",
  "futures",
+ "hex",
  "monad-block-persist",
  "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
  "monad-executor",
  "monad-executor-glue",
  "monad-types",
@@ -4574,6 +4603,7 @@ dependencies = [
 name = "monad-multi-sig"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "monad-consensus-types",
  "monad-crypto",
  "monad-proto",
@@ -4689,6 +4719,7 @@ dependencies = [
  "criterion",
  "futures",
  "futures-util",
+ "hex",
  "itertools 0.10.5",
  "lru",
  "monad-consensus-types",
@@ -4796,6 +4827,7 @@ dependencies = [
 name = "monad-secp"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "criterion",
  "hex",
  "monad-crypto",
@@ -4810,9 +4842,11 @@ dependencies = [
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "clap 4.4.10",
  "glob",
+ "hex",
  "itertools 0.10.5",
  "monad-async-state-verify",
  "monad-blocksync",
@@ -4833,6 +4867,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "prost 0.12.6",
+ "reth-primitives",
  "test-case",
  "toml 0.7.8",
  "tracing",
@@ -4851,6 +4886,7 @@ dependencies = [
 name = "monad-statesync"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bindgen 0.69.4",
  "cmake",
  "criterion",
@@ -4861,6 +4897,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-types",
  "rand",
+ "reth-primitives",
  "tempfile",
  "tokio",
  "tracing",
@@ -4904,6 +4941,7 @@ dependencies = [
 name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -4914,6 +4952,7 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
+ "reth-primitives",
  "zerocopy 0.6.5",
 ]
 
@@ -5007,6 +5046,7 @@ dependencies = [
 name = "monad-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "hex",
  "monad-crypto",
  "monad-proto",
@@ -5027,12 +5067,13 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-state-backend",
- "monad-triedb",
+ "monad-triedb-utils",
  "monad-types",
  "ntest",
  "rand",
  "rand_chacha",
  "rayon",
+ "reth-primitives",
  "serde_json",
  "sorted-vec",
  "tokio",
@@ -6605,9 +6646,9 @@ dependencies = [
 
 [[package]]
 name = "scc"
-version = "2.2.0"
+version = "2.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "836f1e0f4963ef5288b539b643b35e043e76a32d0f4e47e67febf69576527f50"
+checksum = "66b202022bb57c049555430e11fc22fea12909276a80a4c3d368da36ac1d88ed"
 dependencies = [
  "sdd",
 ]
@@ -6674,9 +6715,9 @@ dependencies = [
 
 [[package]]
 name = "sdd"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60a7b59a5d9b0099720b417b6325d91a52cbf5b3dcb5041d864be53eefa58abc"
+checksum = "49c1eeaf4b6a87c7479688c6d52b9f1153cedd3c489300564f932b065c6eab95"
 
 [[package]]
 name = "sec1"
@@ -7035,15 +7076,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "smol_str"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74212e6bbe9a4352329b2f68ba3130c15a3f26fe88ff22dbdc6cdd58fa85e99c"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "socket2"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7123,6 +7155,12 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
+
+[[package]]
+name = "stable_deref_trait"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
 name = "static_assertions"

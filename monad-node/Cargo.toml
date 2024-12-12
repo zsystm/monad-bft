@@ -36,7 +36,7 @@ monad-state = { path = "../monad-state" }
 monad-statesync = { path = "../monad-statesync" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = [
-    "monad-triedb",
+    "monad-triedb-utils",
     "tokio",
 ] }
 monad-validator = { path = "../monad-validator" }

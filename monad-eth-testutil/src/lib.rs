@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use monad_consensus_types::{
-    block::{Block, BlockKind},
-    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    block::Block,
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
@@ -13,8 +13,8 @@ use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 use reth_primitives::{
-    keccak256, revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind,
-    TxLegacy, U256,
+    keccak256, revm_primitives::FixedBytes, sign_message, Address, Header, Transaction,
+    TransactionKind, TxLegacy, U256,
 };
 
 pub fn make_tx(
@@ -68,7 +68,7 @@ pub fn generate_block_with_txs(
         );
 
         Payload {
-            txns: TransactionPayload::List(FullTransactionList::new(full_txs.rlp_encode())),
+            txns: FullTransactionList::new(full_txs.rlp_encode()),
         }
     };
 
@@ -80,13 +80,12 @@ pub fn generate_block_with_txs(
         Epoch(1),
         round,
         &ExecutionProtocol {
-            state_root: Default::default(),
+            delayed_execution_result: Default::default(),
             seq_num,
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),
         },
         payload.get_id(),
-        BlockKind::Executable,
         &QuorumCertificate::genesis_qc(),
     );
 
@@ -98,7 +97,18 @@ pub fn generate_block_with_txs(
     let nonces = validated_txns
         .iter()
         .map(|t| (EthAddress(t.signer()), t.nonce()))
-        .collect();
+        .fold(BTreeMap::default(), |mut map, (address, nonce)| {
+            match map.entry(address) {
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert(nonce);
+                }
+                std::collections::btree_map::Entry::Occupied(mut o) => {
+                    o.insert(nonce.max(*o.get()));
+                }
+            }
+
+            map
+        });
 
     let txn_fees = validated_txns
         .iter()

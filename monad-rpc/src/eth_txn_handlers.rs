@@ -15,7 +15,7 @@ use reth_rpc_types::{
     Signature, Transaction, TransactionReceipt,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     block_handlers::{block_receipts, get_block_num_from_tag},
@@ -351,10 +351,9 @@ pub async fn monad_eth_sendRawTransaction(
             let hash = txn.hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
-            let txn = txn.try_into_ecrecovered().map_err(|_| {
-                JsonRpcError::custom("cannot ec recover sender from transaction".to_string())
-            })?;
-            tx_pool.add_transaction(txn).await;
+            if tx_pool.publisher.send(txn).is_err() {
+                warn!("issue broadcasting transaction from pending pool");
+            }
             Ok(hash.to_string())
         }
         Err(e) => {

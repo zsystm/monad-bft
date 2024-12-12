@@ -3,8 +3,7 @@ use std::{collections::BTreeSet, time::Duration};
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -37,12 +36,8 @@ fn two_nodes_noser() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        || {
-            StateRoot::new(
-                SeqNum(4), // state_root_delay
-            )
-        },
         PeerAsyncStateVerify::new,
+        SeqNum(4),          // state_root_delay
         delta,              // delta
         vote_pace,          // vote pace
         10,                 // proposal_tx_limit

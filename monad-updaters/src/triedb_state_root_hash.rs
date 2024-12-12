@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     marker::PhantomData,
     ops::DerefMut,
     path::Path,
@@ -9,23 +10,29 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    signature_collection::SignatureCollection,
-    state_root_hash::{StateRootHash, StateRootHashInfo},
+    signature_collection::SignatureCollection, state_root_hash::StateRootHash,
     validator_data::ValidatorSetData,
 };
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, StateRootHashCommand};
-use monad_triedb::TriedbHandle;
-use monad_types::{Epoch, SeqNum};
-use tracing::{debug, error, warn};
+use monad_executor_glue::{MonadEvent, ProposedStateRoot, StateRootEvent, StateRootHashCommand};
+use monad_triedb_utils::TriedbReader;
+use monad_types::{BlockId, Epoch, Round, SeqNum};
+use tracing::{debug, error, trace, warn};
 
 use crate::state_root_hash::ValidatorSetUpdate;
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct StateRootRequest {
+    block_id: BlockId,
+    seq_num: SeqNum,
+    round: Round,
+}
+
 /// Updater that gets state root hash updates by polling triedb
 pub struct StateRootHashTriedbPoll<ST, SCT: SignatureCollection> {
-    triedb_recv: tokio::sync::mpsc::UnboundedReceiver<StateRootHashInfo>,
-    seq_num_send: std::sync::mpsc::Sender<SeqNum>,
+    triedb_recv: tokio::sync::mpsc::UnboundedReceiver<StateRootEvent>,
+    state_root_requests_send: std::sync::mpsc::Sender<StateRootRequest>,
     cancel_below: Arc<Mutex<SeqNum>>,
 
     // TODO: where will we get this validator set updates
@@ -34,6 +41,7 @@ pub struct StateRootHashTriedbPoll<ST, SCT: SignatureCollection> {
     // validator set updates from control panel
     last_val_data: Option<ValidatorSetUpdate<SCT>>,
     next_val_data: Option<ValidatorSetUpdate<SCT>>,
+    last_emitted_val_data: Option<SeqNum>,
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
@@ -49,55 +57,70 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
     ) -> Self {
         let (triedb_send, triedb_recv) = tokio::sync::mpsc::unbounded_channel();
 
-        let (seq_num_send, seq_num_recv) = std::sync::mpsc::channel();
+        let (state_root_requests_send, state_root_requests_recv) =
+            std::sync::mpsc::channel::<StateRootRequest>();
         let cancel_below = Arc::new(Mutex::new(SeqNum(0)));
         let cancel_below_clone = cancel_below.clone();
 
         let path = triedb_path.to_path_buf();
         rayon::spawn(move || {
             // FIXME: handle error, maybe retry
-            let handle = TriedbHandle::try_new(path.as_path()).unwrap();
+            let handle = TriedbReader::try_new(path.as_path()).unwrap();
+
+            let mut outstanding_requests: HashMap<_, usize> = HashMap::new();
 
             loop {
-                let seq_num: SeqNum = seq_num_recv.recv().unwrap(); //FIXME
-                let mut num_tries = 0_usize;
-                'poll_triedb: loop {
-                    if seq_num < *cancel_below_clone.lock().unwrap() {
-                        break 'poll_triedb;
-                    }
-                    num_tries += 1;
-                    let result = handle.get_state_root(seq_num.0);
-                    debug!(?seq_num, ?result, "polled state_root_hash");
-                    if let Some(state_root) = result {
-                        let state_root = state_root
-                            .try_into()
-                            .expect("state root from triedb must be 32 Bytes");
-                        let s = StateRootHashInfo {
-                            state_root_hash: StateRootHash(Hash(state_root)),
-                            seq_num,
-                        };
-
-                        triedb_send.send(s).unwrap();
-                        break 'poll_triedb;
-                    }
-
-                    if num_tries > 1 {
-                        warn!(?seq_num, ?num_tries, "no state root");
-                    } else {
-                        debug!(?seq_num, ?num_tries, "no state root");
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                while let Ok(request) = state_root_requests_recv.try_recv() {
+                    outstanding_requests.insert(request, 0);
                 }
+                let cancel_below = *cancel_below_clone.lock().unwrap();
+                outstanding_requests.retain(|request, _| request.seq_num >= cancel_below);
+
+                let mut successes = Vec::new();
+                for (request, num_tries) in &mut outstanding_requests {
+                    let result =
+                        handle.get_eth_header(&request.block_id, &request.seq_num, &request.round);
+                    trace!(?request, ?result, "polled eth_header");
+                    if let Some(eth_header) = result {
+                        triedb_send
+                            .send(StateRootEvent::Proposed(ProposedStateRoot {
+                                block_id: request.block_id,
+                                seq_num: request.seq_num,
+                                round: request.round,
+                                result: eth_header,
+                            }))
+                            .unwrap();
+                        successes.push(*request);
+                        continue;
+                    }
+
+                    *num_tries += 1;
+
+                    if *num_tries > 1 {
+                        warn!(?request, ?num_tries, "no eth header");
+                    } else {
+                        debug!(?request, ?num_tries, "no eth header");
+                    }
+                }
+
+                for success in successes {
+                    outstanding_requests
+                        .remove(&success)
+                        .expect("failed to remove success");
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
         });
 
         Self {
             triedb_recv,
             cancel_below,
-            seq_num_send,
+            state_root_requests_send,
             genesis_validator_data,
             last_val_data: None,
             next_val_data: None,
+            last_emitted_val_data: None,
             val_set_update_interval,
 
             waker: None,
@@ -132,13 +155,7 @@ where
         }
 
         let s = this.triedb_recv.poll_recv(cx);
-        s.map(|s| {
-            s.map(|info| {
-                MonadEvent::AsyncStateVerifyEvent(
-                    monad_executor_glue::AsyncStateVerifyEvent::LocalStateRoot(info),
-                )
-            })
-        })
+        s.map(|s| s.map(|event| MonadEvent::StateRootEvent(event)))
     }
 }
 
@@ -156,8 +173,10 @@ where
                 StateRootHashCommand::CancelBelow(seq_num) => {
                     *self.cancel_below.lock().unwrap() = seq_num;
                 }
-                StateRootHashCommand::Request(seq_num) => {
-                    if seq_num.is_epoch_end(self.val_set_update_interval) {
+                StateRootHashCommand::Request(block_id, seq_num, round) => {
+                    if seq_num.is_epoch_end(self.val_set_update_interval)
+                        && self.last_emitted_val_data != Some(seq_num)
+                    {
                         if self.next_val_data.is_some() {
                             error!("Validator set data is not consumed");
                         }
@@ -195,10 +214,15 @@ where
                             });
 
                         self.next_val_data = Some(next_validator_data);
+                        self.last_emitted_val_data = Some(seq_num);
                     }
-                    self.seq_num_send
-                        .send(seq_num)
-                        .expect("seq_num receiver should never be dropped");
+                    self.state_root_requests_send
+                        .send(StateRootRequest {
+                            block_id,
+                            seq_num,
+                            round,
+                        })
+                        .expect("state_root_requests receiver should never be dropped");
                     wake = true;
                 }
                 StateRootHashCommand::UpdateValidators((validator_data, epoch)) => {

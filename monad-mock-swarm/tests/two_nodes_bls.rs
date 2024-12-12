@@ -4,8 +4,7 @@ use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_mock_swarm::{
@@ -42,7 +41,6 @@ impl SwarmRelation for BLSSwarm {
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
     type BlockValidator = MockValidator;
-    type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -85,12 +83,8 @@ fn two_nodes_bls() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        || {
-            StateRoot::new(
-                SeqNum(4), // state_root_delay
-            )
-        },
         PeerAsyncStateVerify::new,
+        SeqNum(4),          // state_root_delay
         delta,              // delta
         vote_pace,          // vote pace
         0,                  // proposal_tx_limit
