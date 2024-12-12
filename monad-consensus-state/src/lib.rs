@@ -70,7 +70,8 @@ where
     block_sync_requests: BTreeMap<BlockId, (Round, BlockRange)>,
     last_proposed_round: Round,
 
-    execution_results: BTreeMap<Round, ExecutionResult>,
+    finalized_execution_results: BTreeMap<SeqNum, Header>,
+    proposed_execution_results: BTreeMap<Round, ProposedExecutionResult>,
 
     /// Set to true once consensus has kicked off stastesync
     /// This is a bit janky; because initiating statesync is asynchronous (via loopback executor)
@@ -117,11 +118,16 @@ enum OutgoingVoteStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecutionResult {
+pub struct ProposedExecutionResult {
     pub block_id: BlockId,
     pub seq_num: SeqNum,
     pub round: Round,
     pub result: Header,
+}
+
+pub enum ExecutionResult {
+    Proposed(ProposedExecutionResult),
+    Finalized(SeqNum, Header),
 }
 
 pub struct ConsensusStateWrapper<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
@@ -273,7 +279,8 @@ where
             // on our first proposal, we will set this to the appropriate value
             last_proposed_round: Round(0),
 
-            execution_results: Default::default(),
+            finalized_execution_results: Default::default(),
+            proposed_execution_results: Default::default(),
 
             started_statesync: false,
         }
@@ -347,11 +354,32 @@ where
         &mut self,
         execution_result: ExecutionResult,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        let block_id = execution_result.block_id;
-        self.consensus
-            .execution_results
-            .insert(execution_result.round, execution_result);
-        self.try_update_coherency(block_id)
+        match execution_result {
+            ExecutionResult::Finalized(seq_num, execution_result) => {
+                assert_eq!(seq_num.0, execution_result.number);
+                match self.consensus.finalized_execution_results.entry(seq_num) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(execution_result);
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        assert_eq!(entry.get(), &execution_result);
+                    }
+                };
+                Vec::new()
+            }
+            ExecutionResult::Proposed(execution_result) => {
+                if execution_result.round <= self.consensus.pending_block_tree.root().round {
+                    // not necessary, but here for clarity
+                    // try_update_coherency would drop it anyways
+                    return Vec::new();
+                }
+                let block_id = execution_result.block_id;
+                self.consensus
+                    .proposed_execution_results
+                    .insert(execution_result.round, execution_result);
+                self.try_update_coherency(block_id)
+            }
+        }
     }
 
     /// handles proposal messages from other nodes
@@ -868,7 +896,6 @@ where
             );
 
             if !blocks_to_commit.is_empty() {
-                let mut committed_seq_nums = HashMap::new();
                 for block in blocks_to_commit.iter() {
                     // when epoch boundary block is committed, this updates
                     // epoch manager records
@@ -881,21 +908,50 @@ where
                         block.get_txn_list_len() as u64;
 
                     cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(
+                        block.get_seq_num(),
                         OptimisticCommit::Committed(block.get_id()),
                     ));
 
-                    committed_seq_nums.insert(block.get_seq_num(), block.get_id());
+                    if let Some(execution_result) = self
+                        .consensus
+                        .proposed_execution_results
+                        .remove(&block.get_round())
+                    {
+                        if execution_result.block_id == block.get_id() {
+                            assert_eq!(execution_result.seq_num, block.get_seq_num());
+                            self.consensus
+                                .finalized_execution_results
+                                .insert(block.get_seq_num(), execution_result.result);
+                        }
+                    }
                 }
 
-                let last_block = blocks_to_commit.last().expect("asserted nonempty");
-                self.consensus.execution_results.retain(|_, result| {
-                    let is_invalid = committed_seq_nums
-                        .get(&result.seq_num)
-                        .is_some_and(|committed| &result.block_id != committed);
+                let last_committed_block = blocks_to_commit
+                    .last()
+                    .expect("blocks_to_commit is not empty");
 
-                    (result.seq_num + self.config.execution_delay > last_block.get_seq_num())
-                        && !is_invalid
-                });
+                while self
+                    .consensus
+                    .proposed_execution_results
+                    .first_key_value()
+                    .is_some_and(|(proposed_round, _)| {
+                        proposed_round <= &last_committed_block.get_round()
+                    })
+                {
+                    self.consensus.proposed_execution_results.pop_first();
+                }
+
+                while self
+                    .consensus
+                    .finalized_execution_results
+                    .first_key_value()
+                    .is_some_and(|(&finalized_seq_num, _)| {
+                        finalized_seq_num + self.config.execution_delay
+                            <= last_committed_block.get_seq_num()
+                    })
+                {
+                    self.consensus.finalized_execution_results.pop_first();
+                }
 
                 // enter new pacemaker epoch if committing the boundary block
                 // bumps the current epoch
@@ -994,9 +1050,10 @@ where
             self.state_backend,
         ) {
             // optimistically commit any block that has been added to the blocktree and is coherent
-            cmds.push(ConsensusCommand::LedgerCommit(OptimisticCommit::Proposed(
-                newly_coherent_block.get_full_block(),
-            )));
+            cmds.push(ConsensusCommand::LedgerCommit(
+                newly_coherent_block.get_seq_num(),
+                OptimisticCommit::Proposed(newly_coherent_block.get_full_block()),
+            ));
         }
 
         let high_commit_qc = self.consensus.pending_block_tree.get_high_committable_qc();
@@ -1187,7 +1244,7 @@ where
 
         let proposer_builder =
             |txns: FullTransactionList,
-             execution_result: &ExecutionResult,
+             execution_result: &Header,
              seq_num: SeqNum,
              last_round_tc: Option<TimeoutCertificate<SCT>>| {
                 let payload = Payload { txns };
@@ -1198,7 +1255,7 @@ where
                     epoch,
                     round,
                     &ExecutionProtocol {
-                        delayed_execution_result: execution_result.result.clone(),
+                        delayed_execution_result: execution_result.clone(),
                         seq_num,
                         beneficiary: *self.beneficiary,
                         randao_reveal: RandaoReveal::new::<SCT::SignatureType>(
@@ -1245,15 +1302,15 @@ where
             .find(|block| block.get_seq_num() == execution_result_seq_num)
         {
             self.consensus
-                .execution_results
-                .values()
-                .find(|result| result.block_id == block.get_id())
+                .proposed_execution_results
+                .get(&block.get_round())
+                .filter(|result| result.block_id == block.get_id())
+                .map(|result| &result.result)
         } else {
             assert!(execution_result_seq_num <= self.consensus.pending_block_tree.root().seq_num);
             self.consensus
-                .execution_results
-                .values()
-                .find(|result| result.seq_num == execution_result_seq_num)
+                .finalized_execution_results
+                .get(&execution_result_seq_num)
         };
 
         let Some(execution_result) = execution_result else {
@@ -1364,15 +1421,15 @@ where
             .find(|block| block.get_seq_num() == execution_result_seq_num)
         {
             self.consensus
-                .execution_results
-                .values()
-                .find(|result| result.block_id == block.get_id())
+                .proposed_execution_results
+                .get(&block.get_round())
+                .filter(|result| result.block_id == block.get_id())
+                .map(|result| &result.result)
         } else {
             assert!(execution_result_seq_num <= self.consensus.pending_block_tree.root().seq_num);
             self.consensus
-                .execution_results
-                .values()
-                .find(|result| result.seq_num == execution_result_seq_num)
+                .finalized_execution_results
+                .get(&execution_result_seq_num)
         };
 
         let Some(execution_result) = execution_result else {
@@ -1381,7 +1438,7 @@ where
             return StateRootAction::Defer;
         };
 
-        if &execution_result.result == p.block.get_delayed_execution_result() {
+        if execution_result == p.block.get_delayed_execution_result() {
             debug!("Received Proposal Message with valid state root hash");
             StateRootAction::Proceed
         } else {

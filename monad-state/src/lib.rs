@@ -20,6 +20,7 @@ use monad_consensus::{
 };
 use monad_consensus_state::{
     timestamp::BlockTimestamp, ConsensusConfig, ConsensusState, ExecutionResult,
+    ProposedExecutionResult,
 };
 use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
@@ -981,12 +982,17 @@ where
 
                 let consensus_cmds =
                     ConsensusChildState::new(self).handle_execution_result(match event {
-                        StateRootEvent::Proposed(proposed) => ExecutionResult {
-                            block_id: proposed.block_id,
-                            seq_num: proposed.seq_num,
-                            round: proposed.round,
-                            result: proposed.result,
-                        },
+                        StateRootEvent::Proposed(proposed) => {
+                            ExecutionResult::Proposed(ProposedExecutionResult {
+                                block_id: proposed.block_id,
+                                seq_num: proposed.seq_num,
+                                round: proposed.round,
+                                result: proposed.result,
+                            })
+                        }
+                        StateRootEvent::Finalized(seq_num, header) => {
+                            ExecutionResult::Finalized(seq_num, header)
+                        }
                     });
 
                 consensus_cmds
@@ -1335,11 +1341,7 @@ where
                 OptimisticCommit::Committed(block.get_id()),
             )));
             commands.push(Command::StateRootHashCommand(
-                StateRootHashCommand::Request(
-                    block.get_id(),
-                    block.get_seq_num(),
-                    block.get_round(),
-                ),
+                StateRootHashCommand::RequestFinalized(block.get_seq_num()),
             ));
         }
 
@@ -1348,7 +1350,7 @@ where
             .expect("done blocksync, should have root_info");
         // this is necessary for genesis, because we'll never request root otherwise
         commands.push(Command::StateRootHashCommand(
-            StateRootHashCommand::Request(root_info.block_id, root_info.seq_num, root_info.round),
+            StateRootHashCommand::RequestFinalized(root_info.seq_num),
         ));
 
         let first_root_to_request = (root_info.seq_num + SeqNum(1)).max(delay) - delay;

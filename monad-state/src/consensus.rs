@@ -155,7 +155,6 @@ where
                                     "setting new statesync target",
                                 );
                                 cmds.push(WrappedConsensusCommand {
-                                    last_committed: new_root.get_seq_num(), // doesn't matter
                                     state_root_delay: self.consensus_config.execution_delay,
                                     command: ConsensusCommand::RequestStateSync {
                                         root: new_root,
@@ -229,7 +228,6 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                last_committed: consensus.consensus.blocktree().root().seq_num,
                 state_root_delay: consensus.config.execution_delay,
                 command: cmd,
             })
@@ -271,7 +269,6 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                last_committed: consensus.consensus.blocktree().root().seq_num,
                 state_root_delay: consensus.config.execution_delay,
                 command: cmd,
             })
@@ -315,7 +312,6 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                last_committed: consensus.consensus.blocktree().root().seq_num,
                 state_root_delay: consensus.config.execution_delay,
                 command: cmd,
             })
@@ -362,7 +358,6 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    last_committed: SeqNum,
     state_root_delay: SeqNum,
     command: ConsensusCommand<ST, SCT>,
 }
@@ -420,17 +415,17 @@ where
             ConsensusCommand::StartExecution => {
                 parent_cmds.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
             }
-            ConsensusCommand::LedgerCommit(cmd) => {
+            ConsensusCommand::LedgerCommit(seq_num, cmd) => {
                 match cmd {
                     OptimisticCommit::Proposed(block) => {
+                        assert_eq!(seq_num, block.get_seq_num());
                         let block_id = block.get_id();
-                        let seq_num = block.get_seq_num();
                         let round = block.get_round();
                         parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                             OptimisticCommit::Proposed(block),
                         )));
                         parent_cmds.push(Command::StateRootHashCommand(
-                            StateRootHashCommand::Request(block_id, seq_num, round),
+                            StateRootHashCommand::RequestProposed(block_id, seq_num, round),
                         ));
                     }
                     OptimisticCommit::Committed(block_id) => {
@@ -438,13 +433,16 @@ where
                             OptimisticCommit::Committed(block_id),
                         )));
                         parent_cmds.push(Command::StateRootHashCommand(
+                            StateRootHashCommand::RequestFinalized(seq_num),
+                        ));
+                        parent_cmds.push(Command::StateRootHashCommand(
                             // upon committing block N, we no longer need state_root_N-delay
                             // therefore, we cancel below state_root_N-delay+1
                             //
                             // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
                             // exactly `delay` number of roots
                             StateRootHashCommand::CancelBelow(
-                                (wrapped.last_committed + SeqNum(1)).max(wrapped.state_root_delay)
+                                (seq_num + SeqNum(1)).max(wrapped.state_root_delay)
                                     - wrapped.state_root_delay,
                             ),
                         ));

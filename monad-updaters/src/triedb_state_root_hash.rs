@@ -23,10 +23,24 @@ use tracing::{debug, error, trace, warn};
 use crate::state_root_hash::ValidatorSetUpdate;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-struct StateRootRequest {
-    block_id: BlockId,
-    seq_num: SeqNum,
-    round: Round,
+enum StateRootRequest {
+    Proposed {
+        block_id: BlockId,
+        seq_num: SeqNum,
+        round: Round,
+    },
+    Finalized {
+        seq_num: SeqNum,
+    },
+}
+
+impl StateRootRequest {
+    fn seq_num(&self) -> &SeqNum {
+        match self {
+            Self::Proposed { seq_num, .. } => seq_num,
+            Self::Finalized { seq_num, .. } => seq_num,
+        }
+    }
 }
 
 /// Updater that gets state root hash updates by polling triedb
@@ -74,22 +88,32 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
                     outstanding_requests.insert(request, 0);
                 }
                 let cancel_below = *cancel_below_clone.lock().unwrap();
-                outstanding_requests.retain(|request, _| request.seq_num >= cancel_below);
+                outstanding_requests.retain(|request, _| request.seq_num() >= &cancel_below);
 
                 let mut successes = Vec::new();
                 for (request, num_tries) in &mut outstanding_requests {
-                    let result =
-                        handle.get_eth_header(&request.block_id, &request.seq_num, &request.round);
-                    trace!(?request, ?result, "polled eth_header");
-                    if let Some(eth_header) = result {
-                        triedb_send
-                            .send(StateRootEvent::Proposed(ProposedStateRoot {
-                                block_id: request.block_id,
-                                seq_num: request.seq_num,
-                                round: request.round,
-                                result: eth_header,
-                            }))
-                            .unwrap();
+                    let maybe_event = match request {
+                        StateRootRequest::Proposed {
+                            block_id,
+                            seq_num,
+                            round,
+                        } => handle
+                            .get_proposed_eth_header(block_id, seq_num, round)
+                            .map(|header| {
+                                StateRootEvent::Proposed(ProposedStateRoot {
+                                    block_id: *block_id,
+                                    seq_num: *seq_num,
+                                    round: *round,
+                                    result: header,
+                                })
+                            }),
+                        StateRootRequest::Finalized { seq_num } => handle
+                            .get_finalized_eth_header(seq_num)
+                            .map(|header| StateRootEvent::Finalized(*seq_num, header)),
+                    };
+                    trace!(result =? maybe_event, "polled eth_header");
+                    if let Some(event) = maybe_event {
+                        triedb_send.send(event).unwrap();
                         successes.push(*request);
                         continue;
                     }
@@ -126,6 +150,51 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
             waker: None,
             metrics: Default::default(),
             phantom: PhantomData,
+        }
+    }
+
+    fn jank_valset_update(&mut self, seq_num: SeqNum) {
+        if seq_num.is_epoch_end(self.val_set_update_interval)
+            && self.last_emitted_val_data != Some(seq_num)
+        {
+            if self.next_val_data.is_some() {
+                error!("Validator set data is not consumed");
+            }
+            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
+            assert_eq!(
+                locked_epoch,
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+            );
+            let next_validator_data = self
+                .last_val_data
+                .as_ref()
+                .and_then(|v| {
+                    if locked_epoch >= v.epoch {
+                        debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch matched locked epoch");
+                        Some(ValidatorSetUpdate {
+                            epoch: locked_epoch,
+                            validator_data: v.validator_data.clone(),
+                        })
+                    } else {
+                        // FIXME review this... the unwrap_or_else below here will run
+                        // if this branch gets hit.
+                        //
+                        // This all should disappear post staking module so fine for
+                        // now
+                        debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch did not match matched locked epoch");
+                        None
+                    }
+                })
+                .unwrap_or_else(|| {
+                    debug!(locked_epoch = %locked_epoch.0, num_validators = %self.genesis_validator_data.0.len(), "re-using genesis validator set");
+                    ValidatorSetUpdate {
+                        epoch: locked_epoch,
+                        validator_data: self.genesis_validator_data.clone(),
+                    }
+                });
+
+            self.next_val_data = Some(next_validator_data);
+            self.last_emitted_val_data = Some(seq_num);
         }
     }
 }
@@ -173,55 +242,21 @@ where
                 StateRootHashCommand::CancelBelow(seq_num) => {
                     *self.cancel_below.lock().unwrap() = seq_num;
                 }
-                StateRootHashCommand::Request(block_id, seq_num, round) => {
-                    if seq_num.is_epoch_end(self.val_set_update_interval)
-                        && self.last_emitted_val_data != Some(seq_num)
-                    {
-                        if self.next_val_data.is_some() {
-                            error!("Validator set data is not consumed");
-                        }
-                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                        assert_eq!(
-                            locked_epoch,
-                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
-                        );
-                        let next_validator_data = self
-                            .last_val_data
-                            .as_ref()
-                            .and_then(|v| {
-                                if locked_epoch >= v.epoch {
-                                    debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch matched locked epoch");
-                                    Some(ValidatorSetUpdate {
-                                        epoch: locked_epoch,
-                                        validator_data: v.validator_data.clone(),
-                                    })
-                                } else {
-                                    // FIXME review this... the unwrap_or_else below here will run
-                                    // if this branch gets hit.
-                                    //
-                                    // This all should disappear post staking module so fine for
-                                    // now
-                                    debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch did not match matched locked epoch");
-                                    None
-                                }
-                            })
-                            .unwrap_or_else(|| {
-                                debug!(locked_epoch = %locked_epoch.0, num_validators = %self.genesis_validator_data.0.len(), "re-using genesis validator set");
-                                ValidatorSetUpdate {
-                                    epoch: locked_epoch,
-                                    validator_data: self.genesis_validator_data.clone(),
-                                }
-                            });
-
-                        self.next_val_data = Some(next_validator_data);
-                        self.last_emitted_val_data = Some(seq_num);
-                    }
+                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
+                    self.jank_valset_update(seq_num);
                     self.state_root_requests_send
-                        .send(StateRootRequest {
+                        .send(StateRootRequest::Proposed {
                             block_id,
                             seq_num,
                             round,
                         })
+                        .expect("state_root_requests receiver should never be dropped");
+                    wake = true;
+                }
+                StateRootHashCommand::RequestFinalized(seq_num) => {
+                    self.jank_valset_update(seq_num);
+                    self.state_root_requests_send
+                        .send(StateRootRequest::Finalized { seq_num })
                         .expect("state_root_requests receiver should never be dropped");
                     wake = true;
                 }

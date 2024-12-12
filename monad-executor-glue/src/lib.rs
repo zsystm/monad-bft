@@ -117,7 +117,8 @@ pub enum StateRootHashCommand<SCT>
 where
     SCT: SignatureCollection,
 {
-    Request(BlockId, SeqNum, Round),
+    RequestProposed(BlockId, SeqNum, Round),
+    RequestFinalized(SeqNum),
     CancelBelow(SeqNum),
     UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
@@ -460,12 +461,14 @@ pub enum AsyncStateVerifyEvent<SCT: SignatureCollection> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateRootEvent {
     Proposed(ProposedStateRoot),
+    Finalized(SeqNum, Header),
 }
 
 impl StateRootEvent {
     pub fn seq_num(&self) -> SeqNum {
         match self {
             StateRootEvent::Proposed(proposed) => proposed.seq_num,
+            StateRootEvent::Finalized(seq_num, _) => *seq_num,
         }
     }
 }

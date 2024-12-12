@@ -112,6 +112,26 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
     pub fn inject_byzantine_srh(&mut self, calc_srh: fn(&SeqNum) -> StateRootHash) {
         self.calc_state_root = calc_srh;
     }
+
+    fn jank_update_valset(&mut self, seq_num: SeqNum) {
+        if seq_num.is_epoch_end(self.val_set_update_interval)
+            && self.last_sent_epoch != Some(seq_num)
+        {
+            if self.next_val_data.is_some() {
+                error!("Validator set data is not consumed");
+            }
+            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
+            assert_eq!(
+                locked_epoch,
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+            );
+            self.next_val_data = Some(ValidatorSetUpdate {
+                epoch: locked_epoch,
+                validator_data: self.genesis_validator_data.clone(),
+            });
+            self.last_sent_epoch = Some(seq_num);
+        }
+    }
 }
 
 impl<ST, SCT> MockableStateRootHash for MockStateRootHashNop<ST, SCT>
@@ -168,7 +188,7 @@ where
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::Request(block_id, seq_num, round) => {
+                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
                     self.state_root_update
                         .push_back(StateRootEvent::Proposed(ProposedStateRoot {
                             block_id,
@@ -176,25 +196,15 @@ where
                             round,
                             result: self.compute_execution_result(&seq_num),
                         }));
-
-                    if seq_num.is_epoch_end(self.val_set_update_interval)
-                        && self.last_sent_epoch != Some(seq_num)
-                    {
-                        if self.next_val_data.is_some() {
-                            error!("Validator set data is not consumed");
-                        }
-                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                        assert_eq!(
-                            locked_epoch,
-                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
-                        );
-                        self.next_val_data = Some(ValidatorSetUpdate {
-                            epoch: locked_epoch,
-                            validator_data: self.genesis_validator_data.clone(),
-                        });
-                        self.last_sent_epoch = Some(seq_num);
-                    }
-
+                    self.jank_update_valset(seq_num);
+                    wake = true;
+                }
+                StateRootHashCommand::RequestFinalized(seq_num) => {
+                    self.state_root_update.push_back(StateRootEvent::Finalized(
+                        seq_num,
+                        self.compute_execution_result(&seq_num),
+                    ));
+                    self.jank_update_valset(seq_num);
                     wake = true;
                 }
                 StateRootHashCommand::UpdateValidators(_) => {
@@ -307,6 +317,33 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashSwap<ST, SCT> {
             phantom: PhantomData,
         }
     }
+
+    fn jank_update_valset(&mut self, seq_num: SeqNum) {
+        if seq_num.is_epoch_end(self.val_set_update_interval)
+            && self.last_sent_epoch != Some(seq_num)
+        {
+            if self.next_val_data.is_some() {
+                error!("Validator set data is not consumed");
+            }
+            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
+            assert_eq!(
+                locked_epoch,
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+            );
+            self.next_val_data = if locked_epoch.0 % 2 == 0 {
+                Some(ValidatorSetUpdate {
+                    epoch: locked_epoch,
+                    validator_data: self.val_data_1.clone(),
+                })
+            } else {
+                Some(ValidatorSetUpdate {
+                    epoch: locked_epoch,
+                    validator_data: self.val_data_2.clone(),
+                })
+            };
+        }
+        self.last_sent_epoch = Some(seq_num);
+    }
 }
 
 impl<ST, SCT> MockableStateRootHash for MockStateRootHashSwap<ST, SCT>
@@ -376,7 +413,7 @@ where
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::Request(block_id, seq_num, round) => {
+                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
                     self.state_root_update
                         .push_back(StateRootEvent::Proposed(ProposedStateRoot {
                             block_id,
@@ -384,31 +421,15 @@ where
                             round,
                             result: self.compute_execution_result(&seq_num),
                         }));
-
-                    if seq_num.is_epoch_end(self.val_set_update_interval)
-                        && self.last_sent_epoch != Some(seq_num)
-                    {
-                        if self.next_val_data.is_some() {
-                            error!("Validator set data is not consumed");
-                        }
-                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                        assert_eq!(
-                            locked_epoch,
-                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
-                        );
-                        self.next_val_data = if locked_epoch.0 % 2 == 0 {
-                            Some(ValidatorSetUpdate {
-                                epoch: locked_epoch,
-                                validator_data: self.val_data_1.clone(),
-                            })
-                        } else {
-                            Some(ValidatorSetUpdate {
-                                epoch: locked_epoch,
-                                validator_data: self.val_data_2.clone(),
-                            })
-                        };
-                    }
-                    self.last_sent_epoch = Some(seq_num);
+                    self.jank_update_valset(seq_num);
+                    wake = true;
+                }
+                StateRootHashCommand::RequestFinalized(seq_num) => {
+                    self.state_root_update.push_back(StateRootEvent::Finalized(
+                        seq_num,
+                        self.compute_execution_result(&seq_num),
+                    ));
+                    self.jank_update_valset(seq_num);
                     wake = true;
                 }
                 StateRootHashCommand::UpdateValidators(_) => {

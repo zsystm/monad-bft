@@ -314,6 +314,16 @@ impl From<&StateRootEvent> for ProtoStateRootEvent {
             StateRootEvent::Proposed(proposed) => {
                 proto_state_root_event::Event::Proposed(proposed.into())
             }
+            StateRootEvent::Finalized(seq_num, result) => {
+                proto_state_root_event::Event::Finalized(ProtoFinalizedStateRoot {
+                    seq_num: Some(seq_num.into()),
+                    result: {
+                        let mut buf = BytesMut::new();
+                        result.encode(&mut buf);
+                        buf.into()
+                    },
+                })
+            }
         };
         Self { event: Some(event) }
     }
@@ -327,6 +337,17 @@ impl TryFrom<ProtoStateRootEvent> for StateRootEvent {
             Some(proto_state_root_event::Event::Proposed(proposed)) => {
                 Self::Proposed(proposed.try_into()?)
             }
+            Some(proto_state_root_event::Event::Finalized(finalized)) => Self::Finalized(
+                finalized
+                    .seq_num
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "StateRootEvent::Finalized.seq_num".to_owned(),
+                    ))?
+                    .try_into()?,
+                Header::decode(&mut finalized.result.as_ref()).map_err(|_err| {
+                    Self::Error::DeserializeError("StateRootEvent::Finalized.result".to_owned())
+                })?,
+            ),
             None => Err(ProtoError::MissingRequiredField(
                 "StateRootEvent.event".to_owned(),
             ))?,

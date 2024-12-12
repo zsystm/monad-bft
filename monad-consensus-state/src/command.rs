@@ -43,7 +43,7 @@ where
     /// Cancel scheduled (if exists) timeout event
     ScheduleReset,
     /// Commit blocks to ledger
-    LedgerCommit(OptimisticCommit<SCT>),
+    LedgerCommit(SeqNum, OptimisticCommit<SCT>),
     /// Requests BlockSync
     /// Serviced by block_sync in MonadState
     RequestSync(BlockRange),

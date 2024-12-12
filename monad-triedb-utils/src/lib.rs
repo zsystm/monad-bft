@@ -77,16 +77,12 @@ impl TriedbReader {
         }
     }
 
-    pub fn get_eth_header(
+    pub fn get_proposed_eth_header(
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         round: &Round,
     ) -> Option<Header> {
-        if let Some(block_header) = self.get_finalized_eth_header(seq_num) {
-            return Some(block_header);
-        }
-
         let bft_id = self.get_bft_id(seq_num, round)?;
         if block_id != &bft_id {
             return None;

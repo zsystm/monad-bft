@@ -50,6 +50,11 @@ message ProtoProposedStateRoot {
   bytes result = 5;
 }
 
+message ProtoFinalizedStateRoot {
+  monad_proto.basic.ProtoSeqNum seq_num = 1;
+  bytes result = 2;
+}
+
 message ProtoTimestampUpdate {
    uint64 update = 1;
 }
@@ -117,6 +122,7 @@ message ProtoMempoolEvent {
 message ProtoStateRootEvent {
   oneof event {
     ProtoProposedStateRoot proposed = 1;
+    ProtoFinalizedStateRoot finalized = 2;
   }
 }
 
