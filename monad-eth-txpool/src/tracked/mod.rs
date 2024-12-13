@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use heapless::BinaryHeap;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
