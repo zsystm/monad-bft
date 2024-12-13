@@ -25,7 +25,7 @@ use monad_eth_types::EthAddress;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::InMemoryState;
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 
 /// A ledger for commited Monad Blocks
@@ -38,6 +38,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     blocks: BTreeMap<Round, FullBlock<SCT>>,
+    finalized: BTreeMap<SeqNum, FullBlock<SCT>>,
     block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<SCT>>,
 
@@ -55,6 +56,7 @@ where
     pub fn new(state: InMemoryState) -> Self {
         MockEthLedger {
             blocks: Default::default(),
+            finalized: Default::default(),
             block_ids: Default::default(),
             events: Default::default(),
 
@@ -147,6 +149,15 @@ where
                     }
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Committed(block_id)) => {
+                    let block_round = self
+                        .block_ids
+                        .get(&block_id)
+                        .expect("committed block round doesn't exist");
+                    let block = self
+                        .blocks
+                        .get(block_round)
+                        .expect("committed block doesn't exist");
+                    self.finalized.insert(block.get_seq_num(), block.clone());
                     let mut state = self.state.lock().unwrap();
                     state.ledger_commit(&block_id);
                 }
@@ -206,7 +217,7 @@ where
         !self.events.is_empty()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<SCT>> {
-        &self.blocks
+    fn get_finalized_blocks(&self) -> &BTreeMap<SeqNum, FullBlock<SCT>> {
+        &self.finalized
     }
 }

@@ -110,13 +110,13 @@ pub fn swarm_ledger_verification<S: SwarmRelation>(swarm: &Nodes<S>, min_ledger_
     let ledgers: Vec<_> = swarm
         .states()
         .values()
-        .map(|node| node.executor.ledger().get_blocks().clone())
+        .map(|node| node.executor.ledger().get_finalized_blocks().clone())
         .collect();
     ledger_verification(&ledgers, min_ledger_len)
 }
 
 pub fn ledger_verification<SCT: SignatureCollection>(
-    ledgers: &Vec<BTreeMap<Round, FullBlock<SCT>>>,
+    ledgers: &Vec<BTreeMap<SeqNum, FullBlock<SCT>>>,
     min_ledger_len: usize,
 ) {
     let (max_ledger_idx, max_b) = ledgers

@@ -8,6 +8,7 @@ mod test {
     use alloy_rlp::Decodable;
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
+    use monad_consensus_types::block::BlockType;
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -172,19 +173,18 @@ mod test {
         for node_id in node_ids {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
-            for (round, block) in state.executor.ledger().get_blocks() {
+            for (round, block) in state.executor.ledger().get_finalized_blocks() {
                 let decoded_txns =
                     Vec::<EthSignedTransaction>::decode(&mut block.payload.txns.as_ref()).unwrap();
 
-                let decoded_txn_hashes: HashSet<_> =
-                    HashSet::from_iter(decoded_txns.iter().map(|t| t.hash()));
-                for txn_hash in decoded_txn_hashes {
+                for txn in decoded_txns {
+                    let txn_hash = txn.hash();
                     if txns_to_see.contains(&txn_hash) {
                         txns_to_see.remove(&txn_hash);
                     } else {
                         println!(
-                            "Unexpected transaction in block round {}. NodeID: {}, TxnHash: {}",
-                            round.0, node_id, txn_hash
+                            "Unexpected transaction in block round {}. SeqNum: {}, NodeID: {}, TxnHash: {}, Nonce: {}",
+                            round.0, block.get_seq_num().0, node_id, txn_hash, txn.nonce()
                         );
                         return false;
                     }
@@ -237,7 +237,7 @@ mod test {
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(4, CONSENSUS_DELTA),
+            happy_path_tick_by_block(5, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);
@@ -302,7 +302,7 @@ mod test {
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(7, CONSENSUS_DELTA),
+            happy_path_tick_by_block(8, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);
@@ -359,7 +359,7 @@ mod test {
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(9, CONSENSUS_DELTA),
+            happy_path_tick_by_block(10, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);
@@ -402,7 +402,7 @@ mod test {
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(19, CONSENSUS_DELTA),
+            happy_path_tick_by_block(20, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);

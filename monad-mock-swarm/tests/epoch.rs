@@ -111,7 +111,7 @@ mod test {
 
         for node in nodes {
             let mut update_block = None;
-            for block in node.executor.ledger().get_blocks().values() {
+            for block in node.executor.ledger().get_finalized_blocks().values() {
                 if block.get_seq_num() == update_block_num {
                     update_block = Some(block);
                     break;
@@ -596,7 +596,7 @@ mod test {
             .map(|node| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .cloned()
                     .collect_vec()

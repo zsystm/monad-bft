@@ -120,10 +120,10 @@ mod test {
                     .values()
                     .filter_map(|node| {
                         if filter_peers.contains(&node.id) {
-                            assert_eq!(node.executor.ledger().get_blocks().len(), 0);
+                            assert_eq!(node.executor.ledger().get_finalized_blocks().len(), 0);
                             None
                         } else {
-                            Some(node.executor.ledger().get_blocks().clone())
+                            Some(node.executor.ledger().get_finalized_blocks().clone())
                         }
                     })
                     .collect(),
@@ -343,7 +343,7 @@ mod test {
         let ledger_len = swarm
             .states()
             .values()
-            .map(|node| node.executor.ledger().get_blocks().len())
+            .map(|node| node.executor.ledger().get_finalized_blocks().len())
             .max()
             .unwrap();
         let running_nodes_ids = swarm
@@ -484,7 +484,7 @@ mod test {
         let ledger_len = swarm
             .states()
             .values()
-            .map(|node| node.executor.ledger().get_blocks().len())
+            .map(|node| node.executor.ledger().get_finalized_blocks().len())
             .max()
             .unwrap();
         let running_nodes_ids = swarm

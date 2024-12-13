@@ -412,7 +412,7 @@ fn forkpoint_restart_f(
         let maybe_last_block = restarted_node
             .executor
             .ledger()
-            .get_blocks()
+            .get_finalized_blocks()
             .values()
             .last();
         // SeqNum(terminate_block as u64 - 2): if all nodes are in sync, the
@@ -749,7 +749,7 @@ fn forkpoint_restart_below_all(
             .map(|(_id, node)| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .last()
                     .map(|block| block.get_seq_num().0)
@@ -764,7 +764,7 @@ fn forkpoint_restart_below_all(
             .map(|(_id, node)| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .last()
                     .map(|block| block.get_seq_num().0)

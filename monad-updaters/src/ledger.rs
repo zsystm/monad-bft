@@ -22,7 +22,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::InMemoryState;
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Round, SeqNum};
 
 pub trait MockableLedger:
     Executor<Command = LedgerCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin
@@ -31,7 +31,7 @@ pub trait MockableLedger:
     type Event;
 
     fn ready(&self) -> bool;
-    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<Self::SignatureCollection>>;
+    fn get_finalized_blocks(&self) -> &BTreeMap<SeqNum, FullBlock<Self::SignatureCollection>>;
 }
 
 impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
@@ -42,8 +42,8 @@ impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
         (**self).ready()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<Self::SignatureCollection>> {
-        (**self).get_blocks()
+    fn get_finalized_blocks(&self) -> &BTreeMap<SeqNum, FullBlock<Self::SignatureCollection>> {
+        (**self).get_finalized_blocks()
     }
 }
 
@@ -54,7 +54,7 @@ where
 {
     blocks: BTreeMap<Round, FullBlock<SCT>>,
     block_ids: HashMap<BlockId, Round>,
-    committed_blocks: BTreeMap<Round, FullBlock<SCT>>,
+    committed_blocks: BTreeMap<SeqNum, FullBlock<SCT>>,
 
     events: VecDeque<BlockSyncEvent<SCT>>,
 
@@ -164,7 +164,8 @@ where
                         .get(&block_id)
                         .expect("must have proposed block");
                     let block = self.blocks.get(round).expect("must have committed round");
-                    self.committed_blocks.insert(*round, block.clone());
+                    self.committed_blocks
+                        .insert(block.get_seq_num(), block.clone());
                     self.state_backend.lock().unwrap().ledger_commit(&block_id);
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Verified(_)) => {}
@@ -222,7 +223,7 @@ where
         !self.events.is_empty()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<SCT>> {
+    fn get_finalized_blocks(&self) -> &BTreeMap<SeqNum, FullBlock<SCT>> {
         &self.committed_blocks
     }
 }

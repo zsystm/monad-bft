@@ -143,7 +143,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let longest_ledger_before = swarm
         .states()
         .values()
-        .map(|s| s.executor.ledger().get_blocks().len())
+        .map(|s| s.executor.ledger().get_finalized_blocks().len())
         .max()
         .unwrap();
 
@@ -206,7 +206,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let longest_ledger_after = swarm
         .states()
         .values()
-        .map(|s| s.executor.ledger().get_blocks().len())
+        .map(|s| s.executor.ledger().get_finalized_blocks().len())
         .max()
         .unwrap();
 

@@ -254,7 +254,7 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
         for node_id in node_ids {
             let node = swarm.states.get(node_id).unwrap();
             let peer_id = node_id.get_peer_id();
-            let ledger = node.executor.ledger().get_blocks();
+            let ledger = node.executor.ledger().get_finalized_blocks();
             let ledger_len = ledger.len() as u64;
             // ledger should have genesis block
             assert!(ledger_len > 0);
