@@ -1315,6 +1315,16 @@ where
 
         let Some(execution_result) = execution_result else {
             // no state root
+            warn!(
+                ?node_id,
+                ?round,
+                ?high_qc,
+                ?try_propose_seq_num,
+                ?execution_result_seq_num,
+                ?last_round_tc,
+                "no eth_header found, can't propose"
+            );
+            self.metrics.consensus_events.rx_execution_lagging += 1;
             return Vec::new();
         };
         let _create_proposal_span = tracing::info_span!("create_proposal_span", ?round).entered();
