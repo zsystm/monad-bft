@@ -104,7 +104,7 @@ impl TrackedTxMap {
             MAX_PROMOTABLE_ON_CREATE_PROPOSAL,
         )?;
 
-        let tx_heap = TrackedTxHeap::<MAX_ADDRESSES>::new(&self.txs, &extending_blocks);
+        let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
 
         let account_balances = block_policy.compute_account_base_balances(
             proposed_seq_num,
@@ -210,7 +210,7 @@ impl TrackedTxMap {
         &self,
         tx_limit: usize,
         proposal_gas_limit: u64,
-        tx_heap: TrackedTxHeap<'_, MAX_ADDRESSES>,
+        tx_heap: TrackedTxHeap<'_>,
         mut account_balances: BTreeMap<&EthAddress, u128>,
     ) -> Result<(u64, Vec<EthTransaction>), StateBackendError> {
         assert!(tx_limit > 0);

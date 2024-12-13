@@ -1,11 +1,9 @@
-use std::collections::VecDeque;
+use std::collections::{BinaryHeap, VecDeque};
 
-use heapless::BinaryHeap;
 use indexmap::IndexMap;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_eth_block_policy::{AccountNonceRetrievable, EthValidatedBlock};
 use monad_eth_types::EthAddress;
-use tracing::error;
 
 use super::list::TrackedTxList;
 use crate::transaction::ValidEthTransaction;
@@ -18,12 +16,12 @@ struct OrderedTxGroup<'a> {
     queued: VecDeque<&'a ValidEthTransaction>,
 }
 
-pub struct TrackedTxHeap<'a, const MAX_ADDRESSES: usize> {
-    heap: BinaryHeap<OrderedTxGroup<'a>, heapless::binary_heap::Max, MAX_ADDRESSES>,
+pub struct TrackedTxHeap<'a> {
+    heap: BinaryHeap<OrderedTxGroup<'a>>,
     virtual_time: u64,
 }
 
-impl<'a, const MAX_ADDRESSES: usize> TrackedTxHeap<'a, MAX_ADDRESSES> {
+impl<'a> TrackedTxHeap<'a> {
     pub fn new<SCT>(
         tracked_txs: &'a IndexMap<EthAddress, TrackedTxList>,
         extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
@@ -59,15 +57,12 @@ impl<'a, const MAX_ADDRESSES: usize> TrackedTxHeap<'a, MAX_ADDRESSES> {
     ) {
         assert_eq!(address, &tx.sender());
 
-        if let Err(_) = self.heap.push(OrderedTxGroup {
+        self.heap.push(OrderedTxGroup {
             tx,
             virtual_time: self.virtual_time,
             address,
             queued,
-        }) {
-            // TODO(andr-dev): Warn as self.txs length should never exceed [MAX_ADDRESSES]
-            error!("txpool tracked heap invalid push");
-        }
+        });
 
         self.virtual_time += 1;
     }
