@@ -79,9 +79,4 @@ impl PendingTxMap {
 
         split
     }
-
-    pub fn clear(&mut self) {
-        self.txs.clear();
-        self.num_txs = 0;
-    }
 }

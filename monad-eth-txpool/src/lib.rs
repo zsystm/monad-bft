@@ -21,6 +21,8 @@ mod tracked;
 mod transaction;
 
 const MAX_PROPOSAL_SIZE: usize = 10_000;
+const INSERT_TXS_MIN_PROMOTE: usize = 32;
+const INSERT_TXS_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct EthTxPool {
@@ -149,7 +151,9 @@ where
         if let Err(state_backend_error) = self.promote_pending::<SCT, SBT>(
             block_policy,
             state_backend,
-            txns.len().min(16).max(128),
+            txns.len()
+                .min(INSERT_TXS_MIN_PROMOTE)
+                .max(INSERT_TXS_MAX_PROMOTE),
         ) {
             if self.pending.is_at_promote_txs_watermark() {
                 warn!(
