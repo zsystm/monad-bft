@@ -41,6 +41,7 @@ opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
+schemars = "0.8.21"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = [
@@ -54,3 +55,5 @@ tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 reth-primitives = { workspace = true }
+reth-rpc-types = { workspace = true }
+rocksdb = "0.22.0"

@@ -13,14 +13,12 @@ use chrono::{
     prelude::*,
 };
 use clap::Parser;
-use dynamodb::{DynamoDBArchive, HeaderSubset, TxIndexedData};
 use eyre::{Context, Result};
 use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
 use futures::{executor::block_on, future::join_all, stream, StreamExt};
 use metrics::Metrics;
 use monad_archive::*;
 use reth_primitives::{Block, ReceiptWithBloom};
-use s3_archive::{get_aws_config, S3Archive, S3Bucket};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::AsyncWriteExt,
@@ -46,14 +44,7 @@ async fn main() -> Result<()> {
     )?;
 
     // Construct s3 and dynamodb connections
-    let reader = ArchiveReader::new(
-        args.archive_bucket,
-        args.db_table,
-        args.region,
-        args.max_concurrent_connections,
-        metrics.clone(),
-    )
-    .await;
+    let reader = ArchiveReader::new(&args.storage, &metrics).await?;
 
     let mut latest_checked = args.start_block.unwrap_or(0);
 
@@ -94,9 +85,9 @@ async fn main() -> Result<()> {
             &reader,
             start_block_num,
             end_block_num,
-            args.max_concurrent_connections,
+            args.storage.concurrency(),
             &mut fault_writer,
-            metrics.clone(),
+            &metrics,
         )
         .await
         {
@@ -117,7 +108,7 @@ async fn handle_blocks(
     end_block_num: u64,
     concurrency: usize,
     fault_writer: &mut FaultWriter,
-    metrics: Metrics,
+    metrics: &Metrics,
 ) -> Result<()> {
     let faults: Vec<_> = stream::iter(start_block_num..=end_block_num)
         .map(|block_num| async move {

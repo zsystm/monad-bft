@@ -3,11 +3,7 @@ use std::collections::HashMap;
 use eyre::Result;
 use reth_primitives::{Block, ReceiptWithBloom};
 
-use crate::{
-    dynamodb::{DynamoDBArchive, TxIndexedData},
-    metrics::Metrics,
-    s3_archive::{get_aws_config, S3Archive, S3Bucket},
-};
+use crate::*;
 
 pub enum LatestKind {
     Uploaded,
@@ -15,58 +11,60 @@ pub enum LatestKind {
 }
 
 #[derive(Clone)]
-pub struct ArchiveReader {
-    s3: S3Archive,
-    dynamodb: DynamoDBArchive,
+pub struct ArchiveReader<BStore = BlobStoreErased, IStore = IndexStoreErased> {
+    block_store_archive: BlockDataArchive<BStore>,
+    index_store: IStore,
 }
 
 impl ArchiveReader {
-    pub async fn new(
-        bucket: String,
-        table: String,
-        region: Option<String>,
-        concurrency: usize,
-        metrics: Metrics,
-    ) -> ArchiveReader {
-        let sdk_config = get_aws_config(region).await;
-        ArchiveReader {
-            s3: S3Archive::new(S3Bucket::new(bucket, &sdk_config, metrics.clone())),
-            dynamodb: DynamoDBArchive::new(table, &sdk_config, concurrency, metrics.clone()),
-        }
+    pub async fn new(storage_args: &StorageArgs, metrics: &Metrics) -> Result<ArchiveReader> {
+        let (blob_store, index_store) = storage_args.build_stores(metrics.clone()).await?;
+        Ok(ArchiveReader {
+            block_store_archive: BlockDataArchive::new(blob_store),
+            index_store,
+        })
     }
+}
 
+impl<BStore: BlobStore, IStore: IndexStore> ArchiveReader<BStore, IStore> {
     pub fn bucket(&self) -> &str {
-        &self.s3.bucket.bucket
+        &self.block_store_archive.bucket.bucket_name()
     }
 
     pub async fn batch_get_txdata(
         &self,
         keys: &[String],
     ) -> Result<HashMap<String, TxIndexedData>> {
-        self.dynamodb.batch_get_txdata(keys).await
+        self.index_store.bulk_get(keys).await
     }
     pub async fn get_txdata(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
-        self.dynamodb.get_txdata(key).await
+        self.index_store.get(key).await
     }
 
     // Get the latest stored block
     pub async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
-        self.s3.get_latest(latest_kind).await
+        self.block_store_archive.get_latest(latest_kind).await
     }
 
     pub async fn get_block_by_hash(&self, block_hash: &[u8; 32]) -> Result<Block> {
-        self.s3.get_block_by_hash(block_hash).await
+        self.block_store_archive.get_block_by_hash(block_hash).await
     }
 
     pub async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
-        self.s3.get_block_by_number(block_num).await
+        self.block_store_archive
+            .get_block_by_number(block_num)
+            .await
     }
 
     pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
-        self.s3.get_block_receipts(block_number).await
+        self.block_store_archive
+            .get_block_receipts(block_number)
+            .await
     }
 
     pub async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
-        self.s3.get_block_traces(block_number).await
+        self.block_store_archive
+            .get_block_traces(block_number)
+            .await
     }
 }

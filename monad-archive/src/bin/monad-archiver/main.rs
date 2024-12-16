@@ -5,12 +5,7 @@ use std::{sync::Arc, time::Instant};
 use clap::Parser;
 use eyre::{eyre, Result};
 use futures::future::join_all;
-use monad_archive::{
-    archive_reader::LatestKind,
-    metrics::Metrics,
-    s3_archive::{get_aws_config, S3Archive, S3Bucket},
-};
-use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
+use metrics::Metrics;
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
@@ -18,6 +13,8 @@ use tokio::{
 };
 use tracing::{error, info, warn, Level};
 
+use monad_archive::*;
+use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
 mod cli;
 
 #[tokio::main]
@@ -31,7 +28,7 @@ async fn main() -> Result<()> {
         Duration::from_secs(15),
     )?;
 
-    let max_concurrent_blocks = args.max_concurrent_blocks;
+    let max_concurrent_blocks = args.storage.concurrency();
     let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
 
     // This will spin off a polling thread
@@ -40,10 +37,8 @@ async fn main() -> Result<()> {
         args.triedb_max_concurrent_requests as usize,
     );
 
-    // Construct s3 and dynamodb connections
-    let sdk_config = get_aws_config(args.region).await;
-    let s3_archive_writer =
-        S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config, metrics.clone()));
+    // Construct storage
+    let archive_writer = BlockDataArchive::new(args.storage.build_stores(metrics.clone()).await?.0);
 
     // Check for new blocks every 100 ms
     // Issue requests to triedb, poll data and push to relevant tables
@@ -54,7 +49,7 @@ async fn main() -> Result<()> {
         metrics.gauge("triedb_block_number", trie_db_block_number);
 
         let latest_processed_block =
-            (s3_archive_writer.get_latest(LatestKind::Uploaded).await).unwrap_or_default();
+            (archive_writer.get_latest(LatestKind::Uploaded).await).unwrap_or_default();
         metrics.gauge("latest_uploaded", latest_processed_block);
 
         if trie_db_block_number <= latest_processed_block {
@@ -83,7 +78,7 @@ async fn main() -> Result<()> {
 
         let join_handles = (start_block_number..=end_block_number).map(|current_block: u64| {
             let triedb = triedb.clone();
-            let s3_archive_writer = s3_archive_writer.clone();
+            let archive_writer = archive_writer.clone();
 
             let semaphore = concurrent_block_semaphore.clone();
             tokio::spawn(async move {
@@ -91,7 +86,7 @@ async fn main() -> Result<()> {
                     .acquire()
                     .await
                     .expect("Got permit to execute a new block");
-                handle_block(&triedb, current_block, &s3_archive_writer).await
+                handle_block(&triedb, current_block, &archive_writer).await
             })
         });
 
@@ -114,7 +109,7 @@ async fn main() -> Result<()> {
         }
 
         if current_join_block != 0 {
-            s3_archive_writer
+            archive_writer
                 .update_latest(current_join_block - 1, LatestKind::Uploaded)
                 .await?;
         }
@@ -127,7 +122,7 @@ async fn main() -> Result<()> {
 async fn handle_block(
     triedb: &TriedbEnv,
     current_block: u64,
-    s3_archive: &S3Archive,
+    s3_archive: &BlockDataArchive,
 ) -> Result<()> {
     /*  Store Blocks */
     let block_header = match triedb

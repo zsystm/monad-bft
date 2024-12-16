@@ -7,12 +7,10 @@ use std::{
 
 use archive_reader::{ArchiveReader, LatestKind::*};
 use clap::Parser;
-use dynamodb::{DynamoDBArchive, TxIndexArchiver};
 use eyre::Result;
 use futures::{executor::block_on, future::join_all};
 use metrics::Metrics;
 use monad_archive::*;
-use s3_archive::{get_aws_config, S3Archive, S3Bucket};
 use tokio::{join, sync::Semaphore, time::sleep, try_join};
 use tracing::{error, info, warn, Level};
 
@@ -24,18 +22,15 @@ async fn main() -> Result<()> {
 
     let args = cli::Cli::parse();
 
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_connections));
+    // let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_connections));
+    let concurrent_block_semaphore = Arc::new(Semaphore::new(5));
     let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
     // Construct s3 and dynamodb connections
-    let sdk_config = get_aws_config(args.region).await;
-    let dynamodb_archive = DynamoDBArchive::new(
-        args.db_table,
-        &sdk_config,
-        args.max_concurrent_connections,
-        metrics.clone(),
-    );
-    let archive = S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config, metrics.clone()));
+    let (bstore, istore) = args.storage.build_stores(metrics.clone()).await?;
+
+    let dynamodb_archive = TxIndexArchiver::new(istore);
+    let archive = BlockDataArchive::new(bstore);
 
     // for testing
     if args.reset_index {
@@ -129,7 +124,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        latest_indexed = current_join_block - 1;
+        latest_indexed = current_join_block.saturating_sub(1);
         archive.update_latest(latest_indexed, Indexed).await?;
         metrics.gauge("latest_indexed", latest_indexed);
         metrics.counter("txs_indexed", num_txs_indexed as u64);
@@ -140,8 +135,8 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_block(
-    archive: &S3Archive,
-    dynamodb: DynamoDBArchive,
+    archive: &BlockDataArchive,
+    dynamodb: TxIndexArchiver,
     block_num: u64,
 ) -> Result<usize> {
     let (block, traces, receipts) = try_join!(
@@ -159,9 +154,9 @@ async fn handle_block(
 
     // check 1 key
     if let Some(tx) = first {
-        let key = tx.hash.to_string();
+        let key = format!("{:x}", tx.hash);
         tokio::spawn(async move {
-            match dynamodb.get_txdata(&key).await {
+            match dynamodb.store.get(&key).await {
                 Ok(Some(resp)) => {
                     if resp.header_subset.block_number != block_num
                         || Some(&resp.receipt) != first_rx.as_ref()
@@ -176,7 +171,7 @@ async fn handle_block(
                         );
                     }
                 }
-                Ok(None) => warn!(key, "No key found for key"),
+                Ok(None) => warn!(key, block_num, "No key found for key"),
                 Err(e) => warn!("Error while checking: {e}"),
             };
         });

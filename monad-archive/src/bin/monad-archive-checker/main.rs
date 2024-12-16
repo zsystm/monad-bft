@@ -5,25 +5,19 @@ use std::sync::Arc;
 use clap::Parser;
 use eyre::Result;
 use futures::{future::join_all, join};
-use monad_archive::{
-    archive_reader::LatestKind,
-    fault::{BlockCheckResult, Fault, FaultWriter},
-    metrics::Metrics,
-    s3_archive::{get_aws_config, S3Archive, S3Bucket},
-};
 use reth_primitives::{Block, ReceiptWithBloom};
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
 };
-use tracing::{debug, error, info, warn, Level};
+use tracing::{debug, error, info, warn};
+
+use monad_archive::*;
 
 mod cli;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
-
     let args = cli::Cli::parse();
 
     let metrics = Metrics::new(
@@ -60,7 +54,7 @@ async fn main() -> Result<()> {
     for (idx, bucket_name) in s3_buckets.iter().enumerate() {
         let config = get_aws_config(Some(args.regions[idx].clone())).await;
         let s3_archive_reader =
-            S3Archive::new(S3Bucket::new(bucket_name.clone(), &config, metrics.clone()));
+            BlockDataArchive::new(S3Bucket::new(bucket_name.clone(), &config, metrics.clone()));
 
         s3_archive_readers.push(s3_archive_reader);
     }
@@ -105,7 +99,7 @@ async fn main() -> Result<()> {
                     .await
                     .expect("Got permit to check a new block");
                 let blocks_data = get_block_data(&s3_archive_readers, current_block).await;
-                pairwise_check(&blocks_data, current_block, &mut fault_writer, metrics).await
+                pairwise_check(&blocks_data, current_block, &mut fault_writer, &metrics).await
             })
         });
 
@@ -140,7 +134,7 @@ async fn main() -> Result<()> {
 }
 
 async fn latest_uploaded_block(
-    s3_archive_readers: &[S3Archive],
+    s3_archive_readers: &[BlockDataArchive<impl BlobStore>],
     max_lag: &u64,
     s3_buckets: &[String],
 ) -> u64 {
@@ -151,7 +145,7 @@ async fn latest_uploaded_block(
                 // This is not necessarily an error. It might be that the latest is not there yet
                 warn!(
                     "Failed to get latest block number for bucket '{}': {:?}",
-                    reader.bucket.bucket, e
+                    reader.bucket.bucket_name(), e
                 );
                 0
             }
@@ -185,9 +179,12 @@ struct BlockData {
     pub traces: Option<Vec<Vec<u8>>>,
 }
 
-async fn get_block_data(s3_archive_readers: &[S3Archive], block_number: u64) -> Vec<BlockData> {
+async fn get_block_data(
+    s3_archive_readers: &[BlockDataArchive<impl BlobStore>],
+    block_number: u64,
+) -> Vec<BlockData> {
     let block_futures = s3_archive_readers.iter().map(|reader| {
-        let bucket = reader.bucket.bucket.clone();
+        let bucket = reader.bucket.bucket_name().to_owned();
         async move {
             let (block_result, receipts_result, traces_result) = join!(
                 reader.get_block_by_number(block_number),
@@ -232,7 +229,7 @@ async fn pairwise_check(
     blocks_data: &[BlockData],
     block_number: u64,
     fault_writer: &mut FaultWriter,
-    metrics: Metrics,
+    metrics: &Metrics,
 ) -> usize {
     let mut faults = Vec::new();
 
