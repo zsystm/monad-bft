@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::{fs::File, io::Write};
 
@@ -14,7 +14,7 @@ fn main() {
         wal_path.push("wal");
         wal_path
     };
-    let mut wal = File::options()
+    let wal = File::options()
         .read(true)
         .write(true)
         .create(true)
@@ -26,6 +26,8 @@ fn main() {
     wal.set_len(wal_len / event_len * event_len)
         .expect("failed to set wal len");
     let num_events = wal_len / event_len;
+
+    let mut wal = BufReader::new(wal);
 
     for idx in 0..num_events {
         let mut buf = [0_u8; event_len as usize];
