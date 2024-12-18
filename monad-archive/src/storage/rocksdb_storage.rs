@@ -27,15 +27,15 @@ impl RocksDbClient {
     }
 }
 
-impl BlobStore for RocksDbClient {
-    fn bucket_name(&self) -> &str {
-        &self.name
-    }
+impl TryFrom<&RocksDbCliArgs> for RocksDbClient {
+    type Error = eyre::Error;
 
-    async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()> {
-        self.db.put(key, data).map_err(Into::into)
+    fn try_from(value: &RocksDbCliArgs) -> std::result::Result<Self, Self::Error> {
+        Self::new(&value.db_path)
     }
+}
 
+impl BlobReader for RocksDbClient {
     async fn read(&self, key: &str) -> Result<Bytes> {
         self.db
             .get(key)?
@@ -45,22 +45,17 @@ impl BlobStore for RocksDbClient {
     }
 }
 
-// NOTE: we're doing blocking io here even though we're in async. This should be moved to
-// spawn blocking if this code will be used in rpc
-impl IndexStore for RocksDbClient {
-    async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
-        for data in kvs {
-            let key = data.tx.hash();
-            let mut rlp_data = Vec::with_capacity(4096);
-            data.encode(&mut rlp_data);
-            self.db
-                .put(key, rlp_data)
-                .wrap_err_with(|| format!("Failed to write tx data to index: {key}"))?;
-        }
-        self.db.flush()?;
-        Ok(())
+impl BlobStore for RocksDbClient {
+    fn bucket_name(&self) -> &str {
+        &self.name
     }
 
+    async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()> {
+        self.db.put(key, data).map_err(Into::into)
+    }
+}
+
+impl IndexStoreReader for RocksDbClient {
     async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>> {
         // NOTE: This is an unfortunate amount of cloning going on...
         let mut results = HashMap::with_capacity(keys.len());
@@ -78,5 +73,22 @@ impl IndexStore for RocksDbClient {
         };
 
         Ok(Some(TxIndexedData::decode(&mut data.as_slice())?))
+    }
+}
+
+// NOTE: we're doing blocking io here even though we're in async. This should be moved to
+// spawn blocking if this code will be used in rpc
+impl IndexStore for RocksDbClient {
+    async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
+        for data in kvs {
+            let key = data.tx.hash();
+            let mut rlp_data = Vec::with_capacity(4096);
+            data.encode(&mut rlp_data);
+            self.db
+                .put(key, rlp_data)
+                .wrap_err_with(|| format!("Failed to write tx data to index: {key}"))?;
+        }
+        self.db.flush()?;
+        Ok(())
     }
 }

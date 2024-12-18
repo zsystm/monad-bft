@@ -17,7 +17,7 @@ use tokio_retry::{
 };
 use tracing::error;
 
-use crate::{metrics::Metrics, IndexStore, TxIndexedData};
+use crate::{metrics::Metrics, IndexStore, IndexStoreReader, TxIndexedData};
 
 const AWS_DYNAMODB_ERRORS: &'static str = "aws_dynamodb_errors";
 const AWS_DYNAMODB_WRITES: &'static str = "aws_dynamodb_writes";
@@ -29,6 +29,30 @@ pub struct DynamoDBArchive {
     pub table: String,
     pub semaphore: Arc<Semaphore>,
     pub metrics: Metrics,
+}
+
+impl IndexStoreReader for DynamoDBArchive {
+    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>> {
+        let output = self
+            .batch_get(keys)
+            .await?
+            .into_iter()
+            .filter_map(|(k, map)| {
+                Some((
+                    k, // fmt
+                    decode_from_map(&map, "data")?,
+                ))
+            })
+            .collect::<HashMap<String, TxIndexedData>>();
+        Ok(output)
+    }
+
+    async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
+        let key = key.into();
+        self.bulk_get(&[key.clone()])
+            .await
+            .map(|mut v| v.remove(&key))
+    }
 }
 
 impl IndexStore for DynamoDBArchive {
@@ -70,28 +94,6 @@ impl IndexStore for DynamoDBArchive {
             batch_write_result.wrap_err_with(|| format!("Failed to upload index {idx}"))??;
         }
         Ok(())
-    }
-
-    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>> {
-        let output = self
-            .batch_get(keys)
-            .await?
-            .into_iter()
-            .filter_map(|(k, map)| {
-                Some((
-                    k, // fmt
-                    decode_from_map(&map, "data")?,
-                ))
-            })
-            .collect::<HashMap<String, TxIndexedData>>();
-        Ok(output)
-    }
-
-    async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
-        let key = key.into();
-        self.bulk_get(&[key.clone()])
-            .await
-            .map(|mut v| v.remove(&key))
     }
 }
 

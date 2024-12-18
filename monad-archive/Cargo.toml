@@ -57,3 +57,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 reth-primitives = { workspace = true }
 reth-rpc-types = { workspace = true }
 rocksdb = "0.22.0"
+enum_dispatch = "0.3.13"

@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use monad_archive::StorageArgs;
+use monad_archive::{ArchiveArgs, StorageArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-index-checker", about, long_about = None)]
 pub struct Cli {
-    #[command(subcommand)]
-    pub storage: StorageArgs,
+    #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+    pub source: ArchiveArgs,
 
     #[arg(long)]
     pub checker_path: PathBuf,

@@ -6,6 +6,7 @@ use std::{
 };
 
 use archive_reader::{ArchiveReader, LatestKind::*};
+use archive_tx_index::TxIndexArchiver;
 use clap::Parser;
 use eyre::Result;
 use futures::{executor::block_on, future::join_all};
@@ -26,28 +27,25 @@ async fn main() -> Result<()> {
     let concurrent_block_semaphore = Arc::new(Semaphore::new(5));
     let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
-    // Construct s3 and dynamodb connections
-    let (bstore, istore) = args.storage.build_stores(metrics.clone()).await?;
-
-    let dynamodb_archive = TxIndexArchiver::new(istore);
-    let archive = BlockDataArchive::new(bstore);
+    let block_data_reader = args.block_data_source.build(&metrics).await?;
+    // FIXME: concurrency
+    let tx_index_archiver = args.archive_sink.build_index_archive(10, &metrics).await?;
 
     // for testing
     if args.reset_index {
-        archive.update_latest(0, Indexed).await?;
+        tx_index_archiver.update_latest_indexed(0).await?;
     }
 
-    {
-        let latest_indexed = archive.get_latest(Indexed).await.unwrap_or(0);
-        let latest_uploaded = archive.get_latest(Uploaded).await.unwrap_or(0);
+    info!(
+        "Latest indexed block :{}. Latest uploaded block :{}",
+        block_data_reader.get_latest(Indexed).await.unwrap_or(0),
+        block_data_reader.get_latest(Uploaded).await.unwrap_or(0)
+    );
 
-        info!("Latest indexed block is : {latest_indexed}");
-        info!("Latest uploaded block is : {latest_uploaded}");
-    }
     let mut latest_indexed = if let Some(start_block) = args.start_block {
         start_block
     } else {
-        archive.get_latest(Indexed).await.unwrap_or(0)
+        block_data_reader.get_latest(Indexed).await.unwrap_or(0)
     };
 
     loop {
@@ -55,7 +53,7 @@ async fn main() -> Result<()> {
         let start = Instant::now();
 
         // get latest uploaded and indexed from s3
-        let latest_uploaded = match archive.get_latest(Uploaded).await {
+        let latest_uploaded = match block_data_reader.get_latest(Uploaded).await {
             Ok(number) => number,
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
@@ -84,8 +82,8 @@ async fn main() -> Result<()> {
         );
 
         let join_handles = (start_block_number..=end_block_number).map(|current_block: u64| {
-            let archive = archive.clone();
-            let dynamodb_archive = dynamodb_archive.clone();
+            let archive = block_data_reader.clone();
+            let dynamodb_archive = tx_index_archiver.clone();
 
             let semaphore = concurrent_block_semaphore.clone();
             tokio::spawn(async move {
@@ -125,7 +123,9 @@ async fn main() -> Result<()> {
         }
 
         latest_indexed = current_join_block.saturating_sub(1);
-        archive.update_latest(latest_indexed, Indexed).await?;
+        tx_index_archiver
+            .update_latest_indexed(latest_indexed)
+            .await?;
         metrics.gauge("latest_indexed", latest_indexed);
         metrics.counter("txs_indexed", num_txs_indexed as u64);
 
@@ -135,14 +135,14 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_block(
-    archive: &BlockDataArchive,
-    dynamodb: TxIndexArchiver,
+    block_data_reader: &impl BlockDataReader,
+    tx_index_archiver: TxIndexArchiver,
     block_num: u64,
 ) -> Result<usize> {
     let (block, traces, receipts) = try_join!(
-        archive.read_block(block_num),
-        archive.get_block_traces(block_num),
-        archive.get_block_receipts(block_num)
+        block_data_reader.get_block_by_number(block_num),
+        block_data_reader.get_block_traces(block_num),
+        block_data_reader.get_block_receipts(block_num)
     )?;
     let num_txs = block.body.len();
     info!(num_txs, block_num, "Block");
@@ -150,13 +150,15 @@ async fn handle_block(
     let first = block.body.first().cloned();
     let first_rx = receipts.first().cloned();
     let first_trace = traces.first().cloned();
-    dynamodb.index_block(block, traces, receipts).await?;
+    tx_index_archiver
+        .index_block(block, traces, receipts)
+        .await?;
 
     // check 1 key
     if let Some(tx) = first {
         let key = format!("{:x}", tx.hash);
         tokio::spawn(async move {
-            match dynamodb.store.get(&key).await {
+            match tx_index_archiver.store.get(&key).await {
                 Ok(Some(resp)) => {
                     if resp.header_subset.block_number != block_num
                         || Some(&resp.receipt) != first_rx.as_ref()

@@ -1,12 +1,15 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use crate::{dynamodb::DynamoDBArchive, IndexStoreErased};
+use crate::{
+    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, BlockDataArchive, IndexStoreErased,
+};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
     Client,
 };
+use enum_dispatch::enum_dispatch;
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
 use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned, U128, U256};
@@ -18,8 +21,13 @@ use tokio_retry::{
 };
 use tracing::error;
 
-pub trait IndexStore: Clone {
+#[enum_dispatch]
+pub trait IndexStore: IndexStoreReader {
     async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()>;
+}
+
+#[enum_dispatch]
+pub trait IndexStoreReader: Clone {
     async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>>;
     async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>>;
 }
@@ -46,23 +54,24 @@ pub struct HeaderSubset {
     pub base_fee_per_gas: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct TxIndexArchiver<Store = IndexStoreErased> {
-    pub store: Arc<Store>,
-}
-
-impl<T> Clone for TxIndexArchiver<T> {
-    fn clone(&self) -> Self {
-        Self {
-            store: Arc::clone(&self.store),
-        }
-    }
+    pub store: Store,
+    pub block_data_archive: BlockDataArchive,
 }
 
 impl<Store: IndexStore> TxIndexArchiver<Store> {
-    pub fn new(store: Store) -> Self {
+    pub fn new(store: Store, block_data_archive: BlockDataArchive) -> TxIndexArchiver<Store> {
         Self {
-            store: Arc::new(store),
+            store,
+            block_data_archive,
         }
+    }
+
+    pub async fn update_latest_indexed(&self, block_num: u64) -> Result<()> {
+        self.block_data_archive
+            .update_latest(block_num, crate::LatestKind::Indexed)
+            .await
     }
 
     pub async fn index_block(
@@ -96,7 +105,7 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
                         block_hash,
                         block_number,
                         tx_index: idx as u64,
-                        gas_used: gas_used,
+                        gas_used,
                         base_fee_per_gas,
                     },
                 }

@@ -1,13 +1,16 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use monad_archive::StorageArgs;
+use monad_archive::{ArchiveArgs, BlockDataReaderArgs, StorageArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-indexer", about, long_about = None)]
 pub struct Cli {
-    #[command(subcommand)]
-    pub storage: StorageArgs,
+    #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
+    pub block_data_source: BlockDataReaderArgs,
+
+    #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+    pub archive_sink: ArchiveArgs,
 
     /// Number of blocks to handle per loop iteration
     #[arg(long, default_value_t = 20)]

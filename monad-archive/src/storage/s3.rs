@@ -16,7 +16,7 @@ use tokio_retry::{
 };
 use tracing::info;
 
-use crate::{metrics::Metrics, BlobStore, TxIndexedData};
+use crate::{metrics::Metrics, BlobReader, BlobStore, TxIndexedData};
 
 const AWS_S3_ERRORS: &'static str = "aws_s3_errors";
 const AWS_S3_READS: &'static str = "aws_s3_reads";
@@ -65,6 +65,30 @@ impl S3Bucket {
     }
 }
 
+impl BlobReader for S3Bucket {
+    async fn read(&self, key: &str) -> Result<Bytes> {
+        let resp = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .wrap_err_with(|| {
+                self.metrics.inc_counter(AWS_S3_ERRORS);
+                format!("Failed to read key from s3 {key}")
+            })?;
+
+        let data = resp.body.collect().await.wrap_err_with(|| {
+            self.metrics.inc_counter(AWS_S3_ERRORS);
+            "Unable to collect response data"
+        })?;
+
+        self.metrics.counter(AWS_S3_READS, 1);
+        Ok(data.into_bytes())
+    }
+}
+
 impl BlobStore for S3Bucket {
     // Upload rlp-encoded bytes with retry
     async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()> {
@@ -99,28 +123,6 @@ impl BlobStore for S3Bucket {
 
         self.metrics.counter(AWS_S3_WRITES, 1);
         Ok(())
-    }
-
-    async fn read(&self, key: &str) -> Result<Bytes> {
-        let resp = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-            .wrap_err_with(|| {
-                self.metrics.inc_counter(AWS_S3_ERRORS);
-                format!("Failed to read key from s3 {key}")
-            })?;
-
-        let data = resp.body.collect().await.wrap_err_with(|| {
-            self.metrics.inc_counter(AWS_S3_ERRORS);
-            "Unable to collect response data"
-        })?;
-
-        self.metrics.counter(AWS_S3_READS, 1);
-        Ok(data.into_bytes())
     }
 
     fn bucket_name(&self) -> &str {

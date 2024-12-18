@@ -3,7 +3,7 @@
 use std::{sync::Arc, time::Instant};
 
 use clap::Parser;
-use eyre::{eyre, Result};
+use eyre::Result;
 use futures::future::join_all;
 use metrics::Metrics;
 use tokio::{
@@ -11,10 +11,9 @@ use tokio::{
     time::{sleep, Duration},
     try_join,
 };
-use tracing::{error, info, warn, Level};
+use tracing::{error, info, Level};
 
 use monad_archive::*;
-use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
 mod cli;
 
 #[tokio::main]
@@ -28,24 +27,22 @@ async fn main() -> Result<()> {
         Duration::from_secs(15),
     )?;
 
-    let max_concurrent_blocks = args.storage.concurrency();
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
+    let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_blocks));
 
     // This will spin off a polling thread
-    let triedb = TriedbEnv::new(
-        &args.triedb_path,
-        args.triedb_max_concurrent_requests as usize,
-    );
+    let triedb = args.block_data_source.build(&metrics).await?;
 
     // Construct storage
-    let archive_writer = BlockDataArchive::new(args.storage.build_stores(metrics.clone()).await?.0);
+    // let archive_writer = BlockDataArchive::new(args.storage.build_stores(metrics.clone()).await?.0);
+    let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
 
     // Check for new blocks every 100 ms
     // Issue requests to triedb, poll data and push to relevant tables
     loop {
         sleep(Duration::from_millis(100)).await;
 
-        let trie_db_block_number = triedb.get_latest_block().await.map_err(|e| eyre!("{e}"))?;
+        let trie_db_block_number = triedb.get_latest(LatestKind::Uploaded).await?;
+
         metrics.gauge("triedb_block_number", trie_db_block_number);
 
         let latest_processed_block =
@@ -120,53 +117,27 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_block(
-    triedb: &TriedbEnv,
+    reader: &impl BlockDataReader,
     current_block: u64,
-    s3_archive: &BlockDataArchive,
+    archiver: &BlockDataArchive,
 ) -> Result<()> {
-    /*  Store Blocks */
-    let block_header = match triedb
-        .get_block_header(current_block)
-        .await
-        .map_err(|e| eyre!("{e}"))?
-    {
-        Some(header) => header,
-        None => {
-            warn!("Can't find block {} in triedb", current_block);
-            return Ok(());
-        }
-    };
-    let transactions = triedb
-        .get_transactions(current_block)
-        .await
-        .map_err(|e| eyre!("{e}"))?;
-
-    let f_block = s3_archive.archive_block(block_header, transactions, current_block);
-
-    /* Store Receipts */
-    let receipts = triedb
-        .get_receipts(current_block)
-        .await
-        .map_err(|e| eyre!("{e}"))?;
-
-    let f_receipt = s3_archive.archive_receipts(receipts, current_block);
-
-    /* Store Traces */
-    let traces: Vec<Vec<u8>> = triedb
-        .get_call_frames(current_block)
-        .await
-        .map_err(|e| eyre!("{e}"))?;
-
-    let f_trace = s3_archive.archive_traces(traces, current_block);
-
-    match try_join!(f_block, f_receipt, f_trace) {
-        Ok(_) => {
-            info!("Successfully archived block {}", current_block);
-        }
-        Err(e) => {
-            error!("Error archiving block {}: {:?}", current_block, e);
-        }
-    }
-
+    try_join!(
+        async {
+            // NOTE: is it ok to error out here? Previous behavior returned Ok(())
+            // with a warn if the header was not found.
+            // This seems incorrect, but should investigate
+            let block = reader.get_block_by_number(current_block).await?;
+            archiver.archive_block(block).await
+        },
+        async {
+            let receipts = reader.get_block_receipts(current_block).await?;
+            archiver.archive_receipts(receipts, current_block).await
+        },
+        async {
+            let traces = reader.get_block_traces(current_block).await?;
+            archiver.archive_traces(traces, current_block).await
+        },
+    )?;
+    info!("Successfully archived block {}", current_block);
     Ok(())
 }
