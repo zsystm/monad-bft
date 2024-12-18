@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use monad_archive::{ArchiveArgs, BlockDataReaderArgs, StorageArgs};
+use monad_archive::{ArchiveArgs, BlockDataReaderArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-indexer", about, long_about = None)]

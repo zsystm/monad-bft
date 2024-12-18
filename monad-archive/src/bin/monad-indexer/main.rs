@@ -28,8 +28,7 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;
-    // FIXME: concurrency
-    let tx_index_archiver = args.archive_sink.build_index_archive(10, &metrics).await?;
+    let tx_index_archiver = args.archive_sink.build_index_archive(&metrics).await?;
 
     // for testing
     if args.reset_index {

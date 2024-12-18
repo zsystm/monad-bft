@@ -54,31 +54,6 @@ pub enum ArchiveArgs {
     RocksDb(RocksDbCliArgs),
 }
 
-// #[derive(Debug, Clone)]
-// pub enum BlockDataArchiverArgs {
-//     Aws(AwsCliArgs),
-//     RocksDb(RocksDbCliArgs),
-// }
-//
-// #[derive(Debug, Clone)]
-// pub enum TxIndexArchiverArgs {
-//     Aws(AwsCliArgs),
-//     RocksDb(RocksDbCliArgs),
-// }
-//
-// #[derive(Debug, Clone)]
-// pub enum ArchiveReaderArgs {
-//     Aws(AwsCliArgs),
-//     RocksDb(RocksDbCliArgs),
-// }
-
-#[derive(Debug, Clone)]
-pub enum StorageArgs {
-    Aws(AwsCliArgs),
-    RocksDb(RocksDbCliArgs),
-    Triedb(TrieDbCliArgs),
-}
-
 impl FromStr for BlockDataReaderArgs {
     type Err = eyre::Error;
 
@@ -125,52 +100,7 @@ impl FromStr for ArchiveArgs {
         })
     }
 }
-//
-// impl FromStr for TxIndexArchiverArgs {
-//     type Err = eyre::Error;
-//
-//     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-//         use TxIndexArchiverArgs::*;
-//         let mut words = s.split(' ');
-//         let Some(first) = words.next() else {
-//             bail!("Storage args string empty");
-//         };
-//
-//         let next =
-//             |str: &'static str| -> Result<String> { Ok(words.next().ok_or_eyre(str)?.to_owned()) };
-//
-//         Ok(match first.to_lowercase().as_str() {
-//             "aws" => Aws(AwsCliArgs::parse(next)?),
-//             "rocksdb" => RocksDb(RocksDbCliArgs::parse(next)?),
-//             _ => {
-//                 bail!("Unrecognized storage args variant: {first}");
-//             }
-//         })
-//     }
-// }
 
-impl FromStr for StorageArgs {
-    type Err = eyre::Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let mut words = s.split(' ');
-        let Some(first) = words.next() else {
-            bail!("Storage args string empty");
-        };
-
-        let next =
-            |str: &'static str| -> Result<String> { Ok(words.next().ok_or_eyre(str)?.to_owned()) };
-
-        Ok(match first.to_lowercase().as_str() {
-            "aws" => StorageArgs::Aws(AwsCliArgs::parse(next)?),
-            "rocksdb" => StorageArgs::RocksDb(RocksDbCliArgs::parse(next)?),
-            "triedb" => StorageArgs::Triedb(TrieDbCliArgs::parse(next)?),
-            _ => {
-                bail!("Unrecognized storage args variant: {first}");
-            }
-        })
-    }
-}
 impl BlockDataReaderArgs {
     pub async fn build(&self, metrics: &Metrics) -> Result<BlockDataReaderErased> {
         use BlockDataReaderArgs::*;
@@ -191,25 +121,17 @@ impl ArchiveArgs {
         Ok(BlockDataArchive::new(store))
     }
 
-    pub async fn build_index_archive(
-        &self,
-        concurrency: usize,
-        metrics: &Metrics,
-    ) -> Result<TxIndexArchiver> {
-        let (bstore, istore) = self.build_both(concurrency, metrics).await?;
+    pub async fn build_index_archive(&self, metrics: &Metrics) -> Result<TxIndexArchiver> {
+        let (bstore, istore) = self.build_both(metrics).await?;
         Ok(TxIndexArchiver::new(istore, BlockDataArchive::new(bstore)))
     }
 
-    async fn build_both(
-        &self,
-        concurrency: usize,
-        metrics: &Metrics,
-    ) -> Result<(BlobStoreErased, IndexStoreErased)> {
+    async fn build_both(&self, metrics: &Metrics) -> Result<(BlobStoreErased, IndexStoreErased)> {
         Ok(match self {
             ArchiveArgs::Aws(args) => {
                 let (b, s) = join!(
                     args.build_blob_store(metrics),
-                    args.build_index_store(concurrency, metrics)
+                    args.build_index_store(metrics)
                 );
                 (b, s.into())
             }
@@ -220,12 +142,8 @@ impl ArchiveArgs {
         })
     }
 
-    pub async fn build_archive_reader(
-        &self,
-        concurrency: usize,
-        metrics: &Metrics,
-    ) -> Result<ArchiveReader> {
-        let (b_reader, i_reader) = self.build_both(concurrency, metrics).await?;
+    pub async fn build_archive_reader(&self, metrics: &Metrics) -> Result<ArchiveReader> {
+        let (b_reader, i_reader) = self.build_both(metrics).await?;
         Ok(ArchiveReader::new(
             BlockDataArchive::new(b_reader).into(),
             i_reader,
@@ -233,100 +151,18 @@ impl ArchiveArgs {
     }
 }
 
-// impl TxIndexArchiverArgs {
-//     pub async fn build(&self, concurrency: usize, metrics: &Metrics) -> Result<TxIndexArchiver> {
-//         let store: IndexStoreErased = match self {
-//             TxIndexArchiverArgs::Aws(args) => {
-//                 args.build_index_store(concurrency, metrics).await.into()
-//             }
-//             TxIndexArchiverArgs::RocksDb(args) => args.build()?.into(),
-//         };
-//         Ok(TxIndexArchiver::new(store))
-//     }
-// }
-//
-// impl ArchiveReaderArgs {
-//     pub async fn build(&self, concurrency: usize, metrics: &Metrics) -> Result<ArchiveReader> {
-//         let (b_reader, i_reader): (BlobStoreErased, IndexStoreErased) = match self {
-//             ArchiveReaderArgs::Aws(args) => {
-//                 let (b, s) = join!(
-//                     args.build_blob_store(metrics),
-//                     args.build_index_store(concurrency, metrics)
-//                 );
-//                 (b, s.into())
-//             }
-//             ArchiveReaderArgs::RocksDb(args) => {
-//                 let store = args.build()?;
-//                 (store.clone().into(), store.into())
-//             }
-//         };
-//         Ok(ArchiveReader::new(
-//             BlockDataArchive::new(b_reader).into(),
-//             i_reader,
-//         ))
-//     }
-// }
-
-impl StorageArgs {
-    pub async fn build_block_data_reader(&self, metrics: Metrics) -> Result<BlockDataReaderErased> {
-        Ok(match self {
-            StorageArgs::Aws(aws_cli_args) => BlockDataArchive::new(
-                S3Bucket::new(
-                    aws_cli_args.bucket.clone(),
-                    &get_aws_config(aws_cli_args.region.clone()).await,
-                    metrics.clone(),
-                )
-                .into(),
-            )
-            .into(),
-            StorageArgs::RocksDb(args) => {
-                BlockDataArchive::new(RocksDbClient::try_from(args)?.into()).into()
-            }
-            StorageArgs::Triedb(args) => TriedbReader::new(args).into(),
-        })
-    }
-
-    pub async fn build_stores(
-        &self,
-        concurrency: usize,
-        metrics: Metrics,
-    ) -> Result<(BlobStoreErased, IndexStoreErased)> {
-        Ok(match self {
-            StorageArgs::Aws(aws_cli_args) => {
-                let config = get_aws_config(aws_cli_args.region.clone()).await;
-                (
-                    S3Bucket::new(aws_cli_args.bucket.clone(), &config, metrics.clone()).into(),
-                    DynamoDBArchive::new(
-                        aws_cli_args.bucket.clone(),
-                        &config,
-                        concurrency,
-                        metrics,
-                    )
-                    .into(),
-                )
-            }
-            StorageArgs::RocksDb(rocks_db_cli_args) => {
-                let db = RocksDbClient::new(&rocks_db_cli_args.db_path)?;
-                (db.clone().into(), db.into())
-            }
-            StorageArgs::Triedb(trie_db_cli_args) => todo!(),
-        })
-    }
-}
-
-#[derive(Clone, Debug, Parser)]
+#[derive(Clone, Debug)]
 pub struct AwsCliArgs {
-    #[arg(long)]
-    pub region: Option<String>,
-
-    #[arg(long)]
     pub bucket: String,
+    pub concurrency: usize,
+    pub region: Option<String>,
 }
 
 impl AwsCliArgs {
     pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
         Ok(Self {
             bucket: next("args missing bucket")?,
+            concurrency: usize::from_str(&next("args missing concurrency")?)?,
             region: next("").ok(),
         })
     }
@@ -340,15 +176,11 @@ impl AwsCliArgs {
         .into()
     }
 
-    pub async fn build_index_store(
-        &self,
-        concurrency: usize,
-        metrics: &Metrics,
-    ) -> DynamoDBArchive {
+    pub async fn build_index_store(&self, metrics: &Metrics) -> DynamoDBArchive {
         DynamoDBArchive::new(
             self.bucket.clone(),
             &get_aws_config(self.region.clone()).await,
-            concurrency,
+            self.concurrency,
             metrics.clone(),
         )
     }

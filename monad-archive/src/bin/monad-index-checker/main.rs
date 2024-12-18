@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     )?;
 
     // Construct s3 and dynamodb connections
-    let reader = ArchiveReader::new(&args.storage, &metrics).await?;
+    let reader = args.source.build_archive_reader(&metrics).await?;
 
     let mut latest_checked = args.start_block.unwrap_or(0);
 
@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
             &reader,
             start_block_num,
             end_block_num,
-            args.storage.concurrency(),
+            args.concurrent_blocks,
             &mut fault_writer,
             &metrics,
         )
@@ -217,7 +217,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
             trace,
         });
 
-    let fetched = reader.batch_get_txdata(&hashes).await?;
+    let fetched = reader.bulk_get(&hashes).await?;
     let mut faults = Vec::new();
 
     for expected in expected {
@@ -281,19 +281,19 @@ async fn get_block_data(
             if let Err(e) = block {
                 warn!("Error fetching block: {e:?}");
                 check_result.faults.push(Fault::S3MissingBlock {
-                    buckets: vec![reader.bucket().to_owned()],
+                    buckets: vec![reader.get_bucket().to_owned()],
                 });
             }
             if let Err(e) = traces {
                 warn!("Error fetching traces: {e:?}");
                 check_result.faults.push(Fault::S3MissingTraces {
-                    buckets: vec![reader.bucket().to_owned()],
+                    buckets: vec![reader.get_bucket().to_owned()],
                 });
             }
             if let Err(e) = receipts {
                 warn!("Error fetching receipts: {e:?}");
                 check_result.faults.push(Fault::S3MissingReceipts {
-                    buckets: vec![reader.bucket().to_owned()],
+                    buckets: vec![reader.get_bucket().to_owned()],
                 });
             }
             Err(check_result)

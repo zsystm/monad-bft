@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
-use monad_archive::{ArchiveArgs, StorageArgs};
+use clap::Parser;
+use monad_archive::ArchiveArgs;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-index-checker", about, long_about = None)]
@@ -17,8 +17,11 @@ pub struct Cli {
     pub max_response_size: u32,
 
     /// Number of blocks to handle per loop iteration
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 50)]
     pub max_blocks_per_iteration: u64,
+
+    #[arg(long, default_value_t = 10)]
+    pub concurrent_blocks: usize,
 
     /// Block number to start at
     #[arg(long)]
