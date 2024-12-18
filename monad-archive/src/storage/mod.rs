@@ -1,5 +1,6 @@
 pub mod dynamodb;
 pub mod rocksdb_storage;
+pub mod rpc_reader;
 pub mod s3;
 pub mod triedb_reader;
 
@@ -16,6 +17,7 @@ pub use dynamodb::*;
 use futures::FutureExt;
 use reth_primitives::{Block, BlockHash, ReceiptWithBloom};
 pub use rocksdb_storage::*;
+use rpc_reader::RpcReader;
 pub use s3::*;
 use tokio::{join, try_join};
 
@@ -28,7 +30,7 @@ use crate::triedb_reader::TriedbReader;
 pub enum BlockDataReaderErased {
     BlockDataArchive,
     TriedbReader,
-    // RpcBlockDataReader
+    RpcReader,
 }
 
 #[enum_dispatch]
@@ -46,6 +48,7 @@ pub enum BlockDataReaderArgs {
     Aws(AwsCliArgs),
     RocksDb(RocksDbCliArgs),
     Triedb(TrieDbCliArgs),
+    Rpc(RpcCliArgs),
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +111,7 @@ impl BlockDataReaderArgs {
             Aws(args) => BlockDataArchive::new(args.build_blob_store(metrics).await).into(),
             RocksDb(args) => BlockDataArchive::new(RocksDbClient::try_from(args)?.into()).into(),
             Triedb(args) => TriedbReader::new(args).into(),
+            Rpc(args) => args.build().into(),
         })
     }
 }
@@ -194,12 +198,29 @@ pub struct RocksDbCliArgs {
 impl RocksDbCliArgs {
     pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
         Ok(Self {
-            db_path: next("storage args missing db path")?,
+            db_path: next("rocksdb args missing db path")?,
         })
     }
 
     pub fn build(&self) -> Result<RocksDbClient> {
         RocksDbClient::new(&self.db_path)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RpcCliArgs {
+    pub url: String,
+}
+
+impl RpcCliArgs {
+    pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
+        Ok(Self {
+            url: next("rpc args missing url")?,
+        })
+    }
+
+    pub fn build(&self) -> RpcReader {
+        RpcReader::new(&self.url)
     }
 }
 
