@@ -46,7 +46,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/${{ env.IMAGE_NAME }}
+            peach10.devcore4.com/category-labs/monad-bft
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -95,7 +95,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/monad-crypto/monad-full-node
+            peach10.devcore4.com/category-labs/monad-full-node
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -144,7 +144,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/monad-crypto/monad-rpc
+            peach10.devcore4.com/category-labs/monad-rpc
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -196,7 +196,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/monad-crypto/monad-execution
+            peach10.devcore4.com/category-labs/monad-execution
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -265,7 +265,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/monad-crypto/monad-tx-gen
+            peach10.devcore4.com/category-labs/monad-tx-gen
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -312,7 +312,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/monad-crypto/monad-archive
+            peach10.devcore4.com/category-labs/monad-archive
           tags: |
             type=ref,event=branch
             type=sha,prefix=
