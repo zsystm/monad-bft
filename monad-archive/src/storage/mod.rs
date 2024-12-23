@@ -74,6 +74,7 @@ impl FromStr for BlockDataReaderArgs {
             "aws" => Aws(AwsCliArgs::parse(next)?),
             "rocksdb" => RocksDb(RocksDbCliArgs::parse(next)?),
             "triedb" => Triedb(TrieDbCliArgs::parse(next)?),
+            "rpc" => Rpc(RpcCliArgs::parse(next)?),
             _ => {
                 bail!("Unrecognized storage args variant: {first}");
             }

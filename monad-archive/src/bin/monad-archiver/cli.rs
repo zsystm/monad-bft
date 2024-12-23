@@ -12,9 +12,6 @@ pub struct Cli {
     #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
     pub archive_sink: ArchiveArgs,
 
-    #[arg(long)]
-    pub triedb_path: PathBuf,
-
     /// Set the max concurrent requests for triedb reads (smaller than monad-rpc)
     #[arg(long, default_value_t = 5_000)]
     pub triedb_max_concurrent_requests: u32,

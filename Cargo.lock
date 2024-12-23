@@ -2745,6 +2745,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum_dispatch"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.71",
+]
+
+[[package]]
 name = "enumn"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4007,6 +4019,7 @@ name = "monad-archive"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "alloy-rpc-client",
  "aws-config",
  "aws-sdk-dynamodb",
  "aws-sdk-s3",
@@ -4014,6 +4027,7 @@ dependencies = [
  "chrono",
  "clap 4.4.10",
  "dashmap",
+ "enum_dispatch",
  "eyre",
  "futures",
  "hex",
@@ -4032,6 +4046,7 @@ dependencies = [
  "tokio-retry",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
