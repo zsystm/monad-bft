@@ -20,6 +20,7 @@ pub use rocksdb_storage::*;
 use rpc_reader::RpcReader;
 pub use s3::*;
 use tokio::{join, try_join};
+use tracing::{info, warn};
 
 use crate::archive_block_data::BlockDataArchive;
 
@@ -194,16 +195,22 @@ impl AwsCliArgs {
 #[derive(Clone, Debug, Parser)]
 pub struct RocksDbCliArgs {
     pub db_path: String,
+    pub reset: bool,
 }
 
 impl RocksDbCliArgs {
     pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
         Ok(Self {
             db_path: next("rocksdb args missing db path")?,
+            reset: serde_json::from_str(&next("").unwrap_or_else(|_| "false".to_owned()))?,
         })
     }
 
     pub fn build(&self) -> Result<RocksDbClient> {
+        if self.reset {
+            info!("Reseting db...");
+            let _ = std::fs::remove_file(&self.db_path);
+        }
         RocksDbClient::new(&self.db_path)
     }
 }
