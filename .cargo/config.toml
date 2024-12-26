@@ -1,0 +1,7 @@
+[env]
+CXX = "/usr/bin/g++-13"
+CC = "/usr/bin/gcc-13"
+ASMFLAGS = "-march=haswell"
+CFLAGS = "-march=haswell"
+CXXFLAGS = "-march=haswell"
+TRIEDB_TARGET = "triedb_driver"
