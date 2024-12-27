@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, BlockDataArchive, IndexStoreErased,
+    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, BlockDataArchive, BlockDataReader,
+    IndexStoreErased,
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use aws_config::SdkConfig;
@@ -71,6 +72,12 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
     pub async fn update_latest_indexed(&self, block_num: u64) -> Result<()> {
         self.block_data_archive
             .update_latest(block_num, crate::LatestKind::Indexed)
+            .await
+    }
+
+    pub async fn get_latest_indexed(&self) -> Result<u64> {
+        self.block_data_archive
+            .get_latest(crate::LatestKind::Indexed)
             .await
     }
 

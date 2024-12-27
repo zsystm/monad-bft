@@ -6,15 +6,19 @@ use monad_archive::{ArchiveArgs, BlockDataReaderArgs};
 #[derive(Debug, Parser)]
 #[command(name = "monad-indexer", about, long_about = None)]
 pub struct Cli {
+    /// Source to read block data that will be indexed
     #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
     pub block_data_source: BlockDataReaderArgs,
 
+    /// Sink to write index data
     #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
     pub archive_sink: ArchiveArgs,
 
-    /// Number of blocks to handle per loop iteration
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 50)]
     pub max_blocks_per_iteration: u64,
+
+    #[arg(long, default_value_t = 10)]
+    pub max_concurrent_blocks: usize,
 
     #[arg(long, default_value_t = false)]
     pub reset_index: bool,
@@ -23,6 +27,7 @@ pub struct Cli {
     #[arg(long)]
     pub start_block: Option<u64>,
 
+    /// Endpoint to push metrics to
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 }

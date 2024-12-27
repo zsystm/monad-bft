@@ -10,7 +10,7 @@ use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, Level};
 
 use monad_archive::*;
 
@@ -18,6 +18,7 @@ mod cli;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
     let args = cli::Cli::parse();
     info!("Args: {args:?}");
 

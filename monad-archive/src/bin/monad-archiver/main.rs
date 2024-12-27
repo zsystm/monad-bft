@@ -1,17 +1,16 @@
 #![allow(async_fn_in_trait)]
 
-use std::{sync::Arc, time::Instant};
+use std::{ops::RangeInclusive, time::Instant};
 
 use clap::Parser;
 use eyre::Result;
-use futures::future::join_all;
+use futures::{join, StreamExt, TryStreamExt};
 use metrics::Metrics;
 use tokio::{
-    sync::Semaphore,
     time::{sleep, Duration},
     try_join,
 };
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 
 use monad_archive::*;
 mod cli;
@@ -21,123 +20,172 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
+
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-archiver",
         Duration::from_secs(15),
     )?;
 
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_blocks));
+    let block_data_source = args.block_data_source.build(&metrics).await?;
 
-    // This will spin off a polling thread
-    let triedb = args.block_data_source.build(&metrics).await?;
-
-    // Construct storage
-    // let archive_writer = BlockDataArchive::new(args.storage.build_stores(metrics.clone()).await?.0);
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
 
-    // Check for new blocks every 100 ms
-    // Issue requests to triedb, poll data and push to relevant tables
+    tokio::spawn(archive_worker(
+        block_data_source,
+        archive_writer,
+        args.max_blocks_per_iteration,
+        args.max_concurrent_blocks,
+        metrics,
+    ))
+    .await
+    .map_err(Into::into)
+}
+
+async fn archive_worker(
+    block_data_source: (impl BlockDataReader + Sync),
+    archive_writer: BlockDataArchive,
+    max_blocks_per_iteration: u64,
+    max_concurrent_blocks: usize,
+    metrics: Metrics,
+) {
     loop {
         sleep(Duration::from_millis(100)).await;
 
-        let trie_db_block_number = triedb.get_latest(LatestKind::Uploaded).await?;
+        // query latest
+        let (latest_source, latest_uploaded) = join!(
+            block_data_source.get_latest(LatestKind::Uploaded),
+            archive_writer.get_latest(LatestKind::Uploaded)
+        );
 
-        metrics.gauge("triedb_block_number", trie_db_block_number);
+        let latest_source = match latest_source {
+            Ok(number) => number,
+            Err(e) => {
+                warn!("Error getting latest source block: {e:?}");
+                continue;
+            }
+        };
+        let latest_uploaded = latest_uploaded.unwrap_or(0);
 
-        let latest_processed_block =
-            (archive_writer.get_latest(LatestKind::Uploaded).await).unwrap_or_default();
-        metrics.gauge("latest_uploaded", latest_processed_block);
+        metrics.gauge("source_latest_block_num", latest_source);
+        metrics.gauge("latest_uploaded", latest_uploaded);
 
-        if trie_db_block_number <= latest_processed_block {
-            info!(
-                "Nothing to process. S3 archive progress: {}, triedb progress: {}",
-                latest_processed_block, trie_db_block_number
-            );
+        if latest_source <= latest_uploaded {
+            info!(latest_uploaded, latest_source, "Nothing to process");
             continue;
         }
 
-        let start_block_number = if latest_processed_block == 0 {
+        // compute start and end block
+        let start_block_number = if latest_uploaded == 0 {
             0
         } else {
-            latest_processed_block + 1
+            latest_uploaded + 1
         };
 
-        let end_block_number =
-            trie_db_block_number.min(start_block_number + args.max_blocks_per_iteration - 1);
+        let end_block_number = latest_source.min(start_block_number + max_blocks_per_iteration - 1);
         metrics.gauge("end_block_number", end_block_number);
 
-        let start = Instant::now();
         info!(
-            "Processing blocks from {} to {}, start time = {:?}",
-            start_block_number, end_block_number, start
+            start = start_block_number,
+            end = end_block_number,
+            latest_source,
+            latest_uploaded,
+            "Archiving group of blocks",
         );
 
-        let join_handles = (start_block_number..=end_block_number).map(|current_block: u64| {
-            let triedb = triedb.clone();
-            let archive_writer = archive_writer.clone();
-
-            let semaphore = concurrent_block_semaphore.clone();
-            tokio::spawn(async move {
-                let _permit = semaphore
-                    .acquire()
-                    .await
-                    .expect("Got permit to execute a new block");
-                handle_block(&triedb, current_block, &archive_writer).await
-            })
-        });
-
-        let block_results = join_all(join_handles).await;
-        let mut current_join_block = start_block_number;
-        for block_result in block_results {
-            match block_result {
-                Ok(Ok(())) => {
-                    current_join_block += 1;
-                }
-                Ok(Err(e)) => {
-                    error!(current_join_block, "Failure writing block, {e}");
-                    break;
-                }
-                Err(e) => {
-                    error!(current_join_block, "Failure writing block, {e}");
-                    break;
-                }
-            }
-        }
-
-        if current_join_block != 0 {
-            archive_writer
-                .update_latest(current_join_block - 1, LatestKind::Uploaded)
-                .await?;
-        }
-
-        let duration = start.elapsed();
-        info!("Time spent = {:?}", duration);
+        archive_blocks(
+            &block_data_source,
+            start_block_number..=end_block_number,
+            &archive_writer,
+            max_concurrent_blocks,
+        )
+        .await;
     }
 }
 
-async fn handle_block(
+async fn archive_blocks(
+    reader: &(impl BlockDataReader + Sync),
+    range: RangeInclusive<u64>,
+    archiver: &BlockDataArchive,
+    concurrency: usize,
+) {
+    let start = Instant::now();
+
+    let res: Result<(), u64> = futures::stream::iter(range.clone().into_iter())
+        .map(|block_num: u64| async move {
+            match archive_block(reader, block_num, archiver).await {
+                Ok(_) => Ok(block_num),
+                Err(e) => {
+                    error!("Failed to handle block: {e:?}");
+                    Err(block_num)
+                }
+            }
+        })
+        .buffered(concurrency)
+        .then(|r| async move {
+            if let Ok(block_num) = &r {
+                if block_num % 10 == 0 {
+                    checkpoint_latest(archiver, *block_num).await;
+                }
+            }
+            r.map(|_| ())
+        })
+        .try_collect()
+        .await;
+
+    info!(
+        elapsed = start.elapsed().as_millis(),
+        start = range.start(),
+        end = range.end(),
+        "Finished archiving range",
+    );
+
+    let new_latest_uploaded = match res {
+        Ok(()) => *range.end(),
+        Err(err_block) => err_block - 1,
+    };
+
+    if new_latest_uploaded != 0 {
+        checkpoint_latest(archiver, new_latest_uploaded).await;
+    }
+}
+
+async fn archive_block(
     reader: &impl BlockDataReader,
-    current_block: u64,
+    block_num: u64,
     archiver: &BlockDataArchive,
 ) -> Result<()> {
+    let mut num_txs = None;
+
     try_join!(
         async {
             // NOTE: is it ok to error out here? Previous behavior returned Ok(())
             // with a warn if the header was not found.
-            // This seems incorrect, but should investigate
-            let block = reader.get_block_by_number(current_block).await?;
+            // That seems incorrect, but should investigate
+            let block = reader.get_block_by_number(block_num).await?;
+            num_txs = Some(block.body.len());
             archiver.archive_block(block).await
         },
         async {
-            let receipts = reader.get_block_receipts(current_block).await?;
-            archiver.archive_receipts(receipts, current_block).await
+            // let receipts = reader.get_block_receipts(block_num).await?;
+            // archiver.archive_receipts(receipts, block_num).await
+            Ok(())
         },
         async {
-            let traces = reader.get_block_traces(current_block).await?;
-            archiver.archive_traces(traces, current_block).await
+            let traces = reader.get_block_traces(block_num).await?;
+            archiver.archive_traces(traces, block_num).await
         },
     )?;
-    info!("Successfully archived block {}", current_block);
+    info!(block_num, num_txs, "Successfully archived block");
     Ok(())
+}
+
+async fn checkpoint_latest(archiver: &BlockDataArchive, block_num: u64) {
+    match archiver
+        .update_latest(block_num, LatestKind::Uploaded)
+        .await
+    {
+        Ok(()) => info!(block_num, "Set latest uploaded checkpoint"),
+        Err(e) => error!(block_num, "Failed to set latest uploaded block: {e:?}"),
+    }
 }

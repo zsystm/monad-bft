@@ -12,15 +12,6 @@ pub struct Cli {
     #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
     pub archive_sink: ArchiveArgs,
 
-    /// Set the max concurrent requests for triedb reads (smaller than monad-rpc)
-    #[arg(long, default_value_t = 5_000)]
-    pub triedb_max_concurrent_requests: u32,
-
-    /// Set the max response size in bytes (the same as monad-rpc)
-    #[arg(long, default_value_t = 25_000_000)]
-    pub max_response_size: u32,
-
-    /// Set max block processed per iter
     #[arg(long, default_value_t = 100)]
     pub max_blocks_per_iteration: u64,
 
