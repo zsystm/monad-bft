@@ -1,12 +1,15 @@
 use std::cmp;
 
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockType},
+    block::{BlockPolicy, ExecutionProtocol},
     ledger::CommitResult,
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::{Vote, VoteInfo},
+};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_state_backend::StateBackend;
 use monad_types::*;
@@ -106,14 +109,16 @@ impl Safety {
     /// Make a Vote if it's safe to vote in the round. Set the commit field if
     /// QC formed on the voted block can cause a commit: `block.qc.round` is
     /// consecutive with `block.round`
-    pub fn make_vote<SCT, BPT, SBT>(
+    pub fn make_vote<ST, SCT, EPT, BPT, SBT>(
         &mut self,
         block: &BPT::ValidatedBlock,
         last_tc: &Option<TimeoutCertificate<SCT>>,
     ) -> Option<Vote>
     where
-        SCT: SignatureCollection,
-        BPT: BlockPolicy<SCT, SBT>,
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
         SBT: StateBackend,
     {
         let qc_round = block.get_parent_round();
@@ -129,6 +134,7 @@ impl Safety {
                 parent_round: block.get_parent_round(),
                 seq_num: block.get_seq_num(),
                 timestamp: block.get_timestamp(),
+                version: MonadVersion::version(),
             };
 
             let commit_result = if commit_condition(block.get_round(), block.get_qc().info) {
@@ -162,6 +168,6 @@ fn safe_to_extend<SCT>(
     }
 }
 
-fn commit_condition(block_round: Round, qc_info: QcInfo) -> bool {
+pub fn commit_condition(block_round: Round, qc_info: QcInfo) -> bool {
     consecutive(block_round, qc_info.get_round())
 }

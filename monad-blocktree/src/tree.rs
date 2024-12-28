@@ -5,34 +5,44 @@ use std::{
 };
 
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockType},
-    payload::{Payload, PayloadId},
+    block::{BlockPolicy, ExecutionProtocol},
+    payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     signature_collection::SignatureCollection,
+};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_state_backend::StateBackend;
 use monad_types::BlockId;
 
-pub struct Tree<SCT, BPT, SBT>
+pub struct Tree<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
-    tree: HashMap<BlockId, BlockTreeEntry<SCT, BPT, SBT>>,
-    payloads: HashMap<PayloadId, PayloadIndex>,
+    tree: HashMap<BlockId, BlockTreeEntry<ST, SCT, EPT, BPT, SBT>>,
+    payloads: HashMap<ConsensusBlockBodyId, BlockBodyIndex<EPT>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct PayloadIndex {
-    payload: Payload,
+struct BlockBodyIndex<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    body: ConsensusBlockBody<EPT>,
     /// the set of blocks in tree that point to this payload
     active_blocks: HashSet<BlockId>,
 }
 
-impl<SCT, BPT, SBT> Tree<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> Tree<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     pub(crate) fn set_coherent(&mut self, block_id: &BlockId, coherent: bool) -> Option<()> {
@@ -40,10 +50,13 @@ where
         Some(())
     }
 
-    pub(crate) fn remove(&mut self, block_id: &BlockId) -> Option<BlockTreeEntry<SCT, BPT, SBT>> {
+    pub(crate) fn remove(
+        &mut self,
+        block_id: &BlockId,
+    ) -> Option<BlockTreeEntry<ST, SCT, EPT, BPT, SBT>> {
         let maybe_removed = self.tree.remove(block_id);
         if let Some(removed) = &maybe_removed {
-            let payload_id = removed.validated_block.get_payload_id();
+            let payload_id = removed.validated_block.get_body_id();
             let payload_index = self
                 .payloads
                 .get_mut(&payload_id)
@@ -65,8 +78,8 @@ where
     pub(crate) fn insert(&mut self, block: BPT::ValidatedBlock) {
         let new_block_id = block.get_id();
         let parent_id = block.get_parent_id();
-        let payload_id = block.get_payload_id();
-        let payload = block.get_payload();
+        let body_id = block.get_body_id();
+        let body = block.body().clone();
 
         // Get all the children blocks in the blocktree
         let mut children_blocks = Vec::new();
@@ -93,9 +106,9 @@ where
 
         let newly_inserted = self
             .payloads
-            .entry(payload_id)
-            .or_insert(PayloadIndex {
-                payload,
+            .entry(body_id)
+            .or_insert(BlockBodyIndex {
+                body,
                 active_blocks: Default::default(),
             })
             .active_blocks
@@ -103,29 +116,36 @@ where
         assert!(newly_inserted);
     }
 
-    pub fn get_payload(&self, payload_id: &PayloadId) -> Option<&Payload> {
-        let payload_index = self.payloads.get(payload_id)?;
-        Some(&payload_index.payload)
+    pub fn get_payload(
+        &self,
+        block_body_id: &ConsensusBlockBodyId,
+    ) -> Option<&ConsensusBlockBody<EPT>> {
+        let payload_index = self.payloads.get(block_body_id)?;
+        Some(&payload_index.body)
     }
 }
 
-impl<SCT, BPT, SBT> Deref for Tree<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> Deref for Tree<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
-    type Target = HashMap<BlockId, BlockTreeEntry<SCT, BPT, SBT>>;
+    type Target = HashMap<BlockId, BlockTreeEntry<ST, SCT, EPT, BPT, SBT>>;
 
     fn deref(&self) -> &Self::Target {
         &self.tree
     }
 }
 
-impl<SCT, BPT, SBT> Default for Tree<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> Default for Tree<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     fn default() -> Self {
@@ -136,10 +156,12 @@ where
     }
 }
 
-impl<SCT, BPT, SBT> Debug for Tree<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> Debug for Tree<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -150,10 +172,12 @@ where
     }
 }
 
-impl<SCT, BPT, SBT> PartialEq<Self> for Tree<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> PartialEq<Self> for Tree<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     fn eq(&self, other: &Self) -> bool {
@@ -161,18 +185,22 @@ where
     }
 }
 
-impl<SCT, BPT, SBT> Eq for Tree<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> Eq for Tree<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
 }
 
-pub struct BlockTreeEntry<SCT, BPT, SBT>
+pub struct BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     pub validated_block: BPT::ValidatedBlock,
@@ -183,10 +211,12 @@ where
     pub children_blocks: Vec<BlockId>,
 }
 
-impl<SCT, BPT, SBT> Clone for BlockTreeEntry<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> Clone for BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     fn clone(&self) -> Self {
@@ -198,10 +228,12 @@ where
     }
 }
 
-impl<SCT, BPT, SBT> Debug for BlockTreeEntry<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> Debug for BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -213,10 +245,12 @@ where
     }
 }
 
-impl<SCT, BPT, SBT> PartialEq<Self> for BlockTreeEntry<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> PartialEq<Self> for BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     fn eq(&self, other: &Self) -> bool {
@@ -226,10 +260,12 @@ where
     }
 }
 
-impl<SCT, BPT, SBT> Eq for BlockTreeEntry<SCT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT> Eq for BlockTreeEntry<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
 }

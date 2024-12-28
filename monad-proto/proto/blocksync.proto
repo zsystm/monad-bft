@@ -7,7 +7,7 @@ import "block.proto";
 
 message ProtoBlockRange {
   monad_proto.basic.ProtoBlockId last_block_id = 1;
-  monad_proto.basic.ProtoSeqNum root_seq_num = 2;
+  monad_proto.basic.ProtoSeqNum max_blocks = 2;
 }
 
 enum ProtoBlockSyncSelfRequester {
@@ -24,7 +24,7 @@ message ProtoBlockSyncSelfRequest {
 // conversion wrapped into ProtoBlockSyncHeadersResponse
 message ProtoBlockSyncHeaders {
   ProtoBlockRange block_range = 1;
-  repeated monad_proto.block.ProtoBlock headers = 2;
+  repeated monad_proto.block.ProtoBlockHeader headers = 2;
 }
 
 message ProtoBlockSyncHeadersResponse {
@@ -34,9 +34,9 @@ message ProtoBlockSyncHeadersResponse {
   }
 }
 
-message ProtoBlockSyncPayloadResponse {
-  oneof payload_response {
-    monad_proto.block.ProtoPayload payload_found = 1;
-    monad_proto.basic.ProtoPayloadId not_available = 2;
+message ProtoBlockSyncBodyResponse {
+  oneof body_response {
+    monad_proto.block.ProtoBlockBody body_found = 1;
+    monad_proto.basic.ProtoBlockBodyId not_available = 2;
   }
 }

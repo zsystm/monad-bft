@@ -9,7 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-blocksync = { path = "../monad-blocksync" }
 monad-blocktree = { path = "../monad-blocktree" }
 monad-consensus = { path = "../monad-consensus" }
@@ -23,9 +22,12 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
 
+alloy-rlp = { workspace = true }
 bytes = { workspace = true }
+hex = { workspace = true }
 itertools = { workspace = true }
 prost = { workspace = true }
+reth-primitives = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

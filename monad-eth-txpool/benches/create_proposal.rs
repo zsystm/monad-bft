@@ -28,7 +28,45 @@ fn criterion_benchmark(c: &mut Criterion) {
          }| {
             TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::create_proposal(
                 pool,
-                block_policy.get_last_commit() + SeqNum(1),
+                block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
+                *proposal_tx_limit,
+                *gas_limit,
+                block_policy,
+                pending_blocks.iter().collect_vec(),
+                state_backend,
+            )
+            .unwrap();
+        },
+    );
+
+    run_txpool_benches(
+        c,
+        "create_proposal_after_promoting",
+        |controller_config| {
+            let mut controller = BenchController::setup(&block_policy, controller_config.clone());
+
+            controller
+                .pool
+                .promote_pending::<SignatureCollectionType, _>(
+                    controller.block_policy,
+                    &controller.state_backend,
+                    usize::MAX,
+                )
+                .expect("promote pending succeeds");
+
+            controller
+        },
+        |BenchController {
+             state_backend,
+             block_policy,
+             pool,
+             pending_blocks,
+             proposal_tx_limit,
+             gas_limit,
+         }| {
+            TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::create_proposal(
+                pool,
+                block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
                 *gas_limit,
                 block_policy,

@@ -10,11 +10,13 @@ bench = false
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
+
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
 rand = { workspace = true }
 reth-primitives = { workspace = true }
 
@@ -29,7 +31,6 @@ futures = { workspace = true }
 itertools = { workspace = true }
 rand = { workspace = true }
 reth-primitives = { workspace = true }
-reth-rpc-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

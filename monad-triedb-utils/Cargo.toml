@@ -23,3 +23,4 @@ tracing = { workspace = true, features = ["log"] }
 monad-eth-testutil = { path = "../monad-eth-testutil" }
 
 clap = { workspace = true, features = ["derive"] }
+hex = { workspace = true }

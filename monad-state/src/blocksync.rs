@@ -4,8 +4,10 @@ use monad_blocksync::blocksync::{
     BlockCache, BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
 };
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
-    payload::StateRootValidator, signature_collection::SignatureCollection,
+    block::{BlockPolicy, ExecutionProtocol},
+    block_validator::BlockValidator,
+    metrics::Metrics,
+    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -23,19 +25,20 @@ use monad_validator::{
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    block_sync: &'a mut BlockSync<ST, SCT>,
+    block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
     /// BlockSync queries consensus first when receiving BlockSyncRequest
-    consensus: &'a ConsensusMode<SCT, BPT, SBT>,
+    consensus: &'a ConsensusMode<ST, SCT, EPT, BPT, SBT>,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     delta: &'a Duration,
@@ -43,22 +46,22 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT)>,
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    BlockSyncChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
-    BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,
@@ -74,8 +77,8 @@ where
 
     pub(super) fn update(
         &mut self,
-        event: BlockSyncEvent<SCT>,
-    ) -> Vec<WrappedBlockSyncCommand<SCT>> {
+        event: BlockSyncEvent<ST, SCT, EPT>,
+    ) -> Vec<WrappedBlockSyncCommand<ST, SCT, EPT>> {
         let block_cache = match self.consensus {
             ConsensusMode::Sync { block_buffer, .. } => {
                 BlockCache::BlockBuffer(block_buffer.get_payload_cache())
@@ -126,18 +129,24 @@ where
     }
 }
 
-pub(crate) struct WrappedBlockSyncCommand<SCT: SignatureCollection> {
-    request_timeout: Duration,
-    command: BlockSyncCommand<SCT>,
-}
-
-impl<ST, SCT> From<WrappedBlockSyncCommand<SCT>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
+pub(crate) struct WrappedBlockSyncCommand<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(wrapped: WrappedBlockSyncCommand<SCT>) -> Self {
+    request_timeout: Duration,
+    command: BlockSyncCommand<ST, SCT, EPT>,
+}
+
+impl<ST, SCT, EPT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
+    for Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(wrapped: WrappedBlockSyncCommand<ST, SCT, EPT>) -> Self {
         match wrapped.command {
             BlockSyncCommand::SendRequest { to, request } => {
                 vec![Command::RouterCommand(RouterCommand::Publish {

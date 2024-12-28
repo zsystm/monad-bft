@@ -184,11 +184,6 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
             .metric_exact(node_ids, fetch_metric!(consensus_events.created_tc), 1)
             .metric_exact(
                 node_ids,
-                fetch_metric!(consensus_events.creating_empty_block_proposal),
-                0,
-            )
-            .metric_exact(
-                node_ids,
                 fetch_metric!(consensus_events.rx_execution_lagging),
                 0,
             )
@@ -259,14 +254,14 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
         for node_id in node_ids {
             let node = swarm.states.get(node_id).unwrap();
             let peer_id = node_id.get_peer_id();
-            let ledger = node.executor.ledger().get_blocks();
+            let ledger = node.executor.ledger().get_finalized_blocks();
             let ledger_len = ledger.len() as u64;
             // ledger should have genesis block
             assert!(ledger_len > 0);
 
             let blocks_proposed: Vec<_> = ledger
                 .values()
-                .filter(|b| (b.block.author == *peer_id))
+                .filter(|b| (b.get_author() == peer_id))
                 .collect();
             // number of blocks authored in the ledger <= number of rounds as leader
             // NOTE: '<=' is used since blocks can be rejected

@@ -82,13 +82,7 @@ impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
             .get_transactions(block_num)
             .await
             .map_err(JsonRpcError::internal_error)?;
-        let bloom_receipts = self
-            .inner
-            .get_receipts(block_num)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
-        let receipts =
-            block_receipts(&transactions, bloom_receipts, &header.header, header.hash).await?;
+        let receipts = block_receipts(&self.inner, &header.header, header.hash).await?;
 
         let result: Vec<(TransactionSigned, TransactionReceipt)> =
             transactions.into_iter().zip(receipts).collect();

@@ -5,12 +5,11 @@ mod test {
     };
 
     use itertools::Itertools;
-    use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
+
     use monad_consensus_types::{
-        block::{BlockType, PassthruBlockPolicy},
+        block::{MockExecutionProposedHeader, MockExecutionProtocol, PassthruBlockPolicy},
         block_validator::MockValidator,
         metrics::Metrics,
-        payload::StateRoot,
         txpool::MockTxPool,
     };
     use monad_crypto::{
@@ -50,38 +49,55 @@ mod test {
     impl SwarmRelation for ValidatorSwapSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type ExecutionProtocolType = MockExecutionProtocol;
         type StateBackendType = InMemoryState;
         type BlockPolicyType = PassthruBlockPolicy;
 
-        type TransportMessage =
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type TransportMessage = VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
 
         type BlockValidator = MockValidator;
-        type StateRootValidator = StateRoot;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
-        type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-        type AsyncStateRootVerify = PeerAsyncStateVerify<
+        type Ledger = MockLedger<
+            Self::SignatureType,
             Self::SignatureCollectionType,
-            <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+            Self::ExecutionProtocolType,
         >;
 
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
-            MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+            MonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
+            VerifiedMonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
         >;
         type Pipeline = GenericTransformerPipeline<
             CertificateSignaturePubKey<Self::SignatureType>,
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor =
-            MockStateRootHashSwap<Self::SignatureType, Self::SignatureCollectionType>;
-        type StateSyncExecutor =
-            MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        type StateRootHashExecutor = MockStateRootHashSwap<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
+        type StateSyncExecutor = MockStateSyncExecutor<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
     }
 
     fn verify_nodes_in_epoch(nodes: Vec<&Node<impl SwarmRelation>>, epoch: Epoch) {
@@ -113,7 +129,7 @@ mod test {
 
         for node in nodes {
             let mut update_block = None;
-            for block in node.executor.ledger().get_blocks().values() {
+            for block in node.executor.ledger().get_finalized_blocks().values() {
                 if block.get_seq_num() == update_block_num {
                     update_block = Some(block);
                     break;
@@ -121,7 +137,7 @@ mod test {
             }
             let update_block = update_block.unwrap();
 
-            let update_block_round = update_block.block.round;
+            let update_block_round = update_block.get_round();
             let epoch_manager = node.state.epoch_manager();
             let epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
 
@@ -175,18 +191,12 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
-            PeerAsyncStateVerify::new,
+            SeqNum(10_000_000),      // state_root_delay
             delta,                   // delta
             vote_pace,               // vote pace
             0,                       // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
-            majority_threshold,      // state root quorum threshold
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -285,18 +295,12 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
-            PeerAsyncStateVerify::new,
+            SeqNum(10_000_000),      // state_root_delay
             delta,                   // delta
             vote_pace,               // vote pace
             0,                       // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
-            majority_threshold,      // state root quorum threshold
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -467,18 +471,12 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
-            PeerAsyncStateVerify::new,
+            SeqNum(10_000_000),           // state_root_delay
             Duration::from_millis(delta), // delta
             Duration::from_millis(0),     // vote pace
             0,                            // proposal_tx_limit
             val_set_update_interval,      // val_set_update_interval
             Round(20),                    // epoch_start_delay
-            majority_threshold,           // state root quorum threshold
             SeqNum(100),                  // state_sync_threshold
         );
 
@@ -610,7 +608,7 @@ mod test {
             .map(|node| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .cloned()
                     .collect_vec()
@@ -620,14 +618,14 @@ mod test {
 
         for ledger in ledgers {
             for full_block in ledger {
-                if full_block.block.round < epoch_3_start_round {
+                if full_block.get_round() < epoch_3_start_round {
                     // the first two epochs both have genesis validators as the
                     // validator set
-                    assert!(genesis_validators.contains(&full_block.block.author));
-                } else if full_block.block.round < epoch_4_start_round {
-                    assert!(validators_epoch_3.contains(&full_block.block.author));
+                    assert!(genesis_validators.contains(full_block.get_author()));
+                } else if full_block.get_round() < epoch_4_start_round {
+                    assert!(validators_epoch_3.contains(full_block.get_author()));
                 } else {
-                    assert!(validators_epoch_4.contains(&full_block.block.author));
+                    assert!(validators_epoch_4.contains(full_block.get_author()));
                 }
             }
         }
@@ -682,18 +680,12 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-            || {
-                StateRoot::new(
-                    SeqNum(4), // state_root_delay
-                )
-            },
-            PeerAsyncStateVerify::new,
+            SeqNum(4),               // state_root_delay
             delta,                   // delta
             vote_pace,               // vote pace
             10,                      // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             epoch_start_delay,       // epoch_start_delay
-            majority_threshold,      // state root quorum threshold
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs

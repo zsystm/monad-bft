@@ -1,5 +1,5 @@
 use monad_bls::BlsSignatureCollection;
-use monad_consensus_types::checkpoint::Checkpoint;
+use monad_consensus_types::{checkpoint::Checkpoint, payload::EthExecutionProtocol};
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_types::{serde::deserialize_eth_address_from_str, EthAddress};
 use monad_secp::SecpSignature;
@@ -22,6 +22,7 @@ pub mod util;
 pub(crate) type SignatureType = SecpSignature;
 pub type SignatureCollectionType =
     BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+pub type ExecutionProtocolType = EthExecutionProtocol;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

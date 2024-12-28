@@ -5,9 +5,12 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockType},
+    block::{
+        ConsensusBlockHeader, ExecutionResult, MockExecutionBody, MockExecutionFinalizedHeader,
+        MockExecutionProposedHeader, MockExecutionProtocol,
+    },
     ledger::CommitResult,
-    payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
+    payload::{ConsensusBlockBody, FullTransactionList, ProposedEthHeader, RoundSignature},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
@@ -22,13 +25,14 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_eth_types::EthAddress;
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{Epoch, MonadVersion, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use reth_primitives::Header;
 
 #[derive(Clone)]
 pub struct ProposalGen<ST, SCT> {
@@ -79,9 +83,9 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-        txns: TransactionPayload,
-        srh: StateRootHash,
-    ) -> Verified<ST, ProposalMessage<SCT>> {
+        txns: FullTransactionList,
+        delayed_execution_results: Vec<MockExecutionFinalizedHeader>,
+    ) -> Verified<ST, ProposalMessage<ST, SCT, MockExecutionProtocol>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
             &self.high_qc
@@ -108,40 +112,34 @@ where
             })
             .expect("key not in valset");
 
-        let seq_num = match txns {
-            TransactionPayload::List(_) => qc.get_seq_num() + SeqNum(1),
-            TransactionPayload::Null => qc.get_seq_num(),
+        let seq_num = qc.get_seq_num() + SeqNum(1);
+        let block_body = ConsensusBlockBody {
+            execution_body: MockExecutionBody {
+                data: Default::default(),
+            },
         };
-        let block_kind = match txns {
-            TransactionPayload::List(_) => BlockKind::Executable,
-            TransactionPayload::Null => BlockKind::Null,
-        };
-        let payload = Payload { txns };
-        let block = Block::new(
+        let block_header = ConsensusBlockHeader::new(
             NodeId::new(leader_key.pubkey()),
-            self.timestamp,
             self.epoch,
             self.round,
-            &ExecutionProtocol {
-                state_root: srh,
-                seq_num,
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
-            },
-            payload.get_id(),
-            block_kind,
-            qc,
+            delayed_execution_results,
+            MockExecutionProposedHeader {},
+            block_body.get_id(),
+            qc.clone(),
+            seq_num,
+            self.timestamp,
+            RoundSignature::new(self.round, leader_certkey),
         );
 
         let validator_cert_pubkeys = val_epoch_map
             .get_cert_pubkeys(&epoch_manager.get_epoch(self.round).expect("epoch exists"))
             .expect("should have the current validator certificate pubkeys");
         self.high_qc = self.qc.clone();
-        self.qc = self.get_next_qc(certkeys, &block, validator_cert_pubkeys);
+        self.qc = self.get_next_qc(certkeys, &block_header, validator_cert_pubkeys);
 
         let proposal = ProposalMessage {
-            block,
-            payload,
+            block_header,
+            block_body,
             last_round_tc: self.last_tc.clone(),
         };
         self.last_tc = None;
@@ -225,7 +223,7 @@ where
     fn get_next_qc(
         &self,
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
-        block: &Block<SCT>,
+        block: &ConsensusBlockHeader<ST, SCT, MockExecutionProtocol>,
         validator_mapping: &ValidatorMapping<
             CertificateSignaturePubKey<ST>,
             SignatureCollectionKeyPairType<SCT>,
@@ -237,8 +235,9 @@ where
             round: block.round,
             parent_id: block.qc.get_block_id(),
             parent_round: block.qc.get_round(),
-            seq_num: block.execution.seq_num,
+            seq_num: block.seq_num,
             timestamp: block.timestamp,
+            version: MonadVersion::version(),
         };
         let qcinfo = QcInfo {
             vote: Vote {

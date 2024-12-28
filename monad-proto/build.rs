@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "proto/message.proto",
                 "proto/quorum_certificate.proto",
                 "proto/signing.proto",
-                "proto/state_root_hash.proto",
+                "proto/execution.proto",
                 "proto/timeout.proto",
                 "proto/validator_data.proto",
                 "proto/voting.proto",

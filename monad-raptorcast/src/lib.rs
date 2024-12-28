@@ -11,7 +11,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, Stream};
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{block::ExecutionProtocol, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
@@ -350,7 +350,7 @@ where
 }
 
 #[derive(Debug)]
-struct UnknownMessageError;
+struct UnknownMessageError(String);
 fn handle_message<
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
@@ -361,10 +361,10 @@ fn handle_message<
     let Ok(inbound) = InboundRouterMessage::<M, CertificateSignaturePubKey<ST>>::deserialize(bytes)
     else {
         // if that fails, try to deserialize as an old message instead
-        let Ok(old_message) = M::deserialize(bytes) else {
-            return Err(UnknownMessageError);
+        return match M::deserialize(bytes) {
+            Ok(old_message) => Ok(InboundRouterMessage::Application(old_message)),
+            Err(err) => Err(UnknownMessageError(format!("{:?}", err))),
         };
-        return Ok(InboundRouterMessage::Application(old_message));
     };
     Ok(inbound)
 }
@@ -444,8 +444,13 @@ where
                             None
                         }
                     },
-                    Err(_) => {
-                        tracing::warn!(?from, "failed to deserialize message");
+                    Err(err) => {
+                        tracing::warn!(
+                            ?from,
+                            ?err,
+                            decoded = hex::encode(&decoded),
+                            "failed to deserialize message"
+                        );
                         None
                     }
                 },
@@ -500,13 +505,16 @@ where
     }
 }
 
-impl<ST, SCT> From<RaptorCastEvent<MonadEvent<ST, SCT>, CertificateSignaturePubKey<ST>>>
-    for MonadEvent<ST, SCT>
+impl<ST, SCT, EPT> From<RaptorCastEvent<MonadEvent<ST, SCT, EPT>, CertificateSignaturePubKey<ST>>>
+    for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: RaptorCastEvent<MonadEvent<ST, SCT>, CertificateSignaturePubKey<ST>>) -> Self {
+    fn from(
+        value: RaptorCastEvent<MonadEvent<ST, SCT, EPT>, CertificateSignaturePubKey<ST>>,
+    ) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(peer_manager_response) => {

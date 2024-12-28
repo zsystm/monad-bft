@@ -13,6 +13,7 @@ message ProtoVoteInfo {
   monad_proto.basic.ProtoRound parent_round = 5;
   monad_proto.basic.ProtoSeqNum seq_num = 6;
   uint64 timestamp = 7;
+  monad_proto.basic.ProtoMonadVersion version = 8;
 }
 
 message ProtoVote {

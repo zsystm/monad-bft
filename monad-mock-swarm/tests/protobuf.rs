@@ -7,8 +7,9 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
+    block::MockExecutionProtocol,
     ledger::CommitResult,
-    payload::{FullTransactionList, TransactionPayload},
+    payload::FullTransactionList,
     state_root_hash::StateRootHash,
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
@@ -27,7 +28,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, MonadVersion, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     simple_round_robin::SimpleRoundRobin,
@@ -37,11 +38,12 @@ use monad_validator::{
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
+type ExecutionProtocolType = MockExecutionProtocol;
 
 #[test]
 fn test_consensus_timeout_event() {
     let event = MonadEvent::ConsensusEvent(
-        ConsensusEvent::<SignatureType, SignatureCollectionType>::Timeout,
+        ConsensusEvent::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::Timeout,
     );
 
     let buf = serialize_event(&event);
@@ -62,16 +64,17 @@ fn test_consensus_message_event_vote_multisig() {
         parent_round: Round(2),
         seq_num: SeqNum(0),
         timestamp: 0,
+        version: MonadVersion::version(),
     };
     let vote = Vote {
         vote_info: vi,
         ledger_commit_info: CommitResult::Commit,
     };
 
-    let votemsg: ProtocolMessage<SignatureCollectionType> =
+    let votemsg: ProtocolMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
         ProtocolMessage::Vote(VoteMessage::new(vote, &certkeypair));
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: votemsg,
     };
     let conmsg_hash = HasherType::hash_object(&conmsg);
@@ -84,7 +87,8 @@ fn test_consensus_message_event_vote_multisig() {
     });
 
     let buf = serialize_event(&event);
-    let rx_event = deserialize_event::<SignatureType, SignatureCollectionType>(&buf);
+    let rx_event =
+        deserialize_event::<SignatureType, SignatureCollectionType, ExecutionProtocolType>(&buf);
 
     assert_eq!(event, rx_event.unwrap());
 }
@@ -116,13 +120,13 @@ fn test_consensus_message_event_proposal_bls() {
         &epoch_manager,
         &val_epoch_map,
         &election,
-        TransactionPayload::List(FullTransactionList::empty()),
-        StateRootHash::default(),
+        FullTransactionList::empty(),
+        Vec::new(),
     );
 
     let consensus_proposal_msg = ProtocolMessage::Proposal((*proposal).clone());
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: consensus_proposal_msg,
     };
     let conmsg_hash = HasherType::hash_object(&conmsg);
@@ -139,6 +143,7 @@ fn test_consensus_message_event_proposal_bls() {
     let rx_event = deserialize_event::<
         SignatureType,
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>,
+        ExecutionProtocolType,
     >(&buf);
 
     assert_eq!(event, rx_event.unwrap());

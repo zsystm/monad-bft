@@ -4,10 +4,8 @@ use std::env;
 
 use alloy_rpc_client::ClientBuilder;
 use clap::{Parser, Subcommand, ValueEnum};
-use eyre::bail;
 use prelude::*;
 use serde::Deserialize;
-use shared::{ecmul::ECMul, erc20::ERC20};
 use tracing_subscriber::util::SubscriberInitExt;
 use url::Url;
 
@@ -70,21 +68,6 @@ pub struct Config {
 
     #[clap(long, global = true)]
     erc20_contract: Option<String>,
-
-    #[clap(long, global = true)]
-    ecmul_contract: Option<String>,
-
-    #[clap(long, global = true, default_value = "false")]
-    verbose: bool,
-
-    #[clap(long, global = true, default_value = "false")]
-    use_receipts: bool,
-
-    #[clap(long, global = true, default_value = "false")]
-    use_receipts_by_block: bool,
-
-    #[clap(long, global = true, default_value = "false")]
-    use_get_logs: bool,
 }
 
 impl Config {
@@ -99,10 +82,8 @@ impl Config {
             | Duplicates
             | RandomPriorityFee
             | HighCallData
-            | SelfDestructs
             | NonDeterministicStorage
-            | StorageDeletes
-            | ECMul => 10,
+            | StorageDeletes => 10,
             NullGen => 0,
         }
     }
@@ -117,9 +98,10 @@ impl Config {
             ManyToMany { .. }
             | Duplicates
             | RandomPriorityFee
+            | HighCallData
             | NonDeterministicStorage
             | StorageDeletes => 100,
-            NullGen | SelfDestructs | HighCallData | ECMul => 10,
+            NullGen => 10,
         }
     }
 
@@ -133,61 +115,10 @@ impl Config {
             ManyToMany { .. }
             | Duplicates
             | RandomPriorityFee
+            | HighCallData
             | NonDeterministicStorage
             | StorageDeletes => 2500,
             NullGen => 100,
-            SelfDestructs | HighCallData | ECMul => 100,
-        }
-    }
-
-    pub fn required_contract(&self) -> RequiredContract {
-        use RequiredContract::*;
-        match self.generator_config {
-            GeneratorConfig::FewToMany { tx_type } => match tx_type {
-                TxType::ERC20 => ERC20,
-                TxType::Native => None,
-            },
-            GeneratorConfig::ManyToMany { tx_type } => match tx_type {
-                TxType::ERC20 => ERC20,
-                TxType::Native => None,
-            },
-            GeneratorConfig::Duplicates => ERC20,
-            GeneratorConfig::RandomPriorityFee => ERC20,
-            GeneratorConfig::HighCallData => None,
-            GeneratorConfig::SelfDestructs => None,
-            GeneratorConfig::NonDeterministicStorage => ERC20,
-            GeneratorConfig::StorageDeletes => ERC20,
-            GeneratorConfig::NullGen => None,
-            GeneratorConfig::ECMul => ECMUL,
-        }
-    }
-}
-
-pub enum RequiredContract {
-    None,
-    ERC20,
-    ECMUL,
-}
-
-#[derive(Debug)]
-pub enum DeployedContract {
-    None,
-    ERC20(ERC20),
-    ECMUL(ECMul),
-}
-
-impl DeployedContract {
-    pub fn erc20(self) -> Result<ERC20> {
-        match self {
-            Self::ERC20(erc20) => Ok(erc20),
-            _ => bail!("Expected erc20, found {:?}", &self),
-        }
-    }
-
-    pub fn ecmul(self) -> Result<ECMul> {
-        match self {
-            Self::ECMUL(x) => Ok(x),
-            _ => bail!("Expected ecmul, found {:?}", &self),
         }
     }
 }
@@ -205,11 +136,9 @@ pub enum GeneratorConfig {
     Duplicates,
     RandomPriorityFee,
     HighCallData,
-    SelfDestructs,
     NonDeterministicStorage,
     StorageDeletes,
     NullGen,
-    ECMul,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, ValueEnum)]
@@ -220,10 +149,8 @@ pub enum TxType {
 }
 
 #[tokio::main]
-async fn main() {
-    if let Err(e) = setup_logging() {
-        error!("Erorr setting up logging: {e:?}");
-    }
+async fn main() -> Result<()> {
+    setup_logging()?;
 
     let config = Config::parse();
     let client: ReqwestClient = ClientBuilder::default().http(config.rpc_url.clone());
@@ -240,9 +167,7 @@ async fn main() {
         );
     }
 
-    if let Err(e) = run::run(client, config).await {
-        error!("Fatal error: {e:?}");
-    }
+    run::run(client, config).await
 }
 
 fn setup_logging() -> Result<()> {

@@ -1,5 +1,7 @@
-use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_consensus_types::{block::ExecutionProtocol, signature_collection::SignatureCollection};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_proto::{error::ProtoError, proto::event::*};
 
 use crate::ConsensusEvent;
@@ -7,10 +9,13 @@ use crate::ConsensusEvent;
 pub mod event;
 pub mod interface;
 
-impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>>
-    for ProtoConsensusEvent
+impl<ST, SCT, EPT> From<&ConsensusEvent<ST, SCT, EPT>> for ProtoConsensusEvent
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: &ConsensusEvent<S, SCT>) -> Self {
+    fn from(value: &ConsensusEvent<ST, SCT, EPT>) -> Self {
         let event = match value {
             ConsensusEvent::Message {
                 sender,
@@ -39,8 +44,11 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
     }
 }
 
-impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
-    for ConsensusEvent<S, SCT>
+impl<ST, SCT, EPT> TryFrom<ProtoConsensusEvent> for ConsensusEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Error = ProtoError;
 

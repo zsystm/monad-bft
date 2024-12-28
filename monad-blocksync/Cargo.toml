@@ -12,6 +12,8 @@ monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
+alloy-rlp = { workspace = true }
+bytes = { workspace = true }
 itertools = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
@@ -23,5 +25,4 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-testutil = { path = "../monad-testutil" }
 
-bytes = { workspace = true }
 test-case = { workspace = true }

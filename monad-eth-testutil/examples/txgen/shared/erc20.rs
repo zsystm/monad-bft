@@ -10,6 +10,7 @@ use reth_primitives::{
     TransactionSigned, TxEip1559, U256,
 };
 use serde::Deserialize;
+use serde_json::{json, Value};
 use tokio::time::sleep;
 use tracing::info;
 
@@ -26,31 +27,6 @@ pub struct ERC20 {
     pub addr: Address,
 }
 
-pub async fn ensure_contract_deployed(client: &ReqwestClient, addr: Address) -> Result<()> {
-    let mut timeout = Duration::from_millis(200);
-    for _ in 0..10 {
-        info!(
-            "Waiting {}ms for contract to be deployed...",
-            timeout.as_millis()
-        );
-        sleep(timeout).await;
-
-        let code = client.get_code(&addr).await?;
-        if code != "0x" {
-            info!(addr = addr.to_string(), "Deployed contract");
-            return Ok(());
-        }
-
-        // else exponential backoff
-        timeout *= 2;
-    }
-
-    Err(eyre::eyre!(
-        "Failed to deployed contract {}",
-        addr.to_string()
-    ))
-}
-
 impl ERC20 {
     pub async fn deploy(deployer: &(Address, PrivateKey), client: &ReqwestClient) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
@@ -61,9 +37,11 @@ impl ERC20 {
             .request("eth_sendRawTransaction", [tx.envelope_encoded()])
             .await?;
 
+        sleep(Duration::from_secs(1)).await;
+
         let addr = calculate_contract_addr(&deployer.0, nonce);
-        ensure_contract_deployed(client, addr).await?;
-        Ok(ERC20 { addr })
+        info!(addr = addr.to_string(), "Deployed erc20 contract");
+        Ok(Self { addr })
     }
 
     pub fn deploy_tx(nonce: u64, deployer: &PrivateKey) -> TransactionSigned {
@@ -82,10 +60,6 @@ impl ERC20 {
 
         let sig = deployer.sign_transaction(&tx);
         TransactionSigned::from_transaction_and_signature(tx, sig)
-    }
-
-    pub fn self_destruct_tx(&self, sender: &mut SimpleAccount) -> TransactionSigned {
-        self.construct_tx(sender, IERC20::destroySmartContractCall {})
     }
 
     pub fn construct_tx<T: alloy_sol_types::SolCall>(
@@ -115,14 +89,14 @@ impl ERC20 {
         make_tx(nonce, from, self.addr, U256::ZERO, input)
     }
 
-    // pub fn balance_of(&self, account: Address) -> (&'static str, [Value; 1]) {
-    //     let input = IERC20::balanceOfCall { account };
-    //     let call = json!({
-    //         "to": self.addr,
-    //         "data": input.abi_encode()
-    //     });
-    //     ("eth_call", [call])
-    // }
+    pub fn balance_of(&self, account: Address) -> (&'static str, [Value; 1]) {
+        let input = IERC20::balanceOfCall { account };
+        let call = json!({
+            "to": self.addr,
+            "data": input.abi_encode()
+        });
+        ("eth_call", [call])
+    }
 }
 
 fn make_tx(
@@ -160,9 +134,6 @@ sol! {
 pragma solidity ^0.8.13;
 
 contract IERC20 {
-    // constructor(string memory _name, string memory _symbol, uint8 _decimals);
-    event Transfer(address indexed from, address indexed to, uint256 value);
-
     function totalSupply() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);
     function transfer(address recipient, uint256 amount) external returns (bool);

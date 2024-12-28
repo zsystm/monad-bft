@@ -6,9 +6,9 @@ use monad_consensus::{
     validation::signing::Unvalidated,
 };
 use monad_consensus_types::{
-    block::{Block, BlockKind},
+    block::Block,
     ledger::CommitResult,
-    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
@@ -26,7 +26,7 @@ use monad_testutil::{
     signing::{MockSignatures, TestSigner},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, MonadVersion, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetFactory, ValidatorSetType},
@@ -54,7 +54,7 @@ fn setup_block(
     seq_num: SeqNum,
     signers: &[PubKeyType],
 ) -> (Block<MockSignatures<SignatureType>>, Payload) {
-    let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
+    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         epoch: qc_epoch,
@@ -63,6 +63,7 @@ fn setup_block(
         parent_round: qc_parent_round,
         seq_num,
         timestamp: 0,
+        version: MonadVersion::version(),
     };
     let qcinfo = QcInfo {
         vote: Vote {
@@ -95,7 +96,6 @@ fn setup_block(
                 randao_reveal: RandaoReveal::default(),
             },
             payload.get_id(),
-            BlockKind::Executable,
             &qc,
         ),
         payload,
@@ -171,6 +171,7 @@ fn define_proposal_with_tc(
         parent_round: qc_parent_round,
         seq_num: qc_seq_num,
         timestamp: 0,
+        version: MonadVersion::version(),
     };
 
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
@@ -298,7 +299,7 @@ fn test_verify_incorrect_block_epoch(known_round: Round, block_round: Round) {
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
@@ -355,7 +356,7 @@ fn test_verify_author_not_sender() {
     });
 
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, author_keypair);
@@ -432,11 +433,11 @@ fn test_verify_invalid_signature() {
     });
 
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let other_msg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: other_proposal,
     };
     // this causes error
@@ -490,7 +491,7 @@ fn test_verify_proposal_happy() {
     });
 
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
@@ -1233,7 +1234,7 @@ fn test_validate_tc_invalid_tc_signature() {
     };
 
     let author = NodeId::new(keys[0].pubkey());
-    let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
+    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let qc = QuorumCertificate::genesis_qc();
     let payload = Payload { txns };
 
@@ -1249,7 +1250,6 @@ fn test_validate_tc_invalid_tc_signature() {
             randao_reveal: RandaoReveal::default(),
         },
         payload.get_id(),
-        BlockKind::Executable,
         &qc,
     );
 

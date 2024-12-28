@@ -20,8 +20,8 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     R: Executor<
-            Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
-        > + Stream<Item = MonadEvent<ST, SCT>>
+            Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>,
+        > + Stream<Item = MonadEvent<ST, SCT, EPT>>
         + Unpin,
 {
     pub fn new(router: R) -> Self {
@@ -37,10 +37,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     R: Executor<
-        Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
+        Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>,
     >,
 {
-    type Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>;
+    type Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let filtered = commands
@@ -50,7 +50,6 @@ where
                     VerifiedMonadMessage::Consensus(_) => None,
                     VerifiedMonadMessage::BlockSyncRequest(_) => Some(cmd),
                     VerifiedMonadMessage::BlockSyncResponse(_) => Some(cmd),
-                    VerifiedMonadMessage::PeerStateRootMessage(_) => None,
                     VerifiedMonadMessage::ForwardedTx(_) => Some(cmd),
                     VerifiedMonadMessage::StateSyncMessage(_) => Some(cmd),
                 },
@@ -75,11 +74,11 @@ impl<ST, SCT, R> Stream for FullNodeRouterFilter<ST, SCT, R>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    R: Stream<Item = MonadEvent<ST, SCT>> + Unpin,
+    R: Stream<Item = MonadEvent<ST, SCT, EPT>> + Unpin,
 
     Self: Unpin,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,

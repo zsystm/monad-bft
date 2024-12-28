@@ -1,5 +1,5 @@
 use super::*;
-use crate::{generators::native_transfer_priority_fee, prelude::*};
+use crate::{generators::native_transfer_priority_fee, prelude::*, shared::erc20::ERC20};
 
 pub trait Generator {
     // todo: come up with a way to mint too
@@ -16,6 +16,7 @@ pub struct GeneratorHarness {
     pub rpc_sender: mpsc::Sender<AccountsWithTxs>,
 
     pub client: ReqwestClient,
+    pub erc20: ERC20,
     pub root_accts: VecDeque<SimpleAccount>,
     pub min_native: U256,
     pub seed_native_amt: U256,
@@ -28,6 +29,7 @@ impl GeneratorHarness {
         refresh_rx: mpsc::Receiver<Accounts>,
         rpc_sender: mpsc::Sender<AccountsWithTxs>,
         client: &ReqwestClient,
+        erc20: ERC20,
         min_native: U256,
         seed_native_amt: U256,
         metrics: &Arc<Metrics>,
@@ -37,6 +39,7 @@ impl GeneratorHarness {
             refresh_rx,
             rpc_sender,
             client: client.clone(),
+            erc20,
             root_accts: VecDeque::with_capacity(10),
             min_native,
             metrics: Arc::clone(metrics),

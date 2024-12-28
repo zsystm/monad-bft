@@ -1,8 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-use monad_consensus_types::{block::BlockType, payload::StateRoot};
+use monad_consensus_types::payload::EthExecutionProtocol;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
@@ -37,28 +36,38 @@ pub struct ForkpointSwarm;
 impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type ExecutionProtocolType = EthExecutionProtocol;
     type StateBackendType = InMemoryState;
-    type BlockPolicyType = EthBlockPolicy;
+    type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type TransportMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = VerifiedMonadMessage<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 
-    type BlockValidator = EthValidator;
-    type StateRootValidator = StateRoot;
+    type BlockValidator =
+        EthValidator<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type TxPool = EthTxPool;
-    type AsyncStateRootVerify = PeerAsyncStateVerify<
-        Self::SignatureCollectionType,
-        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-    >;
+    type Ledger =
+        MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
+    type TxPool =
+        EthTxPool<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
-        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        MonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >,
+        VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -66,10 +75,16 @@ impl SwarmRelation for ForkpointSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor =
-        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
-    type StateSyncExecutor =
-        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateRootHashExecutor = MockStateRootHashNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
+    type StateSyncExecutor = MockStateSyncExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 }
 
 #[test]
@@ -84,6 +99,7 @@ fn test_forkpoint_restart_f_simple_blocksync() {
         recovery_time,
         epoch_length,
         statesync_threshold,
+        false,
     );
 }
 
@@ -99,6 +115,7 @@ fn test_forkpoint_restart_f_simple_statesync() {
         recovery_time,
         epoch_length,
         statesync_threshold,
+        true,
     );
 }
 
@@ -114,6 +131,7 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
         recovery_time,
         epoch_length,
         statesync_threshold,
+        false,
     );
 }
 
@@ -140,6 +158,7 @@ fn test_forkpoint_restart_f() {
                     recovery_time,
                     epoch_length,
                     statesync_threshold,
+                    false,
                 );
             })
         });
@@ -155,6 +174,7 @@ fn forkpoint_restart_f(
     recovery_time: SeqNum,
     epoch_length: SeqNum,
     statesync_threshold: SeqNum,
+    fresh_forkpoint: bool,
 ) {
     let delta = Duration::from_millis(100);
     let vote_pace = Duration::from_millis(0);
@@ -164,7 +184,7 @@ fn forkpoint_restart_f(
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         Default::default,
-        Default::default,
+        || EthValidator::new(0, 0, 0),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -173,14 +193,12 @@ fn forkpoint_restart_f(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-        || StateRoot::new(state_root_delay),
-        PeerAsyncStateVerify::new,
+        state_root_delay,    // state_root_delay
         delta,               // delta
         vote_pace,           // vote pace
         10,                  // proposal_tx_limit
         epoch_length,        // val_set_update_interval
         Round(50),           // epoch_start_delay
-        majority_threshold,  // state root quorum threshold
         statesync_threshold, // state_sync_threshold
     );
 
@@ -199,7 +217,7 @@ fn forkpoint_restart_f(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             Default::default,
-            Default::default,
+            || EthValidator::new(0, 0, 0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -208,14 +226,12 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
-            PeerAsyncStateVerify::new,
+            state_root_delay,    // state_root_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
-            majority_threshold,  // state root quorum threshold
             statesync_threshold, // state_sync_threshold
         );
         let state_configs_dup = make_state_configs::<ForkpointSwarm>(
@@ -223,7 +239,7 @@ fn forkpoint_restart_f(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             Default::default,
-            Default::default,
+            || EthValidator::new(0, 0, 0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -232,14 +248,12 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
-            PeerAsyncStateVerify::new,
+            state_root_delay,    // state_root_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
-            majority_threshold,  // state root quorum threshold
             statesync_threshold, // state_sync_threshold
         );
 
@@ -308,7 +322,11 @@ fn forkpoint_restart_f(
         {}
 
         // Restart node from forkpoint and join network
-        let forkpoint = failed_node.get_forkpoint();
+        let forkpoint = if fresh_forkpoint {
+            swarm.states().first_key_value().unwrap().1.get_forkpoint()
+        } else {
+            failed_node.get_forkpoint()
+        };
         assert_eq!(
             forkpoint.validate(
                 state_root_delay,
@@ -404,13 +422,13 @@ fn forkpoint_restart_f(
         let maybe_last_block = restarted_node
             .executor
             .ledger()
-            .get_blocks()
+            .get_finalized_blocks()
             .values()
             .last();
         // SeqNum(terminate_block as u64 - 2): if all nodes are in sync, the
         // shortest ledger is at most 2 blocks behind the longest
         let restarted_node_caught_up = maybe_last_block
-            .map(|fb| fb.block.execution.seq_num >= SeqNum(terminate_block as u64 - 2))
+            .map(|fb| fb.get_seq_num() >= SeqNum(terminate_block as u64 - 2))
             .unwrap_or(false);
 
         let test_result = restarted_node_caught_up
@@ -483,7 +501,7 @@ fn forkpoint_restart_below_all(
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         Default::default,
-        Default::default,
+        || EthValidator::new(0, 0, 0),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -492,14 +510,12 @@ fn forkpoint_restart_below_all(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-        || StateRoot::new(state_root_delay),
-        PeerAsyncStateVerify::new,
+        state_root_delay,    // state_root_delay
         delta,               // delta
         vote_pace,           // vote pace
         10,                  // proposal_tx_limit
         epoch_length,        // val_set_update_interval
         Round(50),           // epoch_start_delay
-        majority_threshold,  // state root quorum threshold
         statesync_threshold, // state_sync_threshold
     );
 
@@ -528,7 +544,7 @@ fn forkpoint_restart_below_all(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             Default::default,
-            Default::default,
+            || EthValidator::new(0, 0, 0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -537,14 +553,12 @@ fn forkpoint_restart_below_all(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
-            PeerAsyncStateVerify::new,
+            state_root_delay,    // state_root_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
-            majority_threshold,  // state root quorum threshold
             statesync_threshold, // state_sync_threshold
         );
         let mut state_configs_dup = make_state_configs::<ForkpointSwarm>(
@@ -552,7 +566,7 @@ fn forkpoint_restart_below_all(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             Default::default,
-            Default::default,
+            || EthValidator::new(0, 0, 0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -561,14 +575,12 @@ fn forkpoint_restart_below_all(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
-            PeerAsyncStateVerify::new,
+            state_root_delay,    // state_root_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
-            majority_threshold,  // state root quorum threshold
             statesync_threshold, // state_sync_threshold
         );
 
@@ -741,7 +753,7 @@ fn forkpoint_restart_below_all(
             .map(|(_id, node)| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .last()
                     .map(|block| block.get_seq_num().0)
@@ -756,7 +768,7 @@ fn forkpoint_restart_below_all(
             .map(|(_id, node)| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .last()
                     .map(|block| block.get_seq_num().0)

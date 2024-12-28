@@ -1,8 +1,8 @@
 use std::{collections::HashSet, marker::PhantomData};
 
+use alloy_rlp::{Decodable, Encodable};
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
-    block::{Block, BlockKind},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
@@ -97,38 +97,14 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
     }
 }
 
-pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
-    let block_id = {
-        let mut hasher = HasherType::new();
-        hasher.update(b.author.pubkey().bytes());
-        hasher.update(b.timestamp.as_bytes());
-        hasher.update(b.epoch);
-        hasher.update(b.round);
-        hasher.update(b.execution.state_root);
-        hasher.update(b.execution.seq_num.as_bytes());
-        hasher.update(b.execution.beneficiary.0.as_bytes());
-        hasher.update(b.execution.randao_reveal.0.as_bytes());
-        hasher.update(b.payload_id.0.as_bytes());
-        match &b.block_kind {
-            BlockKind::Executable => {
-                // EnumDiscriminant(1)
-                hasher.update(1_i32.to_le_bytes());
-            }
-            BlockKind::Null => {
-                // EnumDiscriminant(2)
-                hasher.update(2_i32.to_le_bytes());
-            }
-        }
-        hasher.update(b.qc.get_block_id().0);
-        hasher.update(b.qc.signatures.get_hash());
+impl<ST: CertificateSignatureRecoverable> Encodable for MockSignatures<ST> {
+    fn encode(&self, _out: &mut dyn alloy_rlp::BufMut) {}
+}
 
-        hasher.hash()
-    };
-
-    // Hash of a block is actually a hash of its cached BlockId
-    let mut hasher = HasherType::new();
-    hasher.update(block_id);
-    hasher.hash()
+impl<ST: CertificateSignatureRecoverable> Decodable for MockSignatures<ST> {
+    fn decode(_buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        unreachable!()
+    }
 }
 
 pub fn node_id<ST: CertificateSignatureRecoverable>() -> NodeId<CertificateSignaturePubKey<ST>> {

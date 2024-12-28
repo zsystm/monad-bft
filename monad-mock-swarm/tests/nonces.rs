@@ -5,10 +5,12 @@ mod test {
         time::Duration,
     };
 
-    use alloy_rlp::Decodable;
+    use alloy_consensus::Transaction as _;
+    use alloy_primitives::B256;
+    use alloy_rlp::{encode, Decodable};
     use itertools::Itertools;
-    use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-    use monad_consensus_types::payload::{StateRoot, TransactionPayload};
+
+    use monad_consensus_types::payload::EthExecutionProtocol;
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -17,7 +19,6 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_tx, secret_to_eth_address};
-    use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
     use monad_eth_types::{Balance, EthAddress};
     use monad_mock_swarm::{
@@ -46,35 +47,47 @@ mod test {
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
-    use reth_primitives::B256;
+    use reth_primitives::{TransactionSigned, TransactionSignedEcRecovered};
     use tracing::info;
 
     pub struct EthSwarm;
     impl SwarmRelation for EthSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type ExecutionProtocolType = EthExecutionProtocol;
         type StateBackendType = InMemoryState;
-        type BlockPolicyType = EthBlockPolicy;
+        type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
 
-        type TransportMessage =
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type TransportMessage = VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
 
-        type BlockValidator = EthValidator;
-        type StateRootValidator = StateRoot;
+        type BlockValidator = EthValidator<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::StateBackendType,
+        >;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-        type TxPool = EthTxPool;
+        type TxPool =
+            EthTxPool<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
         type Ledger = MockEthLedger<Self::SignatureType, Self::SignatureCollectionType>;
-        type AsyncStateRootVerify = PeerAsyncStateVerify<
-            Self::SignatureCollectionType,
-            <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-        >;
 
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
-            MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+            MonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
+            VerifiedMonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
         >;
 
         type Pipeline = GenericTransformerPipeline<
@@ -82,10 +95,16 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor =
-            MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
-        type StateSyncExecutor =
-            MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        type StateRootHashExecutor = MockStateRootHashNop<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
+        type StateSyncExecutor = MockStateSyncExecutor<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
@@ -105,7 +124,7 @@ mod test {
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            EthTxPool::default,
+            || EthTxPool::new(true),
             || EthValidator::new(10_000, 1_000_000, 1337),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {
@@ -115,14 +134,12 @@ mod test {
                     InMemoryBlockState::genesis(existing_nonces.clone()),
                 )
             },
-            || StateRoot::new(execution_delay),
-            PeerAsyncStateVerify::new,
+            execution_delay,          // state_root_delay
             CONSENSUS_DELTA,          // delta
             Duration::from_millis(0), // vote pace
             10,                       // proposal_tx_limit
             SeqNum(2000),             // val_set_update_interval
             Round(50),                // epoch_start_delay
-            majority_threshold,       // state root quorum threshold
             SeqNum(100),              // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -168,29 +185,21 @@ mod test {
     fn verify_transactions_in_ledger(
         swarm: &Nodes<EthSwarm>,
         node_ids: Vec<ID<NopPubKey>>,
-        txns: Vec<EthSignedTransaction>,
+        txns: Vec<TransactionSigned>,
     ) -> bool {
         let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| t.hash()));
         for node_id in node_ids {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
-            for (round, block) in state.executor.ledger().get_blocks() {
-                let decoded_txns = match &block.payload.txns {
-                    TransactionPayload::List(rlp) => {
-                        Vec::<EthSignedTransaction>::decode(&mut rlp.as_ref()).unwrap()
-                    }
-                    TransactionPayload::Null => Vec::new(),
-                };
-
-                let decoded_txn_hashes: HashSet<_> =
-                    HashSet::from_iter(decoded_txns.iter().map(|t| t.hash()));
-                for txn_hash in decoded_txn_hashes {
+            for (round, block) in state.executor.ledger().get_finalized_blocks() {
+                for txn in &block.body().execution_body.transactions {
+                    let txn_hash = txn.hash();
                     if txns_to_see.contains(&txn_hash) {
                         txns_to_see.remove(&txn_hash);
                     } else {
                         println!(
-                            "Unexpected transaction in block round {}. NodeID: {}, TxnHash: {}",
-                            round.0, node_id, txn_hash
+                            "Unexpected transaction in block round {}. SeqNum: {}, NodeID: {}, TxnHash: {}, Nonce: {}",
+                            round.0, block.get_seq_num().0, node_id, txn_hash, txn.nonce()
                         );
                         return false;
                     }
@@ -226,7 +235,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }
@@ -234,7 +243,7 @@ mod test {
         for nonce in 20..30 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, encode(&eth_txn).into());
         }
 
         while swarm
@@ -278,7 +287,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }
@@ -299,7 +308,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 1000);
 
-            swarm.send_transaction(node_2_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_2_id, encode(&eth_txn).into());
         }
 
         while swarm
@@ -352,8 +361,8 @@ mod test {
             let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn_sender_1.envelope_encoded().into());
-            swarm.send_transaction(node_1_id, eth_txn_sender_2.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, encode(&eth_txn_sender_1).into());
+            swarm.send_transaction(node_1_id, encode(&eth_txn_sender_2).into());
 
             expected_txns.push(eth_txn_sender_1);
             expected_txns.push(eth_txn_sender_2);
@@ -386,8 +395,8 @@ mod test {
             let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_2_id, eth_txn_sender_1.envelope_encoded().into());
-            swarm.send_transaction(node_2_id, eth_txn_sender_2.envelope_encoded().into());
+            swarm.send_transaction(node_2_id, encode(&eth_txn_sender_1).into());
+            swarm.send_transaction(node_2_id, encode(&eth_txn_sender_2).into());
         }
 
         // Send transactions with nonces 10..20 to Node 2
@@ -395,8 +404,8 @@ mod test {
             let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_2_id, eth_txn_sender_1.envelope_encoded().into());
-            swarm.send_transaction(node_2_id, eth_txn_sender_2.envelope_encoded().into());
+            swarm.send_transaction(node_2_id, encode(&eth_txn_sender_1).into());
+            swarm.send_transaction(node_2_id, encode(&eth_txn_sender_2).into());
 
             expected_txns.push(eth_txn_sender_1);
             expected_txns.push(eth_txn_sender_2);
@@ -455,7 +464,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(other_nodes[0], eth_txn.envelope_encoded().into());
+            swarm.send_transaction(other_nodes[0], encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }
@@ -495,7 +504,7 @@ mod test {
         for nonce in 10..20 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }

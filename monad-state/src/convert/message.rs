@@ -1,4 +1,4 @@
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{block::ExecutionProtocol, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -6,12 +6,13 @@ use monad_proto::{error::ProtoError, proto::message::*};
 
 use crate::{MonadMessage, VerifiedMonadMessage};
 
-impl<ST, SCT> From<&VerifiedMonadMessage<ST, SCT>> for ProtoMonadMessage
+impl<ST, SCT, EPT> From<&VerifiedMonadMessage<ST, SCT, EPT>> for ProtoMonadMessage
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: &VerifiedMonadMessage<ST, SCT>) -> Self {
+    fn from(value: &VerifiedMonadMessage<ST, SCT, EPT>) -> Self {
         Self {
             oneof_message: Some(match value {
                 VerifiedMonadMessage::Consensus(msg) => {
@@ -22,9 +23,6 @@ where
                 }
                 VerifiedMonadMessage::BlockSyncResponse(msg) => {
                     proto_monad_message::OneofMessage::BlockSyncResponse(msg.into())
-                }
-                VerifiedMonadMessage::PeerStateRootMessage(msg) => {
-                    proto_monad_message::OneofMessage::PeerStateRoot(msg.into())
                 }
                 VerifiedMonadMessage::ForwardedTx(msg) => {
                     proto_monad_message::OneofMessage::ForwardedTx(ProtoForwardedTx {
@@ -39,10 +37,11 @@ where
     }
 }
 
-impl<ST, SCT> TryFrom<ProtoMonadMessage> for MonadMessage<ST, SCT>
+impl<ST, SCT, EPT> TryFrom<ProtoMonadMessage> for MonadMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Error = ProtoError;
 
@@ -56,9 +55,6 @@ where
             }
             Some(proto_monad_message::OneofMessage::BlockSyncResponse(msg)) => {
                 MonadMessage::BlockSyncResponse(msg.try_into()?)
-            }
-            Some(proto_monad_message::OneofMessage::PeerStateRoot(msg)) => {
-                MonadMessage::PeerStateRoot(msg.try_into()?)
             }
             Some(proto_monad_message::OneofMessage::ForwardedTx(msg)) => {
                 MonadMessage::ForwardedTx(msg.tx)

@@ -11,7 +11,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-blocksync = { path = "../monad-blocksync" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
@@ -43,11 +42,12 @@ monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-eth-ledger = { path = "../monad-eth-ledger" }
 monad-eth-testutil = { path = "../monad-eth-testutil" }
-monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 criterion = { workspace = true }
 reth-primitives = { workspace = true }

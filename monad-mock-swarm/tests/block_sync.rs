@@ -5,10 +5,10 @@ mod test {
     };
 
     use itertools::Itertools;
-    use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
+    
     use monad_consensus_types::{
         block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-        payload::StateRoot, txpool::MockTxPool,
+        txpool::MockTxPool,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_mock_swarm::{
@@ -53,18 +53,14 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
-            PeerAsyncStateVerify::new,
+            
+            SeqNum(10_000_000), // state_root_delay
             delta,              // delta
             vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
-            majority_threshold, // state root quorum threshold
+            
             SeqNum(1000),       // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -124,10 +120,10 @@ mod test {
                     .values()
                     .filter_map(|node| {
                         if filter_peers.contains(&node.id) {
-                            assert_eq!(node.executor.ledger().get_blocks().len(), 0);
+                            assert_eq!(node.executor.ledger().get_finalized_blocks().len(), 0);
                             None
                         } else {
-                            Some(node.executor.ledger().get_blocks().clone())
+                            Some(node.executor.ledger().get_finalized_blocks().clone())
                         }
                     })
                     .collect(),
@@ -184,18 +180,14 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
-            PeerAsyncStateVerify::new,
+            
+            SeqNum(10_000_000), // state_root_delay
             delta,              // delta
             vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
-            majority_threshold, // state root quorum threshold
+            
             SeqNum(100),        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -277,18 +269,14 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
-            PeerAsyncStateVerify::new,
+            
+            SeqNum(10_000_000), // state_root_delay
             delta,              // delta
             vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
-            majority_threshold, // state root quorum threshold
+            
             SeqNum(100),        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -355,7 +343,7 @@ mod test {
         let ledger_len = swarm
             .states()
             .values()
-            .map(|node| node.executor.ledger().get_blocks().len())
+            .map(|node| node.executor.ledger().get_finalized_blocks().len())
             .max()
             .unwrap();
         let running_nodes_ids = swarm
@@ -425,18 +413,14 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
-            PeerAsyncStateVerify::new,
+            
+            SeqNum(10_000_000), // state_root_delay
             delta,              // delta
             vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
-            majority_threshold, // state root quorum threshold
+            
             SeqNum(2000),       // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -500,7 +484,7 @@ mod test {
         let ledger_len = swarm
             .states()
             .values()
-            .map(|node| node.executor.ledger().get_blocks().len())
+            .map(|node| node.executor.ledger().get_finalized_blocks().len())
             .max()
             .unwrap();
         let running_nodes_ids = swarm

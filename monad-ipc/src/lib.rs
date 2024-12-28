@@ -3,12 +3,14 @@ use std::{marker::PhantomData, path::PathBuf, pin::Pin, task::Poll};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{
+    payload::EthExecutionProtocol, signature_collection::SignatureCollection,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_tx::EthSignedTransaction;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
+use reth_primitives::TransactionSigned;
 use tokio::{
     net::{UnixListener, UnixStream},
     sync::mpsc,
@@ -156,7 +158,7 @@ where
     }
 }
 fn validate_ethtx(bytes: &mut &[u8]) -> bool {
-    match EthSignedTransaction::decode(bytes) {
+    match TransactionSigned::decode(bytes) {
         Ok(_) => true,
         Err(err) => {
             warn!("tx decoder error error={:?}", err);
@@ -171,7 +173,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,

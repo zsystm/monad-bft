@@ -298,7 +298,6 @@ where
                     validators: validators.clone(),
                     consensus_config: ConsensusConfig {
                         proposal_txn_limit: args.proposal_size,
-                        proposal_gas_limit: 800_000_000,
                         delta: Duration::from_millis(args.delta_ms),
                         statesync_to_live_threshold: SeqNum(600),
                         live_to_statesync_threshold: SeqNum(900),
@@ -335,7 +334,7 @@ async fn run<ST, SCT>(
     let mut last_printed_len = 0;
     const BLOCK_INTERVAL: usize = 100;
 
-    let mut last_ledger_len = executor.ledger().get_blocks().len();
+    let mut last_ledger_len = executor.ledger().get_finalized_blocks().len();
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
     if let Some(cx) = &cx {
         ledger_span.set_parent(cx.clone());
@@ -347,7 +346,7 @@ async fn run<ST, SCT>(
             let commands = state.update(event);
             executor.exec(commands);
         }
-        let ledger_len = executor.ledger().get_blocks().len();
+        let ledger_len = executor.ledger().get_finalized_blocks().len();
         if ledger_len > last_ledger_len {
             last_ledger_len = ledger_len;
             ledger_span = tracing::info_span!("ledger_span", last_ledger_len);

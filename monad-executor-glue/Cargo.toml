@@ -17,10 +17,13 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
+
+alloy-rlp = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 prost = { workspace = true }
+reth-primitives = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

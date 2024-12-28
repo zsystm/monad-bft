@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, time::Duration
 
 use itertools::Itertools;
 use monad_consensus::messages::consensus_message::ProtocolMessage;
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{block::ExecutionProtocol, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
@@ -38,17 +38,18 @@ impl<PT: PubKey> Default for FilterTransformer<PT> {
     }
 }
 
-impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>>
+impl<ST, SCT, EPT> Transformer<VerifiedMonadMessage<ST, SCT, EPT>>
     for FilterTransformer<CertificateSignaturePubKey<ST>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type NodeIdPubKey = CertificateSignaturePubKey<ST>;
     fn transform(
         &mut self,
-        link_m: LinkMessage<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
-    ) -> TransformerStream<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>> {
+        link_m: LinkMessage<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>,
+    ) -> TransformerStream<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>> {
         let should_drop = match &link_m.message {
             VerifiedMonadMessage::Consensus(consensus_msg) => {
                 match consensus_msg.deref().deref().message {
@@ -59,7 +60,6 @@ where
             }
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => self.drop_block_sync,
-            VerifiedMonadMessage::PeerStateRootMessage(_) => self.drop_state_root,
             VerifiedMonadMessage::ForwardedTx(_) => false,
             VerifiedMonadMessage::StateSyncMessage(_) => false,
         };
@@ -108,18 +108,19 @@ enum TwinsCapture<PT: PubKey> {
     Process(NodeId<PT>, Round), // spread to all target given NodeId and Round
     Drop,                       // Drop the message
 }
-impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>>
+impl<ST, SCT, EPT> Transformer<VerifiedMonadMessage<ST, SCT, EPT>>
     for TwinsTransformer<CertificateSignaturePubKey<ST>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type NodeIdPubKey = CertificateSignaturePubKey<ST>;
 
     fn transform(
         &mut self,
-        message: LinkMessage<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT>>,
-    ) -> TransformerStream<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT>> {
+        message: LinkMessage<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT, EPT>>,
+    ) -> TransformerStream<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT, EPT>> {
         let LinkMessage {
             to,
             from,
@@ -134,7 +135,9 @@ where
         let capture = match &message {
             VerifiedMonadMessage::Consensus(consensus_msg) => {
                 match &consensus_msg.deref().deref().message {
-                    ProtocolMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.round),
+                    ProtocolMessage::Proposal(p) => {
+                        TwinsCapture::Process(pid, p.block_header.round)
+                    }
                     ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
                     // timeout naturally spread because liveness
                     ProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),
@@ -143,13 +146,6 @@ where
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => {
                 if self.ban_block_sync {
-                    TwinsCapture::Drop
-                } else {
-                    TwinsCapture::Spread(pid)
-                }
-            }
-            VerifiedMonadMessage::PeerStateRootMessage(_) => {
-                if self.drop_state_root {
                     TwinsCapture::Drop
                 } else {
                     TwinsCapture::Spread(pid)
@@ -223,17 +219,18 @@ pub enum MonadMessageTransformer<PT: PubKey> {
     Drop(DropTransformer<PT>),
 }
 
-impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>>
+impl<ST, SCT, EPT> Transformer<VerifiedMonadMessage<ST, SCT, EPT>>
     for MonadMessageTransformer<CertificateSignaturePubKey<ST>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type NodeIdPubKey = CertificateSignaturePubKey<ST>;
     fn transform(
         &mut self,
-        message: LinkMessage<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT>>,
-    ) -> TransformerStream<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT>> {
+        message: LinkMessage<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT, EPT>>,
+    ) -> TransformerStream<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT, EPT>> {
         match self {
             MonadMessageTransformer::Latency(t) => t.transform(message),
             MonadMessageTransformer::XorLatency(t) => t.transform(message),
@@ -249,37 +246,37 @@ where
         match self {
             MonadMessageTransformer::Latency(t) => {
                 <LatencyTransformer<Self::NodeIdPubKey> as Transformer<
-                    VerifiedMonadMessage<ST, SCT>,
+                    VerifiedMonadMessage<ST, SCT, EPT>,
                 >>::min_external_delay(t)
             }
             MonadMessageTransformer::XorLatency(t) => {
                 <XorLatencyTransformer<Self::NodeIdPubKey> as Transformer<
-                    VerifiedMonadMessage<ST, SCT>,
+                    VerifiedMonadMessage<ST, SCT, EPT>,
                 >>::min_external_delay(t)
             }
             MonadMessageTransformer::RandLatency(t) => {
                 <RandLatencyTransformer<Self::NodeIdPubKey> as Transformer<
-                    VerifiedMonadMessage<ST, SCT>,
+                    VerifiedMonadMessage<ST, SCT, EPT>,
                 >>::min_external_delay(t)
             }
             MonadMessageTransformer::Twins(t) => {
                 <TwinsTransformer<Self::NodeIdPubKey> as Transformer<
-                    VerifiedMonadMessage<ST, SCT>,
+                    VerifiedMonadMessage<ST, SCT, EPT>,
                 >>::min_external_delay(t)
             }
             MonadMessageTransformer::Filter(t) => {
                 <FilterTransformer<Self::NodeIdPubKey> as Transformer<
-                    VerifiedMonadMessage<ST, SCT>,
+                    VerifiedMonadMessage<ST, SCT, EPT>,
                 >>::min_external_delay(t)
             }
             MonadMessageTransformer::Drop(t) => {
                 <DropTransformer<Self::NodeIdPubKey> as Transformer<
-                    VerifiedMonadMessage<ST, SCT>,
+                    VerifiedMonadMessage<ST, SCT, EPT>,
                 >>::min_external_delay(t)
             }
             MonadMessageTransformer::Partition(t) => {
                 <PartitionTransformer<Self::NodeIdPubKey> as Transformer<
-                    VerifiedMonadMessage<ST, SCT>,
+                    VerifiedMonadMessage<ST, SCT, EPT>,
                 >>::min_external_delay(t)
             }
         }
