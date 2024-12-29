@@ -289,14 +289,14 @@ where
                         .get_parent_block_chain(&block_range.last_block_id)
                         .into_iter()
                         .map(|block| block.header().clone())
-                        .take(block_range.max_blocks.0 as usize)
+                        .take(block_range.num_blocks.0 as usize)
                         .collect_vec(),
                     BlockCache::BlockBuffer(_) => Vec::new(), // TODO
                 };
 
                 // all blocks are cached if the first block is the non-empty block of requested
                 // root_seq_num.
-                if cached_blocks.len() == block_range.max_blocks.0 as usize {
+                if cached_blocks.len() == block_range.num_blocks.0 as usize {
                     // reply with the cached blocks
                     cmds.push(BlockSyncCommand::SendResponse {
                         to: sender,
@@ -312,7 +312,7 @@ where
                         .unwrap_or(block_range.last_block_id);
                     let ledger_fetch_range = BlockRange {
                         last_block_id: last_block_id_to_fetch,
-                        max_blocks: block_range.max_blocks - SeqNum(cached_blocks.len() as u64),
+                        num_blocks: block_range.num_blocks - SeqNum(cached_blocks.len() as u64),
                     };
 
                     let entry = self
@@ -380,7 +380,7 @@ where
     ) -> bool {
         let num_blocks = block_headers.len();
 
-        if num_blocks != block_range.max_blocks.0 as usize {
+        if num_blocks != block_range.num_blocks.0 as usize {
             return false;
         }
 
@@ -802,7 +802,7 @@ where
                             .last()
                             .map(|block| block.get_id())
                             .unwrap_or(block_range.last_block_id),
-                        max_blocks: block_range.max_blocks,
+                        num_blocks: block_range.num_blocks,
                     };
                     let headers_response = match headers_response.clone() {
                         BlockSyncHeadersResponse::Found((_, mut requested_blocks)) => {

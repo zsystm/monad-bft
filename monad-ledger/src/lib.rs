@@ -273,7 +273,7 @@ where
         let mut next_block_id = block_range.last_block_id;
 
         let mut headers = VecDeque::new();
-        while (headers.len() as u64) < block_range.max_blocks.0 {
+        while (headers.len() as u64) < block_range.num_blocks.0 {
             // TODO add max number of headers to read
             let block_header = if let Some(cached_block) = self.block_cache.get(&next_block_id) {
                 cached_block.header().clone()

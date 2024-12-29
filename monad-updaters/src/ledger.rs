@@ -114,7 +114,7 @@ where
         let mut next_block_id = block_range.last_block_id;
 
         let mut headers = VecDeque::new();
-        while (headers.len() as u64) < block_range.max_blocks.0 {
+        while (headers.len() as u64) < block_range.num_blocks.0 {
             // TODO add max number of headers to read
             let Some(block_round) = self.block_ids.get(&next_block_id) else {
                 return BlockSyncHeadersResponse::NotAvailable(block_range);

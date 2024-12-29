@@ -196,11 +196,13 @@ impl StateBackend for TriedbReader {
         block_id: &BlockId,
         seq_num: &SeqNum,
         round: &Round,
+        is_finalized: bool,
         eth_addresses: impl Iterator<Item = &'a EthAddress>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        if self
-            .raw_read_latest_finalized_block()
-            .is_some_and(|latest_finalized| seq_num <= &latest_finalized)
+        if is_finalized
+            && self
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_finalized| seq_num <= &latest_finalized)
         {
             trace!(?seq_num, "triedb read finalized");
             // check finalized

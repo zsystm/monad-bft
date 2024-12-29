@@ -510,38 +510,36 @@ where
         addresses: impl Iterator<Item = &'a EthAddress>,
         base_seq_num: &SeqNum,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        if base_seq_num <= &self.last_commit {
-            debug!(
-                ?base_seq_num,
-                last_commit = self.last_commit.0,
-                "base seq num committed"
-            );
-            let committed_block = &self
-                .committed_cache
-                .blocks
-                .get(base_seq_num)
-                .expect("queried recently committed block that doesn't exist");
-            state_backend.get_account_statuses(
-                &committed_block.block_id,
-                base_seq_num,
-                &committed_block.round,
-                addresses,
-            )
-        } else if let Some(extending_blocks) = extending_blocks {
-            debug!(?base_seq_num, "base seq num proposed");
-            let proposed_block = extending_blocks
-                .iter()
-                .find(|block| &block.get_seq_num() == base_seq_num)
-                .expect("extending block doesn't exist");
-            state_backend.get_account_statuses(
-                &proposed_block.get_id(),
-                base_seq_num,
-                &proposed_block.get_round(),
-                addresses,
-            )
-        } else {
-            Err(StateBackendError::NotAvailableYet)
-        }
+        let (base_block_id, base_block_round, base_block_is_finalized) =
+            if base_seq_num <= &self.last_commit {
+                debug!(
+                    ?base_seq_num,
+                    last_commit = self.last_commit.0,
+                    "base seq num committed"
+                );
+                let committed_block = &self
+                    .committed_cache
+                    .blocks
+                    .get(base_seq_num)
+                    .expect("queried recently committed block that doesn't exist");
+                (committed_block.block_id, committed_block.round, true)
+            } else if let Some(extending_blocks) = extending_blocks {
+                debug!(?base_seq_num, "base seq num proposed");
+                let proposed_block = extending_blocks
+                    .iter()
+                    .find(|block| &block.get_seq_num() == base_seq_num)
+                    .expect("extending block doesn't exist");
+                (proposed_block.get_id(), proposed_block.get_round(), false)
+            } else {
+                return Err(StateBackendError::NotAvailableYet);
+            };
+        state_backend.get_account_statuses(
+            &base_block_id,
+            base_seq_num,
+            &base_block_round,
+            base_block_is_finalized,
+            addresses,
+        )
     }
 
     // Computes account balance available for the account
@@ -735,15 +733,15 @@ where
         self.committed_cache.update_committed_block(block);
     }
 
-    fn reset(&mut self, last_delay_non_null_committed_blocks: Vec<&Self::ValidatedBlock>) {
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
         self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.size);
-        if last_delay_non_null_committed_blocks
+        if last_delay_committed_blocks
             .first()
             .is_some_and(|first| first.get_seq_num() != GENESIS_SEQ_NUM + SeqNum(1))
         {
             self.committed_cache.blocks = Default::default();
         }
-        for block in last_delay_non_null_committed_blocks {
+        for block in last_delay_committed_blocks {
             self.last_commit = block.get_seq_num();
             self.committed_cache.update_committed_block(block);
         }

@@ -519,23 +519,23 @@ mod tests {
         [
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x00_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x01_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x02_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x03_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x04_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x05_u8; 32]))),
             BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x06_u8; 32]))),
@@ -751,7 +751,7 @@ mod tests {
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
             TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x00_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             })),
         )]);
 
@@ -768,13 +768,13 @@ mod tests {
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
             TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x01_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             })),
         )]);
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
             TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x02_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             })),
         )]);
 
@@ -792,13 +792,13 @@ mod tests {
         assert!(
             requests.contains(&BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x01_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             }))
         );
         assert!(
             requests.contains(&BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x02_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             }))
         );
     }

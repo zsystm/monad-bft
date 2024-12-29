@@ -13,7 +13,7 @@ use monad_proto::{error::ProtoError, proto::message::*};
 use crate::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{ ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };

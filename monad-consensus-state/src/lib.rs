@@ -79,11 +79,6 @@ where
 
     finalized_execution_results: BTreeMap<SeqNum, EPT::FinalizedHeader>,
     proposed_execution_results: BTreeMap<Round, ProposedExecutionResult<EPT>>,
-
-    /// Set to true once consensus has kicked off stastesync
-    /// This is a bit janky; because initiating statesync is asynchronous (via loopback executor)
-    /// Ideally we can delete this and initiate statesync synchronously... needs some thought
-    started_statesync: bool,
 }
 
 impl<ST, SCT, EPT, BPT, SBT> PartialEq for ConsensusState<ST, SCT, EPT, BPT, SBT>
@@ -280,8 +275,6 @@ where
 
             finalized_execution_results: Default::default(),
             proposed_execution_results: Default::default(),
-
-            started_statesync: false,
         }
     }
 
@@ -362,6 +355,8 @@ where
                 if execution_result.round <= self.consensus.pending_block_tree.root().round {
                     // not necessary, but here for clarity
                     // try_update_coherency would drop it anyways
+                    //
+                    // the execution result will be re-queried under the Finalized nibble
                     return Vec::new();
                 }
                 let block_id = execution_result.block_id;
@@ -1058,10 +1053,6 @@ where
 
     #[must_use]
     fn maybe_statesync(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
-        if self.consensus.started_statesync {
-            return Vec::new();
-        }
-
         let Some(high_qc_seq_num) = self
             .consensus
             .pending_block_tree
@@ -1334,11 +1325,6 @@ where
 
     #[must_use]
     fn request_blocks_if_missing_ancestor(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
-        if self.consensus.started_statesync {
-            // stop consensus blocksync after statesync is initiated
-            return Vec::new();
-        }
-
         let high_qc = &self.consensus.high_qc;
         let root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
 
@@ -1380,7 +1366,7 @@ where
         }
         let request_range = BlockRange {
             last_block_id: high_qc.get_block_id(),
-            max_blocks: range,
+            num_blocks: range,
         };
         debug!(?request_range, "consensus blocksyncing blocks up to root");
 
@@ -1400,6 +1386,7 @@ where
             .get_blocks_on_path_from_root(&p.block_header.get_parent_id())
         else {
             debug!("no path to root, unable to verify");
+            self.metrics.consensus_events.rx_missing_state_root += 1;
             return StateRootAction::Defer;
         };
 
@@ -1416,6 +1403,7 @@ where
 
         if expected_execution_results != p.block_header.delayed_execution_results {
             debug!("State root hash in proposal conflicts with local value");
+            self.metrics.consensus_events.rx_bad_state_root += 1;
             return StateRootAction::Reject;
         }
 

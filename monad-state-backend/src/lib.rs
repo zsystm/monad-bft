@@ -22,6 +22,7 @@ pub trait StateBackend {
         block_id: &BlockId,
         seq_num: &SeqNum,
         round: &Round,
+        is_finalized: bool,
         addresses: impl Iterator<Item = &'a EthAddress>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError>;
 
@@ -191,11 +192,13 @@ impl StateBackend for InMemoryStateInner {
         block_id: &BlockId,
         seq_num: &SeqNum,
         round: &Round,
+        is_finalized: bool,
         addresses: impl Iterator<Item = &'a EthAddress>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        let state = if self
-            .raw_read_latest_finalized_block()
-            .is_some_and(|latest_finalized| &latest_finalized >= seq_num)
+        let state = if is_finalized
+            && self
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_finalized| &latest_finalized >= seq_num)
         {
             if self
                 .raw_read_earliest_finalized_block()
@@ -251,10 +254,11 @@ impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
         block_id: &BlockId,
         seq_num: &SeqNum,
         round: &Round,
+        is_finalized: bool,
         addresses: impl Iterator<Item = &'a EthAddress>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         let state = self.lock().unwrap();
-        state.get_account_statuses(block_id, seq_num, round, addresses)
+        state.get_account_statuses(block_id, seq_num, round, is_finalized, addresses)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

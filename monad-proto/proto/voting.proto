@@ -3,7 +3,6 @@ syntax = "proto3";
 package monad_proto.voting;
 
 import "basic.proto";
-import "ledger.proto";
 
 message ProtoVote {
   monad_proto.basic.ProtoBlockId id = 1;

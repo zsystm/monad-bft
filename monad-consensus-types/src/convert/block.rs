@@ -35,7 +35,7 @@ impl From<&BlockRange> for ProtoBlockRange {
     fn from(value: &BlockRange) -> Self {
         Self {
             last_block_id: Some((&value.last_block_id).into()),
-            max_blocks: Some((&value.max_blocks).into()),
+            num_blocks: Some((&value.num_blocks).into()),
         }
     }
 }
@@ -51,10 +51,10 @@ impl TryFrom<ProtoBlockRange> for BlockRange {
                     "BlockRange.last_block_id".to_owned(),
                 ))?
                 .try_into()?,
-            max_blocks: value
-                .max_blocks
+            num_blocks: value
+                .num_blocks
                 .ok_or(Self::Error::MissingRequiredField(
-                    "BlockRange.max_blocks".to_owned(),
+                    "BlockRange.num_blocks".to_owned(),
                 ))?
                 .try_into()?,
         })

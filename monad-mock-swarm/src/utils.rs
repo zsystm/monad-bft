@@ -153,7 +153,7 @@ pub mod test_tool {
     pub fn fake_request_block_sync() -> VerifiedMonadMessage<ST, SC, EP> {
         let internal_msg = BlockSyncRequestMessage::Headers(BlockRange {
             last_block_id: BlockId(Hash([0x01_u8; 32])),
-            max_blocks: SeqNum(1),
+            num_blocks: SeqNum(1),
         });
         VerifiedMonadMessage::BlockSyncRequest(internal_msg)
     }
@@ -162,7 +162,7 @@ pub mod test_tool {
         let internal_msg = BlockSyncResponseMessage::HeadersResponse(
             BlockSyncHeadersResponse::NotAvailable(BlockRange {
                 last_block_id: BlockId(Hash([0x01_u8; 32])),
-                max_blocks: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
         );
         VerifiedMonadMessage::BlockSyncResponse(internal_msg)

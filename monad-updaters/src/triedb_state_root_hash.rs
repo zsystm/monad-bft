@@ -258,7 +258,6 @@ where
                     *self.cancel_below.lock().unwrap() = seq_num;
                 }
                 StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
-                    self.jank_valset_update(seq_num);
                     self.state_root_requests_send
                         .send(StateRootRequest::Proposed {
                             block_id,

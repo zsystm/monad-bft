@@ -224,8 +224,6 @@ where
 
     /// Add a new block to the block tree if it's not in the tree and is higher
     /// than the root block's round number
-    ///
-    /// returns newly coherent blocks
     pub fn add(&mut self, block: BPT::ValidatedBlock) {
         if !self.is_valid_to_insert(block.header()) {
             return;
@@ -248,10 +246,10 @@ where
         block_policy: &mut BPT,
         state_backend: &SBT,
     ) -> Vec<BPT::ValidatedBlock> {
-        let Some(path_to_root) = self.get_blocks_on_path_from_root(&block_id) else {
+        let Some(path_from_root) = self.get_blocks_on_path_from_root(&block_id) else {
             return Vec::new();
         };
-        let Some(incoherent_parent_or_self) = path_to_root.iter().find(|block| {
+        let Some(incoherent_parent_or_self) = path_from_root.iter().find(|block| {
             !self
                 .tree
                 .get(&block.get_id())
@@ -268,41 +266,32 @@ where
         let mut retval = vec![];
         while !block_ids_to_update.is_empty() {
             // Next block to check coherency
-            let next_block = block_ids_to_update.pop_front().unwrap();
-            let block = &self
-                .tree
-                .get(&next_block)
-                .expect("block should exist")
-                .validated_block;
-
+            let next_block_id = block_ids_to_update.pop_front().unwrap();
             let mut extending_blocks = self
-                .get_blocks_on_path_from_root(&next_block)
+                .get_blocks_on_path_from_root(&next_block_id)
                 .expect("path to root must exist");
             // Remove the block itself
-            let optimistic_block = extending_blocks
+            let next_block = extending_blocks
                 .pop()
-                .expect("the block itself must be in extending")
-                .clone();
+                .expect("next_block is included in path_from_root");
 
             // extending blocks are always coherent, because we only call
             // update_coherency on the first incoherent block in the chain
             if block_policy
-                .check_coherency(block, extending_blocks, self.root.info, state_backend)
+                .check_coherency(next_block, extending_blocks, self.root.info, state_backend)
                 .is_ok()
             {
-                // FIXME: make the set coherent helper return something to trigger the optimisitc
-                // commit
+                let next_block = next_block.clone();
                 self.tree
-                    .set_coherent(&next_block, true)
+                    .set_coherent(&next_block_id, true)
                     .expect("should be in tree");
 
-                assert_eq!(next_block, optimistic_block.get_id());
-                retval.push(optimistic_block);
+                retval.push(next_block);
 
                 // Can check coherency of children blocks now
                 block_ids_to_update.extend(
                     self.tree
-                        .get(&next_block)
+                        .get(&next_block_id)
                         .expect("should be in tree")
                         .children_blocks
                         .iter()

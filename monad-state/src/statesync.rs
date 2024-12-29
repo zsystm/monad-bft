@@ -218,7 +218,7 @@ where
         let Some(last) = chain.last() else {
             let request_range = BlockRange {
                 last_block_id: self.root,
-                max_blocks: self.state_root_delay,
+                num_blocks: self.state_root_delay,
             };
             tracing::debug!(?request_range, "statesync blocksyncing blocks");
             return Some(request_range);
@@ -229,7 +229,7 @@ where
         if chain.len() < self.state_root_delay.0 as usize {
             let request_range = BlockRange {
                 last_block_id: block_parent_id,
-                max_blocks: self.state_root_delay - SeqNum(chain.len() as u64),
+                num_blocks: self.state_root_delay - SeqNum(chain.len() as u64),
             };
             tracing::debug!(?request_range, "statesync blocksyncing blocks");
             return Some(request_range);

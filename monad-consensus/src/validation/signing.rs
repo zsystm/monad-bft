@@ -556,10 +556,7 @@ fn verify_author<ST: CertificateSignatureRecoverable>(
     msg: &Hash,
     sig: &ST,
 ) -> Result<CertificateSignaturePubKey<ST>, Error> {
-    let pubkey = get_pubkey(msg.as_ref(), sig)
-        .map_err(|e| e)?
-        .valid_pubkey(validators)
-        .map_err(|e| e)?;
+    let pubkey = get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)?;
     sig.verify(msg.as_ref(), &pubkey)
         .map_err(|_| Error::InvalidSignature)?;
     if sender != &pubkey {

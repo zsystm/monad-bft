@@ -47,6 +47,7 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         round: &Round,
+        is_finalized: bool,
         addresses: impl Iterator<Item = &'a EthAddress>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         let addresses = addresses.collect_vec();
@@ -89,24 +90,10 @@ where
                     block_id,
                     seq_num,
                     round,
+                    is_finalized,
                     cache_misses.iter().copied(),
                 )?
             };
-            let hydrated_cache: Vec<_> = cache_misses
-                .iter()
-                .map(|&&address| address)
-                .zip_eq(cache_misses_data)
-                .collect();
-            for (address, cache_miss) in &hydrated_cache {
-                trace!(
-                    ?block_id,
-                    ?seq_num,
-                    ?round,
-                    ?address,
-                    ?cache_miss,
-                    "hydrated account"
-                );
-            }
             cache
                 .entry(*round)
                 .or_insert_with(|| RoundCache {
@@ -115,7 +102,12 @@ where
                     accounts: Default::default(),
                 })
                 .accounts
-                .extend(hydrated_cache)
+                .extend(
+                    cache_misses
+                        .iter()
+                        .map(|&&address| address)
+                        .zip_eq(cache_misses_data),
+                )
         }
 
         let round_cache = cache
