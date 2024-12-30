@@ -3968,6 +3968,8 @@ dependencies = [
 name = "monad-archive"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
  "alloy-rlp",
  "aws-config",
  "aws-sdk-dynamodb",
@@ -3984,7 +3986,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "reth-primitives",
  "serde",
  "serde_json",
  "tokio",
