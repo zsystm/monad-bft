@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
+use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
+use alloy_primitives::BlockHash;
 use eyre::Result;
-use reth_primitives::{Block, BlockHash, ReceiptWithBloom};
 
 use crate::*;
 
@@ -59,7 +60,7 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> BlockDataReader
         self.block_data_reader.get_block_by_hash(block_hash).await
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
         self.block_data_reader
             .get_block_receipts(block_number)
             .await

@@ -5,48 +5,59 @@ use std::{
 };
 
 use futures::Stream;
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{
+    block::{ExecutionProtocol, FinalizedHeader},
+    signature_collection::SignatureCollection,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
-    StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+    StateSyncResponse, StateSyncUpsert, StateSyncUpsertType, SELF_STATESYNC_VERSION,
 };
 use monad_state_backend::InMemoryState;
 use monad_types::{NodeId, SeqNum, GENESIS_SEQ_NUM};
 
 pub trait MockableStateSync:
-    Executor<Command = StateSyncCommand<CertificateSignaturePubKey<Self::SignatureType>>> + Unpin
+    Executor<Command = StateSyncCommand<Self::Signature, Self::ExecutionProtocol>> + Unpin
 {
-    type SignatureType: CertificateSignatureRecoverable;
-    type SignatureCollectionType: SignatureCollection<
-        NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
+    type Signature: CertificateSignatureRecoverable;
+    type SignatureCollection: SignatureCollection<
+        NodeIdPubKey = CertificateSignaturePubKey<Self::Signature>,
     >;
+    type ExecutionProtocol: ExecutionProtocol;
 
     fn ready(&self) -> bool;
-    fn pop(&mut self) -> Option<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
+    fn pop(
+        &mut self,
+    ) -> Option<MonadEvent<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>>;
 }
 
 impl<T: MockableStateSync + ?Sized> MockableStateSync for Box<T> {
-    type SignatureType = T::SignatureType;
-    type SignatureCollectionType = T::SignatureCollectionType;
+    type Signature = T::Signature;
+    type SignatureCollection = T::SignatureCollection;
+    type ExecutionProtocol = T::ExecutionProtocol;
 
     fn ready(&self) -> bool {
         (**self).ready()
     }
-    fn pop(&mut self) -> Option<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>> {
+    fn pop(
+        &mut self,
+    ) -> Option<MonadEvent<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>>
+    {
         (**self).pop()
     }
 }
 
-pub struct MockStateSyncExecutor<ST, SCT>
+pub struct MockStateSyncExecutor<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    events: VecDeque<MonadEvent<ST, SCT>>,
+    events: VecDeque<MonadEvent<ST, SCT, EPT>>,
 
     state_backend: InMemoryState,
     peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -57,12 +68,13 @@ where
     waker: Option<Waker>,
 }
 
-impl<ST, SCT> Executor for MockStateSyncExecutor<ST, SCT>
+impl<ST, SCT, EPT> Executor for MockStateSyncExecutor<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Command = StateSyncCommand<CertificateSignaturePubKey<ST>>;
+    type Command = StateSyncCommand<ST, EPT>;
 
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
@@ -74,20 +86,20 @@ where
                     assert!(!self.started_execution);
                     self.started_execution = true;
                 }
-                StateSyncCommand::RequestSync(state_root_hash)
-                    if state_root_hash.seq_num == GENESIS_SEQ_NUM =>
+                StateSyncCommand::RequestSync(eth_header)
+                    if eth_header.seq_num() == GENESIS_SEQ_NUM =>
                 {
                     self.events
                         .push_back(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
                             GENESIS_SEQ_NUM,
                         )));
                 }
-                StateSyncCommand::RequestSync(state_root_hash) => {
+                StateSyncCommand::RequestSync(eth_header) => {
                     assert!(!self.started_execution);
-                    assert!(self.request.is_none());
+                    assert_eq!(self.request, None);
                     let request = StateSyncRequest {
                         version: SELF_STATESYNC_VERSION,
-                        target: state_root_hash.seq_num.0,
+                        target: eth_header.seq_num().0,
                         from: 0,
                         prefix: 0,
                         prefix_bytes: 1,
@@ -106,7 +118,7 @@ where
                     StateSyncNetworkMessage::Request(request) => {
                         if self.started_execution {
                             let state = self.state_backend.lock().unwrap();
-                            if let Some(state) = state.block_state(&SeqNum(request.target)) {
+                            if let Some(state) = state.committed_state(&SeqNum(request.target)) {
                                 let serialized = serde_json::to_vec(state).unwrap();
                                 let response = StateSyncResponse {
                                     version: SELF_STATESYNC_VERSION,
@@ -114,7 +126,10 @@ where
                                     response_index: 0,
 
                                     request,
-                                    response: vec![(StateSyncUpsertType::Code, serialized)],
+                                    response: vec![StateSyncUpsert::new(
+                                        StateSyncUpsertType::Code,
+                                        serialized,
+                                    )],
                                     response_n: 1,
                                 };
                                 self.events.push_back(MonadEvent::StateSyncEvent(
@@ -134,7 +149,7 @@ where
                         {
                             self.request = None;
                             let deserialized =
-                                serde_json::from_slice(&response.response[0].1).unwrap();
+                                serde_json::from_slice(&response.response[0].data).unwrap();
                             let mut old_state = self.state_backend.lock().unwrap();
                             old_state.reset_state(deserialized);
                             self.events.push_back(MonadEvent::StateSyncEvent(
@@ -152,10 +167,11 @@ where
     }
 }
 
-impl<ST, SCT> MockStateSyncExecutor<ST, SCT>
+impl<ST, SCT, EPT> MockStateSyncExecutor<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn new(
         state_backend: InMemoryState,
@@ -175,29 +191,32 @@ where
     }
 }
 
-impl<ST, SCT> MockableStateSync for MockStateSyncExecutor<ST, SCT>
+impl<ST, SCT, EPT> MockableStateSync for MockStateSyncExecutor<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type SignatureType = ST;
-    type SignatureCollectionType = SCT;
+    type Signature = ST;
+    type SignatureCollection = SCT;
+    type ExecutionProtocol = EPT;
 
     fn ready(&self) -> bool {
         !self.events.is_empty()
     }
 
-    fn pop(&mut self) -> Option<MonadEvent<ST, SCT>> {
+    fn pop(&mut self) -> Option<MonadEvent<ST, SCT, EPT>> {
         self.events.pop_front()
     }
 }
 
-impl<ST, SCT> Stream for MockStateSyncExecutor<ST, SCT>
+impl<ST, SCT, EPT> Stream for MockStateSyncExecutor<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(event) = self.events.pop_front() {

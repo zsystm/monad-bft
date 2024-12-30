@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_consensus_types::block::BlockType;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_transformer::ID;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -75,7 +74,7 @@ where
             || nodes
                 .states
                 .values()
-                .any(|node| node.executor.ledger().get_blocks().len() > self.until_block)
+                .any(|node| node.executor.ledger().get_finalized_blocks().len() > self.until_block)
             || nodes.states.values().any(|node| {
                 node.state
                     .consensus()
@@ -124,7 +123,7 @@ where
                 nodes
                     .states
                     .iter()
-                    .map(|(id, nodes)| (id, nodes.executor.ledger().get_blocks().len()))
+                    .map(|(id, nodes)| (id, nodes.executor.ledger().get_finalized_blocks().len()))
                     .collect::<BTreeMap<_, _>>()
             );
         }
@@ -137,7 +136,7 @@ where
                 .expect("node must exists")
                 .executor
                 .ledger()
-                .get_blocks();
+                .get_finalized_blocks();
             if blocks.len() < *expected_len {
                 return false;
             }
@@ -161,7 +160,7 @@ where
                 .expect("node must exists")
                 .executor
                 .ledger()
-                .get_blocks();
+                .get_finalized_blocks();
 
             let mut next_seq_num = GENESIS_SEQ_NUM + SeqNum(1);
             for (round, block) in longest_ledger_ref.iter().take(*expected_len) {

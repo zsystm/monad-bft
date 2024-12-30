@@ -1,3 +1,4 @@
+use alloy_rlp::{Decodable, Encodable, Header};
 use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
@@ -13,7 +14,7 @@ mod convert;
 
 impl Hashable for BlsAggregateSignature {
     fn hash(&self, state: &mut impl Hasher) {
-        Hashable::hash(&self.as_signature(), state);
+        state.update(alloy_rlp::encode(self));
     }
 }
 
@@ -39,7 +40,24 @@ impl PubKey for BlsPubKey {
     }
 
     fn bytes(&self) -> Vec<u8> {
-        self.compress()
+        self.compress().to_vec()
+    }
+}
+
+impl Encodable for BlsPubKey {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.compress().encode(out);
+    }
+}
+
+impl Decodable for BlsPubKey {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let b = Header::decode_bytes(buf, false)?;
+
+        match <Self as PubKey>::from_bytes(b) {
+            Ok(pk) => Ok(pk),
+            Err(_) => Err(alloy_rlp::Error::Custom("invalid pubkey")),
+        }
     }
 }
 

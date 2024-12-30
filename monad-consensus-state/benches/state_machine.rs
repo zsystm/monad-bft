@@ -11,13 +11,10 @@ use monad_consensus_state::{
     ConsensusStateWrapper,
 };
 use monad_consensus_types::{
-    block::{BlockKind, BlockRange, FullBlock},
+    block::{BlockRange, FullBlock},
     checkpoint::RootInfo,
     metrics::Metrics,
-    payload::{
-        ExecutionProtocol, FullTransactionList, NopStateRoot, StateRootValidator,
-        TransactionPayload,
-    },
+    payload::{ExecutionProtocol, FullTransactionList},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
     txpool::TxPool,
@@ -55,7 +52,6 @@ type NodeCtx = NodeContext<
     SignatureType,
     MultiSig<SignatureType>,
     ValidatorSetFactory<NopPubKey>,
-    NopStateRoot,
     SimpleRoundRobin<NopPubKey>,
     EthTxPool,
 >;
@@ -98,43 +94,31 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    fn next_proposal_empty(&mut self) -> Verified<ST, ProposalMessage<SCT>> {
-        self.proposal_gen.next_proposal(
-            &self.keys,
-            &self.cert_keys,
-            &self.epoch_manager,
-            &self.val_epoch_map,
-            &self.election,
-            TransactionPayload::Null,
-            StateRootHash::default(),
-        )
-    }
-
     fn next_proposal(
         &mut self,
         txn_list: FullTransactionList,
         state_root: StateRootHash,
-    ) -> Verified<ST, ProposalMessage<SCT>> {
+    ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         self.proposal_gen.next_proposal(
             &self.keys,
             &self.cert_keys,
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            TransactionPayload::List(txn_list),
+            txn_list,
             state_root,
         )
     }
 
     // TODO come up with better API for making mal proposals relative to state of proposal_gen
-    fn mal_proposal_empty(&mut self) -> Verified<ST, ProposalMessage<SCT>> {
+    fn mal_proposal_empty(&mut self) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         self.malicious_proposal_gen.next_proposal(
             &self.keys,
             &self.cert_keys,
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            TransactionPayload::List(FullTransactionList::new(vec![5].into())),
+            FullTransactionList::new(vec![5].into()),
             StateRootHash::default(),
         )
     }
@@ -144,14 +128,14 @@ where
         &mut self,
         txn_list: FullTransactionList,
         state_root: StateRootHash,
-    ) -> Verified<ST, ProposalMessage<SCT>> {
+    ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         self.malicious_proposal_gen.next_proposal(
             &self.keys,
             &self.cert_keys,
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            TransactionPayload::List(txn_list),
+            txn_list,
             state_root,
         )
     }
@@ -169,12 +153,11 @@ where
     }
 }
 
-struct NodeContext<ST, SCT, VTF, SVT, LT, TT>
+struct NodeContext<ST, SCT, VTF, LT, TT>
 where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, EthBlockPolicy, InMemoryState> + Default,
 {
@@ -186,9 +169,8 @@ where
 
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
     election: LT,
-    version: &'static str,
+    version: u32,
 
-    state_root_validator: SVT,
     block_validator: EthValidator,
     block_policy: EthBlockPolicy,
     state_backend: InMemoryState,
@@ -201,19 +183,18 @@ where
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
 }
 
-impl<ST, SCT, VTF, SVT, LT, TT> NodeContext<ST, SCT, VTF, SVT, LT, TT>
+impl<ST, SCT, VTF, LT, TT> NodeContext<ST, SCT, VTF, LT, TT>
 where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, EthBlockPolicy, InMemoryState> + Default,
-    // BPT: BlockPolicy<SCT, ValidatedBlock = EthValidatedBlock<SCT>>,
+    // BPT: BlockPolicy<SCT, ValidatedBlock = EthValidatedBlock<ST, SCT, EPT>>,
 {
     fn wrapped_state(
         &mut self,
-    ) -> ConsensusStateWrapper<ST, SCT, EthBlockPolicy, InMemoryState, VTF, LT, TT, EthValidator, SVT>
+    ) -> ConsensusStateWrapper<ST, SCT, EthBlockPolicy, InMemoryState, VTF, LT, TT, EthValidator>
     {
         ConsensusStateWrapper {
             consensus: &mut self.consensus_state,
@@ -226,7 +207,6 @@ where
             election: &self.election,
             version: self.version,
 
-            state_root_validator: &self.state_root_validator,
             block_validator: &self.block_validator,
             block_policy: &mut self.block_policy,
             state_backend: &self.state_backend,
@@ -243,8 +223,8 @@ where
     fn handle_proposal_message(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
-        p: ProposalMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        p: ProposalMessage<ST, SCT, EPT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         self.wrapped_state().handle_proposal_message(author, p)
     }
 
@@ -252,7 +232,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: TimeoutMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         self.wrapped_state().handle_timeout_message(author, p)
     }
 
@@ -260,15 +240,15 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: VoteMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         self.wrapped_state().handle_vote_message(author, p)
     }
 
     fn handle_block_sync(
         &mut self,
         block_range: BlockRange,
-        full_blocks: Vec<FullBlock<SCT>>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         self.wrapped_state()
             .handle_block_sync(block_range, full_blocks)
     }
@@ -278,17 +258,15 @@ fn setup<
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-    SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     TT: TxPool<SCT, EthBlockPolicy, InMemoryState> + Default,
 >(
     num_states: u32,
     valset_factory: VTF,
     election: LT,
-    state_root: impl Fn() -> SVT,
 ) -> (
     EnvContext<ST, SCT, VTF, LT>,
-    Vec<NodeContext<ST, SCT, VTF, SVT, LT, TT>>,
+    Vec<NodeContext<ST, SCT, VTF, LT, TT>>,
 ) {
     let (keys, cert_keys, valset, _valmap) =
         create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
@@ -301,7 +279,7 @@ fn setup<
     let mut dupkeys = create_keys::<ST>(num_states);
     let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-    let ctxs: Vec<NodeContext<_, _, _, _, _, _>> = (0..num_states)
+    let ctxs: Vec<NodeContext<_, _, _, _, _>> = (0..num_states)
         .map(|i| {
             let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
             val_epoch_map.insert(
@@ -325,7 +303,6 @@ fn setup<
                 .unwrap();
             let consensus_config = ConsensusConfig {
                 proposal_txn_limit: 5000,
-                proposal_gas_limit: 8_000_000,
                 delta: Duration::from_secs(1),
                 statesync_to_live_threshold: SeqNum(600),
                 live_to_statesync_threshold: SeqNum(900),
@@ -356,9 +333,8 @@ fn setup<
 
                 val_epoch_map,
                 election: election.clone(),
-                version: "TEST",
+                version: 1,
 
-                state_root_validator: state_root(),
                 block_validator: EthValidator::new(10_000, u64::MAX, 1337),
                 block_policy: EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1337),
                 state_backend: InMemoryStateInner::genesis(u128::MAX, SeqNum(0)),
@@ -399,7 +375,6 @@ fn setup<
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
-type StateRootValidatorType = NopStateRoot;
 type BlockPolicyType = EthBlockPolicy;
 type StateBackendType = InMemoryState;
 
@@ -454,11 +429,10 @@ fn make_txns() -> (Vec<TransactionSigned>, FullTransactionList) {
     )
 }
 fn init(seed_mempool: bool) -> BenchTuple {
-    let (mut env, mut ctx) = setup::<SignatureType, SignatureCollectionType, _, _, _, EthTxPool>(
+    let (mut env, mut ctx) = setup::<SignatureType, SignatureCollectionType, _, _, EthTxPool>(
         4u32,
         ValidatorSetFactory::default(),
         SimpleRoundRobin::default(),
-        || NopStateRoot,
     );
 
     // this guy is the leader
@@ -491,7 +465,8 @@ fn init(seed_mempool: bool) -> BenchTuple {
     assert_eq!(author, leader);
     (encoded_txns, env, ctx, author, proposal_message)
 }
-fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> (Block<SCT>, Payload) {
+fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>(
+) -> (ConsensusBlockHeader<ST, SCT, EPT>, Payload) {
     let txns = (0..NUM_TRANSACTIONS)
         .map(|_| make_tx(TRANSACTION_SIZE_BYTES))
         .collect::<Vec<_>>();
@@ -499,9 +474,7 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> (Block<SC
     let mut txns_encoded: Vec<u8> = vec![];
     txns.encode(&mut txns_encoded);
 
-    let txns = TransactionPayload::List(FullTransactionList::new(Bytes::copy_from_slice(
-        &txns_encoded,
-    )));
+    let txns = FullTransactionList::new(Bytes::copy_from_slice(&txns_encoded));
 
     let payload = Payload { txns };
     (
@@ -517,14 +490,13 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> (Block<SC
                 randao_reveal: Default::default(),
             },
             payload.get_id(),
-            BlockKind::Executable,
             &QuorumCertificate::<SCT>::genesis_qc(),
         ),
         payload,
     )
 }
 
-fn extract_vote_msgs<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<VoteMessage<SCT>>
+fn extract_vote_msgs<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT, EPT>>) -> Vec<VoteMessage<SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -543,7 +515,7 @@ where
         .collect::<Vec<_>>()
 }
 
-fn extract_blocksync_requests<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<BlockRange>
+fn extract_blocksync_requests<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT, EPT>>) -> Vec<BlockRange>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -583,11 +555,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 Vec<(NodeId<NopPubKey>, VoteMessage<SignatureCollectionType>)>,
             ) {
                 let (mut env, mut ctx) =
-                    setup::<SignatureType, SignatureCollectionType, _, _, _, EthTxPool>(
+                    setup::<SignatureType, SignatureCollectionType, _, _, EthTxPool>(
                         4u32,
                         ValidatorSetFactory::default(),
                         SimpleRoundRobin::default(),
-                        || NopStateRoot,
                     );
 
                 // this guy is the leader
@@ -647,11 +618,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter_batched_ref(
             || {
                 let (mut env, mut ctx) =
-                    setup::<SignatureType, SignatureCollectionType, _, _, _, EthTxPool>(
+                    setup::<SignatureType, SignatureCollectionType, _, _, EthTxPool>(
                         4u32,
                         ValidatorSetFactory::default(),
                         SimpleRoundRobin::default(),
-                        || NopStateRoot,
                     );
 
                 let (raw_txns, _) = make_txns();

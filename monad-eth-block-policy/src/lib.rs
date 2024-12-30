@@ -1,21 +1,26 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, marker::PhantomData, ops::Deref};
 
+use alloy_consensus::transaction::Transaction;
+use alloy_primitives::{TxHash, U256};
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
-    payload::{Payload, PayloadId},
+    block::{
+        BlockPolicy, BlockPolicyError, ConsensusBlockHeader, ConsensusFullBlock, ExecutionProtocol,
+    },
+    payload::{ConsensusBlockBodyId, EthExecutionProtocol},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash,
 };
-use monad_crypto::hasher::{Hashable, Hasher};
-use monad_eth_tx::{EthSignedTransaction, EthTransaction, EthTxHash};
-use monad_eth_types::{Balance, EthAddress, Nonce};
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    hasher::{Hashable, Hasher},
+};
+use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
-use reth_primitives::U256;
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+use reth_primitives::{TransactionSigned, TransactionSignedEcRecovered};
 use sorted_vector_map::SortedVectorMap;
-use tracing::trace;
+use tracing::{debug, trace};
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -48,7 +53,7 @@ fn checked_from(arg: U256) -> u128 {
     }
 }
 
-fn compute_intrinsic_gas(tx: &EthSignedTransaction) -> u64 {
+fn compute_intrinsic_gas(tx: &TransactionSigned) -> u64 {
     // base stipend
     let mut intrinsic_gas = 21000;
 
@@ -83,14 +88,14 @@ fn compute_intrinsic_gas(tx: &EthSignedTransaction) -> u64 {
 }
 
 #[allow(clippy::unnecessary_fallible_conversions)]
-pub fn compute_txn_max_value(txn: &EthSignedTransaction) -> U256 {
+pub fn compute_txn_max_value(txn: &TransactionSigned) -> U256 {
     let txn_value = U256::try_from(txn.value()).unwrap();
     let gas_cost = U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas());
 
     checked_sum(txn_value, gas_cost)
 }
 
-pub fn compute_txn_max_value_to_u128(txn: &EthSignedTransaction) -> u128 {
+pub fn compute_txn_max_value_to_u128(txn: &TransactionSigned) -> u128 {
     let txn_value = compute_txn_max_value(txn);
     trace!(
         "compute_txn_max_value gas_cost + txn_value: {:?} ",
@@ -110,7 +115,7 @@ pub enum TransactionError {
 
 /// Stateless helper function to check validity of an Ethereum transaction
 pub fn static_validate_transaction(
-    tx: &EthSignedTransaction,
+    tx: &TransactionSigned,
     chain_id: u64,
 ) -> Result<(), TransactionError> {
     // EIP-155
@@ -146,16 +151,34 @@ pub fn static_validate_transaction(
 /// A consensus block that has gone through the EthereumValidator and makes the decoded and
 /// verified transactions available to access
 #[derive(Debug, Clone)]
-pub struct EthValidatedBlock<SCT: SignatureCollection> {
-    pub block: Block<SCT>,
-    pub orig_payload: Payload,
-    pub validated_txns: Vec<EthTransaction>,
+pub struct EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
+    pub validated_txns: Vec<TransactionSignedEcRecovered>,
     pub nonces: BTreeMap<EthAddress, Nonce>,
     pub txn_fees: BTreeMap<EthAddress, U256>,
 }
 
-impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
-    pub fn get_validated_txn_hashes(&self) -> Vec<EthTxHash> {
+impl<ST, SCT> Deref for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    type Target = ConsensusFullBlock<ST, SCT, EthExecutionProtocol>;
+    fn deref(&self) -> &Self::Target {
+        &self.block
+    }
+}
+
+impl<ST, SCT> EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub fn get_validated_txn_hashes(&self) -> Vec<TxHash> {
         self.validated_txns.iter().map(|t| t.hash()).collect()
     }
 
@@ -171,100 +194,37 @@ impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> PartialEq for EthValidatedBlock<SCT> {
+impl<ST, SCT> PartialEq for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn eq(&self, other: &Self) -> bool {
         self.block == other.block
     }
 }
-impl<SCT: SignatureCollection> Eq for EthValidatedBlock<SCT> {}
+impl<ST, SCT> Eq for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+}
 
-impl<SCT: SignatureCollection> Hashable for EthValidatedBlock<SCT> {
+impl<ST, SCT> Hashable for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn hash(&self, state: &mut impl Hasher) {
         self.block.get_id().hash(state);
     }
 }
 
-impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
-    type NodeIdPubKey = SCT::NodeIdPubKey;
-    type TxnHash = EthTxHash;
-
-    fn get_id(&self) -> BlockId {
-        self.block.get_id()
-    }
-
-    fn get_round(&self) -> Round {
-        self.block.round
-    }
-
-    fn get_epoch(&self) -> Epoch {
-        self.block.epoch
-    }
-
-    fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
-        self.block.author
-    }
-
-    fn get_payload(&self) -> Payload {
-        self.orig_payload.clone()
-    }
-
-    fn get_payload_id(&self) -> PayloadId {
-        self.block.payload_id
-    }
-
-    fn get_parent_id(&self) -> BlockId {
-        self.block.qc.get_block_id()
-    }
-
-    fn get_parent_round(&self) -> Round {
-        self.block.qc.get_round()
-    }
-
-    fn get_seq_num(&self) -> SeqNum {
-        self.block.execution.seq_num
-    }
-
-    fn get_state_root(&self) -> StateRootHash {
-        self.block.execution.state_root
-    }
-
-    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
-        self.get_validated_txn_hashes()
-    }
-
-    fn get_qc(&self) -> &QuorumCertificate<SCT> {
-        &self.block.qc
-    }
-
-    fn get_timestamp(&self) -> u64 {
-        self.block.timestamp
-    }
-
-    fn get_unvalidated_block(self) -> Block<SCT> {
-        self.block
-    }
-
-    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
-        &self.block
-    }
-
-    fn get_txn_list_len(&self) -> usize {
-        self.validated_txns.len()
-    }
-
-    fn is_empty_block(&self) -> bool {
-        self.block.is_empty_block()
-    }
-
-    fn get_full_block(self) -> FullBlock<SCT> {
-        FullBlock {
-            block: self.block,
-            payload: self.orig_payload,
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> AccountNonceRetrievable for EthValidatedBlock<SCT> {
+impl<ST, SCT> AccountNonceRetrievable for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce> {
         let mut account_nonces = BTreeMap::new();
         let block_nonces = self.get_nonces();
@@ -278,7 +238,11 @@ impl<SCT: SignatureCollection> AccountNonceRetrievable for EthValidatedBlock<SCT
     }
 }
 
-impl<SCT: SignatureCollection> AccountNonceRetrievable for Vec<&EthValidatedBlock<SCT>> {
+impl<ST, SCT> AccountNonceRetrievable for Vec<&EthValidatedBlock<ST, SCT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce> {
         let mut account_nonces = BTreeMap::new();
         for block in self.iter() {
@@ -314,29 +278,60 @@ impl BlockTxnFees {
 }
 
 #[derive(Debug)]
-struct CommittedBlkBuffer {
-    blocks: SortedVectorMap<SeqNum, (BlockAccountNonce, BlockTxnFees)>,
+struct CommittedBlock {
+    block_id: BlockId,
+    round: Round,
+
+    nonces: BlockAccountNonce,
+    fees: BlockTxnFees,
+}
+
+impl CommittedBlock {
+    fn genesis() -> Self {
+        Self {
+            block_id: GENESIS_BLOCK_ID,
+            round: Round(0), // TODO const GENESIS_ROUND
+            nonces: BlockAccountNonce {
+                nonces: Default::default(),
+            },
+            fees: BlockTxnFees {
+                txn_fees: Default::default(),
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CommittedBlkBuffer<ST, SCT> {
+    blocks: SortedVectorMap<SeqNum, CommittedBlock>,
     size: usize, // should be execution delay
+
+    _phantom: PhantomData<(ST, SCT)>,
 }
 
 struct CommittedTxnFeeResult {
     txn_fee: U256,
-    next_validate: SeqNum, // next block number to validate; included for assertions only
 }
 
-impl CommittedBlkBuffer {
+impl<ST, SCT> CommittedBlkBuffer<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn new(size: usize) -> Self {
         Self {
-            blocks: Default::default(),
+            blocks: std::iter::once((GENESIS_SEQ_NUM, CommittedBlock::genesis())).collect(),
             size,
+
+            _phantom: Default::default(),
         }
     }
 
     fn get_nonce(&self, eth_address: &EthAddress) -> Option<Nonce> {
         let mut maybe_account_nonce = None;
 
-        for (_, (account_nonces, _)) in self.blocks.iter() {
-            if let Some(nonce) = account_nonces.get(eth_address) {
+        for (_, block) in self.blocks.iter() {
+            if let Some(nonce) = block.nonces.get(eth_address) {
                 if let Some(old_account_nonce) = maybe_account_nonce {
                     assert!(nonce > old_account_nonce);
                 }
@@ -349,27 +344,37 @@ impl CommittedBlkBuffer {
     fn compute_txn_fee(
         &self,
         base_seq_num: SeqNum,
+        extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         eth_address: &EthAddress,
     ) -> CommittedTxnFeeResult {
         let mut txn_fee: U256 = U256::ZERO;
         let mut next_validate = base_seq_num + SeqNum(1);
 
         // start iteration from base_seq_num (non inclusive)
-        for (&cache_seq_num, (_nonce, block_txn_fees)) in self.blocks.range(next_validate..) {
+        for (&cache_seq_num, block) in self.blocks.range(next_validate..) {
             assert_eq!(next_validate, cache_seq_num);
-            if let Some(account_txn_fee) = block_txn_fees.get(eth_address) {
+            if let Some(account_txn_fee) = block.fees.get(eth_address) {
                 txn_fee = checked_sum(txn_fee, account_txn_fee);
             }
             next_validate += SeqNum(1);
         }
 
-        CommittedTxnFeeResult {
-            txn_fee,
-            next_validate,
+        // Apply Txn Fees for txns in extending blocks
+        if let Some(blocks) = &extending_blocks {
+            for extending_block in blocks
+                .iter()
+                .filter(|block| next_validate <= block.get_seq_num())
+            {
+                if let Some(account_txn_fee) = extending_block.txn_fees.get(eth_address) {
+                    txn_fee = checked_sum(txn_fee, *account_txn_fee);
+                }
+            }
         }
+
+        CommittedTxnFeeResult { txn_fee }
     }
 
-    fn update_committed_block<SCT: SignatureCollection>(&mut self, block: &EthValidatedBlock<SCT>) {
+    fn update_committed_block(&mut self, block: &EthValidatedBlock<ST, SCT>) {
         let block_number = block.get_seq_num();
         if let Some((&last_block_num, _)) = self.blocks.last_key_value() {
             assert_eq!(last_block_num + SeqNum(1), block_number);
@@ -392,26 +397,28 @@ impl CommittedBlkBuffer {
             .blocks
             .insert(
                 block_number,
-                (
-                    BlockAccountNonce {
+                CommittedBlock {
+                    block_id: block.get_id(),
+                    round: block.get_round(),
+                    nonces: BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
-                    BlockTxnFees {
+                    fees: BlockTxnFees {
                         txn_fees: block.txn_fees.clone()
                     }
-                ),
+                },
             )
             .is_none());
     }
 }
 
 /// A block policy for ethereum payloads
-pub struct EthBlockPolicy {
+pub struct EthBlockPolicy<ST, SCT> {
     /// SeqNum of last committed block
     last_commit: SeqNum,
 
     // last execution-delay committed transactions
-    committed_cache: CommittedBlkBuffer,
+    committed_cache: CommittedBlkBuffer<ST, SCT>,
 
     /// Cost for including transaction in the consensus
     execution_delay: SeqNum,
@@ -420,8 +427,16 @@ pub struct EthBlockPolicy {
     chain_id: u64,
 }
 
-impl EthBlockPolicy {
-    pub fn new(last_commit: SeqNum, execution_delay: u64, chain_id: u64) -> Self {
+impl<ST, SCT> EthBlockPolicy<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub fn new(
+        last_commit: SeqNum, // TODO deprecate
+        execution_delay: u64,
+        chain_id: u64,
+    ) -> Self {
         Self {
             committed_cache: CommittedBlkBuffer::new(execution_delay as usize),
             last_commit,
@@ -431,16 +446,13 @@ impl EthBlockPolicy {
     }
 
     /// returns account nonces at the start of the provided consensus block
-    pub fn get_account_base_nonces<'a, SCT>(
+    pub fn get_account_base_nonces<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
         state_backend: &impl StateBackend,
-        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         addresses: impl Iterator<Item = &'a EthAddress>,
-    ) -> Result<BTreeMap<&'a EthAddress, Nonce>, StateBackendError>
-    where
-        SCT: SignatureCollection,
-    {
+    ) -> Result<BTreeMap<&'a EthAddress, Nonce>, StateBackendError> {
         // Layers of access
         // 1. extending_blocks: coherent blocks in the blocks tree
         // 2. committed_block_nonces: always buffers the nonce of last `delay`
@@ -470,8 +482,12 @@ impl EthBlockPolicy {
         // when purging, we never purge nonces newer than last_commit - delay
 
         let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
-        let cache_miss_statuses =
-            state_backend.get_account_statuses(base_seq_num, cache_misses.iter().copied())?;
+        let cache_miss_statuses = self.get_account_statuses(
+            state_backend,
+            &Some(extending_blocks),
+            cache_misses.iter().copied(),
+            &base_seq_num,
+        )?;
         account_nonces.extend(
             cache_misses
                 .into_iter()
@@ -486,26 +502,55 @@ impl EthBlockPolicy {
         self.last_commit
     }
 
+    fn get_account_statuses<'a>(
+        &self,
+        state_backend: &impl StateBackend,
+        extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
+        addresses: impl Iterator<Item = &'a EthAddress>,
+        base_seq_num: &SeqNum,
+    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
+        if base_seq_num <= &self.last_commit {
+            debug!(
+                ?base_seq_num,
+                last_commit = self.last_commit.0,
+                "base seq num committed"
+            );
+            let committed_block = &self
+                .committed_cache
+                .blocks
+                .get(base_seq_num)
+                .expect("queried recently committed block that doesn't exist");
+            state_backend.get_account_statuses(
+                &committed_block.block_id,
+                base_seq_num,
+                &committed_block.round,
+                addresses,
+            )
+        } else if let Some(extending_blocks) = extending_blocks {
+            debug!(?base_seq_num, "base seq num proposed");
+            let proposed_block = extending_blocks
+                .iter()
+                .find(|block| &block.get_seq_num() == base_seq_num)
+                .expect("extending block doesn't exist");
+            state_backend.get_account_statuses(
+                &proposed_block.get_id(),
+                base_seq_num,
+                &proposed_block.get_round(),
+                addresses,
+            )
+        } else {
+            Err(StateBackendError::NotAvailableYet)
+        }
+    }
+
     // Computes account balance available for the account
-    pub fn compute_account_base_balances<'a, SCT>(
+    pub fn compute_account_base_balances<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
         state_backend: &impl StateBackend,
-        extending_blocks: Option<&Vec<&EthValidatedBlock<SCT>>>,
+        extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a EthAddress>,
-    ) -> Result<BTreeMap<&'a EthAddress, Balance>, StateBackendError>
-    where
-        SCT: SignatureCollection,
-    {
-        // TODO this is error-prone, easy to forget
-        // TODO write tests that fail if this doesn't exist
-        let extending_blocks = extending_blocks.map(|extending_blocks| {
-            extending_blocks
-                .iter()
-                .filter(|block| !block.is_empty_block())
-                .collect_vec()
-        });
-
+    ) -> Result<BTreeMap<&'a EthAddress, Balance>, StateBackendError> {
         trace!(block = consensus_block_seq_num.0, "compute_base_balance");
 
         // calculation correct only if GENESIS_SEQ_NUM == 0
@@ -513,8 +558,13 @@ impl EthBlockPolicy {
         let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
 
         let addresses = addresses.unique().collect_vec();
-        let account_balances = state_backend
-            .get_account_statuses(base_seq_num, addresses.iter().copied())?
+        let account_balances = self
+            .get_account_statuses(
+                state_backend,
+                &extending_blocks,
+                addresses.iter().copied(),
+                &base_seq_num,
+            )?
             .into_iter()
             .map(|maybe_status| maybe_status.map_or(0, |status| status.balance))
             .collect_vec();
@@ -524,24 +574,23 @@ impl EthBlockPolicy {
             .zip_eq(account_balances)
             .map(|(address, mut account_balance)| {
                 // Apply Txn Fees for the txns from committed blocks
-                let CommittedTxnFeeResult {
-                    txn_fee: txn_fee_committed,
-                    next_validate,
-                } = self.committed_cache.compute_txn_fee(base_seq_num, address);
+                let CommittedTxnFeeResult { txn_fee } =
+                    self.committed_cache
+                        .compute_txn_fee(base_seq_num, &extending_blocks, address);
 
-                let txn_fee_committed_u128 = checked_from(txn_fee_committed);
+                let txn_fee_u128 = checked_from(txn_fee);
 
-                if account_balance < txn_fee_committed_u128 {
+                if account_balance < txn_fee_u128 {
                     panic!(
-                        "Committed block with incoherent transaction fee 
+                        "block with incoherent transaction fee 
                             Not sufficient balance: {:?} \
                             Transaction Fee Committed: {:?} \
                             consensus block:seq num {:?} \
                             for address: {:?}",
-                        account_balance, txn_fee_committed_u128, consensus_block_seq_num, address
+                        account_balance, txn_fee_u128, consensus_block_seq_num, address
                     );
                 } else {
-                    account_balance -= txn_fee_committed_u128;
+                    account_balance -= txn_fee_u128;
                     trace!(
                         "AccountBalance compute 4: \
                             updated balance to: {:?} \
@@ -549,54 +598,7 @@ impl EthBlockPolicy {
                             consensus block:seq num {:?} \
                             for address: {:?}",
                         account_balance,
-                        txn_fee_committed_u128,
-                        consensus_block_seq_num,
-                        address
-                    );
-                }
-
-                // Apply Txn Fees for txns in extending blocks
-                let mut txn_fee_pending: U256 = U256::ZERO;
-                if let Some(blocks) = &extending_blocks {
-                    if let Some(first_block) = blocks.first() {
-                        assert_eq!(
-                            first_block.get_seq_num(),
-                            next_validate,
-                            "consensus sq {:?}\n first block {:?}\n committed_cache {:?}\n",
-                            consensus_block_seq_num,
-                            first_block,
-                            self.committed_cache
-                        );
-                    }
-
-                    for extending_block in blocks {
-                        if let Some(txn_fee) = extending_block.txn_fees.get(address) {
-                            txn_fee_pending = checked_sum(txn_fee_pending, *txn_fee);
-                        }
-                    }
-                }
-
-                let txn_fee_pending_u128 = checked_from(txn_fee_pending);
-
-                if account_balance < txn_fee_pending_u128 {
-                    panic!(
-                        "Majority extended a block with an incoherent balance \
-                            Not sufficient balance: {:?} \
-                            Txn Fees Pending: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                        account_balance, txn_fee_pending_u128, consensus_block_seq_num, address
-                    );
-                } else {
-                    account_balance -= txn_fee_pending_u128;
-                    trace!(
-                        "AccountBalance compute 6: \
-                    updated balance to: {:?} \
-                    Txn Fees Pending: {:?} \
-                    consensus block:seq num {:?} \
-                    for address: {:?}",
-                        account_balance,
-                        txn_fee_pending_u128,
+                        txn_fee_u128,
                         consensus_block_seq_num,
                         address
                     );
@@ -613,12 +615,13 @@ impl EthBlockPolicy {
     }
 }
 
-impl<SCT, SBT> BlockPolicy<SCT, SBT> for EthBlockPolicy
+impl<ST, SCT, SBT> BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> for EthBlockPolicy<ST, SCT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    type ValidatedBlock = EthValidatedBlock<SCT>;
+    type ValidatedBlock = EthValidatedBlock<ST, SCT>;
 
     fn check_coherency(
         &self,
@@ -633,11 +636,7 @@ where
             .chain(std::iter::once(&block))
             .next()
             .unwrap();
-        if first_block.is_empty_block() {
-            assert_eq!(first_block.get_seq_num(), self.last_commit);
-        } else {
-            assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
-        }
+        assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
 
         // TODO fix this unnecessary copy into a new vec to generate an owned EthAddress
         let tx_signers = block
@@ -711,11 +710,6 @@ where
     }
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
-        if block.is_empty_block() {
-            // TODO this is error-prone, easy to forget
-            // TODO write tests that fail if this doesn't exist
-            return;
-        }
         assert_eq!(block.get_seq_num(), self.last_commit + SeqNum(1));
         self.last_commit = block.get_seq_num();
         self.committed_cache.update_committed_block(block);
@@ -723,12 +717,13 @@ where
 
     fn reset(&mut self, last_delay_non_null_committed_blocks: Vec<&Self::ValidatedBlock>) {
         self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.size);
-        // TODO this is error-prone, easy to forget
-        // TODO write tests that fail if this doesn't exist
-        let blocks = last_delay_non_null_committed_blocks
-            .into_iter()
-            .filter(|block| !block.is_empty_block());
-        for block in blocks {
+        if last_delay_non_null_committed_blocks
+            .first()
+            .is_some_and(|first| first.get_seq_num() != GENESIS_SEQ_NUM + SeqNum(1))
+        {
+            self.committed_cache.blocks = Default::default();
+        }
+        for block in last_delay_non_null_committed_blocks {
             self.last_commit = block.get_seq_num();
             self.committed_cache.update_committed_block(block);
         }
@@ -746,10 +741,10 @@ mod test {
 
     use super::*;
 
-    fn create_signed_tx(tx: Transaction, secret_key: FixedBytes<32>) -> EthSignedTransaction {
+    fn create_signed_tx(tx: Transaction, secret_key: FixedBytes<32>) -> TransactionSigned {
         let hash = tx.signature_hash();
         let signature = sign_message(secret_key, hash).expect("signature should always succeed");
-        EthSignedTransaction::from_transaction_and_signature(tx, signature)
+        TransactionSigned::from_transaction_and_signature(tx, signature)
     }
 
     #[test]

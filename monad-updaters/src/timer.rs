@@ -114,7 +114,7 @@ mod tests {
 
     use futures::StreamExt;
     use monad_blocksync::messages::message::BlockSyncRequestMessage;
-    use monad_consensus_types::{block::BlockRange, payload::PayloadId};
+    use monad_consensus_types::{block::BlockRange, payload::ConsensusBlockBodyId};
     use monad_crypto::hasher::Hash;
     use monad_types::{BlockId, SeqNum};
     use ntest::timeout;
@@ -143,11 +143,11 @@ mod tests {
                 last_block_id: BlockId(Hash([0x04_u8; 32])),
                 root_seq_num: SeqNum(1),
             }),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x05_u8; 32]))),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x06_u8; 32]))),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x07_u8; 32]))),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x08_u8; 32]))),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x09_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x05_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x06_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x07_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x08_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x09_u8; 32]))),
         ]
     }
 
@@ -377,7 +377,7 @@ mod tests {
             })),
         )]);
         timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Payload(PayloadId(Hash(
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash(
                 [0x05_u8; 32],
             )))),
         )]);
@@ -398,7 +398,7 @@ mod tests {
             })),
         )]);
         timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Payload(PayloadId(Hash(
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash(
                 [0x05_u8; 32],
             )))),
         )]);
@@ -421,7 +421,7 @@ mod tests {
             }))
         );
         assert!(
-            requests.contains(&BlockSyncRequestMessage::Payload(PayloadId(Hash(
+            requests.contains(&BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash(
                 [0x05_u8; 32]
             ))))
         );

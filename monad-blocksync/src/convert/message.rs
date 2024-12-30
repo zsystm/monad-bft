@@ -1,10 +1,13 @@
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{block::ExecutionProtocol, signature_collection::SignatureCollection};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_proto::{
     error::ProtoError,
     proto::{
         blocksync::{
-            proto_block_sync_headers_response, proto_block_sync_payload_response,
-            ProtoBlockSyncHeaders, ProtoBlockSyncHeadersResponse, ProtoBlockSyncPayloadResponse,
+            proto_block_sync_body_response, proto_block_sync_headers_response,
+            ProtoBlockSyncBodyResponse, ProtoBlockSyncHeaders, ProtoBlockSyncHeadersResponse,
         },
         message::{
             proto_block_sync_request_message, proto_block_sync_response_message,
@@ -16,7 +19,7 @@ use monad_proto::{
 use crate::{
     blocksync::BlockSyncSelfRequester,
     messages::message::{
-        BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncRequestMessage,
+        BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncRequestMessage,
         BlockSyncResponseMessage,
     },
 };
@@ -50,7 +53,7 @@ impl From<&BlockSyncRequestMessage> for ProtoBlockSyncRequestMessage {
                 proto_block_sync_request_message::RequestType::BlockRange(block_range.into())
             }
             BlockSyncRequestMessage::Payload(payload_id) => {
-                proto_block_sync_request_message::RequestType::PayloadId(payload_id.into())
+                proto_block_sync_request_message::RequestType::BlockBodyId(payload_id.into())
             }
         };
 
@@ -68,7 +71,7 @@ impl TryFrom<ProtoBlockSyncRequestMessage> for BlockSyncRequestMessage {
             Some(proto_block_sync_request_message::RequestType::BlockRange(block_range)) => {
                 BlockSyncRequestMessage::Headers(block_range.try_into()?)
             }
-            Some(proto_block_sync_request_message::RequestType::PayloadId(payload_id)) => {
+            Some(proto_block_sync_request_message::RequestType::BlockBodyId(payload_id)) => {
                 BlockSyncRequestMessage::Payload(payload_id.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
@@ -80,10 +83,13 @@ impl TryFrom<ProtoBlockSyncRequestMessage> for BlockSyncRequestMessage {
     }
 }
 
-impl<SCT: SignatureCollection> From<&BlockSyncHeadersResponse<SCT>>
-    for ProtoBlockSyncHeadersResponse
+impl<ST, SCT, EPT> From<&BlockSyncHeadersResponse<ST, SCT, EPT>> for ProtoBlockSyncHeadersResponse
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: &BlockSyncHeadersResponse<SCT>) -> Self {
+    fn from(value: &BlockSyncHeadersResponse<ST, SCT, EPT>) -> Self {
         Self {
             headers_response: Some(match value {
                 BlockSyncHeadersResponse::Found((block_range, blocksync_headers)) => {
@@ -107,8 +113,11 @@ impl<SCT: SignatureCollection> From<&BlockSyncHeadersResponse<SCT>>
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncHeadersResponse>
-    for BlockSyncHeadersResponse<SCT>
+impl<ST, SCT, EPT> TryFrom<ProtoBlockSyncHeadersResponse> for BlockSyncHeadersResponse<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Error = ProtoError;
 
@@ -141,36 +150,40 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncHeadersResponse>
     }
 }
 
-impl From<&BlockSyncPayloadResponse> for ProtoBlockSyncPayloadResponse {
-    fn from(value: &BlockSyncPayloadResponse) -> Self {
+impl<EPT> From<&BlockSyncBodyResponse<EPT>> for ProtoBlockSyncBodyResponse
+where
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &BlockSyncBodyResponse<EPT>) -> Self {
         Self {
-            payload_response: Some(match value {
-                BlockSyncPayloadResponse::Found(payload) => {
-                    proto_block_sync_payload_response::PayloadResponse::PayloadFound(payload.into())
+            body_response: Some(match value {
+                BlockSyncBodyResponse::Found(payload) => {
+                    proto_block_sync_body_response::BodyResponse::BodyFound(payload.into())
                 }
-                BlockSyncPayloadResponse::NotAvailable(payload_id) => {
-                    proto_block_sync_payload_response::PayloadResponse::NotAvailable(
-                        payload_id.into(),
-                    )
+                BlockSyncBodyResponse::NotAvailable(payload_id) => {
+                    proto_block_sync_body_response::BodyResponse::NotAvailable(payload_id.into())
                 }
             }),
         }
     }
 }
 
-impl TryFrom<ProtoBlockSyncPayloadResponse> for BlockSyncPayloadResponse {
+impl<EPT> TryFrom<ProtoBlockSyncBodyResponse> for BlockSyncBodyResponse<EPT>
+where
+    EPT: ExecutionProtocol,
+{
     type Error = ProtoError;
 
-    fn try_from(value: ProtoBlockSyncPayloadResponse) -> Result<Self, Self::Error> {
-        let blocksync_payload_response = match value.payload_response {
-            Some(proto_block_sync_payload_response::PayloadResponse::PayloadFound(payload)) => {
-                BlockSyncPayloadResponse::Found(payload.try_into()?)
+    fn try_from(value: ProtoBlockSyncBodyResponse) -> Result<Self, Self::Error> {
+        let blocksync_payload_response = match value.body_response {
+            Some(proto_block_sync_body_response::BodyResponse::BodyFound(payload)) => {
+                BlockSyncBodyResponse::Found(payload.try_into()?)
             }
-            Some(proto_block_sync_payload_response::PayloadResponse::NotAvailable(payload_id)) => {
-                BlockSyncPayloadResponse::NotAvailable(payload_id.try_into()?)
+            Some(proto_block_sync_body_response::BodyResponse::NotAvailable(payload_id)) => {
+                BlockSyncBodyResponse::NotAvailable(payload_id.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
-                "BlockSyncPayloadResponse.one_of_message".to_owned(),
+                "BlockSyncBodyResponse.one_of_message".to_owned(),
             ))?,
         };
 
@@ -178,10 +191,13 @@ impl TryFrom<ProtoBlockSyncPayloadResponse> for BlockSyncPayloadResponse {
     }
 }
 
-impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>>
-    for ProtoBlockSyncResponseMessage
+impl<ST, SCT, EPT> From<&BlockSyncResponseMessage<ST, SCT, EPT>> for ProtoBlockSyncResponseMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(response: &BlockSyncResponseMessage<SCT>) -> Self {
+    fn from(response: &BlockSyncResponseMessage<ST, SCT, EPT>) -> Self {
         Self {
             blocksync_response: Some(match response {
                 BlockSyncResponseMessage::HeadersResponse(headers_response) => {
@@ -190,7 +206,7 @@ impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>>
                     )
                 }
                 BlockSyncResponseMessage::PayloadResponse(payload_response) => {
-                    proto_block_sync_response_message::BlocksyncResponse::PayloadResponse(
+                    proto_block_sync_response_message::BlocksyncResponse::BodyResponse(
                         payload_response.into(),
                     )
                 }
@@ -199,8 +215,11 @@ impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>>
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncResponseMessage>
-    for BlockSyncResponseMessage<SCT>
+impl<ST, SCT, EPT> TryFrom<ProtoBlockSyncResponseMessage> for BlockSyncResponseMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Error = ProtoError;
 
@@ -209,7 +228,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncResponseMessage>
             Some(proto_block_sync_response_message::BlocksyncResponse::HeadersResponse(
                 headers_response,
             )) => BlockSyncResponseMessage::HeadersResponse(headers_response.try_into()?),
-            Some(proto_block_sync_response_message::BlocksyncResponse::PayloadResponse(
+            Some(proto_block_sync_response_message::BlocksyncResponse::BodyResponse(
                 payload_response,
             )) => BlockSyncResponseMessage::PayloadResponse(payload_response.try_into()?),
             None => Err(ProtoError::MissingRequiredField(

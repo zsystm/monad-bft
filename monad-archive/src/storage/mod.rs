@@ -1,23 +1,22 @@
 pub mod dynamodb;
 pub mod rocksdb_storage;
-pub mod rpc_reader;
 pub mod s3;
 pub mod triedb_reader;
 
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use crate::{ArchiveReader, BlobStore, LatestKind, Metrics, TxIndexArchiver};
+use crate::{ArchiveReader, BlobStore, Block, LatestKind, Metrics, TxIndexArchiver};
 use crate::{IndexStore, IndexStoreReader, TxIndexedData};
+use alloy_consensus::ReceiptEnvelope;
+use alloy_primitives::BlockHash;
 use clap::{Parser, Subcommand};
 use enum_dispatch::enum_dispatch;
 use eyre::{bail, ContextCompat, OptionExt, Result};
 
 pub use dynamodb::*;
 use futures::FutureExt;
-use reth_primitives::{Block, BlockHash, ReceiptWithBloom};
 pub use rocksdb_storage::*;
-use rpc_reader::RpcReader;
 pub use s3::*;
 use tokio::{join, try_join};
 
@@ -30,7 +29,6 @@ use crate::triedb_reader::TriedbReader;
 pub enum BlockDataReaderErased {
     BlockDataArchive,
     TriedbReader,
-    RpcReader,
 }
 
 #[enum_dispatch]
@@ -39,7 +37,7 @@ pub trait BlockDataReader: Clone {
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64>;
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block>;
     async fn get_block_by_hash(&self, block_hash: BlockHash) -> Result<Block>;
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>>;
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>>;
     async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>>;
 }
 
@@ -48,7 +46,6 @@ pub enum BlockDataReaderArgs {
     Aws(AwsCliArgs),
     RocksDb(RocksDbCliArgs),
     Triedb(TrieDbCliArgs),
-    Rpc(RpcCliArgs),
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +71,6 @@ impl FromStr for BlockDataReaderArgs {
             "aws" => Aws(AwsCliArgs::parse(next)?),
             "rocksdb" => RocksDb(RocksDbCliArgs::parse(next)?),
             "triedb" => Triedb(TrieDbCliArgs::parse(next)?),
-            "rpc" => Rpc(RpcCliArgs::parse(next)?),
             _ => {
                 bail!("Unrecognized storage args variant: {first}");
             }
@@ -112,7 +108,6 @@ impl BlockDataReaderArgs {
             Aws(args) => BlockDataArchive::new(args.build_blob_store(metrics).await).into(),
             RocksDb(args) => BlockDataArchive::new(RocksDbClient::try_from(args)?.into()).into(),
             Triedb(args) => TriedbReader::new(args).into(),
-            Rpc(args) => args.build().into(),
         })
     }
 }
@@ -205,23 +200,6 @@ impl RocksDbCliArgs {
 
     pub fn build(&self) -> Result<RocksDbClient> {
         RocksDbClient::new(&self.db_path)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct RpcCliArgs {
-    pub url: String,
-}
-
-impl RpcCliArgs {
-    pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
-        Ok(Self {
-            url: next("rpc args missing url")?,
-        })
-    }
-
-    pub fn build(&self) -> RpcReader {
-        RpcReader::new(&self.url)
     }
 }
 

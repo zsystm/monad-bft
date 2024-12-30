@@ -1,7 +1,9 @@
 use std::marker::PhantomData;
 
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, signature_collection::SignatureCollection,
+    block::{BlockPolicy, ExecutionProtocol},
+    block_validator::BlockValidator,
+    signature_collection::SignatureCollection,
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
@@ -16,18 +18,19 @@ use monad_validator::{
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct EpochChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct EpochChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     val_epoch_map: &'a mut ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, ASVT, BPT, SBT)>,
+    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT)>,
 }
 
 pub(super) enum EpochCommand<PT>
@@ -37,18 +40,19 @@ where
     AddEpochValidatorSet(Epoch, Vec<(NodeId<PT>, Stake)>),
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    EpochChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+    EpochChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,
@@ -76,11 +80,12 @@ where
     }
 }
 
-impl<ST, SCT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
+impl<ST, SCT, EPT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
+    for Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     fn from(command: EpochCommand<CertificateSignaturePubKey<ST>>) -> Self {
         match command {

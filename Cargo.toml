@@ -2,7 +2,6 @@
 
 members = [
     "monad-archive",
-    "monad-async-state-verify",
     "monad-block-persist",
     "monad-blocksync",
     "monad-blocktree",
@@ -21,7 +20,6 @@ members = [
     "monad-eth-block-validator",
     "monad-eth-ledger",
     "monad-eth-testutil",
-    "monad-eth-tx",
     "monad-eth-txpool",
     "monad-eth-types",
     "monad-eth-types",
@@ -70,15 +68,16 @@ panic = "abort"
 ignored = ["getrandom", "pbjson"]
 
 [workspace.dependencies]
-alloy-json-rpc = "0.3.1"
-alloy-primitives = "0.6"
+alloy-consensus = "0.8"
+alloy-json-rpc = "0.8"
+alloy-primitives = "0.8"
 alloy-rlp = "0.3"
-alloy-rpc-client = "0.3.1"
-alloy-sol-macro = "0.6"
-alloy-sol-types = "0.6"
-alloy-transport = "0.3.1"
-reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "685d1c5", default-features = false }
-reth-rpc-types = { git = "https://github.com/paradigmxyz/reth.git", rev = "685d1c5", default-features = false }
+alloy-rpc-client = "0.8"
+alloy-rpc-types = "0.8"
+alloy-sol-macro = "0.8"
+alloy-sol-types = "0.8"
+alloy-transport = "0.8"
+reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "4c1208e", default-features = false }
 
 actix = "0.13"
 actix-http = "3.6.0"
@@ -88,7 +87,7 @@ actix-web-actors = "4.3.0"
 aes = "0.8.3"
 as-any = "0.3.1"
 async-graphql = "7.0"
-auto_impl = "1.1.0"
+auto_impl = "1.2"
 autocxx = "0.26"
 autocxx-build = "0.26"
 aws-config = "1.5.9"
@@ -122,6 +121,7 @@ glob = "0.3.1"
 hdwallet = "0.4.1"
 hex = "0.4"
 hex-literal = "0.4"
+indexmap = "2.4.0"
 inventory = "0.3"
 itertools = "0.10"
 libc = "0.2.153"

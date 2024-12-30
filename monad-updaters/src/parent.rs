@@ -5,7 +5,10 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{block::ExecutionProtocol, signature_collection::SignatureCollection};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     CheckpointCommand, Command, ControlPanelCommand, LedgerCommand, LoopbackCommand, RouterCommand,
@@ -30,23 +33,27 @@ pub struct ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE, E, OM, SCT: SignatureCollection> Executor
+impl<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE, E, OM, ST, SCT, EPT> Executor
     for ParentExecutor<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
 
     CE: Executor<Command = CheckpointCommand<SCT>>,
-    LE: Executor<Command = LedgerCommand<SCT>>,
+    LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
     SE: Executor<Command = StateRootHashCommand<SCT>>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
     TSE: Executor<Command = TimestampCommand>,
-    SSE: Executor<Command = StateSyncCommand<SCT::NodeIdPubKey>>,
-{
-    type Command = Command<E, OM, SCT>;
+    SSE: Executor<Command = StateSyncCommand<ST, EPT>>,
 
-    fn exec(&mut self, commands: Vec<Command<E, OM, SCT>>) {
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    type Command = Command<E, OM, ST, SCT, EPT>;
+
+    fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,

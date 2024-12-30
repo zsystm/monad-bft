@@ -1,8 +1,11 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, BlockDataArchive, IndexStoreErased,
+    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, Block, BlockDataArchive,
+    IndexStoreErased,
 };
+use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
+use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
@@ -12,7 +15,6 @@ use aws_sdk_dynamodb::{
 use enum_dispatch::enum_dispatch;
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned, U128, U256};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_retry::{
@@ -32,13 +34,11 @@ pub trait IndexStoreReader: Clone {
     async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>>;
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, RlpEncodable, RlpDecodable,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 pub struct TxIndexedData {
-    pub tx: TransactionSigned,
+    pub tx: TxEnvelope,
     pub trace: Vec<u8>,
-    pub receipt: ReceiptWithBloom,
+    pub receipt: ReceiptEnvelope,
     pub header_subset: HeaderSubset,
 }
 
@@ -50,7 +50,7 @@ pub struct HeaderSubset {
     pub block_hash: BlockHash,
     pub block_number: u64,
     pub tx_index: u64,
-    pub gas_used: u64,
+    pub gas_used: u128,
     pub base_fee_per_gas: Option<u64>,
 }
 
@@ -78,24 +78,25 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
         &self,
         block: Block,
         traces: Vec<Vec<u8>>,
-        receipts: Vec<ReceiptWithBloom>,
+        receipts: Vec<ReceiptEnvelope>,
     ) -> Result<()> {
-        let block_number = block.number;
-        let block_hash = block.hash_slow();
-        let base_fee_per_gas = block.base_fee_per_gas;
+        let block_number = block.header.number;
+        let block_hash = block.header.hash_slow();
+        let base_fee_per_gas = block.header.base_fee_per_gas;
 
         let mut prev_cumulative_gas_used = 0;
 
         let requests = block
             .body
+            .transactions
             .into_iter()
             .zip(traces.into_iter())
             .zip(receipts.into_iter())
             .enumerate()
             .map(|(idx, ((tx, trace), receipt))| {
                 // calculate gas used by this tx
-                let gas_used = receipt.receipt.cumulative_gas_used - prev_cumulative_gas_used;
-                prev_cumulative_gas_used = receipt.receipt.cumulative_gas_used;
+                let gas_used = receipt.cumulative_gas_used() - prev_cumulative_gas_used;
+                prev_cumulative_gas_used = receipt.cumulative_gas_used();
 
                 TxIndexedData {
                     tx,

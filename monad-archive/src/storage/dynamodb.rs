@@ -8,7 +8,6 @@ use aws_sdk_dynamodb::{
 };
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned, U128, U256};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_retry::{
@@ -59,7 +58,7 @@ impl IndexStore for DynamoDBArchive {
     async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
         let mut requests = Vec::with_capacity(kvs.size_hint().0);
         for data in kvs {
-            let hash = format!("{:x}", data.tx.hash());
+            let hash = format!("{:x}", data.tx.tx_hash());
             let mut attribute_map = HashMap::new();
             attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hash));
 

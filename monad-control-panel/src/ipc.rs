@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::{SinkExt, Stream, StreamExt};
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{block::ExecutionProtocol, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -25,12 +25,13 @@ use tracing_subscriber::{reload::Handle, EnvFilter, Registry};
 
 pub type ReloadHandle = Handle<EnvFilter, Registry>;
 
-pub struct ControlPanelIpcReceiver<ST, SCT>
+pub struct ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    receiver: mpsc::Receiver<MonadEvent<ST, SCT>>,
+    receiver: mpsc::Receiver<MonadEvent<ST, SCT, EPT>>,
     client_sender: broadcast::Sender<ControlPanelCommand<SCT>>,
 
     metrics: ExecutorMetrics,
@@ -38,22 +39,24 @@ where
     reload_handle: ReloadHandle,
 }
 
-impl<ST, SCT> Stream for ControlPanelIpcReceiver<ST, SCT>
+impl<ST, SCT, EPT> Stream for ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.receiver.poll_recv(cx)
     }
 }
 
-impl<ST, SCT> ControlPanelIpcReceiver<ST, SCT>
+impl<ST, SCT, EPT> ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn new(
         bind_path: PathBuf,
@@ -116,7 +119,7 @@ where
 
     async fn new_connection(
         mut read: FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
-        event_channel: mpsc::Sender<MonadEvent<ST, SCT>>,
+        event_channel: mpsc::Sender<MonadEvent<ST, SCT, EPT>>,
     ) {
         while let Some(Ok(bytes)) = read.next().await {
             debug!("control panel ipc server bytes: {:?}", &bytes);
@@ -203,7 +206,7 @@ where
                     WriteCommand::UpdateValidatorSet(update_validator_set) => {
                         match update_validator_set {
                             UpdateValidatorSet::Request(parsed_validator_set) => {
-                                let event = MonadEvent::<ST, SCT>::ControlPanelEvent(
+                                let event = MonadEvent::ControlPanelEvent(
                                     ControlPanelEvent::UpdateValidators(parsed_validator_set),
                                 );
                                 let Ok(_) = event_channel.send(event.clone()).await else {
@@ -256,10 +259,11 @@ where
     }
 }
 
-impl<ST, SCT> Executor for ControlPanelIpcReceiver<ST, SCT>
+impl<ST, SCT, EPT> Executor for ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Command = ControlPanelCommand<SCT>;
 

@@ -1,6 +1,8 @@
 use core::str;
 use std::sync::Arc;
 
+use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, TxEnvelope};
+use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable};
 use aws_config::{meta::region::RegionProviderChain, SdkConfig};
 use aws_sdk_s3::{
@@ -12,7 +14,6 @@ use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
 use eyre::{Context, Result};
 use futures::try_join;
-use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned};
 use tokio::time::Duration;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -26,6 +27,7 @@ use crate::{
 };
 
 use monad_triedb_utils::triedb_env::BlockHeader;
+pub type Block = AlloyBlock<TxEnvelope, Header>;
 
 const BLOCK_PADDING_WIDTH: usize = 12;
 
@@ -85,7 +87,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
         self.read_block(block_num).await
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
         let receipts_key = self.receipts_key(block_number);
 
         let rlp_receipts = self.bucket.read(&receipts_key).await?;
@@ -184,7 +186,7 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
 
     pub async fn archive_block(&self, block: Block) -> Result<()> {
         // 1) Insert into block table
-        let block_num = block.number;
+        let block_num = block.header.number;
         let block_key = self.block_key(block_num);
 
         let mut rlp_block = Vec::with_capacity(8096);
@@ -207,7 +209,7 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
 
     pub async fn archive_receipts(
         &self,
-        receipts: Vec<ReceiptWithBloom>,
+        receipts: Vec<ReceiptEnvelope>,
         block_num: u64,
     ) -> Result<()> {
         // 1) Prepare the receipts upload
@@ -235,13 +237,5 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
         traces.encode(&mut rlp_traces);
 
         self.bucket.upload(&traces_key, rlp_traces).await
-    }
-}
-
-pub fn make_block(block_header: BlockHeader, transactions: Vec<TransactionSigned>) -> Block {
-    Block {
-        header: block_header.header,
-        body: transactions,
-        ..Default::default()
     }
 }

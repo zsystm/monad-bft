@@ -1,6 +1,7 @@
 use core::str;
 use std::sync::Arc;
 
+use alloy_consensus::{BlockBody, Header, ReceiptEnvelope, TxEnvelope};
 use alloy_rlp::{Decodable, Encodable};
 use aws_config::{meta::region::RegionProviderChain, SdkConfig};
 use aws_sdk_s3::{
@@ -12,7 +13,6 @@ use bytes::Bytes;
 use eyre::{Context, Result};
 use futures::try_join;
 use monad_triedb_utils::triedb_env::BlockHeader;
-use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 use tokio::time::Duration;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -27,6 +27,7 @@ const AWS_S3_READS: &str = "aws_s3_reads";
 const AWS_S3_WRITES: &str = "aws_s3_writes";
 
 const BLOCK_PADDING_WIDTH: usize = 12;
+
 
 #[derive(Clone)]
 pub struct S3Bucket {
@@ -206,7 +207,7 @@ impl S3Archive {
     pub async fn archive_block(
         &self,
         block_header: BlockHeader,
-        transactions: Vec<TransactionSigned>,
+        transactions: Vec<TxEnvelope>,
         block_num: u64,
     ) -> Result<()> {
         // 1) Insert into block table
@@ -233,7 +234,7 @@ impl S3Archive {
 
     pub async fn archive_receipts(
         &self,
-        receipts: Vec<ReceiptWithBloom>,
+        receipts: Vec<alloy_consensus::ReceiptEnvelope>,
         block_num: u64,
     ) -> Result<()> {
         // 1) Prepare the receipts upload
@@ -299,7 +300,7 @@ impl S3Archive {
         self.get_block_by_number(block_num).await
     }
 
-    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
+    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
         let receipts_key = self.receipts_key(block_number);
 
         let rlp_receipts = self.bucket.read(&receipts_key).await?;
@@ -322,10 +323,40 @@ impl S3Archive {
     }
 }
 
-pub fn make_block(block_header: BlockHeader, transactions: Vec<TransactionSigned>) -> Block {
+pub fn make_block(
+    triedb_header: monad_triedb_utils::triedb_env::BlockHeader,
+    transactions: Vec<TxEnvelope>,
+) -> Block {
+    let header = triedb_header.header;
     Block {
-        header: block_header.header,
-        body: transactions,
-        ..Default::default()
+        header: Header {
+            parent_hash: header.parent_hash,
+            ommers_hash: header.ommers_hash,
+            beneficiary: header.beneficiary,
+            state_root: header.state_root,
+            transactions_root: header.transactions_root,
+            receipts_root: header.receipts_root,
+            logs_bloom: header.logs_bloom,
+            difficulty: header.difficulty,
+            number: header.number,
+            gas_limit: header.gas_limit,
+            gas_used: header.gas_used,
+            timestamp: header.timestamp,
+            extra_data: header.extra_data,
+            mix_hash: header.mix_hash,
+            nonce: header.nonce,
+            base_fee_per_gas: header.base_fee_per_gas,
+            withdrawals_root: header.withdrawals_root,
+            blob_gas_used: header.blob_gas_used,
+            excess_blob_gas: header.excess_blob_gas,
+            parent_beacon_block_root: header.parent_beacon_block_root,
+            requests_hash: header.requests_hash,
+            target_blobs_per_block: header.target_blobs_per_block,
+        },
+        body: BlockBody {
+            transactions,
+            ommers: Vec::new(),
+            withdrawals: None,
+        },
     }
 }

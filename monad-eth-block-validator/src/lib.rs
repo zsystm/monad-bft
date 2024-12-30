@@ -1,188 +1,260 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, marker::PhantomData};
 
-use alloy_rlp::Decodable;
+use alloy_consensus::{
+    constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, Transaction,
+    EMPTY_OMMER_ROOT_HASH,
+};
+use alloy_primitives::U256;
+use alloy_rlp::{Decodable, Encodable};
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockPolicy, BlockType},
+    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, MockExecutionBody},
     block_validator::{BlockValidationError, BlockValidator},
-    payload::{Payload, TransactionPayload},
+    payload::{
+        ConsensusBlockBody, ConsensusBlockBodyId, EthBlockBody, EthExecutionProtocol,
+        ProposedEthHeader, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT,
+    },
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
+};
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    hasher::{Hasher, HasherType},
 };
 use monad_eth_block_policy::{
     checked_sum, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
 };
-use monad_eth_tx::{EthSignedTransaction, EthTransaction};
 use monad_eth_types::{EthAddress, Nonce};
 use monad_state_backend::StateBackend;
-use reth_primitives::U256;
+use reth_primitives::{
+    transaction::recover_signers, TransactionSigned, TransactionSignedEcRecovered,
+};
 use tracing::warn;
 
 type NonceMap = BTreeMap<EthAddress, Nonce>;
 type TxnFeeMap = BTreeMap<EthAddress, U256>;
-type ValidatedTxns = Vec<EthTransaction>;
+type ValidatedTxns = Vec<TransactionSignedEcRecovered>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block
-#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
-pub struct EthValidator {
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct EthValidator<ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+{
     /// max number of txns to fetch
     pub tx_limit: usize,
     /// limit on cumulative gas from transactions in a block
     pub block_gas_limit: u64,
     /// chain id
     pub chain_id: u64,
+
+    _phantom: PhantomData<(ST, SCT, SBT)>,
 }
 
-impl EthValidator {
+impl<ST, SCT, SBT> EthValidator<ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+{
     pub fn new(tx_limit: usize, block_gas_limit: u64, chain_id: u64) -> Self {
         Self {
             tx_limit,
             block_gas_limit,
             chain_id,
+            _phantom: PhantomData,
         }
     }
 
-    fn validate_payload(
+    fn validate_block_body(
         &self,
-        payload: &Payload,
+        body: &ConsensusBlockBody<EthExecutionProtocol>,
     ) -> Result<(ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError> {
-        if matches!(payload.txns, TransactionPayload::Null) {
-            return Err(BlockValidationError::HeaderPayloadMismatchError);
+        let EthBlockBody {
+            transactions,
+            ommers,
+            withdrawals,
+        } = &body.execution_body;
+
+        if !ommers.is_empty() {
+            return Err(BlockValidationError::PayloadError);
         }
 
-        match &payload.txns {
-            TransactionPayload::List(txns_rlp) => {
-                // RLP decodes the txns
-                let Ok(eth_txns) =
-                    Vec::<EthSignedTransaction>::decode(&mut txns_rlp.bytes().as_ref())
-                else {
-                    return Err(BlockValidationError::TxnError);
-                };
-
-                // recovering the signers verifies that these are valid signatures
-                let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
-                    .ok_or(BlockValidationError::TxnError)?;
-
-                // recover the account nonces and txn fee usage in this block
-                let mut nonces = BTreeMap::new();
-                let mut txn_fees: BTreeMap<EthAddress, U256> = BTreeMap::new();
-
-                let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
-
-                for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
-                    if static_validate_transaction(&eth_txn, self.chain_id).is_err() {
-                        return Err(BlockValidationError::TxnError);
-                    }
-
-                    // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
-                    // update this when base fee is included in consensus proposal
-                    if eth_txn.max_fee_per_gas() < 1000 {
-                        return Err(BlockValidationError::TxnError);
-                    }
-
-                    let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
-                    // txn iteration is following the same order as they are in the
-                    // block. A block is invalid if we see a smaller or equal nonce
-                    // after the first or if there is a nonce gap
-                    if let Some(old_nonce) = maybe_old_nonce {
-                        if eth_txn.nonce() != old_nonce + 1 {
-                            return Err(BlockValidationError::TxnError);
-                        }
-                    }
-
-                    let txn_fee_entry = txn_fees.entry(EthAddress(signer)).or_insert(U256::ZERO);
-
-                    *txn_fee_entry = checked_sum(*txn_fee_entry, compute_txn_max_value(&eth_txn));
-                    validated_txns.push(eth_txn.with_signer(signer));
-                }
-
-                if validated_txns.len() > self.tx_limit {
-                    return Err(BlockValidationError::TxnError);
-                }
-
-                let total_gas = validated_txns
-                    .iter()
-                    .fold(0, |acc, tx| acc + tx.gas_limit());
-                if total_gas > self.block_gas_limit {
-                    return Err(BlockValidationError::TxnError);
-                }
-
-                Ok((validated_txns, nonces, txn_fees))
-            }
-            TransactionPayload::Null => {
-                unreachable!();
-            }
+        if !withdrawals.is_empty() {
+            return Err(BlockValidationError::PayloadError);
         }
+
+        // early return if number of transactions exceed limit
+        // no need to individually validate transactions
+        if transactions.len() > self.tx_limit {
+            return Err(BlockValidationError::TxnError);
+        }
+
+        // recovering the signers verifies that these are valid signatures
+        let signers = recover_signers(transactions, transactions.len())
+            .ok_or(BlockValidationError::TxnError)?;
+
+        // recover the account nonces and txn fee usage in this block
+        let mut nonces = BTreeMap::new();
+        let mut txn_fees: BTreeMap<EthAddress, U256> = BTreeMap::new();
+
+        let mut validated_txns: ValidatedTxns = Vec::with_capacity(transactions.len());
+
+        for (eth_txn, signer) in transactions.into_iter().zip(signers) {
+            if static_validate_transaction(&eth_txn, self.chain_id).is_err() {
+                return Err(BlockValidationError::TxnError);
+            }
+
+            // TODO(kai): currently block base fee is hardcoded
+            // update this when base fee is included in consensus proposal
+            if eth_txn.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
+                return Err(BlockValidationError::TxnError);
+            }
+
+            let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
+            // txn iteration is following the same order as they are in the
+            // block. A block is invalid if we see a smaller or equal nonce
+            // after the first or if there is a nonce gap
+            if let Some(old_nonce) = maybe_old_nonce {
+                if eth_txn.nonce() != old_nonce + 1 {
+                    return Err(BlockValidationError::TxnError);
+                }
+            }
+
+            let txn_fee_entry = txn_fees.entry(EthAddress(signer)).or_insert(U256::ZERO);
+
+            *txn_fee_entry = checked_sum(*txn_fee_entry, compute_txn_max_value(&eth_txn));
+            validated_txns.push(eth_txn.clone().with_signer(signer));
+        }
+
+        let total_gas = validated_txns
+            .iter()
+            .fold(0, |acc, tx| acc + tx.gas_limit());
+        if total_gas > self.block_gas_limit {
+            return Err(BlockValidationError::TxnError);
+        }
+
+        let proposal_size = validated_txns
+            .iter()
+            .fold(0, |acc, tx| acc + tx.length());
+        if proposal_size as u64 > PROPOSAL_SIZE_LIMIT {
+            return Err(BlockValidationError::TxnError);
+        }
+
+        Ok((validated_txns, nonces, txn_fees))
     }
 
-    fn validate_block_header<SCT: SignatureCollection>(
+    fn validate_block_header(
         &self,
-        block: &Block<SCT>,
-        payload: &Payload,
+        header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
+        body: &ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
     ) -> Result<(), BlockValidationError> {
-        if block.payload_id != payload.get_id() {
+        if header.block_body_id != body.get_id() {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
         }
 
-        if block.timestamp <= block.get_qc().get_timestamp() {
+        if header.timestamp <= header.qc.get_timestamp() {
             // timestamps must be monotonically increasing
             return Err(BlockValidationError::TimestampError);
         }
 
         if let Some(author_pubkey) = author_pubkey {
-            if let Err(e) = block
-                .execution
-                .randao_reveal
-                .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
-            {
+            if let Err(e) = header.round_signature.verify(header.round, author_pubkey) {
                 warn!("Invalid randao_reveal signature, reason: {:?}", e);
                 return Err(BlockValidationError::RandaoError);
             };
         }
+
+        let ProposedEthHeader {
+            ommers_hash,
+            beneficiary,
+            transactions_root,
+            withdrawals_root,
+            difficulty,
+            number,
+            gas_limit,
+            timestamp,
+            mix_hash,
+            nonce,
+            base_fee_per_gas,
+            extra_data,
+        } = &header.execution_inputs;
+
+        if ommers_hash != EMPTY_OMMER_ROOT_HASH {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if transactions_root != calculate_transaction_root(&body.execution_body.transactions) {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if withdrawals_root != EMPTY_WITHDRAWALS {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if difficulty != &0 {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if number != &header.seq_num.0 {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if gas_limit != &PROPOSAL_GAS_LIMIT {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if *timestamp != header.timestamp / 1_000 {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if *mix_hash != header.round_signature.get_hash().0 {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if nonce != &[0_u8; 8] {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if extra_data != &[0_u8; 32] {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if base_fee_per_gas != &BASE_FEE_PER_GAS {
+            return Err(BlockValidationError::HeaderError);
+        }
+
         Ok(())
     }
 }
 
 // FIXME: add specific error returns for the different failures
-impl<SCT, SBT> BlockValidator<SCT, EthBlockPolicy, SBT> for EthValidator
+impl<ST, SCT, SBT> BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
+    for EthValidator<ST, SCT, SBT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
     fn validate(
         &self,
-        block: Block<SCT>,
-        payload: Payload,
+        header: ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
+        body: ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
-    ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock, BlockValidationError>
-    {
-        match block.block_kind {
-            BlockKind::Executable => {
-                self.validate_block_header(&block, &payload, author_pubkey)?;
+    ) -> Result<
+        <EthBlockPolicy<ST, SCT> as BlockPolicy<
+            ST,
+            SCT,
+            EthExecutionProtocol,
+            SBT,
+        >>::ValidatedBlock,
+        BlockValidationError,
+    >{
+        self.validate_block_header(&header, &body, author_pubkey)?;
 
-                if let Ok((validated_txns, nonces, txn_fees)) = self.validate_payload(&payload) {
-                    Ok(EthValidatedBlock {
-                        block,
-                        orig_payload: payload,
-                        validated_txns,
-                        nonces,
-                        txn_fees,
-                    })
-                } else {
-                    Err(BlockValidationError::PayloadError)
-                }
-            }
-            BlockKind::Null => {
-                self.validate_block_header(&block, &payload, author_pubkey)?;
-                Ok(EthValidatedBlock {
-                    block,
-                    orig_payload: payload,
-                    validated_txns: Default::default(),
-                    nonces: Default::default(), // (address -> highest txn nonce) in the block
-                    txn_fees: Default::default(), // (address -> txn fee) in the block
-                })
-            }
+        if let Ok((validated_txns, nonces, txn_fees)) = self.validate_block_body(&body) {
+            let block = ConsensusFullBlock::new(header, body)?;
+            Ok(EthValidatedBlock {
+                block,
+                validated_txns,
+                nonces,
+                txn_fees,
+            })
+        } else {
+            Err(BlockValidationError::PayloadError)
         }
     }
 }
@@ -211,7 +283,7 @@ mod test {
         let full_tx_list = EthFullTransactionList(txs).rlp_encode();
         let full_txn_list = FullTransactionList::new(full_tx_list);
         let payload = Payload {
-            txns: TransactionPayload::List(full_txn_list),
+            txns: full_txn_list,
         };
 
         // block validation should return error
@@ -234,7 +306,7 @@ mod test {
         let full_tx_list = EthFullTransactionList(txs).rlp_encode();
         let full_txn_list = FullTransactionList::new(full_tx_list);
         let payload = Payload {
-            txns: TransactionPayload::List(full_txn_list),
+            txns: full_txn_list,
         };
 
         // block validation should return error
@@ -257,7 +329,7 @@ mod test {
         let full_tx_list = EthFullTransactionList(txs).rlp_encode();
         let full_txn_list = FullTransactionList::new(full_tx_list);
         let payload = Payload {
-            txns: TransactionPayload::List(full_txn_list),
+            txns: full_txn_list,
         };
 
         // block validation should return error

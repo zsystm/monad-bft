@@ -71,7 +71,7 @@ where
     ) -> Option<(
         Duration,
         ID<CertificateSignaturePubKey<S::SignatureType>>,
-        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     )> {
         while let Some((tick, _event_type, id)) = self.peek_event() {
             if terminator.should_terminate(self, tick) {
@@ -214,6 +214,7 @@ where
         S: SwarmRelation<
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
+            ExecutionProtocolType = <DebugSwarmRelation as SwarmRelation>::ExecutionProtocolType,
             TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
             BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
             StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,

@@ -7,11 +7,11 @@ use std::{
     thread,
 };
 
-use alloy_primitives::FixedBytes;
+use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
+use alloy_primitives::{keccak256, FixedBytes};
 use alloy_rlp::Decodable;
 use futures::channel::oneshot;
 use monad_triedb::TriedbHandle;
-use reth_primitives::{keccak256, Header, ReceiptWithBloom, TransactionSigned};
 use tracing::{error, warn};
 
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
         rlp_decode_account, rlp_decode_block_num, rlp_decode_storage_slot,
         rlp_decode_transaction_location,
     },
-    key::{create_triedb_key, KeyInput},
+    key::{create_triedb_key, KeyInput, Version},
 };
 
 type EthAddress = [u8; 20];
@@ -93,7 +93,7 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
             Ok(triedb_request) => {
                 match triedb_request {
                     TriedbRequest::BlockNumberRequest(block_num_request) => {
-                        let block_num = triedb_handle.latest_block();
+                        let block_num = triedb_handle.latest_finalized_block().unwrap_or_default();
                         let _ = block_num_request.request_sender.send(block_num);
                     }
                     TriedbRequest::TraverseRequest(traverse_request) => {
@@ -151,20 +151,20 @@ pub trait Triedb {
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<ReceiptWithBloom>, String>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<ReceiptEnvelope>, String>> + Send;
     fn get_receipts(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>, String>> + Send + Sync;
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptEnvelope>, String>> + Send + Sync;
     fn get_transaction(
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<TransactionSigned>, String>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<TxEnvelope>, String>> + Send;
     fn get_transactions(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<TransactionSigned>, String>> + Send + Sync;
+    ) -> impl std::future::Future<Output = Result<Vec<TxEnvelope>, String>> + Send + Sync;
     fn get_block_header(
         &self,
         block_num: u64,
@@ -254,7 +254,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::Address(&addr));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::Address(&addr));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -316,7 +317,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::Storage(&addr, &at));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::Storage(&addr, &at));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -345,7 +347,7 @@ impl Triedb for TriedbEnv {
 
                 match result {
                     Some(triedb_result) => rlp_decode_storage_slot(triedb_result)
-                        .map(|storage_slot| Ok(hex::encode(storage_slot)))
+                        .map(|storage_slot| Ok(format!("0x{}", hex::encode(storage_slot))))
                         .unwrap_or_else(|| {
                             error!("Decoding storage slot error");
                             Err(String::from("error reading from db"))
@@ -367,7 +369,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CodeHash(&code_hash));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::CodeHash(&code_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -394,7 +397,7 @@ impl Triedb for TriedbEnv {
                 }
 
                 match result {
-                    Some(code) => Ok(hex::encode(code)),
+                    Some(code) => Ok(format!("0x{}", hex::encode(code))),
                     None => Ok("0x".to_string()),
                 }
             }
@@ -409,12 +412,14 @@ impl Triedb for TriedbEnv {
         &self,
         receipt_index: u64,
         block_num: u64,
-    ) -> Result<Option<ReceiptWithBloom>, String> {
+    ) -> Result<Option<ReceiptEnvelope>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(KeyInput::ReceiptIndex(Some(receipt_index)));
+        let (triedb_key, key_len_nibbles) = create_triedb_key(
+            Version::Finalized,
+            KeyInput::ReceiptIndex(Some(receipt_index)),
+        );
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -443,7 +448,7 @@ impl Triedb for TriedbEnv {
                 match result {
                     Some(rlp_receipt) => {
                         let mut rlp_buf = rlp_receipt.as_slice();
-                        let receipt = ReceiptWithBloom::decode(&mut rlp_buf)
+                        let receipt = ReceiptEnvelope::decode(&mut rlp_buf)
                             .map_err(|e| format!("decode receipt failed: {}", e))?;
                         Ok(Some(receipt))
                     }
@@ -457,12 +462,13 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptWithBloom>, String> {
+    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptEnvelope>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         // receipt_index set to None to indiciate return all receipts
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::ReceiptIndex(None));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::ReceiptIndex(None));
 
         if let Err(e) = self
             .mpsc_sender
@@ -484,7 +490,7 @@ impl Triedb for TriedbEnv {
                     let receipts = rlp_receipts
                         .iter()
                         .filter_map(|rlp_receipt| {
-                            ReceiptWithBloom::decode(&mut rlp_receipt.as_slice())
+                            ReceiptEnvelope::decode(&mut rlp_receipt.as_slice())
                                 .map_err(|e| {
                                     error!("Failed to decode RLP receipt: {e}");
                                     String::from("error decoding receipt")
@@ -507,11 +513,12 @@ impl Triedb for TriedbEnv {
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> Result<Option<TransactionSigned>, String> {
+    ) -> Result<Option<TxEnvelope>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxIndex(Some(txn_index)));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::TxIndex(Some(txn_index)));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -540,7 +547,7 @@ impl Triedb for TriedbEnv {
 
                 match result {
                     Some(rlp_transaction) => {
-                        match TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice()) {
+                        match TxEnvelope::decode(&mut rlp_transaction.as_slice()) {
                             Ok(transaction) => Ok(Some(transaction)),
                             Err(e) => {
                                 warn!("Failed to decode RLP transaction: {e}");
@@ -558,12 +565,13 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_transactions(&self, block_num: u64) -> Result<Vec<TransactionSigned>, String> {
+    async fn get_transactions(&self, block_num: u64) -> Result<Vec<TxEnvelope>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         // txn_index set to None to indiciate return all transactions
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxIndex(None));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::TxIndex(None));
 
         if let Err(e) = self
             .mpsc_sender
@@ -585,7 +593,7 @@ impl Triedb for TriedbEnv {
                     let signed_transactions = rlp_transactions
                         .iter()
                         .filter_map(|rlp_transaction| {
-                            TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice())
+                            TxEnvelope::decode(&mut rlp_transaction.as_slice())
                                 .map_err(|e| {
                                     error!("Failed to decode RLP transaction: {e}");
                                     String::from("error decoding transaction")
@@ -608,7 +616,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::BlockHeader);
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::BlockHeader);
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -664,7 +673,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxHash(&tx_hash));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::TxHash(&tx_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -721,7 +731,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::BlockHash(&block_hash));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::BlockHash(&block_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -772,7 +783,8 @@ impl Triedb for TriedbEnv {
     ) -> Result<Option<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(Some(txn_index)));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::CallFrame(Some(txn_index)));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -810,7 +822,8 @@ impl Triedb for TriedbEnv {
     async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(None));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::CallFrame(None));
 
         if let Err(e) = self
             .mpsc_sender

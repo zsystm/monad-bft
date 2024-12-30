@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
+use alloy_consensus::ReceiptEnvelope;
 use clap::Parser;
 use eyre::Result;
 use futures::{future::join_all, join};
-use reth_primitives::{Block, ReceiptWithBloom};
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
@@ -148,7 +148,7 @@ async fn latest_uploaded_block(readers: &[impl BlockDataReader], max_lag: &u64) 
 struct BlockData {
     pub bucket: String,
     pub block: Option<Block>,
-    pub receipts: Option<Vec<ReceiptWithBloom>>,
+    pub receipts: Option<Vec<ReceiptEnvelope>>,
     pub traces: Option<Vec<Vec<u8>>>,
 }
 

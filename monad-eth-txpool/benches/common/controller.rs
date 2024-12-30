@@ -4,7 +4,7 @@ use monad_consensus_types::txpool::TxPool;
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_tx};
-use monad_eth_tx::EthSignedTransaction;
+use monad_eth_tx::TransactionSigned;
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -76,9 +76,9 @@ impl<'a> BenchController<'a> {
     pub fn create_pool(
         block_policy: &EthBlockPolicy,
         state_backend: &InMemoryState,
-        txs: &[EthSignedTransaction],
+        txs: &[TransactionSigned],
     ) -> EthTxPool {
-        let mut pool = EthTxPool::default();
+        let mut pool = EthTxPool<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>::new(true);
 
         assert!(
             !TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::insert_tx(
@@ -95,7 +95,7 @@ impl<'a> BenchController<'a> {
         pool
     }
 
-    pub fn generate_state_backend_for_txs(txs: &[EthSignedTransaction]) -> InMemoryState {
+    pub fn generate_state_backend_for_txs(txs: &[TransactionSigned]) -> InMemoryState {
         InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
@@ -117,7 +117,7 @@ impl<'a> BenchController<'a> {
         txs: usize,
         nonce_var: usize,
         pending_blocks: usize,
-    ) -> (Vec<Vec<EthSignedTransaction>>, Vec<EthSignedTransaction>) {
+    ) -> (Vec<Vec<TransactionSigned>>, Vec<TransactionSigned>) {
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
         let mut accounts = (0..accounts)

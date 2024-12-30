@@ -19,12 +19,6 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
 }
 
-// Proposed and finalized subtries. Active on all tables
-const PROPOSAL_NIBBLE: u8 = 0x0;
-const FINALIZED_NIBBLE: u8 = 0x1;
-// Table nibbles
-const STATE_NIBBLE: u8 = 0x0;
-
 #[derive(Clone, Debug)]
 pub struct TriedbHandle {
     db_ptr: *mut bindings::triedb,
@@ -154,7 +148,7 @@ impl TriedbHandle {
 
         // check that there's no unexpected error
         if result <= 0 {
-            error!("Unexpected result from triedb_read_data: {}", result);
+            error!("Unexpected result from triedb_read: {}", result);
             return None;
         }
 
@@ -227,37 +221,6 @@ impl TriedbHandle {
         unsafe { bindings::triedb_poll(self.db_ptr, blocking, max_completions) }
     }
 
-    pub fn get_state_root(&self, block_id: u64) -> Option<Vec<u8>> {
-        // FIXME: revisit after async execution changes
-        let key: Vec<u8> = vec![FINALIZED_NIBBLE << 4 | STATE_NIBBLE];
-        let mut value_ptr = null();
-        let result = unsafe {
-            bindings::triedb_read_data(self.db_ptr, key.as_ptr(), 2, &mut value_ptr, block_id)
-        };
-        if result == -1 {
-            return None;
-        }
-
-        if result == 0 {
-            return Some(Vec::new());
-        }
-
-        // check that there's no unexpected error
-        if result != 32 {
-            error!("Unexpected result from triedb_read_data: {}", result);
-            return None;
-        }
-
-        let value_len = result.try_into().unwrap();
-        let value = unsafe {
-            let value = std::slice::from_raw_parts(value_ptr, value_len).to_vec();
-            bindings::triedb_finalize(value_ptr);
-            value
-        };
-
-        Some(value)
-    }
-
     pub fn traverse_triedb(
         &self,
         key: &[u8],
@@ -306,12 +269,34 @@ impl TriedbHandle {
         Some(rlp_data_vec)
     }
 
-    pub fn earliest_block(&self) -> u64 {
-        unsafe { bindings::triedb_earliest_block(self.db_ptr) }
+    pub fn latest_finalized_block(&self) -> Option<u64> {
+        let maybe_latest_finalized_block =
+            unsafe { bindings::triedb_latest_finalized_block(self.db_ptr) };
+        if maybe_latest_finalized_block == u64::MAX {
+            None
+        } else {
+            Some(maybe_latest_finalized_block)
+        }
     }
 
-    pub fn latest_block(&self) -> u64 {
-        unsafe { bindings::triedb_latest_block(self.db_ptr) }
+    pub fn latest_verified_block(&self) -> Option<u64> {
+        let maybe_latest_verified_block =
+            unsafe { bindings::triedb_latest_verified_block(self.db_ptr) };
+        if maybe_latest_verified_block == u64::MAX {
+            None
+        } else {
+            Some(maybe_latest_verified_block)
+        }
+    }
+
+    pub fn earliest_finalized_block(&self) -> Option<u64> {
+        let maybe_earliest_finalized_block =
+            unsafe { bindings::triedb_earliest_finalized_block(self.db_ptr) };
+        if maybe_earliest_finalized_block == u64::MAX {
+            None
+        } else {
+            Some(maybe_earliest_finalized_block)
+        }
     }
 }
 

@@ -3,8 +3,11 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
-    payload::StateRootValidator, signature_collection::SignatureCollection, txpool::TxPool,
+    block::{BlockPolicy, ExecutionProtocol},
+    block_validator::BlockValidator,
+    metrics::Metrics,
+    signature_collection::SignatureCollection,
+    txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -24,19 +27,17 @@ use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct MempoolChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
-    ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
-
-    SVT: StateRootValidator,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     txpool: &'a mut TT,
     block_policy: &'a BPT,
@@ -44,33 +45,33 @@ where
 
     metrics: &'a mut Metrics,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
-    consensus: &'a ConsensusMode<SCT, BPT, SBT>,
+    consensus: &'a ConsensusMode<ST, SCT, EPT, BPT, SBT>,
     leader_election: &'a LT,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT)>,
 }
 
 pub(super) enum MempoolCommand<PT: PubKey> {
     ForwardTxns(Vec<NodeId<PT>>, Vec<Bytes>),
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+    MempoolChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,
@@ -161,11 +162,12 @@ where
     }
 }
 
-impl<ST, SCT> From<MempoolCommand<CertificateSignaturePubKey<ST>>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
+impl<ST, SCT, EPT> From<MempoolCommand<CertificateSignaturePubKey<ST>>>
+    for Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     fn from(value: MempoolCommand<CertificateSignaturePubKey<ST>>) -> Self {
         match value {

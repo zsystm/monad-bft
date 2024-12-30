@@ -1,23 +1,27 @@
 use std::ops::Deref;
 
 use monad_consensus_types::{
+    block::ExecutionProtocol,
     convert::signing::{certificate_signature_to_proto, proto_to_certificate_signature},
     signature_collection::SignatureCollection,
 };
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_proto::{error::ProtoError, proto::message::*};
 
 use crate::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{PeerStateRootMessage, ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{ ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 
-pub(crate) type VerifiedConsensusMessage<MS, SCT> = Verified<MS, Validated<ConsensusMessage<SCT>>>;
-pub(crate) type UnverifiedConsensusMessage<MS, SCT> =
-    Unverified<MS, Unvalidated<ConsensusMessage<SCT>>>;
+pub(crate) type VerifiedConsensusMessage<ST, SCT, EPT> =
+    Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>;
+pub(crate) type UnverifiedConsensusMessage<ST, SCT, EPT> =
+    Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>;
 
 impl<SCT: SignatureCollection> From<&VoteMessage<SCT>> for ProtoVoteMessage {
     fn from(value: &VoteMessage<SCT>) -> Self {
@@ -72,31 +76,41 @@ impl<SCT: SignatureCollection> TryFrom<ProtoTimeoutMessage> for TimeoutMessage<S
     }
 }
 
-impl<SCT: SignatureCollection> From<&ProposalMessage<SCT>> for ProtoProposalMessage {
-    fn from(value: &ProposalMessage<SCT>) -> Self {
+impl<ST, SCT, EPT> From<&ProposalMessage<ST, SCT, EPT>> for ProtoProposalMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &ProposalMessage<ST, SCT, EPT>) -> Self {
         Self {
-            block: Some((&value.block).into()),
-            payload: Some((&value.payload).into()),
+            block_header: Some((&value.block_header).into()),
+            block_body: Some((&value.block_body).into()),
             last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
         }
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoProposalMessage> for ProposalMessage<SCT> {
+impl<ST, SCT, EPT> TryFrom<ProtoProposalMessage> for ProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoProposalMessage) -> Result<Self, Self::Error> {
         Ok(Self {
-            block: value
-                .block
+            block_header: value
+                .block_header
                 .ok_or(Self::Error::MissingRequiredField(
-                    "ProposalMessage<AggregateSignatures>.block".to_owned(),
+                    "ProposalMessage<AggregateSignatures>.block_header".to_owned(),
                 ))?
                 .try_into()?,
-            payload: value
-                .payload
+            block_body: value
+                .block_body
                 .ok_or(Self::Error::MissingRequiredField(
-                    "ProposalMessage<AggregateSignatures>.payload".to_owned(),
+                    "ProposalMessage<AggregateSignatures>.block_body".to_owned(),
                 ))?
                 .try_into()?,
             last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,
@@ -104,10 +118,13 @@ impl<SCT: SignatureCollection> TryFrom<ProtoProposalMessage> for ProposalMessage
     }
 }
 
-impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
-    From<&VerifiedConsensusMessage<MS, SCT>> for ProtoUnverifiedConsensusMessage
+impl<ST, SCT, EPT> From<&VerifiedConsensusMessage<ST, SCT, EPT>> for ProtoUnverifiedConsensusMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: &VerifiedConsensusMessage<MS, SCT>) -> Self {
+    fn from(value: &VerifiedConsensusMessage<ST, SCT, EPT>) -> Self {
         let oneof_message = match &value.deref().deref().message {
             ProtocolMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
@@ -120,15 +137,19 @@ impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
             }
         };
         Self {
-            version: value.version.clone(),
+            version: value.version,
             oneof_message: Some(oneof_message),
             author_signature: Some(certificate_signature_to_proto(value.author_signature())),
         }
     }
 }
 
-impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
-    TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage<MS, SCT>
+impl<ST, SCT, EPT> TryFrom<ProtoUnverifiedConsensusMessage>
+    for UnverifiedConsensusMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Error = ProtoError;
 
@@ -153,48 +174,5 @@ impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
         let version = value.version;
         let consensus_msg = ConsensusMessage { version, message };
         Ok(Unverified::new(Unvalidated::new(consensus_msg), signature))
-    }
-}
-
-// TODO-2: PeerStateRootMessage doesn't belong to monad-consensus. Create a new
-// crate for it?
-impl<SCT: SignatureCollection> From<&Validated<PeerStateRootMessage<SCT>>>
-    for ProtoPeerStateRootMessage
-{
-    fn from(value: &Validated<PeerStateRootMessage<SCT>>) -> Self {
-        let msg = value.deref();
-        Self {
-            peer: Some((&msg.peer).into()),
-            info: Some((&msg.info).into()),
-            sig: Some(certificate_signature_to_proto(&msg.sig)),
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> TryFrom<ProtoPeerStateRootMessage>
-    for Unvalidated<PeerStateRootMessage<SCT>>
-{
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoPeerStateRootMessage) -> Result<Self, Self::Error> {
-        let msg = PeerStateRootMessage {
-            peer: value
-                .peer
-                .ok_or(ProtoError::MissingRequiredField(
-                    "PeerStateRootMessage.peer".to_owned(),
-                ))?
-                .try_into()?,
-            info: value
-                .info
-                .ok_or(ProtoError::MissingRequiredField(
-                    "PeerStateRootMessage.info".to_owned(),
-                ))?
-                .try_into()?,
-            sig: proto_to_certificate_signature(value.sig.ok_or(
-                ProtoError::MissingRequiredField("PeerStateRootMessage.sig".to_owned()),
-            )?)?,
-        };
-
-        Ok(Unvalidated::new(msg))
     }
 }

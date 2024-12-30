@@ -24,6 +24,7 @@ monad-types = { path = "../monad-types" }
 
 bytes = { workspace = true }
 futures = { workspace = true }
+hex = { workspace = true }
 itertools = { workspace = true }
 lru = { workspace = true }
 tracing = { workspace = true }

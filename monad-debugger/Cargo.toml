@@ -14,7 +14,6 @@ name = "schema_gen"
 bench = false
 
 [dependencies]
-monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor-glue = { path = "../monad-executor-glue" }

@@ -1,10 +1,11 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
+
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
+    block::{MockExecutionProtocol, PassthruBlockPolicy},
+    block_validator::MockValidator,
     txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
@@ -35,28 +36,36 @@ impl SwarmRelation for BLSSwarm {
     type SignatureType = SecpSignature;
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
+    type ExecutionProtocolType = MockExecutionProtocol;
     type StateBackendType = InMemoryState;
     type BlockPolicyType = PassthruBlockPolicy;
 
-    type TransportMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = VerifiedMonadMessage<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 
     type BlockValidator = MockValidator;
-    type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type AsyncStateRootVerify = PeerAsyncStateVerify<
-        Self::SignatureCollectionType,
-        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-    >;
+    type Ledger =
+        MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
-        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        MonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >,
+        VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -65,9 +74,9 @@ impl SwarmRelation for BLSSwarm {
     >;
 
     type StateRootHashExecutor =
-        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
     type StateSyncExecutor =
-        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
 }
 
 #[test]
@@ -85,19 +94,13 @@ fn two_nodes_bls() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        || {
-            StateRoot::new(
-                SeqNum(4), // state_root_delay
-            )
-        },
-        PeerAsyncStateVerify::new,
-        delta,              // delta
-        vote_pace,          // vote pace
-        0,                  // proposal_tx_limit
-        SeqNum(2000),       // val_set_update_interval
-        Round(50),          // epoch_start_delay
-        majority_threshold, // state root quorum threshold
-        SeqNum(100),        // state_sync_threshold
+        SeqNum(4),    // state_root_delay
+        delta,        // delta
+        vote_pace,    // vote pace
+        0,            // proposal_tx_limit
+        SeqNum(2000), // val_set_update_interval
+        Round(50),    // epoch_start_delay
+        SeqNum(100),  // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

@@ -8,11 +8,15 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
+    block::{ExecutionProtocol, ExecutionResult, MockableFinalizedHeader, ProposedExecutionResult},
     signature_collection::SignatureCollection,
     state_root_hash::{StateRootHash, StateRootHashInfo},
     validator_data::ValidatorSetData,
 };
-use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    hasher::Hash,
+};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, SeqNum, Stake};
@@ -30,7 +34,6 @@ pub trait MockableStateRootHash:
 
     fn ready(&self) -> bool;
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection>;
-    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo;
 }
 
 impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
@@ -43,10 +46,6 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
 
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection> {
         (**self).get_validator_set_data(epoch)
-    }
-
-    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
-        (**self).compute_state_root_hash(seq_num)
     }
 }
 
@@ -63,8 +62,14 @@ pub(crate) struct ValidatorSetUpdate<SCT: SignatureCollection> {
 /// Goal is to mimic the behaviour of execution receiving a commit
 /// and generating the state root hash and updating the staking contract,
 /// and sending it back to consensus.
-pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
-    state_root_update: VecDeque<StateRootHashInfo>,
+pub struct MockStateRootHashNop<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
+{
+    state_root_update: VecDeque<ExecutionResult<EPT>>,
 
     // validator set updates
     genesis_validator_data: ValidatorSetData<SCT>,
@@ -72,12 +77,20 @@ pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
     val_set_update_interval: SeqNum,
     calc_state_root: fn(&SeqNum) -> StateRootHash,
 
+    last_sent_epoch: Option<SeqNum>,
+
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
 }
 
-impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
+impl<ST, SCT, EPT> MockStateRootHashNop<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
+{
     /// Defines how an honest mock execution calculates state root hash
     fn state_root_honest(seq_num: &SeqNum) -> StateRootHash {
         let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
@@ -97,6 +110,8 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
             val_set_update_interval,
             calc_state_root: Self::state_root_honest,
 
+            last_sent_epoch: None,
+
             waker: None,
             metrics: Default::default(),
             phantom: PhantomData,
@@ -107,14 +122,36 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
     pub fn inject_byzantine_srh(&mut self, calc_srh: fn(&SeqNum) -> StateRootHash) {
         self.calc_state_root = calc_srh;
     }
+
+    fn jank_update_valset(&mut self, seq_num: SeqNum) {
+        if seq_num.is_epoch_end(self.val_set_update_interval)
+            && self.last_sent_epoch != Some(seq_num)
+        {
+            if self.next_val_data.is_some() {
+                error!("Validator set data is not consumed");
+            }
+            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
+            assert_eq!(
+                locked_epoch,
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+            );
+            self.next_val_data = Some(ValidatorSetUpdate {
+                epoch: locked_epoch,
+                validator_data: self.genesis_validator_data.clone(),
+            });
+            self.last_sent_epoch = Some(seq_num);
+        }
+    }
 }
 
-impl<ST, SCT> MockableStateRootHash for MockStateRootHashNop<ST, SCT>
+impl<ST, SCT, EPT> MockableStateRootHash for MockStateRootHashNop<ST, SCT, EPT>
 where
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
-    type Event = MonadEvent<ST, SCT>;
+    type Event = MonadEvent<ST, SCT, EPT>;
     type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
@@ -124,26 +161,14 @@ where
     fn get_validator_set_data(&self, _epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection> {
         self.genesis_validator_data.clone()
     }
-
-    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
-        // hash is pseudorandom seeded by the block's seq num to ensure
-        // that it is deterministic between nodes
-        let state_root_hash = (self.calc_state_root)(seq_num);
-        debug!(
-            "block number {:?} state root hash {:?}",
-            seq_num.0, state_root_hash
-        );
-        StateRootHashInfo {
-            state_root_hash,
-            seq_num: *seq_num,
-        }
-    }
 }
 
-impl<ST, SCT> Executor for MockStateRootHashNop<ST, SCT>
+impl<ST, SCT, EPT> Executor for MockStateRootHashNop<ST, SCT, EPT>
 where
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Command = StateRootHashCommand<SCT>;
 
@@ -156,31 +181,29 @@ where
                     while self
                         .state_root_update
                         .front()
-                        .is_some_and(|state_root| state_root.seq_num < cancel_below)
+                        .is_some_and(|state_root| state_root.seq_num() < cancel_below)
                     {
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::Request(seq_num) => {
-                    debug!("commit block {:?}", seq_num);
-                    self.state_root_update
-                        .push_back(self.compute_state_root_hash(&seq_num));
-
-                    if seq_num.is_epoch_end(self.val_set_update_interval) {
-                        if self.next_val_data.is_some() {
-                            error!("Validator set data is not consumed");
-                        }
-                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                        assert_eq!(
-                            locked_epoch,
-                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
-                        );
-                        self.next_val_data = Some(ValidatorSetUpdate {
-                            epoch: locked_epoch,
-                            validator_data: self.genesis_validator_data.clone(),
-                        });
-                    }
-
+                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
+                    self.state_root_update.push_back(ExecutionResult::Proposed(
+                        ProposedExecutionResult {
+                            block_id,
+                            seq_num,
+                            round,
+                            result: EPT::FinalizedHeader::from_seq_num(seq_num),
+                        },
+                    ));
+                    self.jank_update_valset(seq_num);
+                    wake = true;
+                }
+                StateRootHashCommand::RequestFinalized(seq_num) => {
+                    self.state_root_update.push_back(ExecutionResult::Finalized(
+                        seq_num,
+                        EPT::FinalizedHeader::from_seq_num(seq_num),
+                    ));
+                    self.jank_update_valset(seq_num);
                     wake = true;
                 }
                 StateRootHashCommand::UpdateValidators(_) => {
@@ -200,21 +223,21 @@ where
     }
 }
 
-impl<ST, SCT> Stream for MockStateRootHashNop<ST, SCT>
+impl<ST, SCT, EPT> Stream for MockStateRootHashNop<ST, SCT, EPT>
 where
     Self: Unpin,
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some(info) = this.state_root_update.pop_front() {
-            Poll::Ready(Some(MonadEvent::AsyncStateVerifyEvent(
-                monad_executor_glue::AsyncStateVerifyEvent::LocalStateRoot(info),
-            )))
+        let event = if let Some(event) = this.state_root_update.pop_front() {
+            Poll::Ready(Some(MonadEvent::ExecutionResultEvent(event)))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
@@ -241,8 +264,14 @@ where
 /// An updater that works the same as MockStateRootHashNop but switches
 /// between two sets of validators every epoch.
 /// Goal is to mimic new validators joining and old validators leaving.
-pub struct MockStateRootHashSwap<ST, SCT: SignatureCollection> {
-    state_root_update: VecDeque<StateRootHashInfo>,
+pub struct MockStateRootHashSwap<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
+{
+    state_root_update: VecDeque<ExecutionResult<EPT>>,
 
     // validator set updates
     epoch: Epoch,
@@ -252,12 +281,20 @@ pub struct MockStateRootHashSwap<ST, SCT: SignatureCollection> {
     next_val_data: Option<ValidatorSetUpdate<SCT>>,
     val_set_update_interval: SeqNum,
 
+    last_sent_epoch: Option<SeqNum>,
+
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
 }
 
-impl<ST, SCT: SignatureCollection> MockStateRootHashSwap<ST, SCT> {
+impl<ST, SCT, EPT> MockStateRootHashSwap<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
+{
     pub fn new(
         genesis_validator_data: ValidatorSetData<SCT>,
         val_set_update_interval: SeqNum,
@@ -286,19 +323,50 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashSwap<ST, SCT> {
             next_val_data: None,
             val_set_update_interval,
 
+            last_sent_epoch: None,
+
             waker: None,
             metrics: Default::default(),
             phantom: PhantomData,
         }
     }
+
+    fn jank_update_valset(&mut self, seq_num: SeqNum) {
+        if seq_num.is_epoch_end(self.val_set_update_interval)
+            && self.last_sent_epoch != Some(seq_num)
+        {
+            if self.next_val_data.is_some() {
+                error!("Validator set data is not consumed");
+            }
+            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
+            assert_eq!(
+                locked_epoch,
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+            );
+            self.next_val_data = if locked_epoch.0 % 2 == 0 {
+                Some(ValidatorSetUpdate {
+                    epoch: locked_epoch,
+                    validator_data: self.val_data_1.clone(),
+                })
+            } else {
+                Some(ValidatorSetUpdate {
+                    epoch: locked_epoch,
+                    validator_data: self.val_data_2.clone(),
+                })
+            };
+        }
+        self.last_sent_epoch = Some(seq_num);
+    }
 }
 
-impl<ST, SCT> MockableStateRootHash for MockStateRootHashSwap<ST, SCT>
+impl<ST, SCT, EPT> MockableStateRootHash for MockStateRootHashSwap<ST, SCT, EPT>
 where
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
-    type Event = MonadEvent<ST, SCT>;
+    type Event = MonadEvent<ST, SCT, EPT>;
     type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
@@ -325,23 +393,14 @@ where
             self.val_data_1.clone()
         }
     }
-
-    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
-        let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
-        let mut hash = StateRootHash(Hash([0; 32]));
-        gen.fill_bytes(&mut hash.0 .0);
-
-        StateRootHashInfo {
-            state_root_hash: hash,
-            seq_num: *seq_num,
-        }
-    }
 }
 
-impl<ST, SCT> Executor for MockStateRootHashSwap<ST, SCT>
+impl<ST, SCT, EPT> Executor for MockStateRootHashSwap<ST, SCT, EPT>
 where
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
     type Command = StateRootHashCommand<SCT>;
 
@@ -354,36 +413,29 @@ where
                     while self
                         .state_root_update
                         .front()
-                        .is_some_and(|state_root| state_root.seq_num < cancel_below)
+                        .is_some_and(|state_root| state_root.seq_num() < cancel_below)
                     {
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::Request(seq_num) => {
-                    self.state_root_update
-                        .push_back(self.compute_state_root_hash(&seq_num));
-
-                    if seq_num.is_epoch_end(self.val_set_update_interval) {
-                        if self.next_val_data.is_some() {
-                            error!("Validator set data is not consumed");
-                        }
-                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                        assert_eq!(
-                            locked_epoch,
-                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
-                        );
-                        self.next_val_data = if locked_epoch.0 % 2 == 0 {
-                            Some(ValidatorSetUpdate {
-                                epoch: locked_epoch,
-                                validator_data: self.val_data_1.clone(),
-                            })
-                        } else {
-                            Some(ValidatorSetUpdate {
-                                epoch: locked_epoch,
-                                validator_data: self.val_data_2.clone(),
-                            })
-                        };
-                    }
+                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
+                    self.state_root_update.push_back(ExecutionResult::Proposed(
+                        ProposedExecutionResult {
+                            block_id,
+                            seq_num,
+                            round,
+                            result: EPT::FinalizedHeader::from_seq_num(seq_num),
+                        },
+                    ));
+                    self.jank_update_valset(seq_num);
+                    wake = true;
+                }
+                StateRootHashCommand::RequestFinalized(seq_num) => {
+                    self.state_root_update.push_back(ExecutionResult::Finalized(
+                        seq_num,
+                        EPT::FinalizedHeader::from_seq_num(seq_num),
+                    ));
+                    self.jank_update_valset(seq_num);
                     wake = true;
                 }
                 StateRootHashCommand::UpdateValidators(_) => {
@@ -403,19 +455,21 @@ where
     }
 }
 
-impl<ST, SCT> Stream for MockStateRootHashSwap<ST, SCT>
+impl<ST, SCT, EPT> Stream for MockStateRootHashSwap<ST, SCT, EPT>
 where
     Self: Unpin,
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some(info) = this.state_root_update.pop_front() {
-            Poll::Ready(Some(MonadEvent::StateRootEvent(info)))
+        let event = if let Some(event) = this.state_root_update.pop_front() {
+            Poll::Ready(Some(MonadEvent::ExecutionResultEvent(event)))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((

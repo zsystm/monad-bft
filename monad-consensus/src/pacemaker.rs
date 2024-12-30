@@ -358,12 +358,12 @@ mod test {
     use monad_consensus_types::{
         ledger::CommitResult,
         quorum_certificate::QcInfo,
-        timeout::TimeoutInfo,
+        timeout::{TimeoutDigest, TimeoutInfo},
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
-        hasher::{Hash, Hasher, HasherType},
+        hasher::{Hash, Hashable, Hasher, HasherType},
         NopSignature,
     };
     use monad_multi_sig::MultiSig;
@@ -371,9 +371,8 @@ mod test {
         signing::{create_certificate_keys, create_keys},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, SeqNum, Stake};
+    use monad_types::{BlockId, Epoch, MonadVersion, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory};
-    use zerocopy::AsBytes;
 
     use super::*;
 
@@ -395,6 +394,7 @@ mod test {
             parent_round: Round(0),
             seq_num: SeqNum(0),
             timestamp: 0,
+            version: MonadVersion::version(),
         };
 
         let vote = Vote {
@@ -750,9 +750,12 @@ mod test {
 
         // assert the TC is created over the two valid timeouts
         let mut hasher = HasherType::new();
-        hasher.update(Epoch(1).as_bytes());
-        hasher.update(Round(1).as_bytes());
-        hasher.update(Round(0).as_bytes());
+        let td = TimeoutDigest {
+            epoch: Epoch(1),
+            round: Round(1),
+            high_qc_round: Round(0),
+        };
+        td.hash(&mut hasher);
         let timeout_hash = hasher.hash();
         let tc = tc.unwrap();
         assert_eq!(tc.high_qc_rounds.len(), 1);

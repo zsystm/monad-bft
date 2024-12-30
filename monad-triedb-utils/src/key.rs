@@ -1,10 +1,8 @@
 use alloy_primitives::keccak256;
 use alloy_rlp::Encodable;
+use monad_types::Round;
 use tracing::warn;
 
-// Proposed and finalized subtries. Active on all tables
-const PROPOSAL_NIBBLE: u8 = 0;
-const FINALIZED_NIBBLE: u8 = 1;
 // Table nibbles
 const STATE_NIBBLE: u8 = 0;
 const CODE_NIBBLE: u8 = 1;
@@ -14,6 +12,18 @@ const BLOCK_HEADER_NIBBLE: u8 = 4;
 const TRANSACTION_HASH_NIBBLE: u8 = 7;
 const BLOCK_HASH_NIBBLE: u8 = 8;
 const CALL_FRAME_NIBBLE: u8 = 9;
+const BFT_BLOCK_NIBBLE: u8 = 10;
+
+// table_key = concat(proposal nibble, little_endian(round - 8 bytes), table_nibble)
+const PROPOSAL_NIBBLE: u8 = 0;
+// table_key = concat(finalized nibble, table_nibble)
+const FINALIZED_NIBBLE: u8 = 1;
+
+#[derive(Debug, Clone, Copy)]
+pub enum Version {
+    Proposal(Round),
+    Finalized,
+}
 
 pub enum KeyInput<'a> {
     Address(&'a [u8; 20]),
@@ -25,11 +35,24 @@ pub enum KeyInput<'a> {
     TxHash(&'a [u8; 32]),
     BlockHash(&'a [u8; 32]),
     CallFrame(Option<u64>),
+    BftBlock,
 }
 
-pub fn create_triedb_key(key: KeyInput) -> (Vec<u8>, u8) {
-    // FIXME: revisit after async execution changes
-    let mut key_nibbles: Vec<u8> = vec![FINALIZED_NIBBLE];
+pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
+    let mut key_nibbles: Vec<u8> = vec![];
+
+    match version {
+        Version::Proposal(round) => {
+            key_nibbles.push(PROPOSAL_NIBBLE);
+            for byte in round.0.to_be_bytes() {
+                key_nibbles.push(byte >> 4);
+                key_nibbles.push(byte & 0xF);
+            }
+        }
+        Version::Finalized => {
+            key_nibbles.push(FINALIZED_NIBBLE);
+        }
+    };
 
     match key {
         KeyInput::Address(addr) => {
@@ -117,6 +140,7 @@ pub fn create_triedb_key(key: KeyInput) -> (Vec<u8>, u8) {
                 }
             }
         }
+        KeyInput::BftBlock => key_nibbles.push(BFT_BLOCK_NIBBLE),
     }
 
     let num_nibbles: u8 = match key_nibbles.len().try_into() {

@@ -1,10 +1,11 @@
 use std::path::Path;
 
+use alloy_consensus::{BlockBody, ReceiptEnvelope, TxEnvelope};
+use alloy_primitives::BlockHash;
 use eyre::{eyre, OptionExt, Result};
 use monad_triedb_utils::triedb_env::{BlockHeader, Triedb, TriedbEnv};
-use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned};
 
-use crate::LatestKind;
+use crate::{Block, LatestKind};
 
 use super::{BlockDataReader, TrieDbCliArgs};
 
@@ -43,7 +44,7 @@ impl BlockDataReader for TriedbReader {
         Ok(make_block(header, txs))
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
         self.db
             .get_receipts(block_number)
             .await
@@ -73,10 +74,13 @@ impl BlockDataReader for TriedbReader {
     }
 }
 
-pub fn make_block(block_header: BlockHeader, transactions: Vec<TransactionSigned>) -> Block {
+pub fn make_block(block_header: BlockHeader, transactions: Vec<TxEnvelope>) -> Block {
     Block {
         header: block_header.header,
-        body: transactions,
-        ..Default::default()
+        body: BlockBody {
+            transactions,
+            ommers: Vec::new(),
+            withdrawals: None,
+        },
     }
 }

@@ -5,10 +5,10 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
+
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-    payload::StateRoot, txpool::MockTxPool,
+    txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -74,23 +74,14 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
-        || {
-            StateRoot::new(
-                // due to the burst behavior of replay-transformer, its okay to
-                // have delay as 1
-                //
-                // TODO-4?: Make Replay Transformer's stored message not burst
-                // within the same Duration
-                SeqNum(1), // state_root_delay
-            )
-        },
-        PeerAsyncStateVerify::new,
+        
+        SeqNum(1),          // state_root_delay
         delta,              // delta
         vote_pace,          // vote pace
         10,                 // proposal_tx_limit
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay
-        majority_threshold, // state root quorum threshold
+        
         SeqNum(100),        // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
@@ -152,7 +143,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let longest_ledger_before = swarm
         .states()
         .values()
-        .map(|s| s.executor.ledger().get_blocks().len())
+        .map(|s| s.executor.ledger().get_finalized_blocks().len())
         .max()
         .unwrap();
 
@@ -215,7 +206,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let longest_ledger_after = swarm
         .states()
         .values()
-        .map(|s| s.executor.ledger().get_blocks().len())
+        .map(|s| s.executor.ledger().get_finalized_blocks().len())
         .max()
         .unwrap();
 

@@ -17,13 +17,14 @@ monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-state-backend = { path = "../monad-state-backend" }
-monad-triedb = { path = "../monad-triedb", optional = true }
+monad-triedb-utils = { path = "../monad-triedb-utils", optional = true }
 monad-types = { path = "../monad-types" }
 bytes = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
+reth-primitives = { workspace = true }
 serde_json = { workspace = true }
 sorted-vec = { workspace = true }
 tokio = { workspace = true, features = [

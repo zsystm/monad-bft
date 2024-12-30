@@ -1,14 +1,19 @@
 use bytes::{Bytes, BytesMut};
-use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_consensus_types::{block::ExecutionProtocol, signature_collection::SignatureCollection};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_proto::{error::ProtoError, proto::event::ProtoMonadEvent};
 use prost::Message;
 
 use crate::MonadEvent;
 
-pub fn serialize_event<S: CertificateSignatureRecoverable, SCT: SignatureCollection>(
-    event: &MonadEvent<S, SCT>,
-) -> Bytes {
+pub fn serialize_event<ST, SCT, EPT>(event: &MonadEvent<ST, SCT, EPT>) -> Bytes
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     let proto_event: ProtoMonadEvent = event.into();
     let mut buf = BytesMut::new();
     proto_event
@@ -17,9 +22,12 @@ pub fn serialize_event<S: CertificateSignatureRecoverable, SCT: SignatureCollect
     buf.into()
 }
 
-pub fn deserialize_event<S: CertificateSignatureRecoverable, SCT: SignatureCollection>(
-    data: &[u8],
-) -> Result<MonadEvent<S, SCT>, ProtoError> {
+pub fn deserialize_event<ST, SCT, EPT>(data: &[u8]) -> Result<MonadEvent<ST, SCT, EPT>, ProtoError>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     let event = ProtoMonadEvent::decode(data)?;
     event.try_into()
 }

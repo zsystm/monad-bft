@@ -143,10 +143,10 @@ async fn handle_block(
         block_data_reader.get_block_traces(block_num),
         block_data_reader.get_block_receipts(block_num)
     )?;
-    let num_txs = block.body.len();
+    let num_txs = block.body.transactions.len();
     info!(num_txs, block_num, "Block");
 
-    let first = block.body.first().cloned();
+    let first = block.body.transactions.first().cloned();
     let first_rx = receipts.first().cloned();
     let first_trace = traces.first().cloned();
     tx_index_archiver
@@ -155,7 +155,7 @@ async fn handle_block(
 
     // check 1 key
     if let Some(tx) = first {
-        let key = format!("{:x}", tx.hash);
+        let key = format!("{:x}", tx.tx_hash());
         tokio::spawn(async move {
             match tx_index_archiver.store.get(&key).await {
                 Ok(Some(resp)) => {

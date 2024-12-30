@@ -3,9 +3,7 @@ use monad_bls::BlsSignatureCollection;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use monad_consensus::messages::consensus_message::{ConsensusMessage, ProtocolMessage};
 use monad_consensus_types::{
-    payload::{FullTransactionList, TransactionPayload},
-    state_root_hash::StateRootHash,
-    voting::ValidatorMapping,
+    payload::FullTransactionList, state_root_hash::StateRootHash, voting::ValidatorMapping,
 };
 use monad_secp::SecpSignature;
 use monad_state::VerifiedMonadMessage;
@@ -53,7 +51,7 @@ fn main() {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionPayload::List(FullTransactionList::new(transactions.to_vec().into())),
+            FullTransactionList::new(transactions.to_vec().into()),
             StateRootHash::default(),
         )
         .destructure()
@@ -72,7 +70,7 @@ fn main() {
         .expect("key in valset");
 
     let proposal: VerifiedMonadMessage<_, _> = ConsensusMessage {
-        version: "Example".into(),
+        version: 1,
         message: ProtocolMessage::Proposal(proposal),
     }
     .sign::<SecpSignature>(leader_key)

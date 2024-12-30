@@ -21,6 +21,7 @@ impl From<&VoteInfo> for ProtoVoteInfo {
             parent_round: Some((&vi.parent_round).into()),
             seq_num: Some((&vi.seq_num).into()),
             timestamp: vi.timestamp,
+            version: Some((&vi.version).into()),
         }
     }
 }
@@ -63,6 +64,12 @@ impl TryFrom<ProtoVoteInfo> for VoteInfo {
                 ))?
                 .try_into()?,
             timestamp: proto_vi.timestamp,
+            version: proto_vi
+                .version
+                .ok_or(Self::Error::MissingRequiredField(
+                    "VoteInfo.version".to_owned(),
+                ))?
+                .try_into()?,
         })
     }
 }
