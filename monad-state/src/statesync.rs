@@ -129,13 +129,13 @@ where
 
         if block_header.qc.is_commitable() {
             let latest_seq_num =
-                if let Some(b) = self.full_blocks.get(&block_header.get_parent_id()) {
-                    b.get_seq_num()
+                if let Some(b) = self.block_headers.get(&block_header.get_parent_id()) {
+                    b.seq_num
                 } else {
                     return None;
                 };
 
-            let committed_seq_num = latest_seq_num - self.commit_distance;
+            let committed_seq_num = latest_seq_num - self.commit_distance + SeqNum(1);
             if committed_seq_num > root_seq_num + self.resync_threshold {
                 let target_blockid = block_header.qc.info.parent_id;
                 if let Some(target_block) = self.block_headers.get(&target_blockid) {
