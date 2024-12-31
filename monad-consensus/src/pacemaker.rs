@@ -783,7 +783,8 @@ mod test {
         );
 
         let mut epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
-        epoch_manager.schedule_epoch_start(SeqNum(100), Round(100));
+        // first epoch is [0, 100)
+        epoch_manager.schedule_epoch_start(SeqNum(99), Round(100));
 
         let (keys, certkeys, _valset, vmap) = create_keys_w_validators::<
             SignatureType,

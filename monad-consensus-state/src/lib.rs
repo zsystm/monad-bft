@@ -3707,7 +3707,7 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval;
+        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let update_block_round = seqnum_to_round_no_tc(update_block);
 
@@ -3776,7 +3776,7 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval;
+        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let update_block_round = seqnum_to_round_no_tc(update_block);
 
@@ -3883,7 +3883,7 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval;
+        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let update_block_round = seqnum_to_round_no_tc(update_block);
 
@@ -3981,7 +3981,7 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval;
+        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let update_block_round = seqnum_to_round_no_tc(update_block);
 
@@ -4096,7 +4096,7 @@ mod test {
 
         let mut blocks = vec![];
         // Sequence number of the block which updates the validator set
-        let update_block_num = env.epoch_manager.val_set_update_interval;
+        let update_block_num = env.epoch_manager.val_set_update_interval - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let update_block_round = seqnum_to_round_no_tc(update_block_num);
 
@@ -4252,7 +4252,7 @@ mod test {
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval;
+        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let update_block_round = seqnum_to_round_no_tc(update_block);
 
@@ -4465,7 +4465,7 @@ mod test {
         }
 
         // Sequence number of the block which updates the validator set
-        let update_block = env.epoch_manager.val_set_update_interval;
+        let update_block = env.epoch_manager.val_set_update_interval - SeqNum(1);
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let update_block_round = seqnum_to_round_no_tc(update_block);
 

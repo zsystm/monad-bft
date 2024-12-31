@@ -1356,7 +1356,7 @@ mod test {
                     round: Round(4030),
                     parent_id: BlockId(Hash([0x06_u8; 32])),
                     parent_round: Round(4027),
-                    seq_num: SeqNum(2999),
+                    seq_num: SeqNum(2998), // one block before boundary block
                     timestamp: 1,
                 },
                 ledger_commit_info: CommitResult::NoCommit,
