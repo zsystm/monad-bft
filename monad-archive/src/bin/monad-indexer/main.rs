@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::hex::ToHexExt;
 use archive_reader::{ArchiveReader, LatestKind::*};
 use archive_tx_index::TxIndexArchiver;
 use clap::Parser;
@@ -23,9 +24,8 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
+    info!(?args);
 
-    // let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_connections));
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(5));
     let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;
@@ -36,18 +36,6 @@ async fn main() -> Result<()> {
         tx_index_archiver.update_latest_indexed(0).await?;
     }
 
-    info!(
-        "Latest indexed block :{}. Latest uploaded block :{}",
-        block_data_reader.get_latest(Indexed).await.unwrap_or(0),
-        block_data_reader.get_latest(Uploaded).await.unwrap_or(0)
-    );
-
-    let initial_block = if let Some(start_block) = args.start_block {
-        start_block
-    } else {
-        block_data_reader.get_latest(Indexed).await.unwrap_or(0)
-    };
-
     // tokio main should not await futures directly, so we spawn a worker
     tokio::spawn(index_worker(
         block_data_reader,
@@ -55,7 +43,7 @@ async fn main() -> Result<()> {
         args.max_blocks_per_iteration,
         args.max_concurrent_blocks,
         metrics,
-        initial_block,
+        args.start_block,
     ))
     .await
     .map_err(Into::into)
@@ -67,18 +55,23 @@ async fn index_worker(
     max_blocks_per_iteration: u64,
     max_concurrent_blocks: usize,
     metrics: Metrics,
-    initial_block: u64,
+    start_block_override: Option<u64>,
 ) {
+    // initialize starting block using either override or stored latest
+    let mut start_block = match start_block_override {
+        Some(start_block) => start_block,
+        None => {
+            let mut latest = indexer.get_latest_indexed().await.unwrap_or(0);
+            if latest != 0 {
+                latest += 1
+            }
+            latest
+        }
+    };
+
     loop {
-        sleep(Duration::from_millis(100)).await;
-
-        // query latest uploaded and indexed
-        let (latest_uploaded, latest_indexed) = join!(
-            block_data_reader.get_latest(Uploaded),
-            indexer.get_latest_indexed()
-        );
-
-        let latest_uploaded = match latest_uploaded {
+        // query latest
+        let latest_source = match block_data_reader.get_latest(Uploaded).await {
             Ok(number) => number,
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
@@ -86,37 +79,35 @@ async fn index_worker(
             }
         };
 
-        let latest_indexed = latest_indexed.unwrap_or(0);
-        metrics.gauge("latest_uploaded", latest_uploaded);
-        metrics.gauge("latest_indexed", latest_indexed);
+        let end_block = latest_source.min(start_block + max_blocks_per_iteration - 1);
 
-        if latest_uploaded <= latest_indexed {
-            info!(latest_indexed, latest_uploaded, "Nothing to process");
+        if end_block < start_block {
+            info!(start_block, end_block, latest_source, "Nothing to process");
             continue;
         }
-
-        // compute start and end block
-        let start_block_number = if latest_indexed == 0 {
-            0
-        } else {
-            latest_indexed + 1
-        };
-        let end_block_number =
-            latest_uploaded.min(start_block_number + max_blocks_per_iteration - 1);
-
         info!(
-            start_block_number,
-            end_block_number, latest_uploaded, "Indexing group of blocks"
+            start_block,
+            end_block, latest_source, "Indexing group of blocks"
         );
+        metrics.gauge("source_latest_block_num", latest_source);
+        metrics.gauge("end_block_number", end_block);
+        metrics.gauge("start_block_number", start_block);
 
-        index_blocks(
+        let latest_indexed = index_blocks(
             &block_data_reader,
             &indexer,
-            start_block_number..=end_block_number,
+            start_block..=end_block,
             max_concurrent_blocks,
             &metrics,
         )
         .await;
+
+        start_block = if latest_indexed == 0 {
+            0
+        } else {
+            latest_indexed + 1
+        };
+        sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -126,7 +117,7 @@ async fn index_blocks(
     block_range: RangeInclusive<u64>,
     concurrency: usize,
     metrics: &Metrics,
-) {
+) -> u64 {
     let start = Instant::now();
 
     let res: Result<usize, u64> = futures::stream::iter(block_range.clone().into_iter())
@@ -170,6 +161,8 @@ async fn index_blocks(
     if new_latest_indexed != 0 {
         checkpoint_latest(indexer, new_latest_indexed).await;
     }
+
+    new_latest_indexed
 }
 
 async fn handle_block(
@@ -194,8 +187,8 @@ async fn handle_block(
 
     // check 1 key
     if let Some(tx) = first {
-        let key = format!("{:x}", tx.tx_hash());
-        match tx_index_archiver.store.get(&key).await {
+        let key = tx.tx_hash().encode_hex();
+        match tx_index_archiver.store.get(tx.tx_hash()).await {
             Ok(Some(resp)) => {
                 if resp.header_subset.block_number != block_num
                     || Some(&resp.receipt) != first_rx.as_ref()

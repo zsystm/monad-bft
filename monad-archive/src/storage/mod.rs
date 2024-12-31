@@ -9,7 +9,7 @@ use std::str::FromStr;
 use crate::{ArchiveReader, BlobStore, Block, LatestKind, Metrics, TxIndexArchiver};
 use crate::{IndexStore, IndexStoreReader, TxIndexedData};
 use alloy_consensus::ReceiptEnvelope;
-use alloy_primitives::BlockHash;
+use alloy_primitives::{BlockHash, TxHash};
 use clap::{Parser, Subcommand};
 use enum_dispatch::enum_dispatch;
 use eyre::{bail, ContextCompat, OptionExt, Result};

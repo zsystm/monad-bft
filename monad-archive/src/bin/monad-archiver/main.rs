@@ -21,6 +21,8 @@ async fn main() -> Result<()> {
 
     let args = cli::Cli::parse();
 
+    info!(?args);
+
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-archiver",
@@ -36,6 +38,7 @@ async fn main() -> Result<()> {
         archive_writer,
         args.max_blocks_per_iteration,
         args.max_concurrent_blocks,
+        args.start_block,
         metrics,
     ))
     .await
@@ -47,59 +50,67 @@ async fn archive_worker(
     archive_writer: BlockDataArchive,
     max_blocks_per_iteration: u64,
     max_concurrent_blocks: usize,
+    mut start_block_override: Option<u64>,
     metrics: Metrics,
 ) {
+    // initialize starting block using either override or stored latest
+    let mut start_block = match start_block_override.take() {
+        Some(start_block) => start_block,
+        None => {
+            let latest_uploaded = archive_writer
+                .get_latest(LatestKind::Uploaded)
+                .await
+                .unwrap_or(0);
+            if latest_uploaded == 0 {
+                0
+            } else {
+                latest_uploaded + 1
+            }
+        }
+    };
+
     loop {
-        sleep(Duration::from_millis(100)).await;
-
         // query latest
-        let (latest_source, latest_uploaded) = join!(
-            block_data_source.get_latest(LatestKind::Uploaded),
-            archive_writer.get_latest(LatestKind::Uploaded)
-        );
-
-        let latest_source = match latest_source {
+        let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
             Ok(number) => number,
             Err(e) => {
                 warn!("Error getting latest source block: {e:?}");
                 continue;
             }
         };
-        let latest_uploaded = latest_uploaded.unwrap_or(0);
 
-        metrics.gauge("source_latest_block_num", latest_source);
-        metrics.gauge("latest_uploaded", latest_uploaded);
-
-        if latest_source <= latest_uploaded {
-            info!(latest_uploaded, latest_source, "Nothing to process");
+        let end_block = latest_source.min(start_block + max_blocks_per_iteration - 1);
+        if end_block < start_block {
+            info!(start_block, end_block, "Nothing to process");
             continue;
         }
 
-        // compute start and end block
-        let start_block_number = if latest_uploaded == 0 {
+        metrics.gauge("source_latest_block_num", latest_source);
+        metrics.gauge("end_block_number", end_block);
+        metrics.gauge("start_block_number", start_block);
+
+        info!(
+            start = start_block,
+            end = end_block,
+            latest_source,
+            "Archiving group of blocks",
+        );
+
+        let latest_uploaded = archive_blocks(
+            &block_data_source,
+            start_block..=end_block,
+            &archive_writer,
+            max_concurrent_blocks,
+        )
+        .await;
+
+        start_block = if latest_uploaded == 0 {
             0
         } else {
             latest_uploaded + 1
         };
 
-        let end_block_number = latest_source.min(start_block_number + max_blocks_per_iteration - 1);
-        metrics.gauge("end_block_number", end_block_number);
-
-        info!(
-            start = start_block_number,
-            end = end_block_number,
-            latest_source,
-            latest_uploaded,
-            "Archiving group of blocks",
-        );
-
-        archive_blocks(
-            &block_data_source,
-            start_block_number..=end_block_number,
-            &archive_writer,
-            max_concurrent_blocks,
-        )
-        .await;
+        sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -108,7 +119,7 @@ async fn archive_blocks(
     range: RangeInclusive<u64>,
     archiver: &BlockDataArchive,
     concurrency: usize,
-) {
+) -> u64 {
     let start = Instant::now();
 
     let res: Result<(), u64> = futures::stream::iter(range.clone().into_iter())
@@ -142,12 +153,14 @@ async fn archive_blocks(
 
     let new_latest_uploaded = match res {
         Ok(()) => *range.end(),
-        Err(err_block) => err_block - 1,
+        Err(err_block) => err_block.saturating_sub(1),
     };
 
     if new_latest_uploaded != 0 {
         checkpoint_latest(archiver, new_latest_uploaded).await;
     }
+
+    new_latest_uploaded
 }
 
 async fn archive_block(

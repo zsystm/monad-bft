@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use alloy_primitives::{hex::FromHex, TxHash};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
@@ -31,26 +32,29 @@ pub struct DynamoDBArchive {
 }
 
 impl IndexStoreReader for DynamoDBArchive {
-    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>> {
+    async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>> {
+        let str_keys = keys
+            .iter()
+            .map(|h| format!("{:x}", h))
+            .collect::<Vec<String>>();
         let output = self
-            .batch_get(keys)
+            .batch_get(&str_keys)
             .await?
             .into_iter()
             .filter_map(|(k, map)| {
                 Some((
-                    k, // fmt
+                    TxHash::from_hex(k).ok()?, // fmt
                     decode_from_map(&map, "data")?,
                 ))
             })
-            .collect::<HashMap<String, TxIndexedData>>();
+            .collect::<HashMap<TxHash, TxIndexedData>>();
         Ok(output)
     }
 
-    async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
-        let key = key.into();
-        self.bulk_get(&[key.clone()])
-            .await
-            .map(|mut v| v.remove(&key))
+    async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>> {
+        self.bulk_get(&[*key])
+            .await // fmt
+            .map(|mut v| v.remove(key))
     }
 }
 

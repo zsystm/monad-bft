@@ -1,4 +1,5 @@
 use crate::*;
+use alloy_primitives::TxHash;
 use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 use eyre::Result;
@@ -6,6 +7,7 @@ use eyre::{Context, ContextCompat};
 use rocksdb::DB;
 use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
+use tracing::info;
 
 #[derive(Clone)]
 pub struct RocksDbClient {
@@ -56,19 +58,19 @@ impl BlobStore for RocksDbClient {
 }
 
 impl IndexStoreReader for RocksDbClient {
-    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>> {
+    async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>> {
         // NOTE: This is an unfortunate amount of cloning going on...
         let mut results = HashMap::with_capacity(keys.len());
         for key in keys {
-            if let Some(value) = self.get(key.clone()).await? {
-                results.insert(key.into(), value);
+            if let Some(value) = self.get(key).await? {
+                results.insert(*key, value);
             }
         }
         Ok(results)
     }
 
-    async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
-        let Some(data) = self.db.get(key.into())? else {
+    async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>> {
+        let Some(data) = self.db.get(key)? else {
             return Ok(None);
         };
 

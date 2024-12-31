@@ -20,10 +20,11 @@ pub struct Cli {
     #[arg(long, default_value_t = 10)]
     pub max_concurrent_blocks: usize,
 
+    /// Resets the latest indexed entry
     #[arg(long, default_value_t = false)]
     pub reset_index: bool,
 
-    /// Block number to start at
+    /// Override block number to start at
     #[arg(long)]
     pub start_block: Option<u64>,
 

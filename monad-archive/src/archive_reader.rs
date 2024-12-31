@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
-use alloy_primitives::BlockHash;
+use alloy_primitives::{BlockHash, TxHash};
 use eyre::Result;
 
 use crate::*;
@@ -32,11 +32,11 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> ArchiveReader<BStore, IS
 impl<BStore: BlockDataReader, IStore: IndexStoreReader> IndexStoreReader
     for ArchiveReader<BStore, IStore>
 {
-    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>> {
+    async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>> {
         self.index_reader.bulk_get(keys).await
     }
 
-    async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
+    async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>> {
         self.index_reader.get(key).await
     }
 }

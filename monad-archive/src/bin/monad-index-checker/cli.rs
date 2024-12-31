@@ -23,7 +23,7 @@ pub struct Cli {
     #[arg(long, default_value_t = 10)]
     pub concurrent_blocks: usize,
 
-    /// Block number to start at
+    /// Override block number to start at
     #[arg(long)]
     pub start_block: Option<u64>,
 

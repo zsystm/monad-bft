@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    dynamodb::DynamoDBArchive, Block, BlobStore, BlobStoreErased, BlockDataArchive, BlockDataReader,
-    IndexStoreErased,
+    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, Block, BlockDataArchive,
+    BlockDataReader, IndexStoreErased,
 };
 use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
-use alloy_primitives::BlockHash;
+use alloy_primitives::{BlockHash, TxHash};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
@@ -30,8 +30,8 @@ pub trait IndexStore: IndexStoreReader {
 
 #[enum_dispatch]
 pub trait IndexStoreReader: Clone {
-    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>>;
-    async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>>;
+    async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>>;
+    async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]

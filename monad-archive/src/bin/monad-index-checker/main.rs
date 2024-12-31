@@ -8,6 +8,7 @@ use std::{
 };
 
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
+use alloy_primitives::hex::ToHexExt;
 use archive_reader::{ArchiveReader, LatestKind::*};
 use chrono::{
     format::{DelayedFormat, StrftimeItems},
@@ -182,7 +183,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         .body
         .transactions
         .iter()
-        .map(|tx| tx.tx_hash().to_string())
+        .map(|tx| *tx.tx_hash())
         .collect::<Vec<_>>();
 
     let gas_used_vec: Vec<_> = {
@@ -223,12 +224,11 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
     let mut faults = Vec::new();
 
     for expected in expected {
-        let key = expected.tx.tx_hash().to_string();
-        let key = key.trim_start_matches("0x");
+        let key = expected.tx.tx_hash();
         let fetched = fetched.get(key);
         let Some(fetched) = fetched else {
             faults.push(Fault::MissingTxhash {
-                txhash: key.to_owned(),
+                txhash: key.encode_hex(),
             });
             continue;
         };

@@ -12,7 +12,7 @@ pub struct Cli {
     #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(BlockDataReaderArgs))]
     pub sources: Vec<BlockDataReaderArgs>,
 
-    /// Set start checking block number
+    /// Override block number to start at
     #[arg(long, default_value_t = 0)]
     pub start_block: u64,
 
