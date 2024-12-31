@@ -196,9 +196,9 @@ pub struct EthBlockBody {
     pub withdrawals: Vec<Withdrawal>,
 }
 
-#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Ommer {}
-#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Withdrawal {}
 
 impl std::fmt::Debug for EthBlockBody {
