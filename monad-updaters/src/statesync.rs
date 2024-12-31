@@ -14,7 +14,7 @@ use monad_executor_glue::{
     MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
     StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
 };
-use monad_state_backend::InMemoryState;
+use monad_state_backend::{InMemoryState, StateBackend};
 use monad_types::{NodeId, SeqNum, GENESIS_SEQ_NUM};
 
 pub trait MockableStateSync:
@@ -50,6 +50,7 @@ where
 
     state_backend: InMemoryState,
     peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    max_service_window: SeqNum,
 
     started_execution: bool,
     request: Option<StateSyncRequest>,
@@ -84,7 +85,6 @@ where
                 }
                 StateSyncCommand::RequestSync(state_root_hash) => {
                     assert!(!self.started_execution);
-                    assert!(self.request.is_none());
                     let request = StateSyncRequest {
                         version: SELF_STATESYNC_VERSION,
                         target: state_root_hash.seq_num.0,
@@ -104,27 +104,36 @@ where
                 }
                 StateSyncCommand::Message((from, message)) => match message {
                     StateSyncNetworkMessage::Request(request) => {
-                        if self.started_execution {
-                            let state = self.state_backend.lock().unwrap();
-                            if let Some(state) = state.block_state(&SeqNum(request.target)) {
-                                let serialized = serde_json::to_vec(state).unwrap();
-                                let response = StateSyncResponse {
-                                    version: SELF_STATESYNC_VERSION,
-                                    nonce: 0,
-                                    response_index: 0,
-
-                                    request,
-                                    response: vec![(StateSyncUpsertType::Code, serialized)],
-                                    response_n: 1,
-                                };
-                                self.events.push_back(MonadEvent::StateSyncEvent(
-                                    StateSyncEvent::Outbound(
-                                        from,
-                                        StateSyncNetworkMessage::Response(response),
-                                    ),
-                                ))
-                            }
+                        if !self.started_execution {
+                            return;
                         }
+                        let state = self.state_backend.lock().unwrap();
+                        let latest_finalized = state.raw_read_latest_block();
+                        if request.target.saturating_add(self.max_service_window.0)
+                            < latest_finalized.0
+                        {
+                            return;
+                        }
+
+                        let Some(state) = state.block_state(&SeqNum(request.target)) else {
+                            return;
+                        };
+
+                        let serialized = serde_json::to_vec(state).unwrap();
+                        let response = StateSyncResponse {
+                            version: SELF_STATESYNC_VERSION,
+                            nonce: 0,
+                            response_index: 0,
+
+                            request,
+                            response: vec![(StateSyncUpsertType::Code, serialized)],
+                            response_n: 1,
+                        };
+                        self.events
+                            .push_back(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                                from,
+                                StateSyncNetworkMessage::Response(response),
+                            )))
                     }
                     StateSyncNetworkMessage::Response(response) => {
                         if !self.started_execution
@@ -166,12 +175,18 @@ where
 
             state_backend,
             peers,
+            max_service_window: SeqNum::MAX,
 
             started_execution: false,
             request: None,
 
             waker: None,
         }
+    }
+
+    pub fn with_max_service_window(mut self, max_service_window: SeqNum) -> Self {
+        self.max_service_window = max_service_window;
+        self
     }
 }
 
