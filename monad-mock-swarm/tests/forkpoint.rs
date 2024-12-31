@@ -91,6 +91,7 @@ impl SwarmRelation for ForkpointSwarm {
 fn test_forkpoint_restart_f_simple_blocksync() {
     let epoch_length = SeqNum(200);
     let statesync_threshold = SeqNum(100);
+    let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(10);
     let recovery_time = SeqNum(statesync_threshold.0 / 2);
@@ -100,6 +101,7 @@ fn test_forkpoint_restart_f_simple_blocksync() {
         epoch_length,
         statesync_threshold,
         false,
+        statesync_service_window,
     );
 }
 
@@ -107,6 +109,7 @@ fn test_forkpoint_restart_f_simple_blocksync() {
 fn test_forkpoint_restart_f_simple_statesync() {
     let epoch_length = SeqNum(200);
     let statesync_threshold = SeqNum(100);
+    let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(10);
     let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
@@ -116,6 +119,26 @@ fn test_forkpoint_restart_f_simple_statesync() {
         epoch_length,
         statesync_threshold,
         true,
+        statesync_service_window,
+    );
+}
+
+// statesync_service_window is less than recovery_time, and the forkpoint isn't refreshed
+#[test]
+fn test_forkpoint_restart_f_target_reset_statesync() {
+    let epoch_length = SeqNum(200);
+    let statesync_threshold = SeqNum(100);
+    let statesync_service_window = SeqNum(50);
+
+    let blocks_before_failure = SeqNum(10);
+    let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
+    forkpoint_restart_f(
+        blocks_before_failure,
+        recovery_time,
+        epoch_length,
+        statesync_threshold,
+        false,
+        statesync_service_window,
     );
 }
 
@@ -123,6 +146,7 @@ fn test_forkpoint_restart_f_simple_statesync() {
 fn test_forkpoint_restart_f_epoch_boundary_statesync() {
     let epoch_length = SeqNum(200);
     let statesync_threshold = SeqNum(100);
+    let statesync_service_window = SeqNum::MAX;
 
     let blocks_before_failure = SeqNum(275);
     let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
@@ -132,6 +156,7 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
         epoch_length,
         statesync_threshold,
         false,
+        statesync_service_window,
     );
 }
 
@@ -145,6 +170,7 @@ fn test_forkpoint_restart_f() {
         .unwrap();
     let epoch_length = SeqNum(200);
     let statesync_threshold = SeqNum(100);
+    let statesync_service_window = SeqNum::MAX;
     // Epoch 1 and 2 are populated on genesis
     // This covers the case with generating validator set for epoch 3
     for before in 10..epoch_length.0 * 3 {
@@ -159,6 +185,7 @@ fn test_forkpoint_restart_f() {
                     epoch_length,
                     statesync_threshold,
                     false,
+                    statesync_service_window,
                 );
             })
         });
@@ -175,6 +202,7 @@ fn forkpoint_restart_f(
     epoch_length: SeqNum,
     statesync_threshold: SeqNum,
     fresh_forkpoint: bool,
+    statesync_service_window: SeqNum,
 ) {
     let delta = Duration::from_millis(100);
     let vote_pace = Duration::from_millis(0);
@@ -287,7 +315,8 @@ fn forkpoint_restart_f(
                                 .iter()
                                 .map(|validator| validator.node_id)
                                 .collect(),
-                        ),
+                        )
+                        .with_max_service_window(statesync_service_window),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
