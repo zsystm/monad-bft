@@ -15,7 +15,6 @@ use aws_sdk_s3::{
 use bytes::Bytes;
 use eyre::{Context, Result};
 use futures::try_join;
-use monad_triedb_utils::triedb_env::BlockHeader;
 use tokio::time::Duration;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -210,7 +209,7 @@ impl S3Archive {
 
     pub async fn archive_block(
         &self,
-        block_header: BlockHeader,
+        block_header: monad_triedb_utils::triedb_env::BlockHeader,
         transactions: Vec<TxEnvelope>,
         block_num: u64,
     ) -> Result<()> {
