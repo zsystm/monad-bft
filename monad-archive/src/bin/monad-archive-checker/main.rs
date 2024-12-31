@@ -2,29 +2,25 @@
 
 use std::sync::Arc;
 
+use alloy_consensus::ReceiptEnvelope;
 use clap::Parser;
 use eyre::Result;
 use futures::{future::join_all, join};
-use monad_archive::{
-    archive_reader::LatestKind,
-    fault::{BlockCheckResult, Fault, FaultWriter},
-    metrics::Metrics,
-    s3_archive::{get_aws_config, S3Archive, S3Bucket},
-};
-use reth_primitives::{Block, ReceiptWithBloom};
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
 };
 use tracing::{debug, error, info, warn, Level};
 
+use monad_archive::*;
+
 mod cli;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
-
     let args = cli::Cli::parse();
+    info!("Args: {args:?}");
 
     let metrics = Metrics::new(
         args.otel_endpoint,
@@ -33,51 +29,24 @@ async fn main() -> Result<()> {
     )?;
 
     let mut s3_archive_readers = Vec::new();
-
-    let s3_buckets = args.s3_buckets.clone();
-    let regions = args.regions.clone();
-
-    if s3_buckets.is_empty() {
-        panic!("Need to specify at least 1 bucket");
-    }
-
-    if s3_buckets.len() != regions.len() {
-        panic!(
-            "Size of buckets and regions should be the same. Bucket size: {}, Regions size: {}",
-            s3_buckets.len(),
-            regions.len()
-        );
+    for arg in args.sources {
+        s3_archive_readers.push(arg.build(&metrics).await?);
     }
 
     if args.max_blocks_per_iteration == 0 {
         panic!("Max blocks per iteration can't be 0. Suggested value: 200");
     }
 
-    let max_concurrent_blocks = args.max_concurrent_blocks;
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
-
-    // Configure all archive checkers
-    for (idx, bucket_name) in s3_buckets.iter().enumerate() {
-        let config = get_aws_config(Some(args.regions[idx].clone())).await;
-        let s3_archive_reader =
-            S3Archive::new(S3Bucket::new(bucket_name.clone(), &config, metrics.clone()));
-
-        s3_archive_readers.push(s3_archive_reader);
-    }
+    let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_blocks));
 
     // Initialize fault writer
     let fault_writer = FaultWriter::new(&args.checker_path).await?;
     info!("Writing S3 checking result at {:?}", &args.checker_path);
 
     let mut start_block_number = args.start_block;
-    info!(
-        "Checking buckets {:?} from regions {:?}. Starting from block: {}",
-        &s3_buckets, &regions, start_block_number
-    );
 
     loop {
-        let latest_block_number =
-            latest_uploaded_block(&s3_archive_readers, &args.max_lag, &s3_buckets).await;
+        let latest_block_number = latest_uploaded_block(&s3_archive_readers, &args.max_lag).await;
         let end_block_number =
             latest_block_number.min(start_block_number + args.max_blocks_per_iteration - 1);
 
@@ -105,7 +74,7 @@ async fn main() -> Result<()> {
                     .await
                     .expect("Got permit to check a new block");
                 let blocks_data = get_block_data(&s3_archive_readers, current_block).await;
-                pairwise_check(&blocks_data, current_block, &mut fault_writer, metrics).await
+                pairwise_check(&blocks_data, current_block, &mut fault_writer, &metrics).await
             })
         });
 
@@ -139,19 +108,16 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn latest_uploaded_block(
-    s3_archive_readers: &[S3Archive],
-    max_lag: &u64,
-    s3_buckets: &[String],
-) -> u64 {
-    let latest_futures = s3_archive_readers.iter().map(|reader| async {
+async fn latest_uploaded_block(readers: &[impl BlockDataReader], max_lag: &u64) -> u64 {
+    let latest_futures = readers.iter().map(|reader| async {
         match reader.get_latest(LatestKind::Uploaded).await {
             Ok(block_number) => block_number,
             Err(e) => {
                 // This is not necessarily an error. It might be that the latest is not there yet
                 warn!(
                     "Failed to get latest block number for bucket '{}': {:?}",
-                    reader.bucket.bucket, e
+                    reader.get_bucket(),
+                    e
                 );
                 0
             }
@@ -167,7 +133,9 @@ async fn latest_uploaded_block(
         if bucket_latest_block + max_lag <= max_block_number {
             error!(
                 "Bucket '{}' falling behind. Tip: {}, Current: {}",
-                &s3_buckets[i], max_block_number, bucket_latest_block
+                &readers[i].get_bucket(),
+                max_block_number,
+                bucket_latest_block
             );
         } else {
             // We only update min when it's not too behind
@@ -181,13 +149,13 @@ async fn latest_uploaded_block(
 struct BlockData {
     pub bucket: String,
     pub block: Option<Block>,
-    pub receipts: Option<Vec<ReceiptWithBloom>>,
+    pub receipts: Option<Vec<ReceiptEnvelope>>,
     pub traces: Option<Vec<Vec<u8>>>,
 }
 
-async fn get_block_data(s3_archive_readers: &[S3Archive], block_number: u64) -> Vec<BlockData> {
-    let block_futures = s3_archive_readers.iter().map(|reader| {
-        let bucket = reader.bucket.bucket.clone();
+async fn get_block_data(readers: &[impl BlockDataReader], block_number: u64) -> Vec<BlockData> {
+    join_all(readers.iter().map(|reader| {
+        let bucket = reader.get_bucket();
         async move {
             let (block_result, receipts_result, traces_result) = join!(
                 reader.get_block_by_number(block_number),
@@ -196,7 +164,7 @@ async fn get_block_data(s3_archive_readers: &[S3Archive], block_number: u64) -> 
             );
 
             let block_data = BlockData {
-                bucket: bucket.clone(),
+                bucket: bucket.to_owned(),
                 block: block_result.ok(),
                 receipts: receipts_result.ok(),
                 traces: traces_result.ok(),
@@ -223,16 +191,15 @@ async fn get_block_data(s3_archive_readers: &[S3Archive], block_number: u64) -> 
 
             block_data
         }
-    });
-
-    join_all(block_futures).await
+    }))
+    .await
 }
 
 async fn pairwise_check(
     blocks_data: &[BlockData],
     block_number: u64,
     fault_writer: &mut FaultWriter,
-    metrics: Metrics,
+    metrics: &Metrics,
 ) -> usize {
     let mut faults = Vec::new();
 
@@ -353,13 +320,13 @@ async fn pairwise_check(
                 }
                 // TODO: Should we use increment?
                 Fault::S3InconsistentBlock { .. } => {
-                    metrics.counter("faults_s3_inconsistent_block", 1)
+                    metrics.inc_counter("faults_s3_inconsistent_block")
                 }
                 Fault::S3InconsistentReceipts { .. } => {
-                    metrics.counter("faults_s3_inconsistent_receipts", 1)
+                    metrics.inc_counter("faults_s3_inconsistent_receipts")
                 }
                 Fault::S3InconsistentTraces { .. } => {
-                    metrics.counter("faults_s3_inconsistent_traces", 1)
+                    metrics.inc_counter("faults_s3_inconsistent_traces")
                 }
 
                 // Other faults are not S3 faults

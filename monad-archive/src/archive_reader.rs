@@ -1,13 +1,10 @@
 use std::collections::HashMap;
 
+use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
+use alloy_primitives::BlockHash;
 use eyre::Result;
-use reth_primitives::{Block, ReceiptWithBloom};
 
-use crate::{
-    dynamodb::{DynamoDBArchive, TxIndexedData},
-    metrics::Metrics,
-    s3_archive::{get_aws_config, S3Archive, S3Bucket},
-};
+use crate::*;
 
 pub enum LatestKind {
     Uploaded,
@@ -15,58 +12,61 @@ pub enum LatestKind {
 }
 
 #[derive(Clone)]
-pub struct ArchiveReader {
-    s3: S3Archive,
-    dynamodb: DynamoDBArchive,
+pub struct ArchiveReader<
+    BReader: BlockDataReader = BlockDataReaderErased,
+    IReader: IndexStoreReader = IndexStoreErased,
+> {
+    block_data_reader: BReader,
+    index_reader: IReader,
 }
 
-impl ArchiveReader {
-    pub async fn new(
-        bucket: String,
-        table: String,
-        region: Option<String>,
-        concurrency: usize,
-        metrics: Metrics,
-    ) -> ArchiveReader {
-        let sdk_config = get_aws_config(region).await;
+impl<BStore: BlockDataReader, IStore: IndexStoreReader> ArchiveReader<BStore, IStore> {
+    pub fn new(block_data_reader: BStore, index_reader: IStore) -> ArchiveReader<BStore, IStore> {
         ArchiveReader {
-            s3: S3Archive::new(S3Bucket::new(bucket, &sdk_config, metrics.clone())),
-            dynamodb: DynamoDBArchive::new(table, &sdk_config, concurrency, metrics.clone()),
+            block_data_reader,
+            index_reader,
         }
     }
+}
 
-    pub fn bucket(&self) -> &str {
-        &self.s3.bucket.bucket
+impl<BStore: BlockDataReader, IStore: IndexStoreReader> IndexStoreReader
+    for ArchiveReader<BStore, IStore>
+{
+    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>> {
+        self.index_reader.bulk_get(keys).await
     }
 
-    pub async fn batch_get_txdata(
-        &self,
-        keys: &[String],
-    ) -> Result<HashMap<String, TxIndexedData>> {
-        self.dynamodb.batch_get_txdata(keys).await
+    async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
+        self.index_reader.get(key).await
     }
-    pub async fn get_txdata(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
-        self.dynamodb.get_txdata(key).await
+}
+
+impl<BStore: BlockDataReader, IStore: IndexStoreReader> BlockDataReader
+    for ArchiveReader<BStore, IStore>
+{
+    fn get_bucket(&self) -> &str {
+        self.block_data_reader.get_bucket()
     }
 
-    // Get the latest stored block
-    pub async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
-        self.s3.get_latest(latest_kind).await
+    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
+        self.block_data_reader.get_latest(latest_kind).await
     }
 
-    pub async fn get_block_by_hash(&self, block_hash: &[u8; 32]) -> Result<Block> {
-        self.s3.get_block_by_hash(block_hash).await
+    async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
+        self.block_data_reader.get_block_by_number(block_num).await
     }
 
-    pub async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
-        self.s3.get_block_by_number(block_num).await
+    async fn get_block_by_hash(&self, block_hash: BlockHash) -> Result<Block> {
+        self.block_data_reader.get_block_by_hash(block_hash).await
     }
 
-    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
-        self.s3.get_block_receipts(block_number).await
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
+        self.block_data_reader
+            .get_block_receipts(block_number)
+            .await
     }
 
-    pub async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
-        self.s3.get_block_traces(block_number).await
+    async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
+        self.block_data_reader.get_block_traces(block_number).await
     }
 }

@@ -1,8 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use alloy_primitives::BlockHash;
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
@@ -18,42 +16,11 @@ use tokio_retry::{
 };
 use tracing::error;
 
-use crate::{metrics::Metrics, s3_archive::Block};
+use crate::{metrics::Metrics, IndexStore, IndexStoreReader, TxIndexedData};
 
-const AWS_DYNAMODB_ERRORS: &str = "aws_dynamodb_errors";
-const AWS_DYNAMODB_WRITES: &str = "aws_dynamodb_writes";
-const AWS_DYNAMODB_READS: &str = "aws_dynamodb_reads";
-
-pub trait TxIndexArchiver {
-    async fn index_block(
-        &self,
-        block: Block,
-        traces: Vec<Vec<u8>>,
-        receipts: Vec<ReceiptEnvelope>,
-    ) -> Result<()>;
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable,
-)]
-pub struct TxIndexedData {
-    pub tx: TxEnvelope,
-    pub trace: Vec<u8>,
-    pub receipt: ReceiptEnvelope,
-    pub header_subset: HeaderSubset,
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, RlpEncodable, RlpDecodable,
-)]
-#[rlp(trailing)]
-pub struct HeaderSubset {
-    pub block_hash: BlockHash,
-    pub block_number: u64,
-    pub tx_index: u64,
-    pub gas_used: u128,
-    pub base_fee_per_gas: Option<u64>,
-}
+const AWS_DYNAMODB_ERRORS: &'static str = "aws_dynamodb_errors";
+const AWS_DYNAMODB_WRITES: &'static str = "aws_dynamodb_writes";
+const AWS_DYNAMODB_READS: &'static str = "aws_dynamodb_reads";
 
 #[derive(Clone)]
 pub struct DynamoDBArchive {
@@ -63,103 +30,41 @@ pub struct DynamoDBArchive {
     pub metrics: Metrics,
 }
 
-impl DynamoDBArchive {
-    pub async fn batch_get_txdata(
-        &self,
-        keys: &[String],
-    ) -> Result<HashMap<String, TxIndexedData>> {
+impl IndexStoreReader for DynamoDBArchive {
+    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, TxIndexedData>> {
         let output = self
             .batch_get(keys)
             .await?
             .into_iter()
             .filter_map(|(k, map)| {
                 Some((
-                    k,
-                    TxIndexedData {
-                        tx: decode_from_map(&map, "tx")?,
-                        receipt: decode_from_map(&map, "receipt")?,
-                        trace: decode_from_map(&map, "trace")?,
-                        header_subset: decode_from_map(&map, "header_subset")?,
-                    },
+                    k, // fmt
+                    decode_from_map(&map, "data")?,
                 ))
             })
             .collect::<HashMap<String, TxIndexedData>>();
         Ok(output)
     }
 
-    pub async fn get_txdata(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
+    async fn get(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
         let key = key.into();
-        self.batch_get_txdata(&[key.clone()])
+        self.bulk_get(&[key.clone()])
             .await
             .map(|mut v| v.remove(&key))
     }
 }
 
-impl TxIndexArchiver for DynamoDBArchive {
-    async fn index_block(
-        &self,
-        block: Block,
-        traces: Vec<Vec<u8>>,
-        receipts: Vec<ReceiptEnvelope>,
-    ) -> Result<()> {
-        let mut requests = Vec::new();
-        let block_number = block.header.number;
-        let block_hash = block.header.hash_slow();
-        let base_fee_per_gas = block.header.base_fee_per_gas;
-
-        let gas_used_vec: Vec<_> = {
-            let mut last = 0;
-            receipts
-                .iter()
-                .map(|r| {
-                    let gas_used = r.cumulative_gas_used() - last;
-                    last = r.cumulative_gas_used();
-                    gas_used
-                })
-                .collect()
-        };
-
-        for (idx, ((tx, trace), receipt)) in block
-            .body
-            .transactions
-            .into_iter()
-            .zip(traces.into_iter())
-            .zip(receipts.into_iter())
-            .enumerate()
-        {
-            let hash = tx.tx_hash();
+impl IndexStore for DynamoDBArchive {
+    async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
+        let mut requests = Vec::with_capacity(kvs.size_hint().0);
+        for data in kvs {
+            let hash = format!("{:x}", data.tx.tx_hash());
             let mut attribute_map = HashMap::new();
-            attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hex::encode(hash)));
+            attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hash));
 
-            // header subset
-            let mut rlp_header_subset = Vec::with_capacity(512);
-            HeaderSubset {
-                block_hash,
-                block_number,
-                tx_index: idx as u64,
-                gas_used: gas_used_vec[idx],
-                base_fee_per_gas,
-            }
-            .encode(&mut rlp_header_subset);
-            attribute_map.insert(
-                "header_subset".to_owned(),
-                AttributeValue::B(rlp_header_subset.into()),
-            );
-
-            // tx
-            let mut rlp_tx = Vec::with_capacity(512);
-            tx.encode(&mut rlp_tx);
-            attribute_map.insert("tx".to_owned(), AttributeValue::B(rlp_tx.into()));
-
-            // trace
-            let mut rlp_trace = Vec::with_capacity(trace.capacity());
-            trace.encode(&mut rlp_trace);
-            attribute_map.insert("trace".to_owned(), AttributeValue::B(rlp_trace.into()));
-
-            // receipt
-            let mut rlp_receipt = Vec::with_capacity(512);
-            receipt.encode(&mut rlp_receipt);
-            attribute_map.insert("receipt".to_owned(), AttributeValue::B(rlp_receipt.into()));
+            let mut rlp_data = Vec::with_capacity(1024);
+            data.encode(&mut rlp_data);
+            attribute_map.insert("data".to_owned(), AttributeValue::B(rlp_data.into()));
 
             let put_request = PutRequest::builder()
                 .set_item(Some(attribute_map))
@@ -278,6 +183,7 @@ impl DynamoDBArchive {
                 unprocessed_keys = response_retry.unprocessed_keys;
             }
         }
+
         self.metrics.counter(AWS_DYNAMODB_READS, keys.len() as u64);
         Ok(results)
     }
@@ -332,6 +238,7 @@ impl DynamoDBArchive {
         })
         .await
         .wrap_err_with(|| format!("Failed to upload to table {} after retries", self.table))?;
+
         self.metrics.counter(AWS_DYNAMODB_WRITES, num_writes as u64);
         Ok(())
     }
