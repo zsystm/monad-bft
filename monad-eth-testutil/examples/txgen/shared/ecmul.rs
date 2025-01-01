@@ -45,7 +45,7 @@ impl ECMul {
     ) -> TransactionSigned {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = Transaction::Eip1559(TxEip1559 {
-            chain_id: 41454,
+            chain_id: 10143,
             nonce,
             gas_limit: 2_000_000,
             max_fee_per_gas,
@@ -72,7 +72,7 @@ impl ECMul {
         .abi_encode();
 
         let tx = Transaction::Eip1559(TxEip1559 {
-            chain_id: 41454,
+            chain_id: 10143,
             nonce: sender.nonce,
             gas_limit: 2_000_000,
             max_fee_per_gas,
