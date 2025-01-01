@@ -162,7 +162,7 @@ fn make_tx(
     let tx = Transaction::Eip1559(TxEip1559 {
         chain_id: 10143,
         nonce,
-        gas_limit: 200_000, // probably closer to 80k
+        gas_limit: 100_000, // probably closer to 80k
         max_fee_per_gas,
         max_priority_fee_per_gas: 0,
         to: TransactionKind::Call(contract_or_to),
