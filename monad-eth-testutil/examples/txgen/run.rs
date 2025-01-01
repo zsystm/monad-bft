@@ -52,8 +52,8 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         refresh_rx,
         rpc_sender,
         &client,
-        U256::from(1e14),
-        U256::from(1e15),
+        U256::from(1e24),
+        U256::from(1e25),
         &metrics,
         config.base_fee(),
     );
