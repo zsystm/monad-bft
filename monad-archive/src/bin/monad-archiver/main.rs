@@ -180,9 +180,8 @@ async fn archive_block(
             archiver.archive_block(block).await
         },
         async {
-            // let receipts = reader.get_block_receipts(block_num).await?;
-            // archiver.archive_receipts(receipts, block_num).await
-            Ok(())
+            let receipts = reader.get_block_receipts(block_num).await?;
+            archiver.archive_receipts(receipts, block_num).await
         },
         async {
             let traces = reader.get_block_traces(block_num).await?;
