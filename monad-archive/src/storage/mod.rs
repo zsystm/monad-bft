@@ -1,28 +1,27 @@
+pub mod cloud_proxy;
 pub mod dynamodb;
 pub mod rocksdb_storage;
 pub mod s3;
 pub mod triedb_reader;
 
-use std::collections::HashMap;
-use std::str::FromStr;
-
-use crate::{ArchiveReader, BlobStore, Block, LatestKind, Metrics, TxIndexArchiver};
-use crate::{IndexStore, IndexStoreReader, TxIndexedData};
+use crate::{
+    archive_block_data::BlockDataArchive, triedb_reader::TriedbReader, ArchiveReader, BlobStore,
+    Block, LatestKind, Metrics, TxIndexArchiver, IndexStoreReader, TxIndexedData, IndexStore
+};
 use alloy_consensus::ReceiptEnvelope;
 use alloy_primitives::{BlockHash, TxHash};
 use clap::{Parser, Subcommand};
 use enum_dispatch::enum_dispatch;
 use eyre::{bail, ContextCompat, OptionExt, Result};
-
-pub use dynamodb::*;
 use futures::FutureExt;
-pub use rocksdb_storage::*;
-pub use s3::*;
+use std::collections::HashMap;
+use std::str::FromStr;
 use tokio::{join, try_join};
 
-use crate::archive_block_data::BlockDataArchive;
-
-use crate::triedb_reader::TriedbReader;
+pub use cloud_proxy::*;
+pub use dynamodb::*;
+pub use rocksdb_storage::*;
+pub use s3::*;
 
 #[enum_dispatch(BlockDataReader)]
 #[derive(Clone)]

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
 use alloy_primitives::{BlockHash, TxHash};
 use eyre::Result;
+use url::Url;
 
 use crate::*;
 
@@ -27,6 +28,24 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> ArchiveReader<BStore, IS
             index_reader,
         }
     }
+
+    // TODO: move this to monad_rpc 
+    // pub async fn for_rpc(
+    //     bucket: String,
+    //     region: Option<String>,
+    //     url: Url,
+    //     api_key: &str,
+    //     concurrency: usize,
+    // ) -> Result<ArchiveReader<BlockDataArchive, CloudProxyReader>> {
+    //     let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket.clone(), concurrency)?;
+    //     let block_data_reader = BlockDataArchive::new(S3Bucket::new(
+    //         bucket,
+    //         &get_aws_config(region).await,
+    //         Metrics::none(),
+    //     ));
+
+    //     Ok(Self::new(block_data_reader, cloud_proxy_reader))
+    // }
 }
 
 impl<BStore: BlockDataReader, IStore: IndexStoreReader> IndexStoreReader

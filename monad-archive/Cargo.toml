@@ -25,7 +25,6 @@ bench = false
 
 [dependencies]
 monad-triedb-utils = { path = "../monad-triedb-utils" }
-
 alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-client = { workspace = true }
@@ -33,6 +32,7 @@ alloy-primitives = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
+base64 = { workspace = true } 
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -58,5 +58,6 @@ tokio = { workspace = true, features = [
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+reqwest = { workspace = true }
 rocksdb = "0.22.0"
 url = { workspace = true }
