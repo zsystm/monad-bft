@@ -70,6 +70,8 @@ async fn archive_worker(
     };
 
     loop {
+        sleep(Duration::from_millis(100)).await;
+
         // query latest
         let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
             Ok(number) => number,
@@ -109,8 +111,6 @@ async fn archive_worker(
         } else {
             latest_uploaded + 1
         };
-
-        sleep(Duration::from_millis(100)).await;
     }
 }
 

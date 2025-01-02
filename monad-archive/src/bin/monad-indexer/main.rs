@@ -70,6 +70,8 @@ async fn index_worker(
     };
 
     loop {
+        sleep(Duration::from_millis(100)).await;
+
         // query latest
         let latest_source = match block_data_reader.get_latest(Uploaded).await {
             Ok(number) => number,
@@ -107,7 +109,6 @@ async fn index_worker(
         } else {
             latest_indexed + 1
         };
-        sleep(Duration::from_millis(100)).await;
     }
 }
 
