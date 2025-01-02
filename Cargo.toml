@@ -90,7 +90,7 @@ alloy-network = "0.8"
 alloy-primitives = "0.8"
 alloy-rlp = "0.3"
 alloy-rpc-client = "0.8"
-alloy-rpc-types = "0.8"
+alloy-rpc-types = { version = "0.8", features = ["eth"] }
 alloy-rpc-types-eth = "0.8"
 alloy-rpc-types-trace = "0.8"
 alloy-signer = "0.8"

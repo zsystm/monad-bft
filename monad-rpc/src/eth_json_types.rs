@@ -2,8 +2,12 @@ use std::str::FromStr;
 
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
-use alloy_rpc_types::{Block, FeeHistory, Header, Log, Transaction, TransactionReceipt};
 use schemars::JsonSchema;
+use alloy_rpc_types::{
+    pubsub::Params, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
+};
+use monad_exec_events::exec_events::{ExecEvent, ProposalMetadata};
+use monad_types::BlockId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tracing::debug;
@@ -178,7 +182,7 @@ impl<'de> Deserialize<'de> for Quantity {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub struct FixedData<const N: usize>(#[schemars(with = "String")] pub [u8; N]);
 
 impl<const N: usize> std::fmt::Display for FixedData<N> {
@@ -324,6 +328,105 @@ impl Default for BlockTagOrHash {
     fn default() -> Self {
         BlockTagOrHash::BlockTags(BlockTags::Latest)
     }
+}
+
+#[derive(Deserialize)]
+pub struct EthSubscribeRequest {
+    pub kind: SubscriptionKind,
+    #[serde(default)]
+    pub params: Params,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionKind {
+    // Equivalent to Geth's "newHeads" subscription.
+    // https://geth.ethereum.org/docs/interacting-with-geth/rpc/pubsub#newheads
+    NewHeads,
+    // Equivalent to Geth's "logs" subscription.
+    // https://geth.ethereum.org/docs/interacting-with-geth/rpc/pubsub#logs
+    Logs,
+    // Subscribes to all heads with their corresponding commit state.
+    MonadNewHeads,
+    // Subscribes to all logs with their corresponding commit state.
+    MonadLogs,
+    // Raw execution stream
+    MonadEventStream,
+}
+
+#[derive(Deserialize)]
+pub struct EthUnsubscribeRequest {
+    pub id: FixedData<16>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EthSubscribeResult {
+    pub subscription: FixedData<16>,
+    pub result: SubscriptionResult,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum SubscriptionResult {
+    // Returns all headers with their corresponding commit state.
+    SpeculativeNewHeads(SpeculativeNewHead),
+    // Returns all logs with their corresponding commit state.
+    SpeculativeLogs(SpeculativeLog),
+    // NewHeads and Logs are Geth results that return finalized block details.
+    NewHeads(alloy_rpc_types::eth::Header),
+    Logs(alloy_rpc_types::eth::Log),
+    // MonadEventStream
+    MonadEventStream(StreamItem),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum BlockCommitState {
+    Proposed,
+    Voted,
+    Finalized,
+    Verified,
+    Abandoned,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SpeculativeNewHead {
+    #[serde(flatten)]
+    pub header: alloy_rpc_types::eth::Header,
+    pub block_id: BlockId,
+    pub commit_state: BlockCommitState,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SpeculativeLog {
+    #[serde(flatten)]
+    pub log: alloy_rpc_types::eth::Log,
+    pub block_id: BlockId,
+    pub commit_state: BlockCommitState,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StreamItem {
+    pub protocol_version: u8,
+    #[serde(flatten)]
+    pub event: StreamEvent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum StreamEvent {
+    ExecutionEvent {
+        seqno: u64,
+        event: ExecEvent,
+    },
+
+    StreamGap {
+        last_read_seqno: u64,
+        next_seqno: u64,
+    },
+
+    AbandonedProposal {
+        #[serde(flatten)]
+        proposal_meta: ProposalMetadata,
+    },
 }
 
 pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {

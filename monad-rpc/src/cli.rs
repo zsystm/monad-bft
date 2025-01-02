@@ -25,6 +25,14 @@ pub struct Cli {
     #[arg(long)]
     pub node_config: PathBuf,
 
+    /// Enable the WebSocket server
+    #[arg(long, default_value_t = false)]
+    pub ws_enabled: bool,
+
+    /// Set the port number for the WebSocket server
+    #[arg(long, default_value_t = 8081)]
+    pub ws_port: u16,
+
     /// Set the max number of requests in a batch request
     #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,
@@ -143,4 +151,8 @@ pub struct Cli {
     /// Dry run using mongo index for eth_getLogs
     #[arg(long)]
     pub dry_run_get_logs_index: bool,
+
+    /// Sets the socket path for the monad execution event server
+    #[arg(long, default_value = monad_exec_events::exec_event_ctypes::EXEC_EVENT_DEFAULT_RING_PATH)]
+    pub exec_event_path: PathBuf,
 }
