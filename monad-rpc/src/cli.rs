@@ -21,6 +21,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 8080)]
     pub rpc_port: u16,
 
+    /// Enable the WebSocket server
+    #[arg(long, default_value_t = false)]
+    pub ws_enabled: bool,
+
+    /// Set the port number for the WebSocket server
+    #[arg(long, default_value_t = 8081)]
+    pub ws_port: u16,
+
     /// Set the chain ID
     #[arg(long)]
     pub chain_id: u64,
@@ -119,4 +127,8 @@ pub struct Cli {
 
     #[arg(long, default_value_t = 3)]
     pub max_voted_block_cache_len: u64,
+
+    /// Sets the socket path for the monad execution event server
+    #[arg(long, default_value = monad_event_ring::exec_event_types_metadata::EXEC_EVENT_DEFAULT_RING_PATH)]
+    pub exec_event_path: PathBuf,
 }
