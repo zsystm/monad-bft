@@ -25,6 +25,14 @@ pub struct Cli {
     #[arg(long)]
     pub chain_id: u64,
 
+    /// Enable the WebSocket server
+    #[arg(long, default_value_t = false)]
+    pub ws_enabled: bool,
+
+    /// Set the port number for the WebSocket server
+    #[arg(long, default_value_t = 8081)]
+    pub ws_port: u16,
+
     /// Set the max number of requests in a batch request
     #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,
@@ -119,4 +127,8 @@ pub struct Cli {
 
     #[arg(long, default_value_t = 3)]
     pub max_voted_block_cache_len: u64,
+
+    /// Sets the socket path for the monad execution event server
+    #[arg(long, default_value = monad_exec_events::exec_event_ctypes::EXEC_EVENT_DEFAULT_RING_PATH)]
+    pub exec_event_path: PathBuf,
 }

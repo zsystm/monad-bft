@@ -160,6 +160,8 @@ impl Drop for EventRing {
     }
 }
 
+unsafe impl Send for EventRing {}
+
 /// Descriptor for a single event; this fixed-size object describes the common
 /// attributes of an event, and is passed between threads via a shared memory
 /// ring buffer (the threads are potentially in different processes). The
