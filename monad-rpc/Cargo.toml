@@ -10,29 +10,23 @@ edition = "2021"
 name = "monad-rpc"
 bench = false
 
-[[bin]]
-name = "monad-rpc-docs"
-bench = false
-path = "./bin/docs.rs"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 monad-archive = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-ethcall = { workspace = true }
-monad-node-config = { workspace = true }
 monad-rpc-docs = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 
 actix = { workspace = true }
 actix-http = { workspace = true }
+actix-rt = "2.10.0"
 actix-test = { workspace = true }
 actix-web = { workspace = true }
 actix-web-actors = { workspace = true }
+actix-ws = {version = "0.3.0"}
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
@@ -51,27 +45,23 @@ opentelemetry = { workspace = true, features = ["metrics"] }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true }
 pin-project = { workspace = true }
-rand = { workspace = true }
 rayon = { workspace = true }
-schemars = { workspace = true, features = ["preserve_order"] }
+schemars = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
-toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-actix-web = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [dev-dependencies]
-monad-eth-testutil = { workspace = true }
-
 alloy-rpc-client = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 reqwest = { workspace = true }
 test-case = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 vergen-git2 = { workspace = true }
