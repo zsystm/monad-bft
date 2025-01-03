@@ -22,6 +22,11 @@ pub struct Cli {
     #[arg(long)]
     pub start_block: Option<u64>,
 
+    /// Path to ledger folder containing bft blocks
+    /// If set, archiver will upload these files to blob store provided in archive_sink
+    #[arg(long)]
+    pub bft_block_ledger_path: Option<PathBuf>,
+
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 }

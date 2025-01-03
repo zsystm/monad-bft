@@ -1,10 +1,10 @@
+use std::{sync::Arc, time::Duration};
+
+use dashmap::DashMap;
 use eyre::Result;
 use opentelemetry::metrics::{Counter, Gauge, Meter, MeterProvider};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
-use std::{sync::Arc, time::Duration};
-
-use dashmap::DashMap;
 
 #[derive(Clone)]
 pub struct Metrics(Option<MetricsInner>);

@@ -6,13 +6,12 @@ use alloy_consensus::ReceiptEnvelope;
 use clap::Parser;
 use eyre::Result;
 use futures::{future::join_all, join};
+use monad_archive::*;
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
 };
 use tracing::{debug, error, info, warn, Level};
-
-use monad_archive::*;
 
 mod cli;
 

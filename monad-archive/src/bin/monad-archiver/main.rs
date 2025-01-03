@@ -4,23 +4,23 @@ use std::{ops::RangeInclusive, time::Instant};
 
 use clap::Parser;
 use eyre::Result;
-use futures::{join, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
+use ledger_watcher::ledger_watcher_worker;
 use metrics::Metrics;
+use monad_archive::*;
 use tokio::{
     time::{sleep, Duration},
     try_join,
 };
 use tracing::{error, info, warn, Level};
-
-use monad_archive::*;
 mod cli;
+mod ledger_watcher;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
-
     info!(?args);
 
     let metrics = Metrics::new(
@@ -30,8 +30,19 @@ async fn main() -> Result<()> {
     )?;
 
     let block_data_source = args.block_data_source.build(&metrics).await?;
-
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
+
+    if let Some(path) = args.bft_block_ledger_path {
+        let store = archive_writer.store.clone();
+        let metrics = metrics.clone();
+        info!("Spawning bft block ledger watcher...");
+        tokio::spawn(ledger_watcher_worker(
+            store,
+            path,
+            Duration::from_secs(5),
+            metrics,
+        ));
+    }
 
     tokio::spawn(archive_worker(
         block_data_source,
