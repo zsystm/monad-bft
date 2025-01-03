@@ -4904,6 +4904,7 @@ dependencies = [
  "flume",
  "futures",
  "futures-util",
+ "monad-archive",
  "monad-cxx",
  "monad-eth-block-policy",
  "monad-rpc-docs",
