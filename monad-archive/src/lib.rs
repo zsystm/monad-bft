@@ -7,6 +7,7 @@ pub mod cli;
 pub mod fault;
 pub mod metrics;
 pub mod storage;
+pub mod ledger_watcher;
 
 pub use archive_block_data::*;
 pub use archive_reader::*;
@@ -15,3 +16,4 @@ pub use cli::*;
 pub use fault::*;
 pub use metrics::*;
 pub use storage::*;
+pub use ledger_watcher::*;
