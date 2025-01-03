@@ -59,15 +59,19 @@ pub struct ProposedEthHeader {
     pub ommers_hash: [u8; 32],
     pub beneficiary: Address,
     pub transactions_root: [u8; 32],
-    pub withdrawals_root: [u8; 32],
     pub difficulty: u64,
     pub number: u64,
     pub gas_limit: u64,
     pub timestamp: u64,
+    pub extra_data: [u8; 32],
     pub mix_hash: [u8; 32],
     pub nonce: [u8; 8],
     pub base_fee_per_gas: u64,
-    pub extra_data: [u8; 32],
+    pub withdrawals_root: [u8; 32],
+    // cancun
+    pub blob_gas_used: u64,
+    pub excess_blob_gas: u64,
+    pub parent_beacon_block_root: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
