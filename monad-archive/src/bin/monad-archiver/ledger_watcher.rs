@@ -7,6 +7,7 @@ use std::{
 
 use eyre::{Context, Result};
 use futures::StreamExt;
+use monad_archive::BlobStoreErased;
 use tokio::time::sleep;
 use tracing::{debug, error, info};
 
@@ -14,8 +15,74 @@ use crate::{BlobStore, Metrics};
 
 const BFT_BLOCK_PREFIX: &'static str = "bft_block/";
 
+pub async fn parallel_upload_iter(
+    uploaded: &mut HashSet<OsString>,
+    s3: BlobStoreErased,
+    dir: PathBuf,
+    fnames: Vec<OsString>,
+) -> usize {
+    futures::stream::iter(fnames)
+        .filter_map(|fname| {
+            let s3 = s3.clone();
+            let dir = dir.clone();
+            spawning_upload(s3, dir, fname)
+        })
+        .buffer_unordered(20)
+        .map(|block_hash_uploaded| {
+            info!(?block_hash_uploaded, "Uploaded bft block");
+            uploaded.insert(block_hash_uploaded);
+            futures::future::ready(())
+        })
+        .count()
+        .await
+}
+
+async fn spawning_upload(
+    s3: BlobStoreErased,
+    dir: PathBuf,
+    block_hash_os_str: OsString,
+) -> Option<futures::future::Ready<OsString>> {
+    let r = tokio::spawn(upload(s3, dir, block_hash_os_str))
+        .await
+        .ok()?;
+
+    r
+}
+
+async fn upload(
+    s3: BlobStoreErased,
+    dir: PathBuf,
+    block_hash_os_str: OsString,
+) -> Option<futures::future::Ready<OsString>> {
+    let block_hash = block_hash_os_str.to_str()?;
+    let mut path = PathBuf::from(&dir);
+    path.push(&block_hash_os_str);
+
+    let data = match tokio::fs::read(path).await {
+        Ok(x) => x,
+        Err(e) => {
+            error!(
+                ?e,
+                block_hash, "Failed to read bft block file from ledger folder"
+            );
+            return None;
+        }
+    };
+
+    match s3
+        .upload(&format!("{BFT_BLOCK_PREFIX}{block_hash}"), data)
+        .await
+    {
+        Ok(_) => Some(futures::future::ready(block_hash_os_str)),
+        Err(e) => {
+            error!(?e, block_hash, "Failed to archive bft block");
+            None
+        }
+    }
+}
+
 pub async fn ledger_watcher_worker(
-    s3: impl BlobStore,
+    s3: BlobStoreErased,
     dir: PathBuf,
     poll_frequency: Duration,
     metrics: Metrics,
@@ -41,46 +108,8 @@ pub async fn ledger_watcher_worker(
         }
         info!(num_to_upload, "Found bft blocks to upload");
 
-        let num_uploaded = futures::stream::iter(to_upload)
-            .filter_map(|block_hash_os_str| {
-                let dir = dir.clone();
-                let s3 = s3.clone();
-                async move {
-                    let block_hash = block_hash_os_str.to_str()?;
-                    let mut path = PathBuf::from(&dir);
-                    path.push(&block_hash_os_str);
-
-                    let data = match tokio::fs::read(path).await {
-                        Ok(x) => x,
-                        Err(e) => {
-                            error!(
-                                ?e,
-                                block_hash, "Failed to read bft block file from ledger folder"
-                            );
-                            return None;
-                        }
-                    };
-
-                    match s3
-                        .upload(&format!("{BFT_BLOCK_PREFIX}{block_hash}"), data)
-                        .await
-                    {
-                        Ok(_) => Some(futures::future::ready(block_hash_os_str)),
-                        Err(e) => {
-                            error!(?e, block_hash, "Failed to archive bft block");
-                            None
-                        }
-                    }
-                }
-            })
-            .buffer_unordered(10)
-            .map(|block_hash_uploaded| {
-                info!(?block_hash_uploaded, "Uploaded bft block");
-                uploaded.insert(block_hash_uploaded);
-                futures::future::ready(())
-            })
-            .count()
-            .await;
+        let num_uploaded =
+            parallel_upload_iter(&mut uploaded, s3.clone(), dir.clone(), to_upload).await;
 
         if num_uploaded > 0 {
             info!(num_uploaded, num_to_upload, "Uploaded bft blocks");

@@ -33,6 +33,7 @@ const BLOCK_PADDING_WIDTH: usize = 12;
 #[enum_dispatch]
 pub trait BlobStore: BlobReader {
     async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()>;
+
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
     fn bucket_name(&self) -> &str;
 }
