@@ -6,13 +6,9 @@ use monad_archive::{ArchiveArgs, BlockDataReaderArgs};
 #[derive(Debug, Parser)]
 #[command(name = "monad-archive", about, long_about = None)]
 pub struct Cli {
-    /// Where blocks, receipts and traces are read from
-    /// For triedb: 'triedb <triedb_path> <concurrent_requests>'
     #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
     pub block_data_source: BlockDataReaderArgs,
 
-    /// Where archive data is written to
-    /// For aws: 'aws <bucket_name> <concurrent_requests>'
     #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
     pub archive_sink: ArchiveArgs,
 

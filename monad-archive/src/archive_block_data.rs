@@ -26,6 +26,7 @@ use crate::{
     archive_reader::LatestKind, get_aws_config, metrics::Metrics, BlobStoreErased, BlockDataReader,
     BlockDataReaderArgs, S3Bucket,
 };
+
 pub type Block = AlloyBlock<TxEnvelope, Header>;
 
 const BLOCK_PADDING_WIDTH: usize = 12;

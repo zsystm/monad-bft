@@ -25,6 +25,11 @@ pub struct ExecutableBlockHeader {
     nonce: [u8; 8],
     extra_data: [u8; 32],
     base_fee_per_gas: u64,
+    // cancun
+    withdrawals_root: [u8; 32],
+    blob_gas_used: u64,
+    excess_blob_gas: u64,
+    parent_beacon_block_root: [u8; 32],
 }
 
 #[derive(RlpEncodable, RlpDecodable)]
@@ -56,6 +61,13 @@ where
                 nonce: full_block.header().execution_inputs.nonce,
                 extra_data: full_block.header().execution_inputs.extra_data,
                 base_fee_per_gas: full_block.header().execution_inputs.base_fee_per_gas,
+                withdrawals_root: full_block.header().execution_inputs.withdrawals_root,
+                blob_gas_used: full_block.header().execution_inputs.blob_gas_used,
+                excess_blob_gas: full_block.header().execution_inputs.excess_blob_gas,
+                parent_beacon_block_root: full_block
+                    .header()
+                    .execution_inputs
+                    .parent_beacon_block_root,
             },
             transactions: full_block.body().execution_body.transactions.clone(),
             ommers: full_block.body().execution_body.ommers.clone(),

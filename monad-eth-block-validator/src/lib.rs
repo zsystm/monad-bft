@@ -176,6 +176,9 @@ where
             nonce,
             base_fee_per_gas,
             extra_data,
+            blob_gas_used,
+            excess_blob_gas,
+            parent_beacon_block_root,
         } = &header.execution_inputs;
 
         if ommers_hash != EMPTY_OMMER_ROOT_HASH {
@@ -209,6 +212,15 @@ where
             return Err(BlockValidationError::HeaderError);
         }
         if base_fee_per_gas != &BASE_FEE_PER_GAS {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if blob_gas_used != &0 {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if excess_blob_gas != &0 {
+            return Err(BlockValidationError::HeaderError);
+        }
+        if parent_beacon_block_root != &[0_u8; 32] {
             return Err(BlockValidationError::HeaderError);
         }
 

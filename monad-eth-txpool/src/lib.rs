@@ -256,6 +256,9 @@ where
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],
             base_fee_per_gas: BASE_FEE_PER_GAS,
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+            parent_beacon_block_root: [0_u8; 32],
         };
 
         Ok(ProposedExecutionInputs { header, body })

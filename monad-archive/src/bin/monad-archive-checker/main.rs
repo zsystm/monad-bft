@@ -13,6 +13,8 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn, Level};
 
+use monad_archive::*;
+
 mod cli;
 
 #[tokio::main]
