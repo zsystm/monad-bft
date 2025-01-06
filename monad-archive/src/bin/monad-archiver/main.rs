@@ -2,10 +2,10 @@
 
 use std::{ops::RangeInclusive, time::Instant};
 
+use bft_block_archiver::bft_block_archive_worker;
 use clap::Parser;
 use eyre::Result;
 use futures::{StreamExt, TryStreamExt};
-use ledger_watcher::ledger_watcher_worker;
 use metrics::Metrics;
 use monad_archive::*;
 use tokio::{
@@ -13,10 +13,13 @@ use tokio::{
     try_join,
 };
 use tracing::{error, info, warn, Level};
-mod cli;
-mod ledger_watcher;
+use wal_checkpoint::wal_checkpoint_worker;
 
-#[tokio::main]
+mod bft_block_archiver;
+mod cli;
+mod wal_checkpoint;
+
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
@@ -32,15 +35,23 @@ async fn main() -> Result<()> {
     let block_data_source = args.block_data_source.build(&metrics).await?;
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
 
-    if let Some(path) = args.bft_block_ledger_path {
-        let store = archive_writer.store.clone();
-        let metrics = metrics.clone();
-        info!("Spawning bft block ledger watcher...");
-        tokio::spawn(ledger_watcher_worker(
-            store,
+    if let Some(path) = args.bft_block_path {
+        info!("Spawning bft block archive worker...");
+        tokio::spawn(bft_block_archive_worker(
+            archive_writer.store.clone(),
+            args.bft_block_header_path.unwrap_or(path.clone()),
             path,
-            Duration::from_secs(5),
-            metrics,
+            Duration::from_secs(args.bft_block_poll_freq_secs),
+            metrics.clone(),
+        ));
+    }
+
+    if let Some(path) = args.wal_path {
+        info!("Spawning wal checkpoint worker...");
+        tokio::spawn(wal_checkpoint_worker(
+            archive_writer.store.clone(),
+            path,
+            Duration::from_secs(args.wal_checkpoint_freq_secs),
         ));
     }
 
