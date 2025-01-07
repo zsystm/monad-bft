@@ -22,6 +22,7 @@ class SignerMap:
 
     @classmethod
     def from_list(cls, decoded_list):
+        assert len(decoded_list) == 2
         return cls(
             num_bits=int.from_bytes(decoded_list[0], 'big'),
             bitmap=decoded_list[1]
@@ -38,6 +39,7 @@ class Signatures:
 
     @classmethod
     def from_list(cls, decoded_list):
+        assert len(decoded_list) == 2
         return cls(
             signers=SignerMap.from_list(decoded_list[0]),
             aggregate_signature=decoded_list[1]
@@ -59,6 +61,7 @@ class Vote:
 
     @classmethod
     def from_list(cls, decoded_list):
+        assert len(decoded_list) == 5
         return cls(
             id=decoded_list[0],
             round=int.from_bytes(decoded_list[1], 'big'),
@@ -78,6 +81,7 @@ class QuorumCertificate:
 
     @classmethod
     def from_list(cls, decoded_list):
+        assert len(decoded_list) == 2
         return cls(
             vote=Vote.from_list(decoded_list[0]),
             signatures=Signatures.from_list(decoded_list[1])
@@ -178,6 +182,7 @@ class ProposedEthHeader:
 
     @classmethod
     def from_list(cls, decoded_list):
+        assert len(decoded_list) == 15
         return cls(
             ommers_hash=decoded_list[0],
             beneficiary=decoded_list[1],
@@ -224,6 +229,7 @@ class ConsensusBlockHeader:
 
     @classmethod
     def from_list(cls, decoded_list):
+        assert len(decoded_list) == 10
         return cls(
             round=int.from_bytes(decoded_list[0], 'big'),
             epoch=int.from_bytes(decoded_list[1], 'big'),
@@ -280,6 +286,7 @@ class EthBlockBody:
 
     @classmethod
     def from_list(cls, decoded_list):
+        assert len(decoded_list) == 3
         return cls(
             transactions=[TransactionSigned.from_list(tx) for tx in decoded_list[0]],
             ommers=[ommer for ommer in decoded_list[1]],
@@ -295,6 +302,7 @@ class ConsensusBlockBody:
 
     @classmethod
     def from_list(cls, decoded_list):
+        assert len(decoded_list) == 1
         return cls(
             execution_body=EthBlockBody.from_list(decoded_list[0])
         )
