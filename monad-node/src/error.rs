@@ -39,6 +39,9 @@ pub enum NodeSetupError {
 
     #[error(transparent)]
     MetricsError(#[from] opentelemetry::metrics::MetricsError),
+
+    #[error(transparent)]
+    RayonPoolBuildError(#[from] rayon::ThreadPoolBuildError),
 }
 
 impl NodeSetupError {
@@ -46,14 +49,14 @@ impl NodeSetupError {
         match self {
             NodeSetupError::ClapError(e) => e.kind(),
             NodeSetupError::Custom { kind, msg: _ } => kind.to_owned(),
-            NodeSetupError::FromHexError(_) => ErrorKind::ValueValidation,
-            NodeSetupError::IoError(_) => ErrorKind::Io,
-            NodeSetupError::Secp256k1(_) => ErrorKind::ValueValidation,
-            NodeSetupError::Bls12_381(_) => ErrorKind::ValueValidation,
-            NodeSetupError::SignatureCollectionError(_) => ErrorKind::ValueValidation,
-            NodeSetupError::TomlDeError(_) => ErrorKind::ValueValidation,
-            NodeSetupError::TraceError(_) => ErrorKind::ValueValidation,
-            NodeSetupError::MetricsError(_) => ErrorKind::ValueValidation,
+            NodeSetupError::IoError(_) | NodeSetupError::RayonPoolBuildError(_) => ErrorKind::Io,
+            NodeSetupError::FromHexError(_)
+            | NodeSetupError::Secp256k1(_)
+            | NodeSetupError::Bls12_381(_)
+            | NodeSetupError::SignatureCollectionError(_)
+            | NodeSetupError::TomlDeError(_)
+            | NodeSetupError::TraceError(_)
+            | NodeSetupError::MetricsError(_) => ErrorKind::ValueValidation,
         }
     }
 }

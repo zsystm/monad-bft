@@ -12,7 +12,7 @@ use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
     ReadCommand, UpdateValidatorSet, WriteCommand,
 };
-use monad_node::config::{
+use monad_node_config::{
     FullNodeConfig, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
 };
 use monad_secp::SecpSignature;

@@ -57,20 +57,8 @@ pub struct Cli {
     #[arg(long)]
     pub statesync_ipc_path: PathBuf,
 
-    /// Set the opentelemetry OTLP exporter endpoint
-    #[arg(long)]
-    pub otel_endpoint: Option<String>,
-
     /// Set the password for decrypting keystore file
     /// Default to empty string
     #[arg(long)]
     pub keystore_password: Option<String>,
-
-    /// Turn otel trace collection on
-    #[arg(long, requires = "otel_endpoint")]
-    pub record_otel_traces: bool,
-
-    /// Set the time interval for metrics collection
-    #[arg(long, requires = "otel_endpoint")]
-    pub record_metrics_interval_seconds: Option<u64>,
 }

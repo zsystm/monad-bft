@@ -5,23 +5,25 @@ use monad_eth_types::{serde::deserialize_eth_address_from_str, EthAddress};
 use monad_secp::SecpSignature;
 use serde::Deserialize;
 
+pub use self::{
+    bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig},
+    consensus::NodeConsensusConfig,
+    fullnode::{FullNodeConfig, FullNodeIdentityConfig},
+    metrics::NodeMetricsConfig,
+    network::NodeNetworkConfig,
+};
+
 mod bootstrap;
-pub use bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig};
-
-pub mod consensus;
-pub use consensus::NodeConsensusConfig;
-
+mod consensus;
 mod fullnode;
-pub use fullnode::{FullNodeConfig, FullNodeIdentityConfig};
-
+mod metrics;
 mod network;
-pub use network::NodeNetworkConfig;
+mod util;
 
-pub mod util;
-
-pub(crate) type SignatureType = SecpSignature;
+pub type SignatureType = SecpSignature;
 pub type SignatureCollectionType =
     BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+pub type ForkpointConfig = Checkpoint<SignatureCollectionType>;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,8 +31,8 @@ pub struct NodeConfig {
     ////////////////////////////////
     // NODE-SPECIFIC CONFIGURATION //
     ////////////////////////////////
-    pub name: Option<String>,
-    pub network_name: Option<String>,
+    pub node_name: String,
+    pub network_name: String,
 
     #[serde(deserialize_with = "deserialize_eth_address_from_str")]
     pub beneficiary: EthAddress,
@@ -47,6 +49,7 @@ pub struct NodeConfig {
     pub bootstrap: NodeBootstrapConfig,
     pub fullnode: FullNodeConfig,
     pub network: NodeNetworkConfig,
+    pub metrics: Option<NodeMetricsConfig>,
 
     // TODO split network-wide configuration into separate file
     ////////////////////////////////
@@ -55,5 +58,3 @@ pub struct NodeConfig {
     pub chain_id: u64,
     pub consensus: NodeConsensusConfig,
 }
-
-pub type ForkpointConfig = Checkpoint<SignatureCollectionType>;
