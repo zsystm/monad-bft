@@ -5,6 +5,7 @@ use eyre::Result;
 use opentelemetry::metrics::{Counter, Gauge, Meter, MeterProvider};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct Metrics(Option<MetricsInner>);
@@ -64,6 +65,20 @@ impl Metrics {
     }
 }
 
+fn get_instance_name(default: &str) -> String {
+    match std::fs::read_to_string("/proc/sys/kernel/hostname") {
+        Ok(hostname) => format!("{default}-{hostname}"),
+        Err(e) => {
+            warn!(
+                ?e,
+                default,
+                "Failed to read hostname when initializing metrics. Falling back to default"
+            );
+            default.to_owned()
+        }
+    }
+}
+
 fn build_otel_meter_provider(
     otel_endpoint: Option<impl AsRef<str>>,
     service_name: String,
@@ -73,7 +88,7 @@ fn build_otel_meter_provider(
         .with_resource(opentelemetry_sdk::Resource::new(vec![
             opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
+                get_instance_name(&service_name),
             ),
         ]));
 
