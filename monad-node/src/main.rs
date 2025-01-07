@@ -297,11 +297,8 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 
                 let provider = build_otel_meter_provider(
                     &otel_endpoint,
-                    format!(
-                        "{network_name}::{node_name}::monad-bft",
-                        network_name = node_state.node_config.network_name,
-                        node_name = node_state.node_config.node_name
-                    ),
+                    node_state.node_config.node_name,
+                    node_state.node_config.network_name,
                     record_metrics_interval,
                 )
                 .expect("failed to build otel monad-node");
@@ -485,7 +482,8 @@ fn send_metrics(
 
 fn build_otel_meter_provider(
     otel_endpoint: &str,
-    service_name: String,
+    node_name: String,
+    network_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
     let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
@@ -511,7 +509,11 @@ fn build_otel_meter_provider(
         .with_resource(opentelemetry_sdk::Resource::new(vec![
             opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
+                format!("{network_name}::{node_name}::monad-bft",),
+            ),
+            opentelemetry::KeyValue::new(
+                opentelemetry::Key::new("network"),
+                opentelemetry::Value::String(network_name.into()),
             ),
         ]));
 
