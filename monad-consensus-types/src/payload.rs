@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
 use crate::block::{ExecutionProtocol, FinalizedHeader, MockableFinalizedHeader};
-use alloy_primitives::Address;
+use alloy_consensus::constants::EMPTY_WITHDRAWALS;
+use alloy_primitives::{Address, FixedBytes};
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 use auto_impl::auto_impl;
 use bytes::Bytes;
@@ -87,7 +88,12 @@ impl MockableFinalizedHeader for EthHeader {
     fn from_seq_num(seq_num: SeqNum) -> Self {
         Self(Header {
             number: seq_num.0,
-            ..Header::default()
+            base_fee_per_gas: Some(50_000_000_000),
+            withdrawals_root: Some(EMPTY_WITHDRAWALS),
+            blob_gas_used: Some(0),
+            excess_blob_gas: Some(0),
+            parent_beacon_block_root: Some(FixedBytes::default()),
+            ..Header::default() 
         })
     }
 }

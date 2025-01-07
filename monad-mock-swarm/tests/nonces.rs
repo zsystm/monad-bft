@@ -1,8 +1,7 @@
 #[cfg(test)]
 mod test {
     use std::{
-        collections::{BTreeMap, BTreeSet, HashSet},
-        time::Duration,
+        collections::{BTreeMap, BTreeSet, HashSet}, fs::File, io::Write, time::Duration
     };
 
     use alloy_consensus::Transaction as _;
@@ -10,10 +9,10 @@ mod test {
     use alloy_rlp::{encode, Decodable};
     use itertools::Itertools;
 
+    use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::payload::{EthExecutionProtocol, BASE_FEE_PER_GAS};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
-        NopPubKey, NopSignature,
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
@@ -31,6 +30,7 @@ mod test {
     };
     use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
+    use monad_secp::{PubKey, SecpSignature};
     use monad_state::{MonadMessage, VerifiedMonadMessage};
     use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
     use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
@@ -52,8 +52,8 @@ mod test {
 
     pub struct EthSwarm;
     impl SwarmRelation for EthSwarm {
-        type SignatureType = NopSignature;
-        type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type SignatureType = SecpSignature;
+        type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SecpSignature>>;
         type ExecutionProtocolType = EthExecutionProtocol;
         type StateBackendType = InMemoryState;
         type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
@@ -183,7 +183,7 @@ mod test {
 
     fn verify_transactions_in_ledger(
         swarm: &Nodes<EthSwarm>,
-        node_ids: Vec<ID<NopPubKey>>,
+        node_ids: Vec<ID<PubKey>>,
         txns: Vec<TransactionSigned>,
     ) -> bool {
         let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| t.hash()));
@@ -537,5 +537,40 @@ mod test {
             swarm.states().keys().cloned().collect_vec(),
             expected_txns
         ));
+    }
+
+    #[test]
+    fn one_node() {
+        tracing_subscriber::fmt::init();
+
+        let mut swarm = generate_eth_swarm(
+            1,
+            vec![],
+        );
+
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(100))
+            .is_some()
+        {}
+        let finalized_blocks = swarm
+            .states()
+            .first_key_value()
+            .unwrap()
+            .1
+            .executor
+            .ledger()
+            .get_finalized_blocks();
+        assert_eq!(finalized_blocks.len(), 101);
+        for (seq_num, finalized_block) in finalized_blocks {
+            let mut header = File::create(format!("../ledger/{}.header", seq_num.0))
+                .expect("Unable to create header file");
+            header
+                .write_all(&alloy_rlp::encode(finalized_block.header()))
+                .expect("Unable to write header");
+            let mut body = File::create(format!("../ledger/{}.body", seq_num.0))
+                .expect("Unable to create body file");
+            body.write_all(&alloy_rlp::encode(finalized_block.body()))
+                .expect("Unable to write body");
+        }
     }
 }
