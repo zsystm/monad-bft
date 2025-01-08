@@ -12,7 +12,7 @@ bench = false
 autocxx = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
-alloy-primitives = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true }
 cxx = { workspace = true }
 futures = { workspace = true }
