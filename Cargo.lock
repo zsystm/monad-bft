@@ -4152,6 +4152,7 @@ dependencies = [
 name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "bytes",
  "criterion",
  "itertools 0.10.5",
@@ -4536,6 +4537,8 @@ dependencies = [
 name = "monad-ledger"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "clap 4.4.10",

@@ -1541,6 +1541,7 @@ where
 mod test {
     use std::{ops::Deref, time::Duration};
 
+    use alloy_primitives::B256;
     use itertools::Itertools;
     use monad_consensus::{
         messages::{
@@ -1601,7 +1602,6 @@ mod test {
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
-    use reth_primitives::B256;
     use test_case::test_case;
     use tracing_test::traced_test;
 
