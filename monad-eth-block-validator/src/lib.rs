@@ -191,7 +191,6 @@ mod test {
     use alloy_primitives::B256;
     use monad_consensus_types::payload::FullTransactionList;
     use monad_eth_testutil::make_tx;
-    use monad_eth_tx::EthFullTransactionList;
 
     use super::*;
 
@@ -204,11 +203,9 @@ mod test {
         let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 3, 10);
 
         // create a block with the above transactions
-        let mut txs = Vec::new();
-        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
-        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
-        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
-        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let txs = vec![txn1, txn2];
+        let rlp_txs = alloy_rlp::encode(txs).into();
+        let full_txn_list = FullTransactionList::new(rlp_txs);
         let payload = Payload {
             txns: TransactionPayload::List(full_txn_list),
         };
@@ -227,11 +224,9 @@ mod test {
         let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 2, 10);
 
         // create a block with the above transactions
-        let mut txs = Vec::new();
-        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
-        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
-        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
-        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let txs = vec![txn1, txn2];
+        let rlp_txs = alloy_rlp::encode(txs).into();
+        let full_txn_list = FullTransactionList::new(rlp_txs);
         let payload = Payload {
             txns: TransactionPayload::List(full_txn_list),
         };
@@ -250,11 +245,9 @@ mod test {
         let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 2, 10);
 
         // create a block with the above transactions
-        let mut txs = Vec::new();
-        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
-        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
-        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
-        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let txs = vec![txn1, txn2];
+        let rlp_txs = alloy_rlp::encode(txs).into();
+        let full_txn_list = FullTransactionList::new(rlp_txs);
         let payload = Payload {
             txns: TransactionPayload::List(full_txn_list),
         };
