@@ -4412,7 +4412,6 @@ name = "monad-eth-ledger"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
- "alloy-rlp",
  "futures",
  "monad-blocksync",
  "monad-consensus-types",
@@ -4623,7 +4622,6 @@ dependencies = [
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "bytes",
@@ -4848,7 +4846,6 @@ dependencies = [
  "monad-archive",
  "monad-cxx",
  "monad-eth-block-policy",
- "monad-eth-types",
  "monad-rpc-docs",
  "monad-triedb-utils",
  "monad-types",

@@ -48,7 +48,6 @@ monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 
-alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 criterion = { workspace = true }
