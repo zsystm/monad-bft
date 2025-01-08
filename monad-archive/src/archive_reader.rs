@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
+use alloy_consensus::ReceiptEnvelope;
 use eyre::Result;
 
 use crate::{

@@ -26,9 +26,9 @@ bench = false
 [dependencies]
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 
-alloy-consensus = { workspace = true }
+alloy-consensus = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true }
-alloy-primitives = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
 aws-config = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
