@@ -24,7 +24,6 @@ pub use rpc_sender::*;
 
 pub const BATCH_SIZE: usize = 500;
 
-#[derive(Default)]
 pub struct SimpleAccount {
     pub nonce: u64,
     pub native_bal: U256,
@@ -183,7 +182,9 @@ impl From<(Address, PrivateKey)> for SimpleAccount {
         SimpleAccount {
             key,
             addr,
-            ..Default::default()
+            nonce: Default::default(),
+            native_bal: Default::default(),
+            erc20_bal: Default::default(),
         }
     }
 }

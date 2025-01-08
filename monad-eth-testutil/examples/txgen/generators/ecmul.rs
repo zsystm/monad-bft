@@ -19,7 +19,7 @@ impl Generator for ECMulGenerator {
         for sender in accts {
             for _ in 0..self.tx_per_sender {
                 let tx = self.ecmul.construct_tx(sender, ctx.base_fee * 2);
-                println!("tx: 0x{}", hex::encode(alloy_rlp::encode(tx)));
+                println!("tx: 0x{}", hex::encode(alloy_rlp::encode(&tx)));
                 txs.push((tx, self.ecmul.addr));
             }
         }
