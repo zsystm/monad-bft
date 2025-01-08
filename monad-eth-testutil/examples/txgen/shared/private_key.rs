@@ -38,7 +38,7 @@ impl PrivateKey {
         (
             address,
             Self {
-                priv_key: PrivateKeySigner::from_bytes(&pk.into()).expect("invalid pk"),
+                priv_key: PrivateKeySigner::from_bytes(&pk).expect("invalid pk"),
             },
         )
     }

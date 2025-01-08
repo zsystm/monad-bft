@@ -110,7 +110,7 @@ pub fn native_transfer_priority_fee(
         max_fee_per_gas,
         max_priority_fee_per_gas: priority_fee,
         to: TxKind::Call(to),
-        value: amt.into(),
+        value: amt,
         access_list: Default::default(),
         input: Default::default(),
     };

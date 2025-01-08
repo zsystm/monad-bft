@@ -45,7 +45,7 @@ impl ECMul {
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TxKind::Create,
-            value: U256::ZERO.into(),
+            value: U256::ZERO,
             access_list: Default::default(),
             input,
         };
@@ -68,7 +68,7 @@ impl ECMul {
             max_fee_per_gas,
             max_priority_fee_per_gas: 0,
             to: TxKind::Call(self.addr),
-            value: U256::ZERO.into(),
+            value: U256::ZERO,
             access_list: Default::default(),
             input: input.into(),
         };
