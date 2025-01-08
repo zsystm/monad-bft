@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_consensus::{Block, Header, TxEnvelope};
+use alloy_consensus::{Block, TxEnvelope};
 use alloy_rpc_types::TransactionReceipt;
 use futures::{FutureExt, Stream};
 use monad_triedb_utils::triedb_env::{BlockHeader, Triedb};

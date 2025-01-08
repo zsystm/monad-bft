@@ -14,7 +14,7 @@ use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 
 use crate::{
     block_handlers::{block_receipts, get_block_num_from_tag},
