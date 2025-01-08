@@ -217,7 +217,7 @@ impl ChainCache {
         let senders = HashIndex::new();
 
         for txn in block.transactions.iter().rev() {
-            let sender = txn.recover_signer_unchecked().unwrap_or_default();
+            let sender = txn.recover_signer().unwrap_or_default();
             let nonce = txn.nonce();
             senders.insert(sender, nonce);
         }
@@ -292,7 +292,7 @@ impl VirtualPool {
     async fn decide_pool(&self, txn: &Recovered<TxEnvelope>) -> TxPoolType {
         let sender = txn.signer();
         let nonce = txn.nonce();
-        let base_fee = txn.transaction.max_fee_per_gas();
+        let base_fee = txn.max_fee_per_gas();
 
         if base_fee < self.chain_cache.get_base_fee().await {
             return TxPoolType::Discard;
@@ -339,8 +339,8 @@ impl VirtualPool {
         } else if last_pending_nonce == nonce {
             if let Some(entry) = self.pending_pool.get(&txn.signer(), &txn.nonce()) {
                 // Replace a pending transaction if the fee is at least 10% higher than the current fee
-                let current_gas_price = entry.transaction.max_fee_per_gas();
-                let new_gas_price = txn.transaction.max_fee_per_gas();
+                let current_gas_price = entry.max_fee_per_gas();
+                let new_gas_price = txn.max_fee_per_gas();
                 if new_gas_price >= current_gas_price + (current_gas_price / 10) {
                     TxPoolType::Replace
                 } else {
@@ -362,13 +362,13 @@ impl VirtualPool {
                 }
                 TxPoolType::Pending => {
                     self.pending_pool.add(txn.clone(), false).await;
-                    if self.publisher.send(txn.into()).is_err() {
+                    if self.publisher.send(txn.into_tx()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
                 }
                 TxPoolType::Replace => {
                     self.pending_pool.add(txn.clone(), true).await;
-                    if self.publisher.send(txn.into()).is_err() {
+                    if self.publisher.send(txn.into_tx()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
                 }
