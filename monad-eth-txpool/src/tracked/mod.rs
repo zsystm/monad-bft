@@ -118,6 +118,7 @@ where
             block_policy,
             state_backend,
             pending,
+            0,
             MAX_PROMOTABLE_ON_CREATE_PROPOSAL,
         )?;
 
@@ -164,6 +165,7 @@ where
         block_policy: &EthBlockPolicy,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
+        min_promotable: usize,
         max_promotable: usize,
     ) -> Result<(), StateBackendError> {
         let Some(last_commit_seq_num) = self.last_commit_seq_num else {
@@ -174,13 +176,13 @@ where
             return Ok(());
         };
 
-        let insertable = insertable.min(max_promotable);
+        let inserting = insertable.min(max_promotable).max(min_promotable);
 
-        if insertable == 0 {
+        if inserting == 0 || inserting != insertable {
             return Ok(());
         }
 
-        let to_insert = pending.split_off(insertable);
+        let to_insert = pending.split_off(inserting);
 
         if to_insert.is_empty() {
             return Ok(());

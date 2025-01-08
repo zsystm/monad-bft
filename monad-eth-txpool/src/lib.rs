@@ -73,6 +73,7 @@ where
         &mut self,
         block_policy: &EthBlockPolicy,
         state_backend: &SBT,
+        min_promotable: usize,
         max_promotable: usize,
     ) -> Result<(), StateBackendError>
     where
@@ -83,6 +84,7 @@ where
             block_policy,
             state_backend,
             &mut self.pending,
+            min_promotable,
             max_promotable,
         )
     }
@@ -169,9 +171,8 @@ where
         if let Err(state_backend_error) = self.promote_pending(
             block_policy,
             state_backend,
-            txns.len()
-                .min(INSERT_TXS_MIN_PROMOTE)
-                .max(INSERT_TXS_MAX_PROMOTE),
+            INSERT_TXS_MIN_PROMOTE,
+            INSERT_TXS_MAX_PROMOTE,
         ) {
             if self.pending.is_at_promote_txs_watermark() {
                 warn!(
