@@ -275,7 +275,7 @@ pub fn decode_revert_message(output_data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{Header, TxLegacy};
+    use alloy_consensus::{Header, SignableTransaction, TxLegacy};
     use alloy_primitives::{Bytes, TxKind};
     use alloy_rlp::Encodable;
     use hex::FromHex;
@@ -300,15 +300,22 @@ mod tests {
             Path::new(&testdb_path).to_owned()
         };
         let result = eth_call(
-            TxEnvelope::Legacy(TxLegacy {
-                chain_id: Some(41454),
-                nonce: 0,
-                gas_price: 0,
-                gas_limit: 1000000000,
-                to: TxKind::Call(hex!("9344b07175800259691961298ca11c824e65032d").into()),
-                value: Default::default(),
-                input: Default::default(),
-            }),
+            TxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(41454),
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 1000000000,
+                    to: TxKind::Call(hex!("9344b07175800259691961298ca11c824e65032d").into()),
+                    value: Default::default(),
+                    input: Default::default(),
+                }
+                .into_signed(PrimitiveSignature::new(
+                    U256::from(0),
+                    U256::from(0),
+                    false,
+                )),
+            ),
             Header {
                 number: 1,
                 beneficiary: hex!("0102030405010203040501020304050102030405").into(),
@@ -345,15 +352,18 @@ mod tests {
             Path::new(&testdb_path).to_owned()
         };
 
-        let txn = TxEnvelope::Legacy(TxLegacy {
-            chain_id: Some(41454),
-            nonce: 0,
-            gas_price: 0,
-            gas_limit: 30000,
-            to: TxKind::Call(hex!("0000000000000000000002000000000000000000").into()),
-            value: TxValue::from(10000),
-            input: Default::default(),
-        });
+        let txn = TxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(41454),
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 30000,
+                to: TxKind::Call(hex!("0000000000000000000002000000000000000000").into()),
+                value: TxValue::from(10000),
+                input: Default::default(),
+            }
+            .into_signed(PrimitiveSignature::new(U256::from(0), U256::from(0), false)),
+        );
 
         let header = Header {
             number: 1,
@@ -441,15 +451,18 @@ mod tests {
             Path::new(&testdb_path).to_owned()
         };
 
-        let mut txn = TxEnvelope::Legacy(TxLegacy {
-            chain_id: Some(41454),
-            nonce: 0,
-            gas_price: 0,
-            gas_limit: 1000000000,
-            to: TxKind::Call(hex!("17e7eedce4ac02ef114a7ed9fe6e2f33feba1667").into()),
-            value: Default::default(),
-            input: hex!("ff01").into(),
-        });
+        let mut txn = TxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(41454),
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 1000000000,
+                to: TxKind::Call(hex!("17e7eedce4ac02ef114a7ed9fe6e2f33feba1667").into()),
+                value: Default::default(),
+                input: hex!("ff01").into(),
+            }
+            .into_signed(PrimitiveSignature::new(U256::from(0), U256::from(0), false)),
+        );
 
         let header = Header {
             number: 0,
@@ -531,15 +544,22 @@ mod tests {
     fn test_sha256_precompile() {
         let temp_blockdb_file = tempfile::TempDir::with_prefix("blockdb").unwrap();
         let result = eth_call(
-            TxEnvelope::Legacy(TxLegacy {
-                chain_id: Some(1337),
-                nonce: 0,
-                gas_price: 0,
-                gas_limit: 100000,
-                to: TxKind::Call(hex!("0000000000000000000000000000000000000002").into()),
-                value: Default::default(),
-                input: hex!("deadbeef").into(),
-            }),
+            TxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(1337),
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 100000,
+                    to: TxKind::Call(hex!("0000000000000000000000000000000000000002").into()),
+                    value: Default::default(),
+                    input: hex!("deadbeef").into(),
+                }
+                .into_signed(PrimitiveSignature::new(
+                    U256::from(0),
+                    U256::from(0),
+                    false,
+                )),
+            ),
             Header::default(),
             hex!("95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5").into(),
             0,
