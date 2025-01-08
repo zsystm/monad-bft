@@ -226,7 +226,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, alloy_rlp::encode(&&eth_txn).into());
+            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }
@@ -234,7 +234,7 @@ mod test {
         for nonce in 20..30 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, alloy_rlp::encode(&&eth_txn).into());
+            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
         }
 
         while swarm
