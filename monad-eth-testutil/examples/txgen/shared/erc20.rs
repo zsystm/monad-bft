@@ -160,7 +160,7 @@ fn make_tx(
         max_fee_per_gas,
         max_priority_fee_per_gas: 0,
         to: TxKind::Call(contract_or_to),
-        value: value,
+        value,
         access_list: Default::default(),
         input: input.into(),
     };
