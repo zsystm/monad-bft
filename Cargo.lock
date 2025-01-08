@@ -4549,7 +4549,6 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "clap 4.4.10",
  "futures",
  "monad-block-persist",
  "monad-blocksync",
@@ -4559,7 +4558,6 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-types",
- "notify",
  "tokio",
  "tracing",
 ]

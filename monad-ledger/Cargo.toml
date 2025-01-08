@@ -30,14 +30,3 @@ tokio = { workspace = true, features = [
     "sync",
 ]}
 tracing = { workspace = true }
-
-[dev-dependencies]
-clap = { workspace = true, features = ["derive"] }
-futures = { workspace = true }
-notify = "6.1.1"
-
-[[example]]
-name = "ledgewatch"
-
-[[example]]
-name = "blockwatch"
