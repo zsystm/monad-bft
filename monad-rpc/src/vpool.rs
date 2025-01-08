@@ -384,7 +384,7 @@ impl VirtualPool {
                     .transactions
                     .iter()
                     .filter_map(|txn| {
-                        let signer = txn.recover_signer().ok()?;
+                        let sender = txn.recover_signer().ok()?;
                         Some((sender, txn.nonce()))
                     })
                     .collect::<Vec<_>>();
@@ -400,7 +400,7 @@ impl VirtualPool {
                 // Add promoted transactions to the pending pool
                 for promoted in promote_queued.into_iter() {
                     self.pending_pool.add(promoted.clone(), false).await;
-                    if let Err(error) = self.publisher.send(promoted.into()) {
+                    if let Err(error) = self.publisher.send(promoted.into_tx()) {
                         warn!(
                             "issue broadcasting transaction from pending pool: {:?}",
                             error

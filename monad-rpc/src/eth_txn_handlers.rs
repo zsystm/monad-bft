@@ -9,7 +9,7 @@ use alloy_rpc_types::{
     BlockNumberOrTag, Filter, FilterBlockOption, FilteredParams, Log, Receipt, Transaction,
     TransactionReceipt,
 };
-use monad_archive::{archive_reader::ArchiveReader, BlockDataReader, IndexStoreReader};
+use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};

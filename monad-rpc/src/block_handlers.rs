@@ -1,7 +1,7 @@
 use alloy_consensus::{Header as RlpHeader, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{FixedBytes, U256};
 use alloy_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt};
-use monad_archive::{archive_reader::ArchiveReader, BlockDataReader};
+use monad_archive::archive_reader::ArchiveReader;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::{Deserialize, Serialize};
@@ -198,7 +198,7 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
             return parse_block_content(
                 block.header.hash_slow(),
                 block.header,
-                block.body,
+                block.body.transactions,
                 params.return_full_txns,
             );
         }
