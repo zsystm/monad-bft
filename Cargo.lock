@@ -593,6 +593,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy-rpc-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3410a472ce26c457e9780f708ee6bd540b30f88f1f31fdab7a11d00bd6aa1aee"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "alloy-rpc-types-eth",
+ "alloy-serde",
+ "serde",
+]
+
+[[package]]
 name = "alloy-rpc-types-any"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -601,6 +614,24 @@ dependencies = [
  "alloy-consensus-any",
  "alloy-rpc-types-eth",
  "alloy-serde",
+]
+
+[[package]]
+name = "alloy-rpc-types-engine"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03bd16fa4959255ebf4a7702df08f325e5631df5cdca07c8a8e58bdc10fe02e3"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-serde",
+ "derive_more 1.0.0",
+ "jsonwebtoken",
+ "rand",
+ "serde",
+ "strum 0.26.1",
 ]
 
 [[package]]
@@ -3722,6 +3753,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "9.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9ae10193d25051e74945f1ea2d0b42e03cc3b890f7e4cc5faa44997d808193f"
+dependencies = [
+ "base64 0.21.5",
+ "js-sys",
+ "pem",
+ "ring 0.17.8",
+ "serde",
+ "serde_json",
+ "simple_asn1",
+]
+
+[[package]]
 name = "k256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4783,9 +4829,13 @@ dependencies = [
  "actix-test",
  "actix-web",
  "actix-web-actors",
+ "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-client",
+ "alloy-rpc-types",
+ "alloy-signer",
+ "alloy-signer-local",
  "bytes",
  "clap 4.4.10",
  "env_logger 0.10.1",
@@ -4795,6 +4845,7 @@ dependencies = [
  "monad-archive",
  "monad-cxx",
  "monad-eth-block-policy",
+ "monad-eth-types",
  "monad-rpc-docs",
  "monad-triedb-utils",
  "monad-types",
@@ -5601,6 +5652,16 @@ name = "peeking_take_while"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
+
+[[package]]
+name = "pem"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e459365e590736a54c3fa561947c84837534b8e9af6fc5bf781307e82658fae"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+]
 
 [[package]]
 name = "percent-encoding"
@@ -6829,6 +6890,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a50cb1e76f89e3c076f7ae0a609c4b0033c26034f740eddbeb761b64b2f42980"
 dependencies = [
  "indexmap 1.9.3",
+]
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adc4e5204eb1910f40f9cfa375f6f05b68c3abac4b6fd879c8ff5e7ae8a0a085"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 1.0.50",
+ "time",
 ]
 
 [[package]]

@@ -14,6 +14,7 @@ bench = false
 monad-archive = { path = "../monad-archive" }
 monad-cxx = { path = "../monad-cxx" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 monad-types = { path = "../monad-types" }
 monad-rpc-docs = { path = "./monad-rpc-docs" }
@@ -23,8 +24,10 @@ actix-http = { workspace = true }
 actix-test = { workspace = true }
 actix-web = { workspace = true }
 actix-web-actors = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+alloy-rpc-types = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
@@ -47,6 +50,8 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 
 [dev-dependencies]
 alloy-rpc-client = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 reqwest = { workspace = true }
 test-case = { workspace = true }
 tempfile = { workspace = true }
