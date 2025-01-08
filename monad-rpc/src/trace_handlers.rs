@@ -133,6 +133,7 @@ pub struct MonadCallFrame {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_reason: Option<String>,
+    // FIXME why Rc<RefCell<_>> ?
     #[serde(skip_serializing_if = "Vec::is_empty")]
     calls: Vec<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>,
 }
@@ -481,7 +482,12 @@ async fn include_code_output<T: Triedb>(
 
 async fn build_call_tree(
     nodes: Vec<CallFrame>,
-) -> JsonRpcResult<Option<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>> {
+) -> JsonRpcResult<
+    Option<
+        // FIXME why Rc<RefCell<_>> ?
+        std::rc::Rc<std::cell::RefCell<MonadCallFrame>>,
+    >,
+> {
     if nodes.is_empty() {
         return Ok(None);
     }
