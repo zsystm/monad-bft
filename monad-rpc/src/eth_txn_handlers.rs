@@ -84,15 +84,15 @@ pub fn parse_tx_receipt(
 
     let logs: Vec<Log> = receipt
         .logs()
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(log_index, log)| Log {
             inner: log.clone(),
             block_hash,
             block_number,
             block_timestamp,
-            transaction_hash: Some((*tx.tx_hash()).into()),
-            transaction_index: Some(tx_index as u64),
+            transaction_hash: Some(*tx.tx_hash()),
+            transaction_index: Some(tx_index),
             log_index: Some(log_index as u64),
             removed: Default::default(),
         })
@@ -115,8 +115,8 @@ pub fn parse_tx_receipt(
 
     let tx_receipt = TransactionReceipt {
         inner: inner_receipt,
-        transaction_hash: (*tx.tx_hash()).into(),
-        transaction_index: Some(tx_index as u64),
+        transaction_hash: *tx.tx_hash(),
+        transaction_index: Some(tx_index),
         block_hash,
         block_number,
         from: address,
@@ -292,13 +292,13 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                     let logs: Vec<Log> = receipt
                         .inner
                         .logs()
-                        .into_iter()
-                        .cloned()
-                        .filter(|log: &Log| {
+                        .iter()
+                        .filter(|&log: &Log| {
                             !(filtered_params.filter.is_some()
                                 && (!filtered_params.filter_address(&log.address())
                                     || !filtered_params.filter_topics(log.topics())))
                         })
+                        .cloned()
                         .collect();
                     logs
                 })

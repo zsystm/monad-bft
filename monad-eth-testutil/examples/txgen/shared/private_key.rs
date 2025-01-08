@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use alloy_consensus::TxEnvelope;
+use alloy_consensus::SignableTransaction;
 use alloy_primitives::{keccak256, Address, PrimitiveSignature, B256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -43,7 +43,10 @@ impl PrivateKey {
         )
     }
 
-    pub fn sign_transaction(&self, transaction: &TxEnvelope) -> PrimitiveSignature {
+    pub fn sign_transaction(
+        &self,
+        transaction: &impl SignableTransaction<PrimitiveSignature>,
+    ) -> PrimitiveSignature {
         self.priv_key
             .sign_hash_sync(&transaction.signature_hash())
             .expect("signature works")

@@ -243,10 +243,7 @@ mod tests {
         let oracle = Oracle::new(Some(2));
 
         for block in blocks {
-            let mut gas_used_vec = Vec::new();
-            for _ in block.body.transactions.iter() {
-                gas_used_vec.push(21000);
-            }
+            let gas_used_vec = vec![21_000; block.body.transactions.len()];
             oracle.process_block(block, gas_used_vec).unwrap();
         }
 
