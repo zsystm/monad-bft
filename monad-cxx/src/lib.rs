@@ -276,7 +276,7 @@ pub fn decode_revert_message(output_data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{Header, SignableTransaction, TxLegacy};
-    use alloy_primitives::{Bytes, TxKind};
+    use alloy_primitives::{Bytes, TxKind, U256};
     use alloy_rlp::Encodable;
     use hex::FromHex;
     use hex_literal::hex;
@@ -359,7 +359,7 @@ mod tests {
                 gas_price: 0,
                 gas_limit: 30000,
                 to: TxKind::Call(hex!("0000000000000000000002000000000000000000").into()),
-                value: TxValue::from(10000),
+                value: U256::from(10000),
                 input: Default::default(),
             }
             .into_signed(PrimitiveSignature::new(U256::from(0), U256::from(0), false)),
@@ -498,10 +498,19 @@ mod tests {
 
         // Code override: this should produce the same result as the above call
         {
-            if let TxEnvelope::Legacy(ref mut legacy_tx) = txn {
-                legacy_tx.to =
-                    TxKind::Call(hex!("000000000000000000000000000000000000000a").into());
-            }
+            let txn = TxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(41454),
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 1000000000,
+                    // note that this `to` is different
+                    to: TxKind::Call(hex!("000000000000000000000000000000000000000a").into()),
+                    value: Default::default(),
+                    input: hex!("ff01").into(),
+                }
+                .into_signed(PrimitiveSignature::new(U256::from(0), U256::from(0), false)),
+            );
 
             let state_overrides_string = "{\"state_override_set\" : {\"0x000000000000000000000000000000000000000a\" : {
                 \"code\" : \"0x366002146022577177726f6e672d63616c6c6461746173697a656000526012600efd5b60003560f01c61ff01146047576d77726f6e672d63616c6c64617461600052600e6012fd5b61ffee6000526002601ef3\"
