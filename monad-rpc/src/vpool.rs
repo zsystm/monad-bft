@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use alloy_consensus::{transaction::Recovered, Signed, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::Address;
 use monad_rpc_docs::rpc;
 use scc::{ebr::Guard, HashIndex, HashMap, TreeIndex};
@@ -384,8 +384,8 @@ impl VirtualPool {
                     .transactions
                     .iter()
                     .filter_map(|txn| {
-                        txn.recover_signer_unchecked()
-                            .map(|sender| (sender, txn.nonce()))
+                        let signer = txn.recover_signer().ok()?;
+                        Some((sender, txn.nonce()))
                     })
                     .collect::<Vec<_>>();
 
@@ -444,9 +444,10 @@ mod tests {
         sync::Arc,
     };
 
-    use alloy_primitives::FixedBytes;
+    use alloy_consensus::{Transaction, TxEnvelope, TxEip1559, Header};
+    use alloy_primitives::{FixedBytes, B256, U256};
     use monad_triedb_utils::triedb_env::BlockHeader;
-    use reth_primitives::{hex::FromHex, sign_message, Header, TxEip1559, B256, U256};
+    use hex::FromHex;
 
     use super::*;
 
