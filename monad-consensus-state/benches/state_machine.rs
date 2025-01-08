@@ -423,7 +423,7 @@ fn make_tx(input_len: usize) -> TransactionSigned {
         nonce: rand::thread_rng().gen_range(10_000..50_000),
         gas_price: 1000,
         gas_limit: 21000,
-        to: TransactionKind::Call(Address::random()),
+        to: TransactionKind::Call(Address::repeat_byte(3)),
         value: 0.into(),
         input: input.into(),
     });

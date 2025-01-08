@@ -806,7 +806,7 @@ mod tests {
             nonce,
             gas_price: 1000,
             gas_limit: 30000,
-            to: TxKind::Call(Address::random()),
+            to: TxKind::Call(Address::repeat_byte(3)),
             value: U256::from(0),
             input: input.into(),
         };
@@ -830,7 +830,7 @@ mod tests {
             max_fee_per_gas: 1000,
             max_priority_fee_per_gas: 123,
             gas_limit: 30000,
-            to: TxKind::Call(Address::random()),
+            to: TxKind::Call(Address::repeat_byte(5)),
             value: U256::from(0),
             input: input.into(),
             ..Default::default()
