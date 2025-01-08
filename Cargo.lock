@@ -4232,7 +4232,10 @@ dependencies = [
 name = "monad-cxx"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
+ "alloy-rlp",
  "autocxx",
  "autocxx-build",
  "cmake",
