@@ -4471,6 +4471,7 @@ dependencies = [
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "bincode",
  "bytes",
  "chrono",
@@ -4489,7 +4490,11 @@ dependencies = [
 name = "monad-ipc"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "bytes",
  "clap 4.4.10",
  "futures",

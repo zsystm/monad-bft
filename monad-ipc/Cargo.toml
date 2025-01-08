@@ -29,6 +29,10 @@ tracing = { workspace = true }
 monad-bls = { path = "../monad-bls" }
 monad-secp = { path = "../monad-secp" }
 
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 hex = { workspace = true }
 itertools = { workspace = true }
