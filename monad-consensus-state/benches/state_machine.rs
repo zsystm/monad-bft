@@ -403,7 +403,7 @@ type StateRootValidatorType = NopStateRoot;
 type BlockPolicyType = EthBlockPolicy;
 type StateBackendType = InMemoryState;
 
-use alloy_consensus::{Transaction, TxEnvelope, TxLegacy};
+use alloy_consensus::{Transaction, TxEnvelope};
 use alloy_primitives::{FixedBytes, U256};
 use alloy_rlp::Encodable;
 use monad_consensus::messages::consensus_message::ProtocolMessage;
@@ -412,7 +412,6 @@ use monad_consensus_types::{
 };
 use monad_crypto::{certificate_signature::PubKey, hasher::Hash};
 use monad_eth_block_validator::EthValidator;
-use rand::{Rng, RngCore};
 
 fn make_tx(input_len: usize) -> TxEnvelope {
     let sender = FixedBytes::from(U256::from(rand::random::<u64>()));

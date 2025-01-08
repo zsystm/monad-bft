@@ -3,7 +3,7 @@ pub use std::{
     sync::Arc,
 };
 
-pub use alloy_consensus::TransactionSigned;
+pub use alloy_consensus::TxLegacy;
 pub use alloy_primitives::{Address, TxHash, U128, U256, U64};
 pub use alloy_rpc_client::ReqwestClient;
 pub use dashmap::{DashMap, DashSet};

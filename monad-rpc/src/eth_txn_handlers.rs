@@ -293,7 +293,7 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                         .inner
                         .logs()
                         .iter()
-                        .filter(|&log: &Log| {
+                        .filter(|log: &&Log| {
                             !(filtered_params.filter.is_some()
                                 && (!filtered_params.filter_address(&log.address())
                                     || !filtered_params.filter_topics(log.topics())))
