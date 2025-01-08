@@ -21,7 +21,6 @@ monad-types = { path = "../monad-types" }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
-reth-primitives = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use alloy_rlp::Decodable;
+use alloy_consensus::transaction::Transaction;
+use alloy_primitives::U256;
 use monad_consensus_types::{
     block::{Block, BlockKind, BlockPolicy, BlockType},
     block_validator::{BlockValidationError, BlockValidator},
@@ -11,10 +12,9 @@ use monad_eth_block_policy::{
     checked_sum, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
 };
-use monad_eth_tx::{EthSignedTransaction, EthTransaction};
+use monad_eth_tx::{EthFullTransactionList, EthTransaction};
 use monad_eth_types::{EthAddress, Nonce};
 use monad_state_backend::StateBackend;
-use reth_primitives::U256;
 use tracing::warn;
 
 type NonceMap = BTreeMap<EthAddress, Nonce>;
@@ -53,15 +53,11 @@ impl EthValidator {
         match &payload.txns {
             TransactionPayload::List(txns_rlp) => {
                 // RLP decodes the txns
-                let Ok(eth_txns) =
-                    Vec::<EthSignedTransaction>::decode(&mut txns_rlp.bytes().as_ref())
+                let Ok(EthFullTransactionList(eth_txns)) =
+                    EthFullTransactionList::rlp_decode(txns_rlp.bytes().clone())
                 else {
                     return Err(BlockValidationError::TxnError);
                 };
-
-                // recovering the signers verifies that these are valid signatures
-                let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
-                    .ok_or(BlockValidationError::TxnError)?;
 
                 // recover the account nonces and txn fee usage in this block
                 let mut nonces = BTreeMap::new();
@@ -69,7 +65,7 @@ impl EthValidator {
 
                 let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
 
-                for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
+                for eth_txn in eth_txns {
                     if static_validate_transaction(&eth_txn, self.chain_id).is_err() {
                         return Err(BlockValidationError::TxnError);
                     }
@@ -80,7 +76,8 @@ impl EthValidator {
                         return Err(BlockValidationError::TxnError);
                     }
 
-                    let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
+                    let maybe_old_nonce =
+                        nonces.insert(EthAddress(eth_txn.signer()), eth_txn.nonce());
                     // txn iteration is following the same order as they are in the
                     // block. A block is invalid if we see a smaller or equal nonce
                     // after the first or if there is a nonce gap
@@ -90,10 +87,12 @@ impl EthValidator {
                         }
                     }
 
-                    let txn_fee_entry = txn_fees.entry(EthAddress(signer)).or_insert(U256::ZERO);
+                    let txn_fee_entry = txn_fees
+                        .entry(EthAddress(eth_txn.signer()))
+                        .or_insert(U256::ZERO);
 
                     *txn_fee_entry = checked_sum(*txn_fee_entry, compute_txn_max_value(&eth_txn));
-                    validated_txns.push(eth_txn.with_signer(signer));
+                    validated_txns.push(eth_txn);
                 }
 
                 if validated_txns.len() > self.tx_limit {

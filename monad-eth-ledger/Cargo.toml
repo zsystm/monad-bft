@@ -20,5 +20,6 @@ monad-executor-glue = { version = "0.1.0", path = "../monad-executor-glue" }
 monad-types = { version = "0.1.0", path = "../monad-types" }
 monad-updaters = { version = "0.1.0", path = "../monad-updaters" }
 
+alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }

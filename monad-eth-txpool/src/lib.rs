@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BinaryHeap};
 
+use alloy_consensus::Transaction;
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use itertools::Itertools;
@@ -11,7 +12,7 @@ use monad_consensus_types::{
 use monad_eth_block_policy::{
     compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
 };
-use monad_eth_tx::{EthFullTransactionList, EthTransaction};
+use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
 use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
@@ -115,7 +116,7 @@ impl EthTxPool {
         }
 
         let sender = EthAddress(eth_tx.signer());
-        let txn_hash = eth_tx.hash();
+        let txn_hash = *eth_tx.tx_hash();
 
         if static_validate_transaction(&eth_tx, valid_chain_id).is_err() {
             return Err(TxPoolInsertionError::NotWellFormed);
@@ -216,10 +217,10 @@ where
         // TODO(rene): sender recovery is done inline here
         let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
             .into_par_iter()
-            .filter_map(|b| {
-                EthTransaction::decode(&mut b.as_ref())
-                    .ok()
-                    .map(|valid_tx| (valid_tx, b))
+            .filter_map(|raw_tx| {
+                let tx = EthSignedTransaction::decode(&mut raw_tx.as_ref()).ok()?;
+                let signer = tx.recover_signer().ok()?;
+                Some((EthTransaction::new_unchecked(tx, signer), raw_tx))
             })
             .unzip();
 
@@ -276,7 +277,7 @@ where
 
         let mut transaction_iters: BTreeMap<
             EthAddress,
-            sorted_vector_map::map::Iter<u64, (reth_primitives::TransactionSignedEcRecovered, f64)>,
+            sorted_vector_map::map::Iter<u64, (EthTransaction, f64)>,
         > = self
             .pool
             .iter()
@@ -343,7 +344,7 @@ where
             }
 
             total_gas += best_tx.gas_limit();
-            trace!(txn_hash = ?best_tx.hash(), "txn included in proposal");
+            trace!(txn_hash = ?best_tx.tx_hash(), "txn included in proposal");
             txs.push(best_tx.clone());
         }
 

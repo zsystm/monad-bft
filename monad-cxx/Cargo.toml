@@ -15,7 +15,6 @@ cxx = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 hex-literal = { workspace = true }
-reth-primitives = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

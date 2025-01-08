@@ -15,12 +15,12 @@ monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-types = { path = "../monad-types" }
 
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 itertools = { workspace = true }
 rayon = { workspace = true }
-reth-primitives = { workspace = true }
 sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
 

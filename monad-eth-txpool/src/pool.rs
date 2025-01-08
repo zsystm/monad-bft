@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
+use alloy_consensus::Transaction;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_eth_block_policy::{compute_txn_max_value_to_u128, EthValidatedBlock};
 use monad_eth_tx::EthTransaction;
 use monad_eth_types::{EthAddress, Nonce};
 use monad_types::SeqNum;
-use reth_primitives::TransactionSignedEcRecovered;
 use sorted_vector_map::{
     map::{Iter, Keys},
     SortedVectorMap,
@@ -42,7 +42,7 @@ impl TransactionGroup {
         self.transactions.len()
     }
 
-    pub fn iter(&self) -> Iter<'_, u64, (TransactionSignedEcRecovered, f64)> {
+    pub fn iter(&self) -> Iter<'_, u64, (EthTransaction, f64)> {
         self.transactions.iter()
     }
 }
@@ -73,7 +73,7 @@ impl Pool {
         self.txs.iter()
     }
 
-    pub fn add_tx(&mut self, sender: EthAddress, eth_tx: TransactionSignedEcRecovered, ratio: f64) {
+    pub fn add_tx(&mut self, sender: EthAddress, eth_tx: EthTransaction, ratio: f64) {
         self.txs.entry(sender).or_default().add(eth_tx, ratio);
     }
 
@@ -99,7 +99,7 @@ impl Pool {
                         txn {:?} will be excluded \
                         nonce is : {:?} < lowest_valid_nonce {:?} \
                         ",
-                            txn.0.hash(),
+                            txn.0.tx_hash(),
                             nonce,
                             lowest_valid_nonce
                         )

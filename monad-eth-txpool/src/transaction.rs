@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use alloy_consensus::Transaction;
 use monad_eth_tx::{EthTransaction, EthTxHash};
 
 use crate::utils::effective_tip_per_gas;
@@ -20,7 +21,7 @@ impl WrappedTransaction<'_> {
     }
 
     pub fn hash(&self) -> EthTxHash {
-        self.inner.hash()
+        *self.inner.tx_hash()
     }
 
     pub fn gas_limit(&self) -> u64 {

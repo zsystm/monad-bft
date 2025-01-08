@@ -1,17 +1,12 @@
+use alloy_consensus::{Transaction, TxEnvelope};
 use monad_eth_tx::EthTransaction;
-use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
 
 pub fn effective_tip_per_gas(transaction: &EthTransaction) -> u128 {
-    match transaction.transaction {
-        Transaction::Legacy(TxLegacy { gas_price, .. })
-        | Transaction::Eip2930(TxEip2930 { gas_price, .. }) => gas_price,
-        Transaction::Eip1559(TxEip1559 {
-            max_priority_fee_per_gas,
-            ..
-        })
-        | Transaction::Eip4844(TxEip4844 {
-            max_priority_fee_per_gas,
-            ..
-        }) => max_priority_fee_per_gas,
+    match transaction.tx() {
+        TxEnvelope::Legacy(tx) => tx.tx().gas_price,
+        TxEnvelope::Eip2930(tx) => tx.tx().gas_price,
+        TxEnvelope::Eip1559(tx) => tx.tx().max_priority_fee_per_gas,
+        TxEnvelope::Eip4844(tx) => tx.tx().tx().max_priority_fee_per_gas,
+        tx => tx.gas_price().unwrap_or_default(), // FIXME is this a sane default?
     }
 }

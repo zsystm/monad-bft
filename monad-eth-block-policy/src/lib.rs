@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use alloy_consensus::transaction::Transaction;
+use alloy_primitives::U256;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
@@ -13,7 +15,6 @@ use monad_eth_tx::{EthSignedTransaction, EthTransaction, EthTxHash};
 use monad_eth_types::{Balance, EthAddress, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
-use reth_primitives::U256;
 use sorted_vector_map::SortedVectorMap;
 use tracing::trace;
 
@@ -156,7 +157,7 @@ pub struct EthValidatedBlock<SCT: SignatureCollection> {
 
 impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
     pub fn get_validated_txn_hashes(&self) -> Vec<EthTxHash> {
-        self.validated_txns.iter().map(|t| t.hash()).collect()
+        self.validated_txns.iter().map(|t| *t.tx_hash()).collect()
     }
 
     /// Returns the highest tx nonce per account in the block
