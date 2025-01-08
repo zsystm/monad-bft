@@ -30,7 +30,9 @@ monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-testutil = { path = "../monad-testutil" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
 itertools = { workspace = true }
 rand = { workspace = true }

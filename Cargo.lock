@@ -4198,7 +4198,9 @@ dependencies = [
 name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
+ "alloy-rlp",
  "bytes",
  "criterion",
  "itertools 0.10.5",
@@ -4433,6 +4435,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-client",
+ "alloy-rpc-types",
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-macro",

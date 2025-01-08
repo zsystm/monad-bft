@@ -26,6 +26,7 @@ rand = { workspace = true }
 alloy-json-rpc = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-client = { workspace = true }
+alloy-rpc-types = { workspace = true }
 alloy-transport = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }

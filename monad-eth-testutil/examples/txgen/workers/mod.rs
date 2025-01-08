@@ -3,8 +3,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering::SeqCst},
 };
 
+use alloy_consensus::TxEnvelope;
 use futures::{stream::FuturesUnordered, StreamExt};
-use reth_primitives::TransactionSigned;
 
 use crate::{prelude::*, shared::eth_json_rpc::EthJsonRpc};
 
@@ -159,7 +159,7 @@ pub struct AddrsWithTime {
 
 pub struct AccountsWithTxs {
     pub accts: Accounts,
-    pub txs: Vec<(TransactionSigned, Address)>,
+    pub txs: Vec<(TxEnvelope, Address)>,
 }
 
 impl ExactSizeIterator for AccountsIter<'_> {}

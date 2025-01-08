@@ -1,4 +1,4 @@
-use reth_primitives::hex;
+use alloy_primitives::hex;
 
 use super::*;
 use crate::shared::ecmul::ECMul;
