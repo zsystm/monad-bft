@@ -12,12 +12,12 @@ pub struct TimestampAdjuster {
     /// list of deltas received from consensus to use towards updating adjustment
     deltas: SortedVec<i64>,
     /// maximum abs value of a delta we can use
-    max_delta: u64,
+    max_delta_ns: u128,
 }
 
 impl TimestampAdjuster {
-    pub fn new(max_delta: u64, adjustment_period: usize) -> Self {
-        assert!(max_delta < i64::MAX as u64);
+    pub fn new(max_delta_ns: u128, adjustment_period: usize) -> Self {
+        assert!(max_delta_ns < i128::MAX as u128);
         assert!(
             adjustment_period % 2 == 1,
             "median accuracy expects odd period"
@@ -26,7 +26,7 @@ impl TimestampAdjuster {
             adjustment: 0,
             adjustment_period,
             deltas: SortedVec::new(),
-            max_delta,
+            max_delta_ns,
         }
     }
 
@@ -48,8 +48,8 @@ impl TimestampAdjuster {
     }
 
     pub fn determine_signed_delta(&self, t: TimestampAdjustment) -> i64 {
-        let delta = if t.delta > self.max_delta {
-            self.max_delta
+        let delta = if t.delta > self.max_delta_ns {
+            self.max_delta_ns
         } else {
             t.delta
         };

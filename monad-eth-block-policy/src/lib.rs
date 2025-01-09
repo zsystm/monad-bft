@@ -5,6 +5,7 @@ use alloy_primitives::U256;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
+    checkpoint::RootInfo,
     payload::{Payload, PayloadId, PROPOSAL_GAS_LIMIT},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
@@ -242,8 +243,8 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
         &self.block.qc
     }
 
-    fn get_timestamp(&self) -> u64 {
-        self.block.timestamp
+    fn get_timestamp(&self) -> u128 {
+        self.block.timestamp_ns
     }
 
     fn get_unvalidated_block(self) -> Block<SCT> {
@@ -630,6 +631,7 @@ where
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
+        blocktree_root: RootInfo,
         state_backend: &SBT,
     ) -> Result<(), BlockPolicyError> {
         trace!(?block, "check_coherency");
@@ -643,6 +645,30 @@ where
             assert_eq!(first_block.get_seq_num(), self.last_commit);
         } else {
             assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
+        }
+
+        // check coherency against the block being extended or against the root of the blocktree if
+        // there is no extending branch
+        let (extending_seq_num, extending_timestamp) =
+            if let Some(extended_block) = extending_blocks.last() {
+                (extended_block.get_seq_num(), extended_block.get_timestamp())
+            } else {
+                (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
+            };
+        if block.is_empty_block() {
+            // Empty block doesn't occupy a sequence number
+            if block.get_seq_num() != extending_seq_num {
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+        } else {
+            // Non-empty blocks must extend their parent QC by 1
+            if block.get_seq_num() != extending_seq_num + SeqNum(1) {
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+        }
+        if block.get_timestamp() <= extending_timestamp {
+            // timestamps must be monotonically increasing
+            return Err(BlockPolicyError::TimestampError);
         }
 
         // TODO fix this unnecessary copy into a new vec to generate an owned EthAddress

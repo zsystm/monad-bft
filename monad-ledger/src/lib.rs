@@ -24,7 +24,6 @@ use monad_consensus_types::{
         ExecutionProtocol, FullTransactionList, Payload, PayloadId, TransactionPayload,
         BASE_FEE_PER_GAS,
     },
-    quorum_certificate::GENESIS_BLOCK_ID,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
@@ -34,7 +33,7 @@ use monad_crypto::{
 use monad_eth_tx::EthSignedTransaction;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_types::{BlockId, Round, SeqNum};
+use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID};
 use tracing::{info, trace};
 
 type EthBlock = AlloyBlock<TxEnvelope>;
@@ -418,7 +417,11 @@ fn generate_header<SCT: SignatureCollection>(
         gas_used: 0,
         // timestamp in consensus proposal is in Unix milliseconds
         // but we commit the block in Unix seconds for integration compatibility
-        timestamp: monad_block.get_timestamp().div(1000),
+        timestamp: monad_block
+            .get_timestamp()
+            .div(1_000_000_000)
+            .try_into()
+            .expect("584 million years hasn't elapsed since epoch"),
         mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: FixedBytes::default(),
         // TODO: calculate base fee according to EIP1559

@@ -102,7 +102,9 @@ impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
             payload_id: Some((&value.payload_id).into()),
             block_kind: (&value.block_kind).into(),
             qc: Some((&value.qc).into()),
-            timestamp: value.timestamp,
+            timestamp: value.timestamp_ns as u64, // TODO: this is obv not correct but protobuf
+                                                  // is not used in protocol and definitions will be
+                                                  // removed
         }
     }
 }
@@ -118,7 +120,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                     "Block<AggregateSignatures>.author".to_owned(),
                 ))?
                 .try_into()?,
-            value.timestamp,
+            value.timestamp.into(),
             value
                 .epoch
                 .ok_or(Self::Error::MissingRequiredField(

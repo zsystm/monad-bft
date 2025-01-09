@@ -13,7 +13,7 @@ use monad_crypto::{
     },
     hasher::{Hash, Hasher, HasherType},
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round};
 
 pub fn setup_block<ST, SCT>(
     author: NodeId<CertificateSignaturePubKey<ST>>,
@@ -38,8 +38,6 @@ where
         round: qc_round,
         parent_id,
         parent_round: Round(0),
-        seq_num: SeqNum(0),
-        timestamp: 0,
     };
     let qcinfo = QcInfo {
         vote: Vote {

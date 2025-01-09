@@ -69,10 +69,6 @@ pub struct VoteInfo {
     pub parent_id: BlockId,
     /// parent round of the proposed block
     pub parent_round: Round,
-    /// seqnum of the proposed block
-    pub seq_num: SeqNum,
-    /// timestamp of the proposed block
-    pub timestamp: u64,
 }
 
 impl std::fmt::Debug for VoteInfo {
@@ -83,8 +79,6 @@ impl std::fmt::Debug for VoteInfo {
             .field("r", &self.round)
             .field("pid", &self.parent_id)
             .field("pr", &self.parent_round)
-            .field("sn", &self.seq_num)
-            .field("ts", &self.timestamp)
             .finish()
     }
 }
@@ -96,8 +90,6 @@ impl Hashable for VoteInfo {
         state.update(self.round.as_bytes());
         self.parent_id.hash(state);
         state.update(self.parent_round.as_bytes());
-        state.update(self.seq_num.as_bytes());
-        state.update(self.timestamp.as_bytes());
     }
 }
 
@@ -109,8 +101,6 @@ impl DontCare for VoteInfo {
             round: Round(0),
             parent_id: BlockId(Hash([0x0_u8; 32])),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
-            timestamp: 0,
         }
     }
 }
@@ -118,9 +108,8 @@ impl DontCare for VoteInfo {
 #[cfg(test)]
 mod test {
     use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
-    use monad_types::{BlockId, Epoch, Round, SeqNum};
+    use monad_types::{BlockId, Epoch, Round};
     use test_case::test_case;
-    use zerocopy::AsBytes;
 
     use super::VoteInfo;
     use crate::{ledger::CommitResult, voting::Vote};
@@ -133,8 +122,6 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
-            timestamp: 0,
         };
 
         let mut hasher = HasherType::new();
@@ -143,8 +130,6 @@ mod test {
         hasher.update(vi.round);
         hasher.update(vi.parent_id.0);
         hasher.update(vi.parent_round);
-        hasher.update(vi.seq_num.as_bytes());
-        hasher.update(vi.timestamp.as_bytes());
 
         let h1 = hasher.hash();
         let h2 = HasherType::hash_object(&vi);
@@ -161,8 +146,6 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
-            timestamp: 0,
         };
 
         let v = Vote {

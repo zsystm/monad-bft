@@ -10,6 +10,7 @@ impl From<&RootInfo> for ProtoRootInfo {
             epoch: Some((&root.epoch).into()),
             block_id: Some((&root.block_id).into()),
             state_root: Some((&root.state_root).into()),
+            timestamp_ns: root.timestamp_ns,
         }
     }
 }
@@ -49,6 +50,7 @@ impl TryFrom<ProtoRootInfo> for RootInfo {
                     "RootInfo::state_root".to_owned(),
                 ))?
                 .try_into()?,
+            timestamp_ns: root.timestamp_ns,
         })
     }
 }

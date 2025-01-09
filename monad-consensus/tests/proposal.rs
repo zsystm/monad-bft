@@ -61,8 +61,6 @@ fn setup_block(
         round: qc_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: qc_parent_round,
-        seq_num,
-        timestamp: 0,
     };
     let qcinfo = QcInfo {
         vote: Vote {
@@ -169,8 +167,6 @@ fn define_proposal_with_tc(
         round: qc_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: qc_parent_round,
-        seq_num: qc_seq_num,
-        timestamp: 0,
     };
 
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
@@ -504,7 +500,6 @@ fn test_verify_proposal_happy() {
 // in the validate function in the case there exists no TC.
 //
 // The error messages and their related tests are the following:
-//  - test_validate_invalid_seq_num - Error::InvalidSeqNum
 //  - test_validate_missing_tc - Error::NotWellFormed
 //  - test_validate_incorrect_block_epoch - Error::InvalidEpoch
 //  - test_validate_qc_epoch - Error::InvalidEpoch
@@ -516,53 +511,6 @@ fn test_verify_proposal_happy() {
 // These tests do not reach Error::InvalidSignature due to mocksignature collection
 // when a proposal message contains a QC.
 
-// block seq num is not QC seq num + 1
-#[test]
-fn test_validate_invalid_seq_num() {
-    let known_epoch = Epoch(1);
-    let known_round = Round(0);
-    let val_epoch = Epoch(1);
-
-    let block_epoch = Epoch(1);
-    let block_round = Round(234);
-    let block_seq_num = SeqNum(110); // this causes error
-
-    let qc_epoch = Epoch(1);
-    let qc_round = Round(233);
-    let qc_parent_round = Round(0);
-    let qc_seq_num = block_seq_num - SeqNum(2); // this causes error
-
-    let (keypairs, _, epoch_manager, val_epoch_map) =
-        setup_val_state(known_epoch, known_round, val_epoch);
-    let author = NodeId::new(keypairs[0].pubkey());
-
-    let (block, payload) = setup_block(
-        author,
-        block_epoch,
-        block_round,
-        block_seq_num,
-        qc_epoch,
-        qc_round,
-        qc_parent_round,
-        qc_seq_num,
-        &[
-            keypairs[0].pubkey(),
-            keypairs[1].pubkey(),
-            keypairs[2].pubkey(),
-        ],
-    );
-
-    let proposal = Unvalidated::new(ProposalMessage {
-        block,
-        payload,
-        last_round_tc: None,
-    });
-
-    assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
-        Err(Error::InvalidSeqNum)
-    );
-}
 // block round is not either QC seq num + 1 or TC block round + 1
 #[test_case(Round(20))]
 #[test_case(Round(233))]
@@ -892,7 +840,6 @@ fn test_validate_qc_happy() {
 // of the validate function in the case there exists a TC.
 //
 // The error messages and their related tests are the following:
-//  - test_validate_tc_qc_invalid_seq_num - Error::InvalidSeqNum
 //  - test_validate_tc_invalid_round_block - Error::NotWellFormed
 //  - test_validate_tc_invalid_epoch - Error::InvalidEpoch
 //  - test_validate_tc_incorrect_epoch - Error::InvalidEpoch
@@ -900,47 +847,6 @@ fn test_validate_qc_happy() {
 //  - test_validate_tc_invalid_round - Error::InvalidTcRound
 //  - test_validate_tc_invalid_tc_signature - Error::InvalidSignature
 //  - test_validate_tc_happy - happy path
-
-// TC has invalid seq_num
-#[test]
-fn test_validate_tc_qc_invalid_seq_num() {
-    let known_epoch = Epoch(1);
-    let known_round = Round(0);
-    let val_epoch = known_epoch;
-
-    let block_epoch = known_epoch;
-    let block_round = known_round + Round(3);
-    let block_seq_num = SeqNum(2);
-
-    let qc_epoch = known_epoch;
-    let qc_round = block_round - Round(1);
-    let qc_parent_round = block_round - Round(2);
-    let qc_seq_num = block_seq_num;
-
-    let tc_epoch = Epoch(3);
-    let tc_round = Round(2);
-
-    let (_, _, epoch_manager, val_epoch_map, proposal) = define_proposal_with_tc(
-        known_epoch,
-        known_round,
-        val_epoch,
-        block_epoch,
-        block_round,
-        block_seq_num,
-        qc_epoch,
-        qc_round,
-        qc_parent_round,
-        qc_seq_num,
-        tc_epoch,
-        tc_round,
-    );
-
-    let proposal = Unvalidated::new(proposal);
-    assert_eq!(
-        proposal.validate(&epoch_manager, &val_epoch_map),
-        Err(Error::InvalidSeqNum)
-    );
-}
 
 // TC round is not 1 behind block round
 #[test_case(Round(3), Round(1))]

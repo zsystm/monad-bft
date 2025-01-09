@@ -6,13 +6,14 @@ use crate::{
     state_root_hash::StateRootHash, validator_data::ValidatorSetDataWithEpoch,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootInfo {
     pub round: Round,
     pub seq_num: SeqNum,
     pub epoch: Epoch,
     pub block_id: BlockId,
     pub state_root: StateRootHash,
+    pub timestamp_ns: u64, // FIXME: using u64 because toml doesn't support u128. Once we remove timestamp from checkpoint we should change it back
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

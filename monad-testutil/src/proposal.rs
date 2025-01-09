@@ -35,9 +35,11 @@ pub struct ProposalGen<ST, SCT> {
     epoch: Epoch,
     round: Round,
     qc: QuorumCertificate<SCT>,
+    qc_seq_num: SeqNum,
     high_qc: QuorumCertificate<SCT>,
+    high_qc_seq_num: SeqNum,
     last_tc: Option<TimeoutCertificate<SCT>>,
-    timestamp: u64,
+    timestamp: u128,
     phantom: PhantomData<ST>,
 }
 
@@ -62,7 +64,9 @@ where
             epoch: Epoch(1),
             round: Round(0),
             qc: genesis_qc.clone(),
+            qc_seq_num: SeqNum(0),
             high_qc: genesis_qc,
+            high_qc_seq_num: SeqNum(0),
             last_tc: None,
             timestamp: 0,
             phantom: PhantomData,
@@ -83,13 +87,13 @@ where
         srh: StateRootHash,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal
-        let qc = if self.last_tc.is_some() {
-            &self.high_qc
+        let (qc, last_seq_num) = if self.last_tc.is_some() {
+            (&self.high_qc, self.high_qc_seq_num)
         } else {
             // entering new round from qc
             self.round += Round(1);
             self.epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
-            &self.qc
+            (&self.qc, self.qc_seq_num)
         };
         self.timestamp += 1;
 
@@ -109,8 +113,8 @@ where
             .expect("key not in valset");
 
         let seq_num = match txns {
-            TransactionPayload::List(_) => qc.get_seq_num() + SeqNum(1),
-            TransactionPayload::Null => qc.get_seq_num(),
+            TransactionPayload::List(_) => last_seq_num + SeqNum(1),
+            TransactionPayload::Null => last_seq_num,
         };
         let block_kind = match txns {
             TransactionPayload::List(_) => BlockKind::Executable,
@@ -137,7 +141,9 @@ where
             .get_cert_pubkeys(&epoch_manager.get_epoch(self.round).expect("epoch exists"))
             .expect("should have the current validator certificate pubkeys");
         self.high_qc = self.qc.clone();
+        self.high_qc_seq_num = self.qc_seq_num;
         self.qc = self.get_next_qc(certkeys, &block, validator_cert_pubkeys);
+        self.qc_seq_num = seq_num;
 
         let proposal = ProposalMessage {
             block,
@@ -237,8 +243,6 @@ where
             round: block.round,
             parent_id: block.qc.get_block_id(),
             parent_round: block.qc.get_round(),
-            seq_num: block.execution.seq_num,
-            timestamp: block.timestamp,
         };
         let qcinfo = QcInfo {
             vote: Vote {

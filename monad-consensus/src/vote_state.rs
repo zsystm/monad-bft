@@ -200,7 +200,7 @@ mod test {
     };
     use monad_multi_sig::MultiSig;
     use monad_testutil::{signing::*, validators::create_keys_w_validators};
-    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
+    use monad_types::{BlockId, Epoch, NodeId, Round, Stake};
     use monad_validator::validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory};
 
     use super::VoteState;
@@ -220,8 +220,6 @@ mod test {
             round: vote_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
-            timestamp: 0,
         };
 
         let v = Vote {

@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, ops::Deref};
 
 use monad_consensus_types::{
-    block::BlockType,
     convert::signing::certificate_signature_to_proto,
     ledger::CommitResult,
     quorum_certificate::QuorumCertificate,
@@ -20,7 +19,7 @@ use monad_crypto::{
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{NodeId, Round, SeqNum, Stake};
+use monad_types::{NodeId, Round, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -324,32 +323,14 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
     }
 
     /// A well-formed proposal
-    /// 1. extends the sequence number in the QC by 1 and
-    /// 2. carries a QC/TC from r-1, proving that the block is proposed on a
+    /// 1. carries a QC/TC from r-1, proving that the block is proposed on a
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
-        self.valid_seq_num()?;
         well_formed(
             self.obj.block.round,
             self.obj.block.qc.get_round(),
             &self.obj.last_round_tc,
         )
-    }
-
-    fn valid_seq_num(&self) -> Result<(), Error> {
-        if self.obj.block.is_empty_block() {
-            // Empty block doesn't occupy a sequence number
-            if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() {
-                return Err(Error::InvalidSeqNum);
-            }
-        } else {
-            // Non-empty blocks must extend their parent QC by 1
-            if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() + SeqNum(1) {
-                return Err(Error::InvalidSeqNum);
-            }
-        }
-
-        Ok(())
     }
 
     /// Check local epoch manager record for block.round is equal to block.epoch
@@ -1156,8 +1137,6 @@ mod test {
                 round: Round(10),
                 parent_id: BlockId(Hash([0x09_u8; 32])),
                 parent_round: Round(9),
-                seq_num: SeqNum(10),
-                timestamp: 0,
             },
             ledger_commit_info: CommitResult::Commit,
         };
@@ -1217,8 +1196,6 @@ mod test {
             round: Round(10),
             parent_id: BlockId(Hash([0x0a_u8; 32])),
             parent_round: Round(9),
-            seq_num: SeqNum(7),
-            timestamp: 0,
         };
 
         let qcinfo = QcInfo {
@@ -1268,8 +1245,6 @@ mod test {
             round: Round(10),
             parent_id: BlockId(Hash([0x0a_u8; 32])),
             parent_round: Round(9),
-            seq_num: SeqNum(7),
-            timestamp: 0,
         };
 
         let qcinfo = QcInfo {
@@ -1352,8 +1327,6 @@ mod test {
             round: Round(10),
             parent_id: BlockId(Hash([0x0a_u8; 32])),
             parent_round: Round(8),
-            seq_num: SeqNum(7),
-            timestamp: 0,
         };
 
         let qcinfo = QcInfo {

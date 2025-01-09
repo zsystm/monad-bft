@@ -17,11 +17,11 @@ use monad_consensus::{
 };
 use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockType},
+    block::{BlockPolicy, BlockType, GENESIS_TIMESTAMP},
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
-    quorum_certificate::{QuorumCertificate, GENESIS_BLOCK_ID},
+    quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::{StateRootHash, StateRootHashInfo},
     txpool::TxPool,
@@ -40,7 +40,7 @@ use monad_executor_glue::{
     StateSyncNetworkMessage, UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -78,9 +78,6 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
         }
         validation::Error::InsufficientStake => {
             metrics.validation_errors.insufficient_stake += 1;
-        }
-        validation::Error::InvalidSeqNum => {
-            metrics.validation_errors.invalid_seq_num += 1;
         }
         validation::Error::ValidatorSetDataUnavailable => {
             // This error occurs when the node knows when the next epoch starts,
@@ -158,6 +155,7 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
                 seq_num: GENESIS_SEQ_NUM,
                 epoch: Epoch(1),
                 state_root,
+                timestamp_ns: GENESIS_TIMESTAMP.try_into().unwrap(),
             },
             high_qc: QuorumCertificate::genesis_qc(),
             validator_sets: vec![
@@ -736,15 +734,9 @@ where
         );
 
         let nodeid = NodeId::new(self.key.pubkey());
-        let delta: u64 = self
-            .consensus_config
-            .delta
-            .as_millis()
-            .try_into()
-            .expect("consensus config delta should not be too large for a u64");
         let block_timestamp = BlockTimestamp::new(
-            5 * delta,
-            self.consensus_config.timestamp_latency_estimate_ms,
+            5 * self.consensus_config.delta.as_nanos(),
+            self.consensus_config.timestamp_latency_estimate_ns,
         );
         let statesync_to_live_threshold = self.consensus_config.statesync_to_live_threshold;
         let mut monad_state = MonadState {
@@ -754,7 +746,7 @@ where
 
             consensus_config: self.consensus_config,
             consensus: ConsensusMode::start_sync(
-                self.forkpoint.root.clone(),
+                self.forkpoint.root,
                 self.forkpoint.high_qc.clone(),
                 BlockBuffer::new(
                     self.consensus_config.execution_delay,
@@ -1219,7 +1211,7 @@ where
         let consensus = ConsensusState::new(
             &self.epoch_manager,
             &self.consensus_config,
-            root.clone(),
+            *root,
             high_qc.clone(),
         );
         tracing::info!(?root, ?high_qc, "done syncing, initializing consensus");
@@ -1287,12 +1279,11 @@ mod test {
                     round: Round(4030),
                     parent_id: BlockId(Hash([0x06_u8; 32])),
                     parent_round: Round(4027),
-                    seq_num: SeqNum(2998), // one block before boundary block
-                    timestamp: 1,
                 },
                 ledger_commit_info: CommitResult::NoCommit,
             },
         };
+        let qc_seq_num = SeqNum(2998); // one block before boundary block
 
         let qc_info_hash = HasherType::hash_object(&qc_info.vote);
 
@@ -1309,7 +1300,7 @@ mod test {
 
         let qc = QuorumCertificate::new(qc_info, sigcol);
 
-        let state_root = StateRootHash(Hash([(qc.get_seq_num() - STATE_ROOT_DELAY).0 as u8; 32]));
+        let state_root = StateRootHash(Hash([(qc_seq_num - STATE_ROOT_DELAY).0 as u8; 32]));
 
         let mut validators = Vec::new();
 
@@ -1322,10 +1313,11 @@ mod test {
         let forkpoint: Forkpoint<BlsSignatureCollection<monad_secp::PubKey>> = Checkpoint {
             root: RootInfo {
                 block_id: qc.get_block_id(),
-                seq_num: qc.get_seq_num(),
+                seq_num: qc_seq_num,
                 epoch: qc.get_epoch(),
                 round: qc.get_round(),
                 state_root,
+                timestamp_ns: GENESIS_TIMESTAMP.try_into().unwrap(),
             },
             high_qc: qc,
             validator_sets: vec![

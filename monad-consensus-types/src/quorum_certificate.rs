@@ -10,8 +10,6 @@ use crate::{
     voting::*,
 };
 
-pub const GENESIS_BLOCK_ID: BlockId = BlockId(Hash([0xAA; 32]));
-
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,8 +125,6 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
             round: Round(0),
             parent_id: GENESIS_BLOCK_ID,
             parent_round: Round(0),
-            seq_num: GENESIS_SEQ_NUM,
-            timestamp: 0,
         };
 
         let sigs = SCT::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])
@@ -175,14 +171,6 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
     pub fn get_block_id(&self) -> BlockId {
         self.info.vote.vote_info.id
     }
-
-    pub fn get_seq_num(&self) -> SeqNum {
-        self.info.vote.vote_info.seq_num
-    }
-
-    pub fn get_timestamp(&self) -> u64 {
-        self.info.vote.vote_info.timestamp
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -193,6 +181,6 @@ pub enum TimestampAdjustmentDirection {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TimestampAdjustment {
-    pub delta: u64,
+    pub delta: u128,
     pub direction: TimestampAdjustmentDirection,
 }

@@ -91,6 +91,7 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
                             epoch: block.epoch,
                             block_id: block.get_id(),
                             state_root: block.get_state_root(),
+                            timestamp_ns: block.get_timestamp().try_into().unwrap(),
                         },
                         block_header.get_qc().clone(),
                     ));

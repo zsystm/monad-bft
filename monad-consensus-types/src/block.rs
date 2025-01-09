@@ -8,11 +8,14 @@ use monad_types::{BlockId, EnumDiscriminant, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
+    checkpoint::RootInfo,
     payload::{ExecutionProtocol, Payload, PayloadId, TransactionPayload},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
 };
+
+pub const GENESIS_TIMESTAMP: u128 = 0;
 
 /// Represent a range of blocks the last of which is `last_block_id` and includes
 /// all blocks upto to `root_seq_num`
@@ -76,7 +79,7 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     /// get a reference to the block's QC
     fn get_qc(&self) -> &QuorumCertificate<SCT>;
 
-    fn get_timestamp(&self) -> u64;
+    fn get_timestamp(&self) -> u128;
 
     fn get_unvalidated_block(self) -> Block<SCT>;
 
@@ -129,7 +132,7 @@ pub struct Block<SCT: SignatureCollection> {
     /// Certificate of votes for the parent block
     pub qc: QuorumCertificate<SCT>,
 
-    pub timestamp: u64,
+    pub timestamp_ns: u128,
 
     /// Unique hash used to identify the block
     id: BlockId,
@@ -148,7 +151,7 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
             .field("author", &self.author)
             .field("epoch", &self.epoch)
             .field("round", &self.round)
-            .field("timestamp", &self.timestamp)
+            .field("timestamp_ns", &self.timestamp_ns)
             .field("qc", &self.qc)
             .field("id", &self.id)
             .field("payload_id", &self.payload_id)
@@ -169,7 +172,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
     // FIXME &QuorumCertificate -> QuorumCertificate
     pub fn new(
         author: NodeId<SCT::NodeIdPubKey>,
-        timestamp: u64,
+        timestamp_ns: u128,
         epoch: Epoch,
         round: Round,
         execution: &ExecutionProtocol,
@@ -179,7 +182,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
     ) -> Self {
         Self {
             author,
-            timestamp,
+            timestamp_ns,
             epoch,
             round,
             execution: execution.clone(),
@@ -190,7 +193,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
                 let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
                 let mut state = HasherType::new();
                 author.hash(&mut state);
-                state.update(timestamp.as_bytes());
+                state.update(timestamp_ns.as_bytes());
                 state.update(epoch.as_bytes());
                 state.update(round.as_bytes());
                 execution.hash(&mut state);
@@ -283,8 +286,8 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
         &self.qc
     }
 
-    fn get_timestamp(&self) -> u64 {
-        self.timestamp
+    fn get_timestamp(&self) -> u128 {
+        self.timestamp_ns
     }
 
     fn get_unvalidated_block(self) -> Block<SCT> {
@@ -304,6 +307,7 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
 pub enum BlockPolicyError {
     BlockNotCoherent,
     StateBackendError(StateBackendError),
+    TimestampError,
 }
 
 impl From<StateBackendError> for BlockPolicyError {
@@ -332,6 +336,7 @@ where
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
+        blocktree_root: RootInfo,
         state_backend: &SBT,
     ) -> Result<(), BlockPolicyError>;
 
@@ -356,10 +361,34 @@ where
 
     fn check_coherency(
         &self,
-        _: &Self::ValidatedBlock,
-        _: Vec<&Self::ValidatedBlock>,
+        block: &Self::ValidatedBlock,
+        extending_blocks: Vec<&Self::ValidatedBlock>,
+        blocktree_root: RootInfo,
         _: &InMemoryState,
     ) -> Result<(), BlockPolicyError> {
+        // check coherency against the block being extended or against the root of the blocktree if
+        // there is no extending branch
+        let (extending_seq_num, extending_timestamp) =
+            if let Some(extended_block) = extending_blocks.last() {
+                (extended_block.get_seq_num(), extended_block.get_timestamp())
+            } else {
+                (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
+            };
+        if block.is_empty_block() {
+            // Empty block doesn't occupy a sequence number
+            if block.get_seq_num() != extending_seq_num {
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+        } else {
+            // Non-empty blocks must extend their parent QC by 1
+            if block.get_seq_num() != extending_seq_num + SeqNum(1) {
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+        }
+        if block.get_timestamp() <= extending_timestamp {
+            // timestamps must be monotonically increasing
+            return Err(BlockPolicyError::TimestampError);
+        }
         Ok(())
     }
 
@@ -443,8 +472,8 @@ impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
         &self.block.qc
     }
 
-    fn get_timestamp(&self) -> u64 {
-        self.block.timestamp
+    fn get_timestamp(&self) -> u128 {
+        self.block.timestamp_ns
     }
 
     fn get_unvalidated_block(self) -> Block<SCT> {

@@ -17,4 +17,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-crypto = { path = "../monad-crypto" }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-testutil = { path = "../monad-testutil" }
+
+bytes = { workspace = true }

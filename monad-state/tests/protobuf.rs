@@ -151,8 +151,6 @@ test_all_combination!(test_vote_message, |num_keys| {
         round: Round(2),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(1),
-        seq_num: SeqNum(0),
-        timestamp: 0,
     };
 
     let vote = Vote {
@@ -220,8 +218,6 @@ test_all_combination!(test_timeout_message, |num_keys| {
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(0),
-        seq_num: SeqNum(0),
-        timestamp: 0,
     };
 
     let qcinfo = QcInfo {

@@ -4167,8 +4167,10 @@ dependencies = [
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
@@ -4946,8 +4948,6 @@ name = "monad-state"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "clap 4.4.10",
- "glob",
  "itertools 0.10.5",
  "monad-blocksync",
  "monad-blocktree",
@@ -4959,7 +4959,6 @@ dependencies = [
  "monad-eth-types",
  "monad-executor-glue",
  "monad-multi-sig",
- "monad-node",
  "monad-proto",
  "monad-secp",
  "monad-state-backend",

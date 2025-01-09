@@ -203,13 +203,6 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         .pop_front()
                         .expect("missing block in blocktree");
 
-                    assert_eq!(
-                        current_seq_num
-                            .checked_sub(pending_blocks.len() as u64 + 2)
-                            .expect("seq_num does not underflow"),
-                        block.block.qc.get_seq_num().0
-                    );
-
                     BlockPolicy::<MockSignatures<SignatureType>, StateBackendType>::update_committed_block(
                         &mut eth_block_policy,
                         &block,

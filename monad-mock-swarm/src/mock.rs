@@ -98,7 +98,7 @@ impl Timestamper {
             period: config.period,
             timestamp_drift: config.timestamp_drift,
             drift_adjustment: Duration::from_millis(0),
-            adjuster: TimestampAdjuster::new(config.max_adjust_delta, config.adjust_period),
+            adjuster: TimestampAdjuster::new(config.max_adjust_delta_ns, config.adjust_period),
         }
     }
 
@@ -129,7 +129,7 @@ pub struct TimestamperConfig {
     pub period: Duration,
     pub timestamp_drift: Duration,
 
-    pub max_adjust_delta: u64,
+    pub max_adjust_delta_ns: u128,
     pub adjust_period: usize,
 }
 
@@ -139,7 +139,7 @@ impl Default for TimestamperConfig {
             period: Duration::from_millis(10),
             timestamp_drift: Duration::from_millis(0),
 
-            max_adjust_delta: 10_000,
+            max_adjust_delta_ns: 10_000_000_000,
             adjust_period: 9,
         }
     }
@@ -394,9 +394,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 }
                 ExecutorEventType::Timestamp => {
                     let event = self.timestamper.next_tick();
-                    MockExecutorEvent::Event(MonadEvent::TimestampUpdateEvent(
-                        event.as_millis().try_into().unwrap(),
-                    ))
+                    MockExecutorEvent::Event(MonadEvent::TimestampUpdateEvent(event.as_nanos()))
                 }
                 ExecutorEventType::StateSync => {
                     return self.statesync.pop().map(MockExecutorEvent::Event)

@@ -24,10 +24,10 @@ pub struct TokioTimestamp<ST, SCT> {
 }
 
 impl<ST, SCT> TokioTimestamp<ST, SCT> {
-    pub fn new(period: Duration, max_delta: u64, adjustment_period: usize) -> Self {
+    pub fn new(period: Duration, max_delta_ns: u128, adjustment_period: usize) -> Self {
         Self {
             interval: tokio::time::interval(period),
-            adjuster: TimestampAdjuster::new(max_delta, adjustment_period),
+            adjuster: TimestampAdjuster::new(max_delta_ns, adjustment_period),
             metrics: Default::default(),
             _phantom: PhantomData,
         }
@@ -66,19 +66,10 @@ where
                 let epoch_time = start
                     .duration_since(UNIX_EPOCH)
                     .expect("Clock may have gone backwards");
-                let mut t: i64 = epoch_time
-                    .as_millis()
-                    .try_into()
-                    .expect("its not 300 million years since the epoch");
+                let mut t = epoch_time.as_nanos();
                 // t += self.adjuster.get_adjustment();
 
-                if t < 0 {
-                    t = 0;
-                }
-
-                Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(
-                    t.try_into().unwrap(),
-                )))
+                Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(t)))
             }
             Poll::Pending => Poll::Pending,
         }

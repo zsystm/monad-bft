@@ -13,7 +13,6 @@ use monad_blocksync::messages::message::{
 use monad_consensus_types::{
     block::{BlockRange, BlockType, FullBlock},
     payload::PayloadId,
-    quorum_certificate::GENESIS_BLOCK_ID,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -22,7 +21,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::InMemoryState;
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Round, GENESIS_BLOCK_ID};
 
 pub trait MockableLedger:
     Executor<Command = LedgerCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin

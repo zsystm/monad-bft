@@ -127,8 +127,6 @@ impl Safety {
                 round: block.get_round(),
                 parent_id: block.get_parent_id(),
                 parent_round: block.get_parent_round(),
-                seq_num: block.get_seq_num(),
-                timestamp: block.get_timestamp(),
             };
 
             let commit_result = if commit_condition(block.get_round(), block.get_qc().info) {

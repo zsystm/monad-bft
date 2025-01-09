@@ -12,8 +12,6 @@ pub enum Error {
     InvalidTcRound,
     /// The SignatureCollection doesn't have supermajority of the stake signed
     InsufficientStake,
-    /// Seq num in block proposal must be 1 higher than in the QC
-    InvalidSeqNum,
     /// Required validator set (or cert pubkeys) not in validators epoch mapping
     ValidatorSetDataUnavailable,
     /// Vote does not contain a valid commit condition

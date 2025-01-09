@@ -11,7 +11,7 @@ use monad_consensus_state::{
     ConsensusStateWrapper,
 };
 use monad_consensus_types::{
-    block::{BlockKind, BlockRange, FullBlock},
+    block::{BlockKind, BlockRange, FullBlock, GENESIS_TIMESTAMP},
     checkpoint::RootInfo,
     metrics::Metrics,
     payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
@@ -324,7 +324,7 @@ fn setup<
                 live_to_statesync_threshold: SeqNum(900),
                 start_execution_threshold: SeqNum(300),
                 vote_pace: Duration::from_secs(1),
-                timestamp_latency_estimate_ms: 10,
+                timestamp_latency_estimate_ns: 10_000_000,
             };
             let genesis_qc = QuorumCertificate::genesis_qc();
             let cs = ConsensusState::new(
@@ -332,10 +332,11 @@ fn setup<
                 &consensus_config,
                 RootInfo {
                     round: genesis_qc.get_round(),
-                    seq_num: genesis_qc.get_seq_num(),
+                    seq_num: GENESIS_SEQ_NUM,
                     epoch: genesis_qc.get_epoch(),
                     block_id: genesis_qc.get_block_id(),
                     state_root: StateRootHash(Hash([0xb; 32])),
+                    timestamp_ns: GENESIS_TIMESTAMP.try_into().unwrap(),
                 },
                 genesis_qc,
             );
@@ -356,7 +357,7 @@ fn setup<
                 state_backend: InMemoryStateInner::genesis(u128::MAX, SeqNum(0)),
                 block_timestamp: BlockTimestamp::new(
                     100,
-                    consensus_config.timestamp_latency_estimate_ms,
+                    consensus_config.timestamp_latency_estimate_ns,
                 ),
                 beneficiary: EthAddress::default(),
                 nodeid: NodeId::new(keys[i as usize].pubkey()),

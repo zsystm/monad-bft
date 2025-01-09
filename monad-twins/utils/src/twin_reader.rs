@@ -346,12 +346,12 @@ where
                 live_to_statesync_threshold: SeqNum(900),
                 start_execution_threshold: SeqNum(300),
                 vote_pace: Duration::from_millis(vote_pace_ms),
-                timestamp_latency_estimate_ms: 10,
+                timestamp_latency_estimate_ns: 10_000_000,
             },
         })
         .collect();
 
-    let mut nodes = BTreeMap::new();
+    let mut nodes: BTreeMap<String, _> = BTreeMap::new();
     let mut duplicates = BTreeMap::new();
 
     for (name, key_secret, certkey_secret, state_config) in
@@ -368,7 +368,7 @@ where
             name.clone(),
             FullTwinsNodeConfig {
                 id,
-                name: name.clone(),
+                name: name.to_string(),
                 state_config,
                 key_secret,
                 certkey_secret,

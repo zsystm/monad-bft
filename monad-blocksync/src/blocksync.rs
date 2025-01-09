@@ -931,6 +931,7 @@ mod test {
     use monad_consensus_types::{
         block::{
             Block, BlockKind, BlockPolicy, BlockRange, BlockType, FullBlock, PassthruBlockPolicy,
+            GENESIS_TIMESTAMP,
         },
         checkpoint::RootInfo,
         ledger::CommitResult,
@@ -939,7 +940,7 @@ mod test {
             ExecutionProtocol, FullTransactionList, Payload, PayloadId, RandaoReveal,
             TransactionPayload,
         },
-        quorum_certificate::{QcInfo, QuorumCertificate, GENESIS_BLOCK_ID},
+        quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         state_root_hash::StateRootHash,
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -956,7 +957,9 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
     use monad_testutil::validators::create_keys_w_validators;
-    use monad_types::{BlockId, Epoch, Hash, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{
+        BlockId, Epoch, Hash, NodeId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM,
+    };
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
@@ -1081,6 +1084,7 @@ mod test {
         // TODO: update and use ProposalGen
         fn get_blocks(&mut self, num_blocks: usize) -> Vec<FullBlock<SCT>> {
             let mut qc = QuorumCertificate::genesis_qc();
+            let mut qc_seq_num = GENESIS_SEQ_NUM;
             let mut timestamp = 1;
             let mut round = Round(1);
 
@@ -1106,10 +1110,8 @@ mod test {
                     .expect("key not in valset");
 
                 let (seq_num, block_kind) = match txns {
-                    TransactionPayload::List(_) => {
-                        (qc.get_seq_num() + SeqNum(1), BlockKind::Executable)
-                    }
-                    TransactionPayload::Null => (qc.get_seq_num(), BlockKind::Null),
+                    TransactionPayload::List(_) => (qc_seq_num + SeqNum(1), BlockKind::Executable),
+                    TransactionPayload::Null => (qc_seq_num, BlockKind::Null),
                 };
                 let payload = Payload { txns };
                 let block = Block::new(
@@ -1137,6 +1139,7 @@ mod test {
                     .expect("should have the current validator certificate pubkeys");
 
                 qc = self.get_qc(&self.cert_keys, &block, validator_cert_pubkeys);
+                qc_seq_num = seq_num;
                 timestamp += 1;
                 round += Round(1);
 
@@ -1161,8 +1164,6 @@ mod test {
                 round: block.round,
                 parent_id: block.qc.get_block_id(),
                 parent_round: block.qc.get_round(),
-                seq_num: block.execution.seq_num,
-                timestamp: block.timestamp,
             };
             let qcinfo = QcInfo {
                 vote: Vote {
@@ -1227,6 +1228,7 @@ mod test {
             seq_num: GENESIS_SEQ_NUM,
             epoch: Epoch(1),
             state_root: StateRootHash::default(),
+            timestamp_ns: GENESIS_TIMESTAMP.try_into().unwrap(),
         });
 
         BlockSyncContext {
