@@ -83,19 +83,15 @@ pub fn tui_init() -> std::io::Result<Tui> {
 }
 
 enum DeltaWidgetState {
-    AsyncStateDelta,
     ConsensusDelta,
-    AsyncStateChart,
     ConsensusChart,
 }
 
 pub struct MainView {
     count_widget: EventCountsWidget,
-    async_delta_widget: EventDeltaWidget,
     consensus_delta_widget: EventDeltaWidget,
     event_list_widget: EventListWidget,
 
-    async_delta_chart: EventDeltaChart,
     consensus_delta_chart: EventDeltaChart,
 
     delta_widget_state: DeltaWidgetState,
@@ -114,17 +110,9 @@ impl MainView {
 
         let rc_wal_events = Rc::new(wal_events);
         let count_widget = EventCountsWidget::new(rc_wal_events.clone());
-        let async_delta_widget =
-            EventDeltaWidget::new("Async State Event", rc_wal_events.clone(), |event| {
-                matches!(event, MonadEvent::AsyncStateVerifyEvent(_))
-            });
         let consensus_delta_widget =
             EventDeltaWidget::new("Consensus Event", rc_wal_events.clone(), |event| {
                 matches!(event, MonadEvent::ConsensusEvent(_))
-            });
-        let async_delta_chart =
-            EventDeltaChart::new("Async State Event", rc_wal_events.clone(), |event| {
-                matches!(event, MonadEvent::AsyncStateVerifyEvent(_))
             });
         let consensus_delta_chart =
             EventDeltaChart::new("Consensus State Event", rc_wal_events.clone(), |event| {
@@ -134,12 +122,10 @@ impl MainView {
 
         Self {
             count_widget,
-            async_delta_widget,
             consensus_delta_widget,
             event_list_widget,
-            async_delta_chart,
             consensus_delta_chart,
-            delta_widget_state: DeltaWidgetState::AsyncStateDelta,
+            delta_widget_state: DeltaWidgetState::ConsensusDelta,
             exit: false,
         }
     }
@@ -165,14 +151,8 @@ impl MainView {
             .split(layout[0]);
 
         match self.delta_widget_state {
-            DeltaWidgetState::AsyncStateDelta => {
-                frame.render_widget(&self.async_delta_widget, left_panel[0])
-            }
             DeltaWidgetState::ConsensusDelta => {
                 frame.render_widget(&self.consensus_delta_widget, left_panel[0])
-            }
-            DeltaWidgetState::AsyncStateChart => {
-                frame.render_widget(&self.async_delta_chart, left_panel[0])
             }
             DeltaWidgetState::ConsensusChart => {
                 frame.render_widget(&self.consensus_delta_chart, left_panel[0])
@@ -200,23 +180,14 @@ impl MainView {
         match key_event.code {
             KeyCode::Char('q') => self.exit(),
             KeyCode::Char('r') => self.count_widget.load_counts(),
-            KeyCode::Char('1') => self.delta_widget_state = DeltaWidgetState::AsyncStateDelta,
             KeyCode::Char('2') => self.delta_widget_state = DeltaWidgetState::ConsensusDelta,
-            KeyCode::Char('3') => self.delta_widget_state = DeltaWidgetState::AsyncStateChart,
             KeyCode::Char('4') => self.delta_widget_state = DeltaWidgetState::ConsensusChart,
             KeyCode::Char('s') => {
-                if self.async_delta_widget.start_index > 0 {
-                    self.async_delta_widget.start_index -= 1;
-                }
                 if self.consensus_delta_widget.start_index > 0 {
                     self.consensus_delta_widget.start_index -= 1;
                 }
             }
             KeyCode::Char('f') => {
-                if self.async_delta_widget.start_index < self.async_delta_widget.event_deltas.len()
-                {
-                    self.async_delta_widget.start_index += 1;
-                }
                 if self.consensus_delta_widget.start_index
                     < self.consensus_delta_widget.event_deltas.len()
                 {
@@ -449,7 +420,6 @@ impl Widget for &EventListWidget {
                 MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
                 MonadEvent::MempoolEvent(_) => "MEMPOOL".to_string(),
                 MonadEvent::StateRootEvent(_) => "STATEROOT".to_string(),
-                MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
                 MonadEvent::ControlPanelEvent(_) => "CONTROLPANEL".to_string(),
                 MonadEvent::TimestampUpdateEvent(_) => "TIMESTAMP".to_string(),
                 MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
@@ -578,7 +548,6 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
     buckets.entry("blocksyncevent".into()).or_default();
     buckets.entry("validatorevent".into()).or_default();
     buckets.entry("mempoolevent".into()).or_default();
-    buckets.entry("asyncstateverifyevent".into()).or_default();
     buckets.entry("metricsevent".into()).or_default();
 
     for e in events {
@@ -588,7 +557,6 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
             MonadEvent::ValidatorEvent(_) => "validatorevent",
             MonadEvent::MempoolEvent(_) => "mempoolevent",
             MonadEvent::StateRootEvent(_) => "staterootevent",
-            MonadEvent::AsyncStateVerifyEvent(_) => "asyncstateverifyevent",
             WalEvent::ControlPanelEvent(_) => "controlpanelevent",
             MonadEvent::TimestampUpdateEvent(_) => "timestampupdateevent",
             MonadEvent::StateSyncEvent(_) => "statesyncevent",

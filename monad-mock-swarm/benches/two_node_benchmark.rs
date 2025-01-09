@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
     txpool::MockTxPool,
@@ -46,13 +45,11 @@ fn two_nodes() {
                 SeqNum(4), // state_root_delay
             )
         },
-        PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         Duration::from_millis(0), // vote pace
         5_000,                    // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay
-        majority_threshold,       // state root quorum threshold
         SeqNum(100),              // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

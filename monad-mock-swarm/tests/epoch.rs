@@ -5,7 +5,6 @@ mod test {
     };
 
     use itertools::Itertools;
-    use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
         block::{BlockType, PassthruBlockPolicy},
         block_validator::MockValidator,
@@ -42,8 +41,7 @@ mod test {
         statesync::MockStateSyncExecutor,
     };
     use monad_validator::{
-        simple_round_robin::SimpleRoundRobin,
-        validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+        simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
     };
     use test_case::test_case;
     pub struct ValidatorSwapSwarm;
@@ -63,10 +61,6 @@ mod test {
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
         type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-        type AsyncStateRootVerify = PeerAsyncStateVerify<
-            Self::SignatureCollectionType,
-            <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-        >;
 
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
@@ -180,13 +174,11 @@ mod test {
                     SeqNum(10_000_000), // state_root_delay
                 )
             },
-            PeerAsyncStateVerify::new,
             delta,                   // delta
             vote_pace,               // vote pace
             0,                       // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
-            majority_threshold,      // state root quorum threshold
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -290,13 +282,11 @@ mod test {
                     SeqNum(10_000_000), // state_root_delay
                 )
             },
-            PeerAsyncStateVerify::new,
             delta,                   // delta
             vote_pace,               // vote pace
             0,                       // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
-            majority_threshold,      // state root quorum threshold
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -472,13 +462,11 @@ mod test {
                     SeqNum(10_000_000), // state_root_delay
                 )
             },
-            PeerAsyncStateVerify::new,
             Duration::from_millis(delta), // delta
             Duration::from_millis(0),     // vote pace
             0,                            // proposal_tx_limit
             val_set_update_interval,      // val_set_update_interval
             Round(20),                    // epoch_start_delay
-            majority_threshold,           // state root quorum threshold
             SeqNum(100),                  // state_sync_threshold
         );
 
@@ -687,13 +675,11 @@ mod test {
                     SeqNum(4), // state_root_delay
                 )
             },
-            PeerAsyncStateVerify::new,
             delta,                   // delta
             vote_pace,               // vote pace
             10,                      // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             epoch_start_delay,       // epoch_start_delay
-            majority_threshold,      // state root quorum threshold
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs

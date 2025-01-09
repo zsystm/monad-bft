@@ -4,7 +4,6 @@ use monad_consensus_types::{
     block::Block,
     payload::Payload,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHashInfo,
     timeout::{Timeout, TimeoutCertificate},
     voting::Vote,
 };
@@ -12,7 +11,6 @@ use monad_crypto::{
     certificate_signature::CertificateSignature,
     hasher::{Hashable, Hasher, HasherType},
 };
-use monad_types::NodeId;
 
 /// Consensus protocol vote message
 ///
@@ -96,11 +94,4 @@ impl<T: SignatureCollection> Hashable for ProposalMessage<T> {
     fn hash(&self, state: &mut impl Hasher) {
         self.block.hash(state);
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerStateRootMessage<SCT: SignatureCollection> {
-    pub peer: NodeId<SCT::NodeIdPubKey>,
-    pub info: StateRootHashInfo,
-    pub sig: SCT::SignatureType,
 }

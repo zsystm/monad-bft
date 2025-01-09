@@ -10,7 +10,7 @@ use monad_proto::{error::ProtoError, proto::message::*};
 use crate::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{PeerStateRootMessage, ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
@@ -153,48 +153,5 @@ impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
         let version = value.version;
         let consensus_msg = ConsensusMessage { version, message };
         Ok(Unverified::new(Unvalidated::new(consensus_msg), signature))
-    }
-}
-
-// TODO-2: PeerStateRootMessage doesn't belong to monad-consensus. Create a new
-// crate for it?
-impl<SCT: SignatureCollection> From<&Validated<PeerStateRootMessage<SCT>>>
-    for ProtoPeerStateRootMessage
-{
-    fn from(value: &Validated<PeerStateRootMessage<SCT>>) -> Self {
-        let msg = value.deref();
-        Self {
-            peer: Some((&msg.peer).into()),
-            info: Some((&msg.info).into()),
-            sig: Some(certificate_signature_to_proto(&msg.sig)),
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> TryFrom<ProtoPeerStateRootMessage>
-    for Unvalidated<PeerStateRootMessage<SCT>>
-{
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoPeerStateRootMessage) -> Result<Self, Self::Error> {
-        let msg = PeerStateRootMessage {
-            peer: value
-                .peer
-                .ok_or(ProtoError::MissingRequiredField(
-                    "PeerStateRootMessage.peer".to_owned(),
-                ))?
-                .try_into()?,
-            info: value
-                .info
-                .ok_or(ProtoError::MissingRequiredField(
-                    "PeerStateRootMessage.info".to_owned(),
-                ))?
-                .try_into()?,
-            sig: proto_to_certificate_signature(value.sig.ok_or(
-                ProtoError::MissingRequiredField("PeerStateRootMessage.sig".to_owned()),
-            )?)?,
-        };
-
-        Ok(Unvalidated::new(msg))
     }
 }

@@ -9,7 +9,7 @@ use monad_blocksync::{
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::PeerStateRootMessage},
+    messages::consensus_message::ConsensusMessage,
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
@@ -440,15 +440,6 @@ impl<PT: PubKey> Debug for MempoolEvent<PT> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AsyncStateVerifyEvent<SCT: SignatureCollection> {
-    PeerStateRoot {
-        sender: NodeId<SCT::NodeIdPubKey>,
-        unvalidated_message: Unvalidated<PeerStateRootMessage<SCT>>,
-    },
-    LocalStateRoot(StateRootHashInfo),
-}
-
 pub const SELF_STATESYNC_VERSION: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -580,8 +571,6 @@ where
     MempoolEvent(MempoolEvent<CertificateSignaturePubKey<ST>>),
     /// State Root updates
     StateRootEvent(StateRootHashInfo),
-    /// Events to async state verification
-    AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
     /// Events for the debug control panel
     ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
@@ -643,13 +632,6 @@ where
             }
             MonadEvent::MempoolEvent(MempoolEvent::Clear) => "CLEARMEMPOOL".to_string(),
             MonadEvent::StateRootEvent(_) => "STATE_ROOT".to_string(),
-            MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::LocalStateRoot(root)) => {
-                format!(
-                    "AsyncStateVerifyEvent::LocalStateRoot -- seqnum:{} hash:{}",
-                    root.seq_num.0, root.state_root_hash.0
-                )
-            }
-            MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),

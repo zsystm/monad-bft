@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{block::BlockType, payload::StateRoot};
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -27,10 +26,7 @@ use monad_updaters::{
     state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor,
 };
-use monad_validator::{
-    simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
-};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rayon::prelude::*;
 
 pub struct ForkpointSwarm;
@@ -50,10 +46,6 @@ impl SwarmRelation for ForkpointSwarm {
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
     type TxPool = EthTxPool<Self::SignatureCollectionType, Self::StateBackendType>;
-    type AsyncStateRootVerify = PeerAsyncStateVerify<
-        Self::SignatureCollectionType,
-        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -204,13 +196,11 @@ fn forkpoint_restart_f(
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
         || StateRoot::new(state_root_delay),
-        PeerAsyncStateVerify::new,
         delta,               // delta
         vote_pace,           // vote pace
         10,                  // proposal_tx_limit
         epoch_length,        // val_set_update_interval
         Round(50),           // epoch_start_delay
-        majority_threshold,  // state root quorum threshold
         statesync_threshold, // state_sync_threshold
     );
 
@@ -239,13 +229,11 @@ fn forkpoint_restart_f(
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             || StateRoot::new(state_root_delay),
-            PeerAsyncStateVerify::new,
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
-            majority_threshold,  // state root quorum threshold
             statesync_threshold, // state_sync_threshold
         );
         let state_configs_dup = make_state_configs::<ForkpointSwarm>(
@@ -263,13 +251,11 @@ fn forkpoint_restart_f(
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             || StateRoot::new(state_root_delay),
-            PeerAsyncStateVerify::new,
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
-            majority_threshold,  // state root quorum threshold
             statesync_threshold, // state_sync_threshold
         );
 
@@ -524,13 +510,11 @@ fn forkpoint_restart_below_all(
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
         || StateRoot::new(state_root_delay),
-        PeerAsyncStateVerify::new,
         delta,               // delta
         vote_pace,           // vote pace
         10,                  // proposal_tx_limit
         epoch_length,        // val_set_update_interval
         Round(50),           // epoch_start_delay
-        majority_threshold,  // state root quorum threshold
         statesync_threshold, // state_sync_threshold
     );
 
@@ -569,13 +553,11 @@ fn forkpoint_restart_below_all(
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             || StateRoot::new(state_root_delay),
-            PeerAsyncStateVerify::new,
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
-            majority_threshold,  // state root quorum threshold
             statesync_threshold, // state_sync_threshold
         );
         let mut state_configs_dup = make_state_configs::<ForkpointSwarm>(
@@ -593,13 +575,11 @@ fn forkpoint_restart_below_all(
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             || StateRoot::new(state_root_delay),
-            PeerAsyncStateVerify::new,
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
-            majority_threshold,  // state root quorum threshold
             statesync_threshold, // state_sync_threshold
         );
 

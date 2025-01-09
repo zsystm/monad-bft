@@ -23,9 +23,6 @@ where
                 VerifiedMonadMessage::BlockSyncResponse(msg) => {
                     proto_monad_message::OneofMessage::BlockSyncResponse(msg.into())
                 }
-                VerifiedMonadMessage::PeerStateRootMessage(msg) => {
-                    proto_monad_message::OneofMessage::PeerStateRoot(msg.into())
-                }
                 VerifiedMonadMessage::ForwardedTx(msg) => {
                     proto_monad_message::OneofMessage::ForwardedTx(ProtoForwardedTx {
                         tx: (*msg).clone(),
@@ -56,9 +53,6 @@ where
             }
             Some(proto_monad_message::OneofMessage::BlockSyncResponse(msg)) => {
                 MonadMessage::BlockSyncResponse(msg.try_into()?)
-            }
-            Some(proto_monad_message::OneofMessage::PeerStateRoot(msg)) => {
-                MonadMessage::PeerStateRoot(msg.try_into()?)
             }
             Some(proto_monad_message::OneofMessage::ForwardedTx(msg)) => {
                 MonadMessage::ForwardedTx(msg.tx)

@@ -9,7 +9,6 @@ use chrono::Utc;
 use clap::CommandFactory;
 use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{metrics::Metrics, payload::StateRoot};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -296,7 +295,6 @@ async fn run(
         state_root_validator: StateRoot::new(SeqNum(
             node_state.node_config.consensus.execution_delay,
         )),
-        async_state_verify: PeerAsyncStateVerify::new(majority_threshold, statesync_threshold),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,

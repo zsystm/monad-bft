@@ -14,7 +14,6 @@ bench = false
 bench = false
 
 [dependencies]
-monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-bls = { path = "../monad-bls" }
 monad-control-panel = { path = "../monad-control-panel" }
 monad-consensus-state = { path = "../monad-consensus-state" }

@@ -2,7 +2,6 @@
 
 members = [
     "monad-archive",
-    "monad-async-state-verify",
     "monad-block-persist",
     "monad-blocksync",
     "monad-blocktree",

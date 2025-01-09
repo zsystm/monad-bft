@@ -4,8 +4,8 @@ use async_graphql::{Context, NewType, Object, Union};
 use monad_consensus_types::{metrics::Metrics, state_root_hash::StateRootHashInfo};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent,
-    MonadEvent, StateSyncEvent, ValidatorEvent,
+    BlockSyncEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent, StateSyncEvent,
+    ValidatorEvent,
 };
 use monad_mock_swarm::{
     node::Node,
@@ -218,7 +218,6 @@ enum GraphQLMonadEvent<'s> {
     ValidatorEvent(GraphQLValidatorEvent<'s>),
     MempoolEvent(GraphQLMempoolEvent<'s>),
     StateRootEvent(GraphQLStateRootEvent<'s>),
-    AsyncStateVerifyEvent(GraphQLAsyncStateVerifyEvent<'s>),
     ControlPanelEvent(GraphQLControlPanelEvent<'s>),
     TimestampEvent(GraphQLTimestampEvent),
     StateSyncEvent(GraphQLStateSyncEvent<'s>),
@@ -232,9 +231,6 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             MonadEvent::ValidatorEvent(event) => Self::ValidatorEvent(GraphQLValidatorEvent(event)),
             MonadEvent::MempoolEvent(event) => Self::MempoolEvent(GraphQLMempoolEvent(event)),
             MonadEvent::StateRootEvent(event) => Self::StateRootEvent(GraphQLStateRootEvent(event)),
-            MonadEvent::AsyncStateVerifyEvent(event) => {
-                Self::AsyncStateVerifyEvent(GraphQLAsyncStateVerifyEvent(event))
-            }
             MonadEventType::ControlPanelEvent(event) => {
                 Self::ControlPanelEvent(GraphQLControlPanelEvent(event))
             }
@@ -286,13 +282,6 @@ impl<'s> GraphQLStateRootEvent<'s> {
     }
 }
 
-struct GraphQLAsyncStateVerifyEvent<'s>(&'s AsyncStateVerifyEvent<SignatureCollectionType>);
-#[Object]
-impl<'s> GraphQLAsyncStateVerifyEvent<'s> {
-    async fn debug(&self) -> String {
-        format!("{:?}", self.0)
-    }
-}
 struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent<SignatureCollectionType>);
 
 #[Object]

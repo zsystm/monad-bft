@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
@@ -26,10 +25,7 @@ use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
-use monad_validator::{
-    simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
-};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 struct BLSSwarm;
 impl SwarmRelation for BLSSwarm {
     type SignatureType = SecpSignature;
@@ -48,10 +44,6 @@ impl SwarmRelation for BLSSwarm {
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
     type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type AsyncStateRootVerify = PeerAsyncStateVerify<
-        Self::SignatureCollectionType,
-        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -90,14 +82,12 @@ fn two_nodes_bls() {
                 SeqNum(4), // state_root_delay
             )
         },
-        PeerAsyncStateVerify::new,
-        delta,              // delta
-        vote_pace,          // vote pace
-        0,                  // proposal_tx_limit
-        SeqNum(2000),       // val_set_update_interval
-        Round(50),          // epoch_start_delay
-        majority_threshold, // state root quorum threshold
-        SeqNum(100),        // state_sync_threshold
+        delta,        // delta
+        vote_pace,    // vote pace
+        0,            // proposal_tx_limit
+        SeqNum(2000), // val_set_update_interval
+        Round(50),    // epoch_start_delay
+        SeqNum(100),  // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

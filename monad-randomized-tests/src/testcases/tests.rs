@@ -3,7 +3,6 @@ use std::{
     time::Duration,
 };
 
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
     txpool::MockTxPool,
@@ -42,13 +41,11 @@ fn random_latency_test(latency_seed: u64) {
                 SeqNum(4), // state_root_delay
             )
         },
-        PeerAsyncStateVerify::new,
         Duration::from_millis(250), // delta
         Duration::from_millis(100), // vote pace
         0,                          // proposal_tx_limit
         SeqNum(2000),               // val_set_update_interval
         Round(50),                  // epoch_start_delay
-        majority_threshold,         // state root quorum threshold
         SeqNum(100),                // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
@@ -110,13 +107,11 @@ fn delayed_message_test(latency_seed: u64) {
                 SeqNum(4), // state_root_delay
             )
         },
-        PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         Duration::from_millis(0), // vote pace
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay
-        majority_threshold,       // state root quorum threshold
         SeqNum(100),              // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

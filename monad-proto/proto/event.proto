@@ -111,19 +111,6 @@ message ProtoMempoolEvent {
   }
 }
 
-message ProtoPeerStateUpdateWithSender {
-  monad_proto.basic.ProtoNodeId sender = 1;
-  monad_proto.message.ProtoPeerStateRootMessage message = 2;
-}
-
-
-message ProtoAsyncStateVerifyEvent {
-  oneof event {
-    ProtoPeerStateUpdateWithSender peer_state_root = 1;
-    ProtoStateUpdateEvent local_state_root = 2;
-  }
-}
-
 message ProtoMetricsTimeout {}
 
 message ProtoGetValidatorSetEvent {}
@@ -254,7 +241,6 @@ message ProtoMonadEvent{
     ProtoValidatorEvent validator_event = 3;
     ProtoMempoolEvent mempool_event = 4;
     ProtoStateUpdateEvent state_root_event = 5;
-    ProtoAsyncStateVerifyEvent async_state_verify_event = 6;
     ProtoControlPanelEvent control_panel_event = 7;
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;

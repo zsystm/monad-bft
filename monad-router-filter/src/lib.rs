@@ -50,7 +50,6 @@ where
                     VerifiedMonadMessage::Consensus(_) => None,
                     VerifiedMonadMessage::BlockSyncRequest(_) => Some(cmd),
                     VerifiedMonadMessage::BlockSyncResponse(_) => Some(cmd),
-                    VerifiedMonadMessage::PeerStateRootMessage(_) => None,
                     VerifiedMonadMessage::ForwardedTx(_) => Some(cmd),
                     VerifiedMonadMessage::StateSyncMessage(_) => Some(cmd),
                 },

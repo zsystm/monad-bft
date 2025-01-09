@@ -132,13 +132,7 @@ where
         }
 
         let s = this.triedb_recv.poll_recv(cx);
-        s.map(|s| {
-            s.map(|info| {
-                MonadEvent::AsyncStateVerifyEvent(
-                    monad_executor_glue::AsyncStateVerifyEvent::LocalStateRoot(info),
-                )
-            })
-        })
+        s.map(|s| s.map(|info| MonadEvent::StateRootEvent(info)))
     }
 }
 

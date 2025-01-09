@@ -1,7 +1,4 @@
 use bytes::Bytes;
-use monad_async_state_verify::{
-    AsyncStateVerifyProcess, BoxedAsyncStateVerifyProcess, PeerAsyncStateVerify,
-};
 use monad_consensus_types::{
     block::{BlockPolicy, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
@@ -42,7 +39,6 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::TxPool,
     <S as SwarmRelation>::BlockValidator,
     <S as SwarmRelation>::StateRootValidator,
-    <S as SwarmRelation>::AsyncStateRootVerify,
 >;
 pub trait SwarmRelation
 where
@@ -83,12 +79,6 @@ where
             SignatureCollection = Self::SignatureCollectionType,
             Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
         > + Send
-        + Unpin;
-    type AsyncStateRootVerify: AsyncStateVerifyProcess<
-            SignatureCollectionType = Self::SignatureCollectionType,
-            ValidatorSetType = <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-        > + Send
-        + Sync
         + Unpin;
 
     type RouterScheduler: RouterScheduler<
@@ -162,7 +152,6 @@ impl SwarmRelation for DebugSwarmRelation {
             > + Send
             + Sync,
     >;
-    type AsyncStateRootVerify = BoxedAsyncStateVerifyProcess<Self::SignatureCollectionType>;
 
     type RouterScheduler = Box<
         dyn RouterScheduler<
@@ -222,10 +211,6 @@ impl SwarmRelation for NoSerSwarm {
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
     type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type AsyncStateRootVerify = PeerAsyncStateVerify<
-        Self::SignatureCollectionType,
-        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -260,10 +245,6 @@ impl SwarmRelation for BytesSwarm {
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
     type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type AsyncStateRootVerify = PeerAsyncStateVerify<
-        Self::SignatureCollectionType,
-        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-    >;
 
     type RouterScheduler = BytesRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -299,10 +280,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
     type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type AsyncStateRootVerify = PeerAsyncStateVerify<
-        Self::SignatureCollectionType,
-        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,

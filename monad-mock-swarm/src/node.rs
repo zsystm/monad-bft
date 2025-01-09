@@ -4,7 +4,6 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
 use monad_consensus_types::{
     signature_collection::SignatureCollection,
     validator_data::{ValidatorData, ValidatorSetData},
@@ -41,7 +40,6 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::TxPool,
         S::BlockValidator,
         S::StateRootValidator,
-        S::AsyncStateRootVerify,
     >,
     pub router_scheduler: S::RouterScheduler,
     pub state_root_executor: S::StateRootHashExecutor,
@@ -65,7 +63,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::TxPool,
             S::BlockValidator,
             S::StateRootValidator,
-            S::AsyncStateRootVerify,
         >,
         router_scheduler: S::RouterScheduler,
         state_root_executor: S::StateRootHashExecutor,
@@ -116,9 +113,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 block_policy: self.state_builder.block_policy,
                 state_backend: self.state_builder.state_backend,
                 state_root_validator: Box::new(self.state_builder.state_root_validator),
-                async_state_verify: BoxedAsyncStateVerifyProcess::new(
-                    self.state_builder.async_state_verify,
-                ),
                 key: self.state_builder.key,
                 certkey: self.state_builder.certkey,
                 val_set_update_interval: self.state_builder.val_set_update_interval,

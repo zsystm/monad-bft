@@ -1,20 +1,18 @@
 use std::{fmt::Debug, ops::Deref};
 
-use async_state_verify::AsyncStateVerifyChildState;
 use blocksync::BlockSyncChildState;
 use bytes::Bytes;
 use consensus::ConsensusChildState;
 use epoch::EpochChildState;
 use itertools::Itertools;
 use mempool::MempoolChildState;
-use monad_async_state_verify::AsyncStateVerifyProcess;
 use monad_blocksync::{
     blocksync::{BlockSync, BlockSyncSelfRequester},
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::PeerStateRootMessage},
+    messages::consensus_message::ConsensusMessage,
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
@@ -37,11 +35,10 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
-    UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
+    BlockSyncEvent, ClearMetrics, Command, ConsensusEvent, ControlPanelCommand, ControlPanelEvent,
+    GetFullNodes, GetMetrics, GetPeers, GetValidatorSet, LedgerCommand, MempoolEvent, Message,
+    MonadEvent, ReadCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent,
+    StateSyncNetworkMessage, UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
@@ -53,7 +50,6 @@ use monad_validator::{
 };
 use statesync::BlockBuffer;
 
-mod async_state_verify;
 mod blocksync;
 mod consensus;
 pub mod convert;
@@ -447,7 +443,7 @@ where
     }
 }
 
-pub struct MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -475,8 +471,6 @@ where
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
     /// Transaction pool is the source of Proposals
     txpool: TT,
-    /// Async state verification
-    async_state_verify: ASVT,
 
     state_root_validator: SVT,
     block_timestamp: BlockTimestamp,
@@ -495,8 +489,7 @@ where
 // execution needs NumBlockHash blocks before tip to execute tip
 const NUM_BLOCK_HASH: SeqNum = SeqNum(256);
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT> MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -506,10 +499,6 @@ where
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
-    ASVT: AsyncStateVerifyProcess<
-        SignatureCollectionType = SCT,
-        ValidatorSetType = VTF::ValidatorSetType,
-    >,
 {
     pub fn consensus(&self) -> Option<&ConsensusState<SCT, BPT, SBT>> {
         match &self.consensus {
@@ -555,7 +544,6 @@ where
     Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
     BlockSyncRequest(BlockSyncRequestMessage),
     BlockSyncResponse(BlockSyncResponseMessage<SCT>),
-    PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
     ForwardedTx(Vec<Bytes>),
     StateSyncMessage(StateSyncNetworkMessage),
 }
@@ -585,9 +573,6 @@ where
     /// Block sync response
     BlockSyncResponse(BlockSyncResponseMessage<SCT>),
 
-    /// Async state verification msgs
-    PeerStateRoot(Unvalidated<PeerStateRootMessage<SCT>>),
-
     /// Forwarded transactions
     ForwardedTx(Vec<Bytes>),
 
@@ -615,9 +600,6 @@ where
             VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
             VerifiedMonadMessage::BlockSyncRequest(msg) => MonadMessage::BlockSyncRequest(msg),
             VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
-            VerifiedMonadMessage::PeerStateRootMessage(msg) => {
-                MonadMessage::PeerStateRoot(msg.into())
-            }
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
         }
@@ -646,9 +628,6 @@ where
             VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
             VerifiedMonadMessage::BlockSyncRequest(msg) => MonadMessage::BlockSyncRequest(msg),
             VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
-            VerifiedMonadMessage::PeerStateRootMessage(msg) => {
-                MonadMessage::PeerStateRoot(msg.into())
-            }
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
         }
@@ -688,12 +667,6 @@ where
                     response,
                 })
             }
-            MonadMessage::PeerStateRoot(msg) => {
-                MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::PeerStateRoot {
-                    sender: from,
-                    unvalidated_message: msg,
-                })
-            }
             MonadMessage::ForwardedTx(msg) => {
                 MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxns {
                     sender: from,
@@ -707,7 +680,7 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -718,10 +691,6 @@ where
     BVT: BlockValidator<SCT, BPT, SBT>,
 
     SVT: StateRootValidator,
-    ASVT: AsyncStateVerifyProcess<
-        SignatureCollectionType = SCT,
-        ValidatorSetType = VTF::ValidatorSetType,
-    >,
 {
     pub version: MonadVersion,
 
@@ -732,7 +701,6 @@ where
     pub block_policy: BPT,
     pub state_backend: SBT,
     pub state_root_validator: SVT,
-    pub async_state_verify: ASVT,
     pub forkpoint: Forkpoint<SCT>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
@@ -743,8 +711,8 @@ where
     pub consensus_config: ConsensusConfig,
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+    MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -756,15 +724,11 @@ where
     BVT: BlockValidator<SCT, BPT, SBT>,
 
     SVT: StateRootValidator,
-    ASVT: AsyncStateVerifyProcess<
-        SignatureCollectionType = SCT,
-        ValidatorSetType = VTF::ValidatorSetType,
-    >,
 {
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+        MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>,
         Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>,
     ) {
         assert_eq!(
@@ -817,7 +781,6 @@ where
             epoch_manager,
             val_epoch_map,
             txpool: self.transaction_pool,
-            async_state_verify: self.async_state_verify,
 
             state_root_validator: self.state_root_validator,
             block_timestamp,
@@ -853,8 +816,7 @@ where
     }
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT> MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -866,10 +828,6 @@ where
     BVT: BlockValidator<SCT, BPT, SBT>,
 
     SVT: StateRootValidator,
-    ASVT: AsyncStateVerifyProcess<
-        SignatureCollectionType = SCT,
-        ValidatorSetType = VTF::ValidatorSetType,
-    >,
 {
     pub fn update(
         &mut self,
@@ -923,20 +881,6 @@ where
                 Vec::new()
             }
 
-            MonadEvent::AsyncStateVerifyEvent(async_state_verify_event) => {
-                let ConsensusMode::Live(consensus) = &mut self.consensus else {
-                    tracing::trace!("ignoring AsyncStateVerifyEvent, not live yet");
-                    return vec![];
-                };
-                let current_round_estimate = consensus.get_current_round();
-                let async_state_verify_cmds = AsyncStateVerifyChildState::new(self)
-                    .update(async_state_verify_event, current_round_estimate);
-
-                async_state_verify_cmds
-                    .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _>>>::into)
-                    .collect::<Vec<_>>()
-            }
             MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
                 StateSyncEvent::Inbound(sender, message) => {
                     // TODO we need to add some sort of throttling to who we service... right now

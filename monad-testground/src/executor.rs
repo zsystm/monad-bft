@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::NopStateRoot,
@@ -26,10 +25,7 @@ use monad_updaters::{
     statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
     BoxUpdater, Updater,
 };
-use monad_validator::{
-    simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
-};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
 
 pub enum RouterConfig<ST, SCT>
@@ -153,7 +149,7 @@ type MonadStateType<ST, SCT> = MonadState<
     MockTxPool,
     MockValidator,
     NopStateRoot,
-    PeerAsyncStateVerify<SCT, <ValidatorSetFactory<CertificateSignaturePubKey<ST>> as ValidatorSetTypeFactory>::ValidatorSetType>>;
+>;
 
 pub struct StateConfig<ST, SCT>
 where
@@ -191,7 +187,6 @@ where
         block_policy: PassthruBlockPolicy {},
         state_backend,
         state_root_validator: NopStateRoot,
-        async_state_verify: PeerAsyncStateVerify::default(),
         key: config.key,
         certkey: config.cert_key,
         val_set_update_interval: config.val_set_update_interval,

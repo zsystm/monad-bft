@@ -1,6 +1,5 @@
 use std::{collections::BTreeSet, time::Duration};
 
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
     txpool::MockTxPool,
@@ -47,13 +46,11 @@ pub fn simulation_make() -> *mut Simulation {
                     SeqNum(4), // state_root_delay
                 )
             },
-            PeerAsyncStateVerify::new,
             Duration::from_millis(20), // delta
             Duration::from_millis(5),  // vote pace
             100,                       // proposal_tx_limit
             SeqNum(2000),              // val_set_update_interval
             Round(50),                 // epoch_start_delay
-            majority_threshold,        // state root quorum threshold
             SeqNum(100),               // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs

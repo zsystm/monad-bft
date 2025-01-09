@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
-use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
     txpool::MockTxPool,
@@ -42,14 +41,12 @@ fn two_nodes_noser() {
                 SeqNum(4), // state_root_delay
             )
         },
-        PeerAsyncStateVerify::new,
-        delta,              // delta
-        vote_pace,          // vote pace
-        10,                 // proposal_tx_limit
-        SeqNum(2000),       // val_set_update_interval
-        Round(50),          // epoch_start_delay
-        majority_threshold, // state root quorum threshold
-        SeqNum(100),        // state_sync_threshold
+        delta,        // delta
+        vote_pace,    // vote pace
+        10,           // proposal_tx_limit
+        SeqNum(2000), // val_set_update_interval
+        Round(50),    // epoch_start_delay
+        SeqNum(100),  // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

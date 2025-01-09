@@ -52,12 +52,6 @@ message ProtoUnverifiedConsensusMessage {
   monad_proto.signing.ProtoSignature author_signature = 6;
 }
 
-message ProtoPeerStateRootMessage {
-  monad_proto.basic.ProtoNodeId peer = 1;
-  monad_proto.state_root_hash.ProtoStateRootHashInfo info = 2;
-  monad_proto.signing.ProtoSignature sig = 3;
-}
-
 message ProtoForwardedTx {
   repeated bytes tx = 1;
 }
@@ -108,7 +102,6 @@ message ProtoMonadMessage {
     ProtoUnverifiedConsensusMessage consensus = 1;
     ProtoBlockSyncRequestMessage block_sync_request = 2;
     ProtoBlockSyncResponseMessage block_sync_response = 3;
-    ProtoPeerStateRootMessage peer_state_root = 4;
     ProtoForwardedTx forwarded_tx = 5;
     ProtoStateSyncNetworkMessage state_sync_message = 6;
   }

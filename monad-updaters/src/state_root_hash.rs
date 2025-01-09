@@ -212,9 +212,7 @@ where
         let this = self.deref_mut();
 
         let event = if let Some(info) = this.state_root_update.pop_front() {
-            Poll::Ready(Some(MonadEvent::AsyncStateVerifyEvent(
-                monad_executor_glue::AsyncStateVerifyEvent::LocalStateRoot(info),
-            )))
+            Poll::Ready(Some(MonadEvent::StateRootEvent(info)))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((

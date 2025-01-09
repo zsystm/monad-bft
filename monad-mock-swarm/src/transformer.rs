@@ -59,7 +59,6 @@ where
             }
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => self.drop_block_sync,
-            VerifiedMonadMessage::PeerStateRootMessage(_) => self.drop_state_root,
             VerifiedMonadMessage::ForwardedTx(_) => false,
             VerifiedMonadMessage::StateSyncMessage(_) => false,
         };
@@ -143,13 +142,6 @@ where
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => {
                 if self.ban_block_sync {
-                    TwinsCapture::Drop
-                } else {
-                    TwinsCapture::Spread(pid)
-                }
-            }
-            VerifiedMonadMessage::PeerStateRootMessage(_) => {
-                if self.drop_state_root {
                     TwinsCapture::Drop
                 } else {
                     TwinsCapture::Spread(pid)

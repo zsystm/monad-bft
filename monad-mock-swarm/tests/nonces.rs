@@ -8,7 +8,6 @@ mod test {
     use alloy_primitives::B256;
     use alloy_rlp::Decodable;
     use itertools::Itertools;
-    use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::payload::{StateRoot, TransactionPayload};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -44,8 +43,7 @@ mod test {
         statesync::MockStateSyncExecutor,
     };
     use monad_validator::{
-        simple_round_robin::SimpleRoundRobin,
-        validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+        simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
     };
     use tracing::info;
 
@@ -66,10 +64,6 @@ mod test {
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = EthTxPool<Self::SignatureCollectionType, Self::StateBackendType>;
         type Ledger = MockEthLedger<Self::SignatureType, Self::SignatureCollectionType>;
-        type AsyncStateRootVerify = PeerAsyncStateVerify<
-            Self::SignatureCollectionType,
-            <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
-        >;
 
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
@@ -116,13 +110,11 @@ mod test {
                 )
             },
             || StateRoot::new(execution_delay),
-            PeerAsyncStateVerify::new,
             CONSENSUS_DELTA,          // delta
             Duration::from_millis(0), // vote pace
             10,                       // proposal_tx_limit
             SeqNum(2000),             // val_set_update_interval
             Round(50),                // epoch_start_delay
-            majority_threshold,       // state root quorum threshold
             SeqNum(100),              // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs

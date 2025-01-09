@@ -8,7 +8,7 @@ use monad_consensus_types::{
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
-use monad_types::{Round, SeqNum, Stake};
+use monad_types::{Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::validator_set::ValidatorSetType;
 
@@ -24,14 +24,12 @@ pub fn make_state_configs<S: SwarmRelation>(
     block_policy: impl Fn() -> S::BlockPolicyType,
     state_backend: impl Fn() -> S::StateBackendType,
     state_root_validator: impl Fn() -> S::StateRootValidator,
-    async_state_verify: impl Fn(fn(Stake) -> Stake, usize) -> S::AsyncStateRootVerify,
 
     delta: Duration,
     vote_pace: Duration,
     proposal_txn_limit: usize,
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
-    state_root_quorum_threshold: fn(Stake) -> Stake,
     statesync_threshold: SeqNum,
 ) -> Vec<
     MonadStateBuilder<
@@ -44,7 +42,6 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::TxPool,
         S::BlockValidator,
         S::StateRootValidator,
-        S::AsyncStateRootVerify,
     >,
 > {
     let (keys, cert_keys, validators, validator_mapping) =
@@ -78,10 +75,6 @@ pub fn make_state_configs<S: SwarmRelation>(
             block_policy: block_policy(),
             state_backend: state_backend(),
             state_root_validator: state_root_validator(),
-            async_state_verify: async_state_verify(
-                state_root_quorum_threshold,
-                statesync_threshold.0 as usize,
-            ),
             forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
 
             key,

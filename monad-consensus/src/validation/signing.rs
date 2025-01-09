@@ -18,7 +18,7 @@ use monad_crypto::{
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_proto::proto::message::{
-    proto_unverified_consensus_message, ProtoPeerStateRootMessage, ProtoUnverifiedConsensusMessage,
+    proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_validator::{
@@ -31,7 +31,7 @@ use crate::{
     convert::message::UnverifiedConsensusMessage,
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{PeerStateRootMessage, ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::{message::well_formed, safety::consecutive},
 };
@@ -425,53 +425,6 @@ impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
         match epoch_manager.get_epoch(self.obj.timeout.tminfo.round) {
             Some(epoch) if self.obj.timeout.tminfo.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> Unvalidated<PeerStateRootMessage<SCT>> {
-    pub fn validate<VTF, VT>(
-        self,
-        sender: &NodeId<SCT::NodeIdPubKey>,
-        epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<PeerStateRootMessage<SCT>>, Error>
-    where
-        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-    {
-        if self.obj.peer != *sender {
-            return Err(Error::AuthorNotSender);
-        }
-
-        // If the node is lagging too far behind, it wouldn't know when the
-        // next epoch is starting. The epoch retrieved here may be incorrect.
-        // TODO: Need to check that case. Should trigger statesync.
-        let epoch = self
-            .obj
-            .info
-            .seq_num
-            .to_epoch(epoch_manager.val_set_update_interval);
-        let valset = val_epoch_map
-            .get_val_set(&epoch)
-            .ok_or(Error::ValidatorSetDataUnavailable)?;
-
-        if !valset.is_member(&self.obj.peer) {
-            return Err(Error::InvalidAuthor);
-        }
-
-        Ok(Validated { message: self })
-    }
-}
-
-impl<SCT: SignatureCollection> From<&Unvalidated<PeerStateRootMessage<SCT>>>
-    for ProtoPeerStateRootMessage
-{
-    fn from(value: &Unvalidated<PeerStateRootMessage<SCT>>) -> Self {
-        ProtoPeerStateRootMessage {
-            peer: Some((&value.obj.peer).into()),
-            info: Some((&value.obj.info).into()),
-            sig: Some(certificate_signature_to_proto(&value.obj.sig)),
         }
     }
 }
