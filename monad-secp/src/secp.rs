@@ -1,3 +1,4 @@
+use alloy_rlp::{Decodable, Encodable};
 use monad_crypto::hasher::{Hasher, HasherType};
 use secp256k1::Secp256k1;
 use zeroize::Zeroize;
@@ -95,12 +96,12 @@ impl PubKey {
     }
 
     /// Serialize public key
-    pub fn bytes(&self) -> Vec<u8> {
-        self.0.serialize_uncompressed().to_vec()
+    pub fn bytes(&self) -> [u8; 65] {
+        self.0.serialize_uncompressed()
     }
 
-    pub fn bytes_compressed(&self) -> Vec<u8> {
-        self.0.serialize().to_vec()
+    pub fn bytes_compressed(&self) -> [u8; 33] {
+        self.0.serialize()
     }
 
     /// Verify that the message is correctly signed
@@ -144,6 +145,23 @@ impl SecpSignature {
         Ok(SecpSignature(
             secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?,
         ))
+    }
+}
+
+impl Encodable for SecpSignature {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.serialize().encode(out);
+    }
+}
+
+impl Decodable for SecpSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let raw_bytes = <[u8; 65]>::decode(buf)?;
+
+        match SecpSignature::deserialize(&raw_bytes) {
+            Ok(sig) => Ok(sig),
+            Err(_) => Err(alloy_rlp::Error::Custom("invalid secp signature")),
+        }
     }
 }
 
@@ -227,5 +245,19 @@ mod tests {
         let ser = signature.serialize();
         let deser = SecpSignature::deserialize(&ser);
         assert_eq!(signature, deser.unwrap());
+    }
+
+    #[test]
+    fn test_signature_rlp() {
+        let mut privkey: [u8; 32] = [127; 32];
+        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+
+        let msg = b"hello world";
+        let signature = keypair.sign(msg);
+
+        let rlp = alloy_rlp::encode(signature);
+        let x: SecpSignature = alloy_rlp::decode_exact(rlp).unwrap();
+
+        assert_eq!(signature, x);
     }
 }
