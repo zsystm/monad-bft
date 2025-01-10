@@ -3,6 +3,7 @@ pub mod dynamodb;
 pub mod rocksdb_storage;
 pub mod s3;
 pub mod triedb_reader;
+pub mod memory;
 
 use std::{collections::HashMap, str::FromStr};
 
