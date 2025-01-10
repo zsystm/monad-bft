@@ -1,8 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -41,11 +40,7 @@ pub fn simulation_make() -> *mut Simulation {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-            || {
-                StateRoot::new(
-                    SeqNum(4), // state_root_delay
-                )
-            },
+            SeqNum(4),                 // execution_delay
             Duration::from_millis(20), // delta
             Duration::from_millis(5),  // vote pace
             100,                       // proposal_tx_limit

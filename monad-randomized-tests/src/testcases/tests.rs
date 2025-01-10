@@ -4,8 +4,7 @@ use std::{
 };
 
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -36,11 +35,7 @@ fn random_latency_test(latency_seed: u64) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        || {
-            StateRoot::new(
-                SeqNum(4), // state_root_delay
-            )
-        },
+        SeqNum(4),                  // execution_delay
         Duration::from_millis(250), // delta
         Duration::from_millis(100), // vote pace
         0,                          // proposal_tx_limit
@@ -102,11 +97,7 @@ fn delayed_message_test(latency_seed: u64) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        || {
-            StateRoot::new(
-                SeqNum(4), // state_root_delay
-            )
-        },
+        SeqNum(4),                // execution_delay
         Duration::from_millis(2), // delta
         Duration::from_millis(0), // vote pace
         0,                        // proposal_tx_limit

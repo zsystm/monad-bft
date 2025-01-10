@@ -7,7 +7,7 @@ use std::{
 use itertools::Itertools;
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-    payload::StateRoot, txpool::MockTxPool,
+    txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -73,16 +73,12 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
-        || {
-            StateRoot::new(
-                // due to the burst behavior of replay-transformer, its okay to
-                // have delay as 1
-                //
-                // TODO-4?: Make Replay Transformer's stored message not burst
-                // within the same Duration
-                SeqNum(1), // state_root_delay
-            )
-        },
+        // due to the burst behavior of replay-transformer, its okay to
+        // have delay as 1
+        //
+        // TODO-4?: Make Replay Transformer's stored message not burst
+        // within the same Duration
+        SeqNum(1),    // execution_delay
         delta,        // delta
         vote_pace,    // vote pace
         10,           // proposal_tx_limit

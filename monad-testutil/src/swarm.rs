@@ -23,8 +23,8 @@ pub fn make_state_configs<S: SwarmRelation>(
     block_validator: impl Fn() -> S::BlockValidator,
     block_policy: impl Fn() -> S::BlockPolicyType,
     state_backend: impl Fn() -> S::StateBackendType,
-    state_root_validator: impl Fn() -> S::StateRootValidator,
 
+    execution_delay: SeqNum,
     delta: Duration,
     vote_pace: Duration,
     proposal_txn_limit: usize,
@@ -41,7 +41,6 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::LeaderElection,
         S::TxPool,
         S::BlockValidator,
-        S::StateRootValidator,
     >,
 > {
     let (keys, cert_keys, validators, validator_mapping) =
@@ -74,7 +73,6 @@ pub fn make_state_configs<S: SwarmRelation>(
             block_validator: block_validator(),
             block_policy: block_policy(),
             state_backend: state_backend(),
-            state_root_validator: state_root_validator(),
             forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
 
             key,
@@ -85,6 +83,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             beneficiary: EthAddress::default(),
 
             consensus_config: ConsensusConfig {
+                execution_delay,
                 proposal_txn_limit,
                 proposal_gas_limit: 30_000_000,
                 delta,

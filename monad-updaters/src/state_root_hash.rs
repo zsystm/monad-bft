@@ -72,6 +72,8 @@ pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
     val_set_update_interval: SeqNum,
     calc_state_root: fn(&SeqNum) -> StateRootHash,
 
+    enable_updates: bool,
+
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
@@ -97,6 +99,8 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
             val_set_update_interval,
             calc_state_root: Self::state_root_honest,
 
+            enable_updates: true,
+
             waker: None,
             metrics: Default::default(),
             phantom: PhantomData,
@@ -106,6 +110,11 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
     /// Change how state root hash is calculated
     pub fn inject_byzantine_srh(&mut self, calc_srh: fn(&SeqNum) -> StateRootHash) {
         self.calc_state_root = calc_srh;
+    }
+
+    pub fn with_updates_enabled(mut self, on: bool) -> Self {
+        self.enable_updates = on;
+        self
     }
 }
 
@@ -118,6 +127,9 @@ where
     type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
+        if !self.enable_updates {
+            return false;
+        }
         !self.state_root_update.is_empty() || self.next_val_data.is_some()
     }
 
@@ -210,6 +222,10 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
+
+        if !this.enable_updates {
+            return Poll::Pending;
+        }
 
         let event = if let Some(info) = this.state_root_update.pop_front() {
             Poll::Ready(Some(MonadEvent::StateRootEvent(info)))

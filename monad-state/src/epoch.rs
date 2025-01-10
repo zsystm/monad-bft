@@ -16,7 +16,7 @@ use monad_validator::{
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct EpochChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+pub(super) struct EpochChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -27,7 +27,7 @@ where
 {
     val_epoch_map: &'a mut ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, BPT, SBT)>,
+    _phantom: PhantomData<(ST, LT, TT, BVT, BPT, SBT)>,
 }
 
 pub(super) enum EpochCommand<PT>
@@ -37,8 +37,8 @@ where
     AddEpochValidatorSet(Epoch, Vec<(NodeId<PT>, Stake)>),
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
-    EpochChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+    EpochChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -48,7 +48,7 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,

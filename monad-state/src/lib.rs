@@ -21,7 +21,6 @@ use monad_consensus_types::{
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
-    payload::StateRootValidator,
     quorum_certificate::{QuorumCertificate, GENESIS_BLOCK_ID},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::{StateRootHash, StateRootHashInfo},
@@ -443,7 +442,7 @@ where
     }
 }
 
-pub struct MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+pub struct MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -472,7 +471,6 @@ where
     /// Transaction pool is the source of Proposals
     txpool: TT,
 
-    state_root_validator: SVT,
     block_timestamp: BlockTimestamp,
     block_validator: BVT,
     block_policy: BPT,
@@ -489,7 +487,7 @@ where
 // execution needs NumBlockHash blocks before tip to execute tip
 const NUM_BLOCK_HASH: SeqNum = SeqNum(256);
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT> MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT> MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -498,7 +496,6 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
 {
     pub fn consensus(&self) -> Option<&ConsensusState<SCT, BPT, SBT>> {
         match &self.consensus {
@@ -513,10 +510,6 @@ where
 
     pub fn validators_epoch_mapping(&self) -> &ValidatorsEpochMapping<VTF, SCT> {
         &self.val_epoch_map
-    }
-
-    pub fn state_root_validator(&self) -> &SVT {
-        &self.state_root_validator
     }
 
     pub fn pubkey(&self) -> SCT::NodeIdPubKey {
@@ -680,7 +673,7 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+pub struct MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -689,8 +682,6 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-
-    SVT: StateRootValidator,
 {
     pub version: MonadVersion,
 
@@ -700,7 +691,6 @@ where
     pub block_validator: BVT,
     pub block_policy: BPT,
     pub state_backend: SBT,
-    pub state_root_validator: SVT,
     pub forkpoint: Forkpoint<SCT>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
@@ -711,8 +701,7 @@ where
     pub consensus_config: ConsensusConfig,
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
-    MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT> MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -722,18 +711,16 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-
-    SVT: StateRootValidator,
 {
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>,
+        MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>,
         Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>,
     ) {
         assert_eq!(
             self.forkpoint.validate(
-                self.state_root_validator.get_delay(),
+                self.consensus_config.execution_delay,
                 &self.validator_set_factory,
                 self.val_set_update_interval
             ),
@@ -770,7 +757,7 @@ where
                 self.forkpoint.root.clone(),
                 self.forkpoint.high_qc.clone(),
                 BlockBuffer::new(
-                    self.state_root_validator.get_delay(),
+                    self.consensus_config.execution_delay,
                     self.forkpoint.root.seq_num,
                     statesync_to_live_threshold,
                 ),
@@ -782,7 +769,6 @@ where
             val_epoch_map,
             txpool: self.transaction_pool,
 
-            state_root_validator: self.state_root_validator,
             block_timestamp,
             block_validator: self.block_validator,
             block_policy: self.block_policy,
@@ -816,7 +802,7 @@ where
     }
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT> MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT> MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -826,8 +812,6 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-
-    SVT: StateRootValidator,
 {
     pub fn update(
         &mut self,
@@ -876,9 +860,11 @@ where
                 // arrive after the delay-gap between execution so they need to be handled
                 // asynchronously
                 self.metrics.consensus_events.state_root_update += 1;
-                self.state_root_validator
-                    .add_state_root(info.seq_num, info.state_root_hash);
-                Vec::new()
+                let consensus_cmds = ConsensusChildState::new(self).handle_execution_result(info);
+                consensus_cmds
+                    .into_iter()
+                    .flat_map(Into::<Vec<Command<_, _, _>>>::into)
+                    .collect::<Vec<_>>()
             }
 
             MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
@@ -898,7 +884,7 @@ where
                 StateSyncEvent::RequestSync { root, high_qc } => {
                     let mut commands = Vec::new();
 
-                    let delay = self.state_root_validator.get_delay();
+                    let delay = self.consensus_config.execution_delay;
                     let root_seq_num = root.seq_num;
                     let state_root_seq_num = root_seq_num.max(delay) - delay;
 
@@ -973,7 +959,7 @@ where
                     assert!(!*done_db_sync);
 
                     let root_seq_num = root.seq_num;
-                    let delay = self.state_root_validator.get_delay();
+                    let delay = self.consensus_config.execution_delay;
                     let target = root_seq_num.max(delay) - delay;
                     assert!(n <= target);
 
@@ -1148,7 +1134,7 @@ where
         };
 
         let root_seq_num = root.seq_num;
-        let delay = self.state_root_validator.get_delay();
+        let delay = self.consensus_config.execution_delay;
 
         let root_parent_chain = block_buffer.root_parent_chain(root);
         // check:

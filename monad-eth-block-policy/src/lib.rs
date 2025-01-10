@@ -376,7 +376,7 @@ impl CommittedBlkBuffer {
             assert_eq!(last_block_num + SeqNum(1), block_number);
         }
 
-        if self.blocks.len() >= self.size * 2 {
+        if self.blocks.len() >= self.size.saturating_mul(2) {
             let (&first_block_num, _) = self.blocks.first_key_value().expect("txns non-empty");
             let divider = first_block_num + SeqNum(self.size as u64);
 

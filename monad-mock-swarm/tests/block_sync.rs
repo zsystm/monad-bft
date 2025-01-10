@@ -7,7 +7,7 @@ mod test {
     use itertools::Itertools;
     use monad_consensus_types::{
         block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-        payload::StateRoot, txpool::MockTxPool,
+        txpool::MockTxPool,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_mock_swarm::{
@@ -51,12 +51,8 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
+            || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            SeqNum::MAX,  // execution_delay
             delta,        // delta
             vote_pace,    // vote pace
             0,            // proposal_tx_limit
@@ -180,12 +176,8 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
+            || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            SeqNum::MAX,  // execution_delay
             delta,        // delta
             vote_pace,    // vote pace
             0,            // proposal_tx_limit
@@ -271,12 +263,8 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
+            || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            SeqNum::MAX,  // execution_delay
             delta,        // delta
             vote_pace,    // vote pace
             0,            // proposal_tx_limit
@@ -417,12 +405,8 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            || {
-                StateRoot::new(
-                    SeqNum(10_000_000), // state_root_delay
-                )
-            },
+            || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            SeqNum::MAX,  // execution_delay
             delta,        // delta
             vote_pace,    // vote pace
             0,            // proposal_tx_limit

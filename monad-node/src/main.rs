@@ -10,10 +10,7 @@ use clap::CommandFactory;
 use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{
-    metrics::Metrics,
-    payload::{StateRoot, PROPOSAL_GAS_LIMIT},
-};
+use monad_consensus_types::{metrics::Metrics, payload::PROPOSAL_GAS_LIMIT};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -294,9 +291,6 @@ async fn run(
                 .expect("triedb should exist in path"),
             SeqNum(node_state.node_config.consensus.execution_delay),
         ),
-        state_root_validator: StateRoot::new(SeqNum(
-            node_state.node_config.consensus.execution_delay,
-        )),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
@@ -304,6 +298,7 @@ async fn run(
         beneficiary: node_state.node_config.beneficiary,
         forkpoint: node_state.forkpoint_config.into(),
         consensus_config: ConsensusConfig {
+            execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: PROPOSAL_GAS_LIMIT,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),

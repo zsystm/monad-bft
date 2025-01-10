@@ -8,7 +8,7 @@ mod test {
     use alloy_primitives::B256;
     use alloy_rlp::Decodable;
     use itertools::Itertools;
-    use monad_consensus_types::payload::{StateRoot, TransactionPayload, BASE_FEE_PER_GAS};
+    use monad_consensus_types::payload::{TransactionPayload, BASE_FEE_PER_GAS};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -58,7 +58,6 @@ mod test {
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
         type BlockValidator = EthValidator;
-        type StateRootValidator = StateRoot;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -109,7 +108,7 @@ mod test {
                     InMemoryBlockState::genesis(existing_nonces.clone()),
                 )
             },
-            || StateRoot::new(execution_delay),
+            execution_delay,          // execution_delay
             CONSENSUS_DELTA,          // delta
             Duration::from_millis(0), // vote pace
             10,                       // proposal_tx_limit

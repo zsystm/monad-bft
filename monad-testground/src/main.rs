@@ -297,6 +297,7 @@ where
                     epoch_start_delay: Round(args.epoch_start_delay),
                     validators: validators.clone(),
                     consensus_config: ConsensusConfig {
+                        execution_delay: SeqNum::MAX,
                         proposal_txn_limit: args.proposal_size,
                         proposal_gas_limit: 800_000_000,
                         delta: Duration::from_millis(args.delta_ms),

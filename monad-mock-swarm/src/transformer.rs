@@ -19,7 +19,6 @@ pub struct FilterTransformer<PT: PubKey> {
     pub drop_vote: bool,
     pub drop_timeout: bool,
     pub drop_block_sync: bool,
-    pub drop_state_root: bool,
 
     pub _phantom: PhantomData<PT>,
 }
@@ -31,7 +30,6 @@ impl<PT: PubKey> Default for FilterTransformer<PT> {
             drop_vote: false,
             drop_timeout: false,
             drop_block_sync: false,
-            drop_state_root: false,
 
             _phantom: PhantomData,
         }
@@ -80,8 +78,6 @@ pub struct TwinsTransformer<PT: PubKey> {
     default_part: Vec<ID<PT>>,
     // block sync and associated message is dropped by default
     ban_block_sync: bool,
-    // state root verification messages is forwarded by default
-    drop_state_root: bool,
 }
 
 impl<PT: PubKey> TwinsTransformer<PT> {
@@ -90,14 +86,12 @@ impl<PT: PubKey> TwinsTransformer<PT> {
         partition: BTreeMap<Round, Vec<ID<PT>>>,
         default_part: Vec<ID<PT>>,
         ban_block_sync: bool,
-        drop_state_root: bool,
     ) -> Self {
         Self {
             dups,
             partition,
             default_part,
             ban_block_sync,
-            drop_state_root,
         }
     }
 }
@@ -466,7 +460,7 @@ mod test {
         filter.insert(Round(1), dups.iter().take(2).copied().collect());
         filter.insert(Round(2), dups.iter().skip(1).take(2).copied().collect());
 
-        let mut t = TwinsTransformer::new(pid_to_dups.clone(), filter.clone(), vec![], true, false);
+        let mut t = TwinsTransformer::new(pid_to_dups.clone(), filter.clone(), vec![], true);
 
         for i in 3..30 {
             // messages that is not part of the specified round result in default
@@ -629,7 +623,7 @@ mod test {
         }
 
         // however if we enable block_sync then it should be broadcasted
-        t = TwinsTransformer::new(pid_to_dups, filter, vec![], false, false);
+        t = TwinsTransformer::new(pid_to_dups, filter, vec![], false);
         for msg in vec![
             fake_request_block_sync(),
             fake_block_sync(),

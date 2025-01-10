@@ -188,6 +188,12 @@ impl Rem for SeqNum {
     }
 }
 
+impl SeqNum {
+    pub const fn saturating_add(self, other: Self) -> Self {
+        Self(self.0.saturating_add(other.0))
+    }
+}
+
 impl std::fmt::Debug for SeqNum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)

@@ -2,7 +2,7 @@ pub mod twin_reader;
 
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_consensus_types::{payload::StateRoot, signature_collection::SignatureCollection};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -41,7 +41,6 @@ where
             MonadMessage<ST, SCT>,
             VerifiedMonadMessage<ST, SCT>,
         >,
-        StateRootValidator = StateRoot,
         StateRootHashExecutor = MockStateRootHashNop<ST, SCT>,
         StateSyncExecutor = MockStateSyncExecutor<ST, SCT>,
         Ledger = MockLedger<ST, SCT>,
@@ -73,7 +72,6 @@ where
             partition,
             default_partition,
             !allow_block_sync,
-            false, // drop_state_root
         );
 
         let outbound_pipeline = vec![
@@ -118,13 +116,8 @@ where
     while swarm.step_until(&mut terminator.clone()).is_some() {}
 
     if let Some(liveness_length) = liveness {
-        let liveness_transformer = TwinsTransformer::new(
-            duplicates,
-            BTreeMap::new(),
-            ids.clone(),
-            false,
-            false, // drop_state_root
-        );
+        let liveness_transformer =
+            TwinsTransformer::new(duplicates, BTreeMap::new(), ids.clone(), false);
         let pipeline = vec![
             MonadMessageTransformer::Twins(liveness_transformer),
             MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(

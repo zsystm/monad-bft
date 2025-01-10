@@ -4,7 +4,7 @@ use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
-    payload::StateRootValidator, signature_collection::SignatureCollection, txpool::TxPool,
+    signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -24,7 +24,7 @@ use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+pub(super) struct MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     ST: CertificateSignatureRecoverable,
@@ -35,8 +35,6 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-
-    SVT: StateRootValidator,
 {
     txpool: &'a mut TT,
     block_policy: &'a BPT,
@@ -49,15 +47,15 @@ where
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT, SVT)>,
+    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT)>,
 }
 
 pub(super) enum MempoolCommand<PT: PubKey> {
     ForwardTxns(Vec<NodeId<PT>>, Vec<Bytes>),
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
-    MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+    MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -67,10 +65,9 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,

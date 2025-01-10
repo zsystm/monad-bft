@@ -10,7 +10,6 @@ mod test {
         block::{BlockType, PassthruBlockPolicy},
         block_validator::MockValidator,
         metrics::Metrics,
-        payload::{MissingNextStateRoot, StateRoot, StateRootValidator},
         signature_collection::SignatureCollectionPubKeyType,
         txpool::MockTxPool,
     };
@@ -58,7 +57,6 @@ mod test {
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
         type BlockValidator = MockValidator;
-        type StateRootValidator = Box<dyn StateRootValidator + Send + Sync>;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -97,7 +95,7 @@ mod test {
     ) {
         let execution_delay = SeqNum(4);
 
-        let mut state_configs = make_state_configs::<NullBlockSwarm>(
+        let state_configs = make_state_configs::<NullBlockSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
@@ -105,7 +103,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || Box::new(StateRoot::new(execution_delay)),
+            execution_delay,
             CONSENSUS_DELTA,
             Duration::from_millis(0),
             10,           // proposal_tx_limit
@@ -114,9 +112,7 @@ mod test {
             SeqNum(100),  // state_sync_threshold
         );
 
-        // change state root validator of node0
         let null_proposer_id = NodeId::new(state_configs[0].key.pubkey());
-        state_configs[0].state_root_validator = Box::new(MissingNextStateRoot {});
 
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -127,13 +123,15 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
+                    let node_id = NodeId::new(state_builder.key.pubkey());
                     let state_backend = state_builder.state_backend.clone();
                     let validators = state_builder.forkpoint.validator_sets[0].clone();
                     NodeBuilder::<NullBlockSwarm>::new(
-                        ID::new(NodeId::new(state_builder.key.pubkey())),
+                        ID::new(node_id),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000))
+                            .with_updates_enabled(node_id != null_proposer_id),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -206,6 +204,21 @@ mod test {
         verifier
             .metric_minimum(
                 &null_proposer,
+                fetch_metric!(consensus_events.created_vote),
+                250,
+            )
+            .metric_maximum(
+                &null_proposer,
+                fetch_metric!(consensus_events.rx_execution_lagging),
+                750,
+            )
+            .metric_maximum(
+                &null_proposer,
+                fetch_metric!(consensus_events.rx_missing_state_root),
+                750,
+            )
+            .metric_minimum(
+                &null_proposer,
                 fetch_metric!(consensus_events.creating_empty_block_proposal),
                 250,
             )
@@ -264,7 +277,7 @@ mod test {
         swarm.update_outbound_pipeline_for_all(filter_pipeline);
 
         while swarm
-            .step_until(&mut UntilTerminator::new().until_block(50))
+            .step_until(&mut UntilTerminator::new().until_round(Round(100)))
             .is_some()
         {}
 

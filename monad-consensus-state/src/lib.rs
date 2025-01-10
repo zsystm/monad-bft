@@ -16,12 +16,11 @@ use monad_consensus_types::{
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
     payload::{
-        ExecutionProtocol, Payload, RandaoReveal, StateRootResult, StateRootValidator,
-        TransactionPayload,
+        ExecutionProtocol, Payload, RandaoReveal, TransactionPayload, INITIAL_DELAY_STATE_ROOT_HASH,
     },
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHash,
+    state_root_hash::{StateRootHash, StateRootHashInfo},
     timeout::TimeoutCertificate,
     txpool::TxPool,
     validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
@@ -69,6 +68,8 @@ where
     block_sync_requests: BTreeMap<BlockId, (Round, BlockRange)>,
     last_proposed_round: Round,
 
+    finalized_execution_results: BTreeMap<SeqNum, StateRootHashInfo>,
+
     /// Set to true once consensus has kicked off execution
     started_execution: bool,
     /// Set to true once consensus has kicked off stastesync
@@ -115,7 +116,7 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+pub struct ConsensusStateWrapper<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -125,7 +126,6 @@ where
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
 {
     pub consensus: &'a mut ConsensusState<SCT, BPT, SBT>,
 
@@ -141,8 +141,6 @@ where
     pub election: &'a LT,
     pub version: &'a str,
 
-    /// Policy for validating the state root hashes included in proposals
-    pub state_root_validator: &'a SVT,
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
     /// Track local timestamp and validate proposal timestamps
@@ -164,6 +162,7 @@ where
 /// Consensus algorithm's configurable parameters
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct ConsensusConfig {
+    pub execution_delay: SeqNum,
     /// Maximum number of transactions allowed in a proposal
     pub proposal_txn_limit: usize,
     /// Maximum cumulative gas allowed for all transactions in a proposal
@@ -274,6 +273,8 @@ where
             // on our first proposal, we will set this to the appropriate value
             last_proposed_round: Round(0),
 
+            finalized_execution_results: Default::default(),
+
             started_execution: false,
             started_statesync: false,
         }
@@ -304,8 +305,8 @@ where
     }
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
-    ConsensusStateWrapper<'_, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+    ConsensusStateWrapper<'_, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -315,8 +316,6 @@ where
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-
-    SVT: StateRootValidator,
 {
     /// handles the local timeout expiry event
     pub fn handle_timeout_expiry(&mut self) -> Vec<ConsensusCommand<ST, SCT>> {
@@ -342,6 +341,26 @@ where
                 }),
         );
         cmds
+    }
+
+    #[must_use]
+    pub fn add_execution_result(
+        &mut self,
+        execution_result: StateRootHashInfo,
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        match self
+            .consensus
+            .finalized_execution_results
+            .entry(execution_result.seq_num)
+        {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(execution_result);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                assert_eq!(entry.get(), &execution_result);
+            }
+        };
+        Vec::new()
     }
 
     /// handles proposal messages from other nodes
@@ -871,12 +890,28 @@ where
                 }
 
                 let unvalidated_blocks = blocks_to_commit
-                    .into_iter()
-                    .map(|b| b.get_full_block())
+                    .iter()
+                    .map(|b| b.clone().get_full_block())
                     .collect();
                 cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(
                     unvalidated_blocks,
                 ));
+
+                let last_committed_block = blocks_to_commit
+                    .last()
+                    .expect("blocks_to_commit is not empty");
+
+                while self
+                    .consensus
+                    .finalized_execution_results
+                    .first_key_value()
+                    .is_some_and(|(&finalized_seq_num, _)| {
+                        finalized_seq_num.saturating_add(self.config.execution_delay)
+                            <= last_committed_block.get_seq_num()
+                    })
+                {
+                    self.consensus.finalized_execution_results.pop_first();
+                }
 
                 // enter new pacemaker epoch if committing the boundary block
                 // bumps the current epoch
@@ -1025,8 +1060,8 @@ where
         // set high_qc to N
         // execution will sync to N-2*delay using state_root in consensus_root
 
-        assert!(self.config.live_to_statesync_threshold > self.state_root_validator.get_delay());
-        let max_committed_seq_num = high_qc_seq_num - self.state_root_validator.get_delay();
+        assert!(self.config.live_to_statesync_threshold > self.config.execution_delay);
+        let max_committed_seq_num = high_qc_seq_num - self.config.execution_delay;
 
         let earliest_block_exists_and_is_not_empty = connected_blocks
             .first()
@@ -1384,10 +1419,7 @@ where
     #[must_use]
     fn proposal_policy(&self, proposed_seq_num: SeqNum) -> ConsensusAction {
         // Can't propose txs without state root hash
-        let Some(h) = self
-            .state_root_validator
-            .get_next_state_root(proposed_seq_num)
-        else {
+        let Some(h) = self.get_expected_execution_results(proposed_seq_num) else {
             // propose empty also needs a state root hash with it
             return ConsensusAction::ProposeNull;
         };
@@ -1422,7 +1454,7 @@ where
             if root_seq_num + self.config.live_to_statesync_threshold <= high_qc_seq_num {
                 // should statesync at this point
                 // request only upto delay blocks to trigger statesync
-                let delay = self.state_root_validator.get_delay();
+                let delay = self.config.execution_delay;
                 let blocksync_root = high_qc_seq_num - delay;
                 let request_range = BlockRange {
                     last_block_id: qc.get_block_id(),
@@ -1467,41 +1499,29 @@ where
             self.metrics.consensus_events.rx_empty_block += 1;
             return StateRootAction::Proceed;
         }
-        match self
-            .state_root_validator
-            .validate(p.block.get_seq_num(), p.block.get_state_root())
-        {
-            // TODO-1 execution lagging too far behind should be a trigger for
-            // something to try and catch up faster. For now, just wait
-            StateRootResult::OutOfRange => {
-                debug!(
-                    "Proposal Message carries state root hash for a block higher than highest locally known, unable to verify"
-                );
-                self.metrics.consensus_events.rx_execution_lagging += 1;
-                StateRootAction::Defer
-            }
-            // Don't vote and locally timeout if the proposed state root does
-            // not match
-            StateRootResult::Mismatch => {
-                debug!("State root hash in proposal conflicts with local value");
-                self.metrics.consensus_events.rx_bad_state_root += 1;
-                StateRootAction::Reject
-            }
-            // Don't vote and locally timeout if we don't have enough
-            // information to decide whether the state root is valid. It's still
-            // safe to insert to the block tree if other checks passes. So we
-            // don't need to request block sync if other blocks forms a QC on it
-            StateRootResult::Missing => {
-                debug!("Missing state root hash value locally, unable to verify");
-                self.metrics.consensus_events.rx_missing_state_root += 1;
-                StateRootAction::Defer
-            }
-            StateRootResult::Success => {
-                debug!("Received Proposal Message with valid state root hash");
-                self.metrics.consensus_events.rx_proposal += 1;
-                StateRootAction::Proceed
-            }
+
+        let Some(expected_execution_results) =
+            self.get_expected_execution_results(p.block.get_seq_num())
+        else {
+            warn!(
+                block_seq_num =? p.block.get_seq_num(),
+                "execution result not ready, unable to verify"
+            );
+            // TODO unify these metrics
+            self.metrics.consensus_events.rx_execution_lagging += 1;
+            self.metrics.consensus_events.rx_missing_state_root += 1;
+            return StateRootAction::Defer;
+        };
+
+        if expected_execution_results != p.block.get_state_root() {
+            debug!("State root hash in proposal conflicts with local value");
+            self.metrics.consensus_events.rx_bad_state_root += 1;
+            return StateRootAction::Reject;
         }
+
+        debug!("Received Proposal Message with valid state root hash");
+        self.metrics.consensus_events.rx_proposal += 1;
+        StateRootAction::Proceed
     }
 
     #[must_use]
@@ -1535,6 +1555,23 @@ where
 
         cmds
     }
+
+    fn get_expected_execution_results(
+        &self,
+        consensus_block_seq_num: SeqNum,
+    ) -> Option<StateRootHash> {
+        let expected_execution_results = if consensus_block_seq_num < self.config.execution_delay {
+            INITIAL_DELAY_STATE_ROOT_HASH
+        } else {
+            let execution_result_seq_num = consensus_block_seq_num - self.config.execution_delay;
+            let finalized_execution_result = self
+                .consensus
+                .finalized_execution_results
+                .get(&execution_result_seq_num)?;
+            finalized_execution_result.state_root_hash
+        };
+        Some(expected_execution_results)
+    }
 }
 
 #[cfg(test)]
@@ -1560,12 +1597,12 @@ mod test {
         ledger::CommitResult,
         metrics::Metrics,
         payload::{
-            FullTransactionList, MissingNextStateRoot, NopStateRoot, StateRoot, StateRootValidator,
-            TransactionPayload, BASE_FEE_PER_GAS, INITIAL_DELAY_STATE_ROOT_HASH,
+            FullTransactionList, TransactionPayload, BASE_FEE_PER_GAS,
+            INITIAL_DELAY_STATE_ROOT_HASH,
         },
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        state_root_hash::StateRootHash,
+        state_root_hash::{StateRootHash, StateRootHashInfo},
         timeout::Timeout,
         txpool::{MockTxPool, TxPool},
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -1618,9 +1655,8 @@ mod test {
     type BlockPolicyType = PassthruBlockPolicy;
     type StateBackendType = InMemoryState;
     type BlockValidatorType = MockValidator;
-    type StateRootValidatorType = NopStateRoot;
 
-    struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT>
+    struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT, TT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1628,8 +1664,6 @@ mod test {
         BPT: BlockPolicy<SCT, SBT>,
         SBT: StateBackend,
         BVT: BlockValidator<SCT, BPT, SBT>,
-        SVT: StateRootValidator,
-        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool<SCT, BPT, SBT>,
     {
         consensus_state: ConsensusState<SCT, BPT, SBT>,
@@ -1642,7 +1676,6 @@ mod test {
         election: LT,
         version: &'static str,
 
-        state_root_validator: SVT,
         block_validator: BVT,
         block_policy: BPT,
         state_backend: SBT,
@@ -1655,7 +1688,7 @@ mod test {
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     }
 
-    impl<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT> NodeContext<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT>
+    impl<ST, SCT, BPT, SBT, BVT, VTF, LT, TT> NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT, TT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1663,13 +1696,10 @@ mod test {
         BPT: BlockPolicy<SCT, SBT>,
         SBT: StateBackend,
         BVT: BlockValidator<SCT, BPT, SBT>,
-        SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool<SCT, BPT, SBT>,
     {
-        fn wrapped_state(
-            &mut self,
-        ) -> ConsensusStateWrapper<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT> {
+        fn wrapped_state(&mut self) -> ConsensusStateWrapper<ST, SCT, BPT, SBT, VTF, LT, TT, BVT> {
             ConsensusStateWrapper {
                 consensus: &mut self.consensus_state,
 
@@ -1681,7 +1711,6 @@ mod test {
                 election: &self.election,
                 version: self.version,
 
-                state_root_validator: &self.state_root_validator,
                 block_validator: &self.block_validator,
                 block_policy: &mut self.block_policy,
                 state_backend: &self.state_backend,
@@ -1830,7 +1859,6 @@ mod test {
         SBT: StateBackend,
         BVT: BlockValidator<SCT, BPT, SBT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-        SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         TT: TxPool<SCT, BPT, SBT> + Clone,
     >(
@@ -1841,10 +1869,10 @@ mod test {
         state_backend: impl Fn() -> SBT,
         block_validator: impl Fn() -> BVT,
         txpool: TT,
-        state_root: impl Fn() -> SVT,
+        execution_delay: SeqNum,
     ) -> (
         EnvContext<ST, SCT, VTF, LT>,
-        Vec<NodeContext<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT>>,
+        Vec<NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT, TT>>,
     ) {
         let (keys, cert_keys, valset, _valmap) =
             create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
@@ -1857,7 +1885,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<ST, SCT, BPT, SBT, BVT, _, _, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<ST, SCT, BPT, SBT, BVT, _, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -1881,6 +1909,7 @@ mod test {
                     )
                     .unwrap();
                 let consensus_config = ConsensusConfig {
+                    execution_delay,
                     proposal_txn_limit: 5000,
                     proposal_gas_limit: 8_000_000,
                     delta: Duration::from_secs(1),
@@ -1915,7 +1944,6 @@ mod test {
                     election: election.clone(),
                     version: "TEST",
 
-                    state_root_validator: state_root(),
                     block_validator: block_validator(),
                     block_policy: block_policy(),
                     state_backend: state_backend(),
@@ -2096,6 +2124,7 @@ mod test {
     #[test]
     fn lock_qc_high() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2103,7 +2132,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2111,10 +2139,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2162,6 +2190,7 @@ mod test {
     #[test]
     fn timeout_stops_voting() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2169,7 +2198,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2177,10 +2205,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
         let p1 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
@@ -2207,6 +2235,7 @@ mod test {
     #[test]
     fn enter_proposalmsg_round() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2214,7 +2243,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2222,10 +2250,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2269,6 +2297,7 @@ mod test {
     #[test]
     fn duplicate_proposals() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2276,7 +2305,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2284,10 +2312,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2307,6 +2335,7 @@ mod test {
     #[test]
     fn timestamp_update_only_for_higher_round() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2314,7 +2343,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2322,10 +2350,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2371,6 +2399,7 @@ mod test {
 
     fn out_of_order_proposals(perms: Vec<usize>) {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2378,7 +2407,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2386,10 +2414,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2462,6 +2490,7 @@ mod test {
     #[test]
     fn test_commit_rule_consecutive() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2469,7 +2498,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2477,10 +2505,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2518,6 +2546,7 @@ mod test {
     #[test]
     fn test_commit_rule_non_consecutive() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2525,7 +2554,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2533,10 +2561,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2596,6 +2624,7 @@ mod test {
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2603,7 +2632,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -2611,10 +2639,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let (n1, xs) = ctx.split_first_mut().unwrap();
         let (n2, xs) = xs.split_first_mut().unwrap();
@@ -2816,6 +2844,7 @@ mod test {
     #[test]
     fn test_receive_empty_block() {
         let num_state = 4;
+        let execution_delay = SeqNum(1);
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2823,7 +2852,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRoot,
             _,
             _,
         >(
@@ -2831,10 +2859,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2852,6 +2880,7 @@ mod test {
     #[test]
     fn test_lagging_execution() {
         let num_state = 4;
+        let execution_delay = SeqNum(1);
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2859,7 +2888,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRoot,
             _,
             _,
         >(
@@ -2867,10 +2895,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
+            execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2912,6 +2940,7 @@ mod test {
     #[test]
     fn test_missing_state_root() {
         let num_state = 4;
+        let execution_delay = SeqNum(5);
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -2919,7 +2948,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRoot,
             _,
             _,
         >(
@@ -2927,18 +2955,20 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(5)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || StateRoot::new(SeqNum(5)),
+            execution_delay,
         );
 
-        // add state root for the genesis block
-        ctx[0]
-            .state_root_validator
-            .add_state_root(GENESIS_SEQ_NUM, StateRootHash::default());
-
         let mut wrapped_state = ctx[0].wrapped_state();
+
+        // add state root for the genesis block
+        let cmds = wrapped_state.add_execution_result(StateRootHashInfo {
+            seq_num: GENESIS_SEQ_NUM,
+            state_root_hash: StateRootHash::default(),
+        });
+        assert!(cmds.is_empty());
 
         // prepare 5 blocks
         for _ in 0..5 {
@@ -2951,10 +2981,11 @@ mod test {
         assert_eq!(wrapped_state.consensus.get_current_round(), Round(5));
 
         // only execution update for block 3 comes
-        ctx[0]
-            .state_root_validator
-            .add_state_root(SeqNum(3), StateRootHash(Hash([0x08_u8; 32])));
-        let mut wrapped_state = ctx[0].wrapped_state();
+        let cmds = wrapped_state.add_execution_result(StateRootHashInfo {
+            seq_num: SeqNum(3),
+            state_root_hash: StateRootHash(Hash([0x08_u8; 32])),
+        });
+        assert!(cmds.is_empty());
 
         // Block 11 carries the state root hash from executing block 6 the state
         // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
@@ -2988,6 +3019,7 @@ mod test {
     #[test]
     fn test_unavailable_state_root_during_proposal() {
         let num_state = 4;
+        let execution_delay = SeqNum(1);
         // MissingNextStateRoot forces the proposer's state root hash
         // to be unavailable
         let (mut env, mut ctx) = setup::<
@@ -2997,7 +3029,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            MissingNextStateRoot,
             _,
             _,
         >(
@@ -3005,10 +3036,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            MissingNextStateRoot::default,
+            execution_delay,
         );
         let (n1, xs) = ctx.split_first_mut().unwrap();
         let (n2, xs) = xs.split_first_mut().unwrap();
@@ -3095,6 +3126,7 @@ mod test {
     #[test]
     fn test_state_root_updates() {
         let num_state = 4;
+        let execution_delay = SeqNum(1);
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3102,7 +3134,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRoot,
             _,
             _,
         >(
@@ -3110,12 +3141,12 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
+            execution_delay,
         );
-        let node = &mut ctx[0];
+        let node = &mut ctx[0].wrapped_state();
 
         // delay gap in setup is 1
 
@@ -3131,8 +3162,11 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         // p1 has seq_num 1 and therefore requires state_root 0
         // the state_root 0's hash should be Hash([0x99; 32])
-        node.state_root_validator
-            .add_state_root(SeqNum(0), StateRootHash(Hash([0x99; 32])));
+        let cmds = node.add_execution_result(StateRootHashInfo {
+            seq_num: SeqNum(0),
+            state_root_hash: StateRootHash(Hash([0x99; 32])),
+        });
+        assert!(cmds.is_empty());
 
         let _ = node.handle_proposal_message(author, verified_message);
 
@@ -3145,8 +3179,11 @@ mod test {
 
         let (author, _, verified_message) = p2.destructure();
         // p2 should have seqnum 2 and therefore only require state_root 1
-        node.state_root_validator
-            .add_state_root(SeqNum(1), StateRootHash(Hash([0xbb; 32])));
+        let cmds = node.add_execution_result(StateRootHashInfo {
+            seq_num: SeqNum(1),
+            state_root_hash: StateRootHash(Hash([0xbb; 32])),
+        });
+        assert!(cmds.is_empty());
         let p2_cmds = node.handle_proposal_message(author, verified_message);
         assert!(find_commit_cmd(&p2_cmds).is_some());
 
@@ -3156,26 +3193,29 @@ mod test {
         );
 
         let (author, _, verified_message) = p3.destructure();
-        node.state_root_validator
-            .add_state_root(SeqNum(2), StateRootHash(Hash([0xcc; 32])));
+        let cmds = node.add_execution_result(StateRootHashInfo {
+            seq_num: SeqNum(2),
+            state_root_hash: StateRootHash(Hash([0xcc; 32])),
+        });
+        assert!(cmds.is_empty());
         let p3_cmds = node.handle_proposal_message(author, verified_message);
         assert!(find_commit_cmd(&p3_cmds).is_some());
 
         // Delay gap is 1 and we have received proposals with seq num 0, 1, 2, 3
         // state_root_validator had updates for 0, 1, 2
         //
-        // Proposals with seq num 1 and 2 are committed, so expect 2 to remain
-        // in the state_root_validator
-        assert_eq!(2, node.state_root_validator.root_hashes.len());
+        // Delay gap is 1, so expect 1 to remain in finalized_execution_results
+        assert_eq!(1, node.consensus.finalized_execution_results.len());
         assert!(node
-            .state_root_validator
-            .root_hashes
+            .consensus
+            .finalized_execution_results
             .contains_key(&SeqNum(2)));
     }
 
     #[test]
     fn test_fetch_uncommitted_block() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3183,7 +3223,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3191,10 +3230,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let node = &mut ctx[0];
 
@@ -3267,6 +3306,7 @@ mod test {
     #[test_case(7; "7 participants")]
     #[test_case(123; "123 participants")]
     fn test_observing_qc_through_votes(num_state: usize) {
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3274,7 +3314,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3282,10 +3321,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         for i in 0..8 {
@@ -3374,6 +3413,7 @@ mod test {
     #[test]
     fn test_observe_qc_through_tmo() {
         let num_state = 5;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3381,7 +3421,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3389,10 +3428,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -3445,6 +3484,7 @@ mod test {
     #[test]
     fn test_observe_qc_through_proposal() {
         let num_state = 5;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3452,7 +3492,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3460,10 +3499,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -3493,6 +3532,7 @@ mod test {
     #[test]
     fn test_votes_with_missing_parent_block() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3500,7 +3540,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3508,10 +3547,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let missing_round = 9;
@@ -3617,6 +3656,7 @@ mod test {
     #[test]
     fn test_reject_non_leader_proposal() {
         let num_state = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3624,7 +3664,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3632,10 +3671,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let node = &mut ctx[0];
 
@@ -3684,6 +3723,7 @@ mod test {
     #[test]
     fn test_schedule_next_epoch() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3691,7 +3731,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3699,10 +3738,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut blocks = vec![];
 
@@ -3753,6 +3792,7 @@ mod test {
     #[test]
     fn test_advance_epoch_through_proposal_qc() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3760,7 +3800,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3768,10 +3807,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut blocks = vec![];
 
@@ -3860,6 +3899,7 @@ mod test {
     #[test]
     fn test_advance_epoch_through_proposal_tc() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3867,7 +3907,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3875,10 +3914,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut blocks = vec![];
 
@@ -3958,6 +3997,7 @@ mod test {
     #[test]
     fn test_advance_epoch_through_local_tc() {
         let num_states = 4;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3965,7 +4005,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -3973,10 +4012,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut blocks = vec![];
 
@@ -4072,6 +4111,7 @@ mod test {
     #[test]
     fn test_schedule_epoch_on_blocksync() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
 
         let (mut env, mut ctx) = setup::<
             SignatureType,
@@ -4080,7 +4120,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4088,10 +4127,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let mut blocks = vec![];
@@ -4229,6 +4268,7 @@ mod test {
     #[test]
     fn test_advance_epoch_with_blocksync() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -4236,7 +4276,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4244,10 +4283,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let mut blocks = vec![];
 
@@ -4351,6 +4390,7 @@ mod test {
     #[test]
     fn test_blocksync_invariant() {
         let num_state = 2;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -4358,7 +4398,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4366,10 +4405,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
         let p1 = env.next_proposal(FullTransactionList::empty(), INITIAL_DELAY_STATE_ROOT_HASH);
         // there's no child block in the blocktree, so this must be ignored
@@ -4400,6 +4439,7 @@ mod test {
     #[test]
     fn test_vote_sent_to_leader_in_next_epoch() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -4407,7 +4447,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4415,10 +4454,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let val_stakes: Vec<(NodeId<_>, Stake)> = env
@@ -4509,6 +4548,7 @@ mod test {
         // State 1 receives Block 4. It should validate Block 4, and send a vote message.
 
         let num_states = 2;
+        let execution_delay = SeqNum(4);
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -4516,7 +4556,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4524,10 +4563,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4635,6 +4674,7 @@ mod test {
         //      Block 3/4 has a path to root via Block 2. It should be validated. Block 2 is committed
 
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -4642,7 +4682,6 @@ mod test {
             StateBackendType,
             BlockValidatorType,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
@@ -4650,10 +4689,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4812,6 +4851,7 @@ mod test {
         let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_zero = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+        let execution_delay = SeqNum::MAX;
 
         let (mut env, mut ctx) = setup::<
             SignatureType,
@@ -4820,24 +4860,23 @@ mod test {
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
+                    execution_delay,
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
             || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4870,6 +4909,7 @@ mod test {
     #[test]
     fn test_incoherent_block_invalid_nonce() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
         let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_one = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
@@ -4881,24 +4921,23 @@ mod test {
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
+                    execution_delay,
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
             || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4930,6 +4969,7 @@ mod test {
     #[test]
     fn test_incoherent_block_duplicate_nonce() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
         let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_zero = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
         let txn_nonce_zero_prime = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 1000);
@@ -4941,24 +4981,23 @@ mod test {
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
+                    execution_delay,
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
             || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -5012,6 +5051,7 @@ mod test {
     #[test]
     fn test_coherent_block_valid_nonce() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
 
         let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_zero = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
@@ -5028,24 +5068,23 @@ mod test {
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
+                    execution_delay,
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
             || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -5136,6 +5175,7 @@ mod test {
     #[test]
     fn test_branched_coherent_block_valid_nonce() {
         let num_states = 2;
+        let execution_delay = SeqNum::MAX;
 
         let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_zero = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
@@ -5150,24 +5190,23 @@ mod test {
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
+                    execution_delay,
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
             || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -5257,6 +5296,7 @@ mod test {
     #[test]
     fn test_pacemaker_advance_epoch_on_blocktree_commit() {
         let num_states = 4;
+        let execution_delay = SeqNum::MAX;
 
         let (mut env, mut ctx) = setup::<
             SignatureType,
@@ -5265,18 +5305,17 @@ mod test {
             InMemoryState,
             EthValidator,
             _,
-            StateRootValidatorType,
             _,
             _,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
             || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
-            || NopStateRoot,
+            execution_delay,
         );
 
         let epoch_length = ctx[0].epoch_manager.val_set_update_interval;

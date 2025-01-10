@@ -13,8 +13,8 @@ use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
     block_validator::BlockValidator,
     metrics::Metrics,
-    payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state_root_hash::StateRootHashInfo,
     txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
@@ -39,7 +39,7 @@ use crate::{
     VerifiedMonadMessage,
 };
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -49,7 +49,6 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
 {
     consensus: &'a mut ConsensusMode<SCT, BPT, SBT>,
 
@@ -63,7 +62,6 @@ where
     leader_election: &'a LT,
     version: &'a MonadVersion,
 
-    state_root_validator: &'a SVT,
     block_timestamp: &'a BlockTimestamp,
     block_validator: &'a BVT,
     beneficiary: &'a EthAddress,
@@ -76,8 +74,8 @@ where
     _phantom: PhantomData<()>,
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
-    ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+    ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -87,10 +85,9 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
-    SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
@@ -105,7 +102,6 @@ where
             leader_election: &monad_state.leader_election,
             version: &monad_state.version,
 
-            state_root_validator: &monad_state.state_root_validator,
             block_timestamp: &monad_state.block_timestamp,
             block_validator: &monad_state.block_validator,
             beneficiary: &monad_state.beneficiary,
@@ -157,7 +153,7 @@ where
                                     "setting new statesync target",
                                 );
                                 cmds.push(WrappedConsensusCommand {
-                                    state_root_delay: self.state_root_validator.get_delay(),
+                                    state_root_delay: self.consensus_config.execution_delay,
                                     command: ConsensusCommand::RequestStateSync {
                                         root: new_root,
                                         high_qc: new_high_qc,
@@ -185,7 +181,6 @@ where
             election: self.leader_election,
             version: self.version.protocol_version,
 
-            state_root_validator: self.state_root_validator,
             block_timestamp: self.block_timestamp,
             block_validator: self.block_validator,
             beneficiary: self.beneficiary,
@@ -231,7 +226,48 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: consensus.state_root_validator.get_delay(),
+                state_root_delay: consensus.config.execution_delay,
+                command: cmd,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    pub(super) fn handle_execution_result(
+        &mut self,
+        execution_result: StateRootHashInfo,
+    ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
+        let ConsensusMode::Live(mode) = self.consensus else {
+            unreachable!("handle_execution_result when not live")
+        };
+        let mut consensus = ConsensusStateWrapper {
+            consensus: mode,
+
+            metrics: self.metrics,
+            tx_pool: self.txpool,
+            epoch_manager: self.epoch_manager,
+            block_policy: self.block_policy,
+            state_backend: self.state_backend,
+
+            val_epoch_map: self.val_epoch_map,
+            election: self.leader_election,
+            version: self.version.protocol_version,
+
+            block_timestamp: self.block_timestamp,
+            block_validator: self.block_validator,
+            beneficiary: self.beneficiary,
+            nodeid: self.nodeid,
+            config: self.consensus_config,
+
+            keypair: self.keypair,
+            cert_keypair: self.cert_keypair,
+        };
+
+        let consensus_cmds = consensus.add_execution_result(execution_result);
+
+        consensus_cmds
+            .into_iter()
+            .map(|cmd| WrappedConsensusCommand {
+                state_root_delay: consensus.config.execution_delay,
                 command: cmd,
             })
             .collect::<Vec<_>>()
@@ -259,7 +295,6 @@ where
             election: self.leader_election,
             version: self.version.protocol_version,
 
-            state_root_validator: self.state_root_validator,
             block_timestamp: self.block_timestamp,
             block_validator: self.block_validator,
             beneficiary: self.beneficiary,
@@ -275,7 +310,7 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: consensus.state_root_validator.get_delay(),
+                state_root_delay: consensus.config.execution_delay,
                 command: cmd,
             })
             .collect::<Vec<_>>()

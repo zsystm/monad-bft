@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::NopStateRoot,
+    block::PassthruBlockPolicy, block_validator::MockValidator,
     signature_collection::SignatureCollection, state_root_hash::StateRootHash, txpool::MockTxPool,
     validator_data::ValidatorSetData,
 };
@@ -148,7 +148,6 @@ type MonadStateType<ST, SCT> = MonadState<
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     MockTxPool,
     MockValidator,
-    NopStateRoot,
 >;
 
 pub struct StateConfig<ST, SCT>
@@ -186,7 +185,6 @@ where
         block_validator: MockValidator {},
         block_policy: PassthruBlockPolicy {},
         state_backend,
-        state_root_validator: NopStateRoot,
         key: config.key,
         certkey: config.cert_key,
         val_set_update_interval: config.val_set_update_interval,

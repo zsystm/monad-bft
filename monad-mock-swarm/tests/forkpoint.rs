@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
-use monad_consensus_types::{block::BlockType, payload::StateRoot};
+use monad_consensus_types::block::BlockType;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
@@ -40,7 +40,6 @@ impl SwarmRelation for ForkpointSwarm {
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
     type BlockValidator = EthValidator;
-    type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -195,7 +194,7 @@ fn forkpoint_restart_f(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-        || StateRoot::new(state_root_delay),
+        state_root_delay,
         delta,               // delta
         vote_pace,           // vote pace
         10,                  // proposal_tx_limit
@@ -228,7 +227,7 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
+            state_root_delay,    // execution_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
@@ -250,7 +249,7 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
+            state_root_delay,    // execution_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
@@ -509,7 +508,7 @@ fn forkpoint_restart_below_all(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-        || StateRoot::new(state_root_delay),
+        state_root_delay,    // execution_delay
         delta,               // delta
         vote_pace,           // vote pace
         10,                  // proposal_tx_limit
@@ -552,7 +551,7 @@ fn forkpoint_restart_below_all(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
+            state_root_delay,    // execution_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit
@@ -574,7 +573,7 @@ fn forkpoint_restart_below_all(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            || StateRoot::new(state_root_delay),
+            state_root_delay,    // execution_delay
             delta,               // delta
             vote_pace,           // vote pace
             10,                  // proposal_tx_limit

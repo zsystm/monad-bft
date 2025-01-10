@@ -2,8 +2,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -40,11 +39,7 @@ fn two_nodes() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        || {
-            StateRoot::new(
-                SeqNum(4), // state_root_delay
-            )
-        },
+        SeqNum(4),                // execution_delay
         Duration::from_millis(2), // delta
         Duration::from_millis(0), // vote pace
         5_000,                    // proposal_tx_limit
