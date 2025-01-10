@@ -1,8 +1,10 @@
 pub mod cloud_proxy;
 pub mod dynamodb;
+pub mod memory;
 pub mod rocksdb_storage;
 pub mod s3;
 pub mod triedb_reader;
+pub mod fs_storage;
 
 use std::{collections::HashMap, str::FromStr};
 
@@ -13,7 +15,9 @@ pub use cloud_proxy::*;
 pub use dynamodb::*;
 use enum_dispatch::enum_dispatch;
 use eyre::{bail, ContextCompat, OptionExt, Result};
+use fs_storage::FsStorage;
 use futures::FutureExt;
+use memory::MemoryStorage;
 pub use rocksdb_storage::*;
 pub use s3::*;
 use tokio::{join, try_join};
@@ -228,6 +232,8 @@ use crate::archive_block_data::BlobReader;
 pub enum BlobStoreErased {
     RocksDbClient,
     S3Bucket,
+    MemoryStorage,
+    FsStorage,
 }
 
 #[enum_dispatch(IndexStoreReader, IndexStore)]
@@ -235,4 +241,6 @@ pub enum BlobStoreErased {
 pub enum IndexStoreErased {
     RocksDbClient,
     DynamoDBArchive,
+    MemoryStorage,
+    FsStorage,
 }
