@@ -4127,7 +4127,12 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+<<<<<<< HEAD
  "alloy-rpc-client",
+=======
+ "alloy-signer",
+ "alloy-signer-local",
+>>>>>>> fd01b7e3 (Archive unit tests)
  "aws-config",
  "aws-sdk-dynamodb",
  "aws-sdk-s3",

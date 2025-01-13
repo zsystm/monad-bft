@@ -12,6 +12,7 @@ use tokio::{
     time::{sleep, Duration},
 };
 use tracing::{debug, error, info, warn, Level};
+use workers::block_data_archive::Block;
 
 use monad_archive::*;
 

@@ -4,6 +4,7 @@ use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
 use alloy_primitives::{BlockHash, TxHash};
 use eyre::Result;
 use url::Url;
+use workers::block_data_archive::{Block, BlockDataArchive};
 
 use crate::*;
 

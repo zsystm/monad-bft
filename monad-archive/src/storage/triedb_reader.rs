@@ -6,7 +6,7 @@ use eyre::{eyre, OptionExt, Result};
 use monad_triedb_utils::triedb_env::{BlockHeader, Triedb, TriedbEnv};
 
 use super::{BlockDataReader, TrieDbCliArgs};
-use crate::{Block, LatestKind};
+use crate::{workers::block_data_archive::Block, LatestKind};
 
 #[derive(Clone)]
 pub struct TriedbReader {

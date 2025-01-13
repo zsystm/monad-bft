@@ -29,6 +29,7 @@ use tokio::{
     try_join,
 };
 use tracing::{error, info, warn, Level};
+use workers::block_data_archive::Block;
 
 mod cli;
 

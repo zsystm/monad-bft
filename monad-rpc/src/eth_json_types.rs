@@ -4,8 +4,8 @@ use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{Block, FeeHistory, Header, Log, Transaction, TransactionReceipt};
 use monad_archive::{
-    archive_block_data::BlockDataArchive, archive_reader::ArchiveReader,
-    cloud_proxy::CloudProxyReader, storage::BlobStoreErased,
+     archive_reader::ArchiveReader,
+    cloud_proxy::CloudProxyReader, storage::BlobStoreErased, workers::block_data_archive::BlockDataArchive,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;

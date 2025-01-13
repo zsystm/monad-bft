@@ -27,8 +27,14 @@ bench = false
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }
+<<<<<<< HEAD
 alloy-rpc-client = { workspace = true }
 alloy-primitives = { workspace = true }
+=======
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
+>>>>>>> fd01b7e3 (Archive unit tests)
 aws-config = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }

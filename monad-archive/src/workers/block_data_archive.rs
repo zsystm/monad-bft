@@ -12,37 +12,25 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
-use eyre::{Context, Result};
 use futures::{try_join, Stream};
 use monad_triedb_utils::triedb_env::BlockHeader;
-use tokio::time::Duration;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     Retry,
 };
-use tracing::info;
 
+<<<<<<< HEAD:monad-archive/src/archive_block_data.rs
 use crate::{
     archive_reader::LatestKind, get_aws_config, metrics::Metrics, BlobStoreErased, BlockDataReader,
     BlockDataReaderArgs, S3Bucket,
 };
+=======
+use crate::prelude::*;
+>>>>>>> fd01b7e3 (Archive unit tests):monad-archive/src/workers/block_data_archive.rs
 
 pub type Block = AlloyBlock<TxEnvelope, Header>;
 
 const BLOCK_PADDING_WIDTH: usize = 12;
-
-#[enum_dispatch]
-pub trait BlobStore: BlobReader {
-    async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()>;
-
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
-    fn bucket_name(&self) -> &str;
-}
-
-#[enum_dispatch]
-pub trait BlobReader: Clone {
-    async fn read(&self, key: &str) -> Result<Bytes>;
-}
 
 #[derive(Clone)]
 pub struct BlockDataArchive<Store = BlobStoreErased> {

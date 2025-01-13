@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, str::pattern::Pattern, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use alloy_primitives::TxHash;
 use alloy_rlp::{Decodable, Encodable};
@@ -18,11 +18,11 @@ pub struct MemoryStorage {
 }
 
 impl MemoryStorage {
-    pub fn new(name: String) -> MemoryStorage {
+    pub fn new(name: impl Into<String>) -> MemoryStorage {
         MemoryStorage {
             db: Arc::new(Mutex::new(HashMap::default())),
             index: Arc::new(Mutex::new(HashMap::default())),
-            name,
+            name: name.into(),
         }
     }
 }
@@ -49,35 +49,19 @@ impl BlobStore for MemoryStorage {
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let mut objects = Vec::new();
-        let prefix_bytes = prefix.as_bytes();
-
         Ok(self
             .db
             .lock()
             .await
-            .iter()
-            .filter_map(|(k, v)| {
-                if prefix.is_prefix_of(k) {
+            .keys()
+            .filter_map(|k| {
+                if k.starts_with(prefix) {
                     Some(k.to_owned())
                 } else {
                     None
                 }
             })
             .collect())
-
-        // // Create iterator with prefix seeking
-        // let iter = self.db.prefix_iterator(prefix_bytes);
-
-        // // Collect all matching keys
-        // for item in iter {
-        //     let (key, _) = item?;
-        //     if let Ok(key_str) = String::from_utf8(key.to_vec()) {
-        //         objects.push(key_str);
-        //     }
-        // }
-
-        // Ok(objects)
     }
 }
 
@@ -94,11 +78,7 @@ impl IndexStoreReader for MemoryStorage {
     }
 
     async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>> {
-        let Some(data) = self.db.get(key)? else {
-            return Ok(None);
-        };
-
-        Ok(Some(TxIndexedData::decode(&mut data.as_slice())?))
+        Ok(self.index.lock().await.get(key).map(ToOwned::to_owned))
     }
 }
 
@@ -108,13 +88,8 @@ impl IndexStore for MemoryStorage {
     async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
         for data in kvs {
             let key = data.tx.tx_hash();
-            let mut rlp_data = Vec::with_capacity(4096);
-            data.encode(&mut rlp_data);
-            self.db
-                .put(key, rlp_data)
-                .wrap_err_with(|| format!("Failed to write tx data to index: {key}"))?;
+            self.index.lock().await.insert(*key, data);
         }
-        self.db.flush()?;
         Ok(())
     }
 }

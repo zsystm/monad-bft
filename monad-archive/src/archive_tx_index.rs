@@ -20,40 +20,11 @@ use tokio_retry::{
 use tracing::error;
 
 use crate::{
-    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, Block, BlockDataArchive,
-    BlockDataReader, IndexStoreErased,
+    dynamodb::DynamoDBArchive,
+    workers::block_data_archive::{Block, BlockDataArchive},
+    BlobStore, BlobStoreErased, BlockDataReader, HeaderSubset, IndexStore, IndexStoreErased,
+    TxIndexedData,
 };
-
-#[enum_dispatch]
-pub trait IndexStore: IndexStoreReader {
-    async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()>;
-}
-
-#[enum_dispatch]
-pub trait IndexStoreReader: Clone {
-    async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>>;
-    async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
-pub struct TxIndexedData {
-    pub tx: TxEnvelope,
-    pub trace: Vec<u8>,
-    pub receipt: ReceiptEnvelope,
-    pub header_subset: HeaderSubset,
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, RlpEncodable, RlpDecodable,
-)]
-#[rlp(trailing)]
-pub struct HeaderSubset {
-    pub block_hash: BlockHash,
-    pub block_number: u64,
-    pub tx_index: u64,
-    pub gas_used: u128,
-    pub base_fee_per_gas: Option<u64>,
-}
 
 #[derive(Clone)]
 pub struct TxIndexArchiver<Store = IndexStoreErased> {
