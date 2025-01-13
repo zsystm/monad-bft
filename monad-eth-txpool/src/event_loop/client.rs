@@ -86,10 +86,6 @@ where
         self.notify_event(EthTxPoolEventLoopEvent::CommittedBlock(committed_block))
     }
 
-    pub fn notify_clear(&mut self) -> Result<(), EthTxPoolEventLoopClientError> {
-        self.notify_event(EthTxPoolEventLoopEvent::Clear)
-    }
-
     pub fn create_proposal<SBT>(
         &mut self,
         proposed_seq_num: SeqNum,

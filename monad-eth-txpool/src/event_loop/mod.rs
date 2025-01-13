@@ -8,8 +8,6 @@ use monad_eth_block_policy::EthBlockPolicy;
 use state::SharedEthTxPoolEventLoopState;
 
 pub use self::client::EthTxPoolEventLoopClient;
-// TODO(andr-dev): Make PendingEthTxMap private after async promote pending
-pub use self::pending::PendingEthTxMap;
 use self::{
     error::EthTxPoolEventLoopError, event::EthTxPoolEventLoopEvent, state::EthTxPoolEventLoopState,
 };
@@ -17,7 +15,7 @@ use self::{
 mod client;
 mod error;
 mod event;
-mod pending;
+pub mod pending;
 mod state;
 
 const EVENTS_CAPACITY: usize = 1024;

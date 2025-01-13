@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use self::tx_heap::{TrackedTxHeap, TrackedTxHeapDrainAction};
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
@@ -12,13 +13,10 @@ use monad_eth_types::EthAddress;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
-use tx_heap::TrackedTxHeapDrainAction;
 
 use self::list::TrackedTxList;
-use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
 use super::ValidEthTransaction;
-use crate::event_loop::PendingEthTxMap;
-use crate::{pending::PendingTxMap, transaction::ValidEthTransaction};
+use crate::event_loop::pending::PendingTxMap;
 
 mod list;
 mod tx_heap;

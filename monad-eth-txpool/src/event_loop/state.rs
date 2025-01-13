@@ -9,7 +9,7 @@ use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rtrb::{Consumer, Producer};
 
-use super::{event::EthTxPoolEventLoopEvent, pending::PendingEthTxMap};
+use super::{event::EthTxPoolEventLoopEvent, pending::PendingTxMap};
 use crate::storage::EthTxPoolStorage;
 
 pub type SharedEthTxPoolEventLoopState<SCT> = Arc<Mutex<EthTxPoolEventLoopState<SCT>>>;
@@ -20,7 +20,7 @@ where
     SCT: SignatureCollection,
 {
     storage: EthTxPoolStorage,
-    pending: PendingEthTxMap,
+    pending: PendingTxMap,
     events: Consumer<EthTxPoolEventLoopEvent<SCT>>,
 }
 
@@ -34,7 +34,7 @@ where
     ) -> SharedEthTxPoolEventLoopState<SCT> {
         Arc::new(Mutex::new(Self {
             storage: EthTxPoolStorage::new(block_policy),
-            pending: PendingEthTxMap::default(),
+            pending: PendingTxMap::default(),
             events,
         }))
     }
@@ -69,8 +69,7 @@ where
                 event @ EthTxPoolEventLoopEvent::CommittedBlock(_) => {
                     self.process_event(event);
                 }
-                event @ EthTxPoolEventLoopEvent::TxBatch(_)
-                | event @ EthTxPoolEventLoopEvent::Clear => {
+                event @ EthTxPoolEventLoopEvent::TxBatch(_) => {
                     events_tx.push(event).expect("channel never overflows");
                 }
             }
@@ -108,10 +107,6 @@ where
             }
             EthTxPoolEventLoopEvent::CommittedBlock(committed_block) => {
                 self.storage.update_committed_block(committed_block);
-            }
-            EthTxPoolEventLoopEvent::Clear => {
-                self.storage.clear();
-                self.pending.clear();
             }
         }
     }

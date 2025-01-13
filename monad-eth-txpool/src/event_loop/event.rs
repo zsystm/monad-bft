@@ -10,6 +10,4 @@ where
     TxBatch(Vec<EthTransaction>),
 
     CommittedBlock(EthValidatedBlock<SCT>),
-
-    Clear,
 }

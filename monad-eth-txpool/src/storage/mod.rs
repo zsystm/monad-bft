@@ -8,16 +8,16 @@ use monad_eth_tx::EthTransaction;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use tracing::error;
+use tracked::TrackedTxMap;
 
-use self::tracked::TrackedEthTxMap;
-use crate::{event_loop::PendingEthTxMap, ValidEthTransaction};
+use crate::{event_loop::pending::PendingTxMap, ValidEthTransaction};
 
 mod tracked;
 
 #[derive(Clone, Debug)]
 pub struct EthTxPoolStorage {
     chain_id: u64,
-    tracked: TrackedEthTxMap,
+    tracked: TrackedTxMap,
 }
 
 impl EthTxPoolStorage {
@@ -28,7 +28,7 @@ impl EthTxPoolStorage {
     pub(super) fn new_with_chain_id(chain_id: u64) -> Self {
         Self {
             chain_id,
-            tracked: TrackedEthTxMap::default(),
+            tracked: TrackedTxMap::default(),
         }
     }
 
@@ -65,7 +65,7 @@ impl EthTxPoolStorage {
         block_policy: &EthBlockPolicy,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
-        pending: &mut PendingEthTxMap,
+        pending: &mut PendingTxMap,
     ) -> Result<FullTransactionList, StateBackendError>
     where
         SBT: StateBackend,
@@ -92,10 +92,5 @@ impl EthTxPoolStorage {
         SCT: SignatureCollection,
     {
         self.tracked.update_committed_block(committed_block);
-    }
-
-    pub fn clear(&mut self) {
-        // TODO(andr-dev): Add timeout to tracked txs and remove clear
-        self.tracked.clear();
     }
 }
