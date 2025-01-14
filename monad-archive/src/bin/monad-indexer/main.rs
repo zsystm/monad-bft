@@ -44,6 +44,7 @@ async fn main() -> Result<()> {
         args.max_concurrent_blocks,
         metrics,
         args.start_block,
+        args.end_block,
     ))
     .await
     .map_err(Into::into)
@@ -56,6 +57,7 @@ async fn index_worker(
     max_concurrent_blocks: usize,
     metrics: Metrics,
     start_block_override: Option<u64>,
+    end_block_override: Option<u64>,
 ) {
     // initialize starting block using either override or stored latest
     let mut start_block = match start_block_override {
@@ -71,6 +73,13 @@ async fn index_worker(
 
     loop {
         sleep(Duration::from_millis(100)).await;
+
+        if let Some(end_block_override) = end_block_override {
+            if start_block > end_block_override {
+                info!("Reached end block override, stopping...");
+                return;
+            }
+        }
 
         // query latest
         let latest_source = match block_data_reader.get_latest(Uploaded).await {

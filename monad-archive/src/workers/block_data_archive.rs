@@ -19,14 +19,7 @@ use tokio_retry::{
     Retry,
 };
 
-<<<<<<< HEAD:monad-archive/src/archive_block_data.rs
-use crate::{
-    archive_reader::LatestKind, get_aws_config, metrics::Metrics, BlobStoreErased, BlockDataReader,
-    BlockDataReaderArgs, S3Bucket,
-};
-=======
 use crate::prelude::*;
->>>>>>> fd01b7e3 (Archive unit tests):monad-archive/src/workers/block_data_archive.rs
 
 pub type Block = AlloyBlock<TxEnvelope, Header>;
 

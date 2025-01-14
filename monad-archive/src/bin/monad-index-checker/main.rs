@@ -65,6 +65,13 @@ async fn main() -> Result<()> {
             }
         };
 
+        if let Some(end_block_override) = args.end_block {
+            if latest_checked > end_block_override {
+                info!("Reached end block override, stopping...");
+                return Ok(());
+            }
+        }
+
         if latest_checked >= latest_indexed {
             info!(latest_checked, latest_indexed, "Nothing to process");
             continue;

@@ -5,7 +5,6 @@ pub mod memory;
 pub mod rocksdb_storage;
 pub mod s3;
 pub mod triedb_reader;
-pub mod memory;
 
 use std::{collections::HashMap, str::FromStr};
 
@@ -26,7 +25,11 @@ pub use s3::*;
 use serde::{Deserialize, Serialize};
 use tokio::{join, try_join};
 
-use crate::{triedb_reader::TriedbReader, workers::block_data_archive::{Block, BlockDataArchive}, ArchiveReader, LatestKind, Metrics, TxIndexArchiver};
+use crate::{
+    triedb_reader::TriedbReader,
+    workers::block_data_archive::{Block, BlockDataArchive},
+    ArchiveReader, LatestKind, Metrics, TxIndexArchiver,
+};
 
 #[enum_dispatch]
 pub trait BlobStore: BlobReader {

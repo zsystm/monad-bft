@@ -29,6 +29,10 @@ pub struct Cli {
     #[arg(long)]
     pub start_block: Option<u64>,
 
+    /// Override block number to end at
+    #[arg(long)]
+    pub end_block: Option<u64>,
+
     /// Endpoint to push metrics to
     #[arg(long)]
     pub otel_endpoint: Option<String>,

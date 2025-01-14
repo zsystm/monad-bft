@@ -52,6 +52,13 @@ async fn main() -> Result<()> {
         let end_block_number =
             latest_block_number.min(start_block_number + args.max_blocks_per_iteration - 1);
 
+        if let Some(cli_end_block) = args.end_block {
+            if start_block_number > cli_end_block {
+                info!("Reached end block, exiting...");
+                return Ok(());
+            }
+        }
+
         info!(
             "Start block: {}, end block: {}, latest block: {}",
             start_block_number, end_block_number, latest_block_number
@@ -303,49 +310,49 @@ async fn pairwise_check(
 
     if !faults.is_empty() {
         metrics.counter("faults_blocks_with_faults", 1);
+    }
 
-        let block_check_result = BlockCheckResult::new(block_number, faults);
-        for fault in &block_check_result.faults {
-            match fault {
-                Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
-                Fault::S3MissingBlock { buckets } => {
-                    metrics.counter("faults_s3_missing_block", 1);
-                    metrics.counter("faults_s3_missing_block_buckets", buckets.len() as u64);
-                }
-                Fault::S3MissingReceipts { buckets } => {
-                    metrics.counter("faults_s3_missing_receipts", 1);
-                    metrics.counter("faults_s3_missing_receipts_buckets", buckets.len() as u64);
-                }
-                Fault::S3MissingTraces { buckets } => {
-                    metrics.counter("faults_s3_missing_traces", 1);
-                    metrics.counter("faults_s3_missing_traces_buckets", buckets.len() as u64);
-                }
-                // TODO: Should we use increment?
-                Fault::S3InconsistentBlock { .. } => {
-                    metrics.inc_counter("faults_s3_inconsistent_block")
-                }
-                Fault::S3InconsistentReceipts { .. } => {
-                    metrics.inc_counter("faults_s3_inconsistent_receipts")
-                }
-                Fault::S3InconsistentTraces { .. } => {
-                    metrics.inc_counter("faults_s3_inconsistent_traces")
-                }
-
-                // Other faults are not S3 faults
-                _ => (),
+    let block_check_result = BlockCheckResult::new(block_number, faults);
+    for fault in &block_check_result.faults {
+        match fault {
+            Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
+            Fault::S3MissingBlock { buckets } => {
+                metrics.counter("faults_s3_missing_block", 1);
+                metrics.counter("faults_s3_missing_block_buckets", buckets.len() as u64);
             }
-        }
+            Fault::S3MissingReceipts { buckets } => {
+                metrics.counter("faults_s3_missing_receipts", 1);
+                metrics.counter("faults_s3_missing_receipts_buckets", buckets.len() as u64);
+            }
+            Fault::S3MissingTraces { buckets } => {
+                metrics.counter("faults_s3_missing_traces", 1);
+                metrics.counter("faults_s3_missing_traces_buckets", buckets.len() as u64);
+            }
+            // TODO: Should we use increment?
+            Fault::S3InconsistentBlock { .. } => {
+                metrics.inc_counter("faults_s3_inconsistent_block")
+            }
+            Fault::S3InconsistentReceipts { .. } => {
+                metrics.inc_counter("faults_s3_inconsistent_receipts")
+            }
+            Fault::S3InconsistentTraces { .. } => {
+                metrics.inc_counter("faults_s3_inconsistent_traces")
+            }
 
-        if let Err(e) = fault_writer.write_fault(block_check_result.clone()).await {
-            error!(
-                "Failed to write results for block {}: {:?}",
-                block_number, e
-            );
-            error!(
-                "BlockCheckResults should be written: {:?}",
-                block_check_result
-            );
+            // Other faults are not S3 faults
+            _ => (),
         }
+    }
+
+    if let Err(e) = fault_writer.write_fault(block_check_result.clone()).await {
+        error!(
+            "Failed to write results for block {}: {:?}",
+            block_number, e
+        );
+        error!(
+            "BlockCheckResults should be written: {:?}",
+            block_check_result
+        );
     }
 
     faults_cnt

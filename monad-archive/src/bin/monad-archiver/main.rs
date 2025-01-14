@@ -12,6 +12,7 @@ use tokio::{
     try_join,
 };
 use tracing::{error, info, warn, Level};
+use wal_checkpoint::wal_checkpoint_worker;
 use workers::{bft_block_archiver::bft_block_archive_worker, block_archive_worker::archive_worker};
 
 mod cli;

@@ -16,6 +16,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 0)]
     pub start_block: u64,
 
+    /// Override block number to end at
+    #[arg(long)]
+    pub end_block: Option<u64>,
+
     /// Set the concurrent blocks
     #[arg(long, default_value_t = 10)]
     pub max_concurrent_blocks: usize,
