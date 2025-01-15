@@ -26,7 +26,12 @@ async fn main() -> Result<()> {
     let args = cli::Cli::parse();
     info!(?args);
 
-    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
+    let metrics = Metrics::new(
+        args.otel_endpoint,
+        "monad-indexer",
+        args.archive_sink.replica_name(),
+        Duration::from_secs(15),
+    )?;
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;
     let tx_index_archiver = args.archive_sink.build_index_archive(&metrics).await?;

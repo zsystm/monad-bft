@@ -109,6 +109,15 @@ impl BlockDataReaderArgs {
             Triedb(args) => TriedbReader::new(args).into(),
         })
     }
+
+    pub fn replica_name(&self) -> String {
+        use BlockDataReaderArgs::*;
+        match self {
+            Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
+            RocksDb(rocks_db_cli_args) => rocks_db_cli_args.db_path.clone(),
+            Triedb(trie_db_cli_args) => trie_db_cli_args.triedb_path.clone(),
+        }
+    }
 }
 
 impl ArchiveArgs {
@@ -147,6 +156,13 @@ impl ArchiveArgs {
             BlockDataArchive::new(b_reader).into(),
             i_reader,
         ))
+    }
+
+    pub fn replica_name(&self) -> String {
+        match self {
+            ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
+            ArchiveArgs::RocksDb(rocks_db_cli_args) => rocks_db_cli_args.db_path.clone(),
+        }
     }
 }
 

@@ -1,11 +1,11 @@
-use std::{sync::Arc, time::Duration};
-
-use dashmap::DashMap;
 use eyre::Result;
 use opentelemetry::metrics::{Counter, Gauge, Meter, MeterProvider};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
+use std::{sync::Arc, time::Duration};
 use tracing::warn;
+
+use dashmap::DashMap;
 
 #[derive(Clone)]
 pub struct Metrics(Option<MetricsInner>);
@@ -22,9 +22,10 @@ impl Metrics {
     pub fn new(
         otel_endpoint: Option<impl AsRef<str>>,
         service_name: impl Into<String>,
+        replica_name: impl Into<String>,
         interval: Duration,
     ) -> Result<Metrics> {
-        let provider = build_otel_meter_provider(otel_endpoint, service_name.into(), interval)?;
+        let provider = build_otel_meter_provider(otel_endpoint, service_name.into(), replica_name.into(), interval)?;
         let meter = provider.meter("opentelemetry");
 
         Ok(Metrics(Some(MetricsInner {
@@ -65,30 +66,17 @@ impl Metrics {
     }
 }
 
-fn get_instance_name(default: &str) -> String {
-    match std::fs::read_to_string("/proc/sys/kernel/hostname") {
-        Ok(hostname) => format!("{default}-{hostname}"),
-        Err(e) => {
-            warn!(
-                ?e,
-                default,
-                "Failed to read hostname when initializing metrics. Falling back to default"
-            );
-            default.to_owned()
-        }
-    }
-}
-
 fn build_otel_meter_provider(
     otel_endpoint: Option<impl AsRef<str>>,
     service_name: String,
+    replica_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
     let mut provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_resource(opentelemetry_sdk::Resource::new(vec![
             opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                get_instance_name(&service_name),
+                format!("{replica_name}-{service_name}"),
             ),
         ]));
 

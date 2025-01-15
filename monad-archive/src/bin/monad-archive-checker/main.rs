@@ -24,6 +24,9 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-archive-checker",
+        args.sources
+            .first()
+            .map_or("".to_owned(), |s| s.replica_name()), // TODO: improve naming
         Duration::from_secs(15),
     )?;
 

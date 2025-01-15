@@ -41,6 +41,7 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-index-checker",
+        args.source.replica_name(),
         Duration::from_secs(15),
     )?;
 
