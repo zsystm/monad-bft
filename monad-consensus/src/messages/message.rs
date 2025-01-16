@@ -1,16 +1,19 @@
 use std::fmt::Debug;
 
 use monad_consensus_types::{
-    block::Block,
-    payload::Payload,
+    block::ConsensusBlockHeader,
+    payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate},
     voting::Vote,
 };
 use monad_crypto::{
-    certificate_signature::CertificateSignature,
+    certificate_signature::{
+        CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
     hasher::{Hashable, Hasher, HasherType},
 };
+use monad_types::ExecutionProtocol;
 
 /// Consensus protocol vote message
 ///
@@ -82,16 +85,26 @@ impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
 
 /// Consensus protocol proposal message
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProposalMessage<SCT: SignatureCollection> {
-    pub block: Block<SCT>,
-    pub payload: Payload,
+pub struct ProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub block_header: ConsensusBlockHeader<ST, SCT, EPT>,
+    pub block_body: ConsensusBlockBody<EPT>,
     pub last_round_tc: Option<TimeoutCertificate<SCT>>,
 }
 
 /// The last_round_tc can be independently verified. The message hash is over
 /// the block only
-impl<T: SignatureCollection> Hashable for ProposalMessage<T> {
+impl<ST, SCT, EPT> Hashable for ProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn hash(&self, state: &mut impl Hasher) {
-        self.block.hash(state);
+        self.block_header.hash(state);
     }
 }

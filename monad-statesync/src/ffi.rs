@@ -7,6 +7,8 @@ use std::{
     time::Duration,
 };
 
+use alloy_consensus::Header;
+use alloy_rlp::Encodable;
 use futures::{FutureExt, Stream};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
@@ -32,7 +34,7 @@ pub extern "C" fn statesync_send_request(
 pub(crate) struct StateSync<PT: PubKey> {
     state_sync_peers: Vec<NodeId<PT>>,
     outbound_requests: OutboundRequests<PT>,
-    current_target: Option<Target>,
+    current_target: Option<Header>,
 
     request_rx: tokio::sync::mpsc::UnboundedReceiver<SyncRequest<StateSyncRequest>>,
     response_tx: std::sync::mpsc::Sender<SyncResponse>,
@@ -40,18 +42,13 @@ pub(crate) struct StateSync<PT: PubKey> {
     progress: Arc<Mutex<Progress>>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Target {
-    pub n: SeqNum,
-    pub state_root: [u8; 32],
-}
-
+#[derive(Debug, Clone)]
 /// This name is confusing, but I can't think of a better name. This is basically an output event
 /// from the perspective of this module. OutputEvent would also be a confusing name, because from
 /// the perspetive of the caller, this is an input event.
 pub(crate) enum SyncRequest<R> {
     Request(R),
-    DoneSync(Target),
+    DoneSync(Header),
 }
 
 /// This name is confusing, but I can't think of a better name. This is basically an input event
@@ -59,7 +56,7 @@ pub(crate) enum SyncRequest<R> {
 /// the perspetive of the caller, this is an output event.
 pub(crate) enum SyncResponse {
     Response(StateSyncResponse),
-    UpdateTarget(Target),
+    UpdateTarget(Header),
 }
 
 const NUM_PREFIXES: u64 = 256;
@@ -75,11 +72,11 @@ struct Progress {
 }
 
 impl Progress {
-    fn update_target(&mut self, target: Target) {
-        self.end_target = Some(target.n);
+    fn update_target(&mut self, target: &Header) {
+        self.end_target = Some(SeqNum(target.number));
         if self.min_until_guess.is_none() {
             // guess that the statesync servicers have been up for at least 10_000 blocks
-            self.min_until_guess = Some(SeqNum(target.n.0.max(10_000) - 10_000));
+            self.min_until_guess = Some(SeqNum(target.number.max(10_000) - 10_000));
         }
     }
 
@@ -109,9 +106,9 @@ impl Progress {
         }
     }
 
-    fn update_reached_target(&mut self, target: Target) {
-        assert_eq!(self.end_target, Some(target.n));
-        self.start_target = Some(target.n);
+    fn update_reached_target(&mut self, target: &Header) {
+        assert_eq!(self.end_target, Some(SeqNum(target.number)));
+        self.start_target = Some(SeqNum(target.number));
         self.current_progress = None;
     }
 
@@ -201,26 +198,26 @@ impl<PT: PubKey> StateSync<PT> {
                             new_target =? target,
                             "updating statesync target"
                         );
+                        let mut buf = Vec::new();
+                        target.encode(&mut buf);
                         unsafe {
                             bindings::monad_statesync_client_handle_target(
                                 sync_ctx.ctx,
-                                bindings::monad_sync_target {
-                                    n: target.n.0,
-                                    state_root: target.state_root,
-                                },
+                                buf.as_ptr(),
+                                buf.len() as u64,
                             )
                         };
+                        progress.lock().unwrap().update_target(&target);
                         current_target = Some(target);
-                        progress.lock().unwrap().update_target(target)
                     }
                     SyncResponse::Response(response) => {
                         assert!(current_target.is_some());
                         unsafe {
-                            for (upsert_type, upsert_data) in &response.response {
+                            for upsert in &response.response {
                                 let upsert_result = bindings::monad_statesync_client_handle_upsert(
                                     sync_ctx.ctx,
                                     response.request.prefix,
-                                    match upsert_type {
+                                    match upsert.upsert_type {
                                         StateSyncUpsertType::Code => {
                                             bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE
                                         }
@@ -236,9 +233,12 @@ impl<PT: PubKey> StateSync<PT> {
                                         StateSyncUpsertType::StorageDelete => {
                                             bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE
                                         }
+                                        StateSyncUpsertType::Header => {
+                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_HEADER
+                                        }
                                     },
-                                    upsert_data.as_ptr(),
-                                    upsert_data.len() as u64,
+                                    upsert.data.as_ptr(),
+                                    upsert.data.len() as u64,
                                 );
                                 assert!(
                                     upsert_result,
@@ -261,15 +261,15 @@ impl<PT: PubKey> StateSync<PT> {
                             .update_handled_request(&response.request)
                     }
                 }
-                let target = current_target.expect("current_target must have been set");
                 if sync_ctx.try_finalize() {
+                    let target = current_target
+                        .take()
+                        .expect("current_target must have been set");
                     tracing::debug!(?target, "done statesync");
+                    progress.lock().unwrap().update_reached_target(&target);
                     request_tx
                         .send(SyncRequest::DoneSync(target))
                         .expect("request_rx dropped mid DoneSync");
-
-                    current_target = None;
-                    progress.lock().unwrap().update_reached_target(target);
                 }
             }
             // this loop exits when execution is about to start
@@ -287,11 +287,11 @@ impl<PT: PubKey> StateSync<PT> {
         }
     }
 
-    pub fn update_target(&mut self, target: Target) {
-        if let Some(old_target) = self.current_target {
-            assert!(old_target.n < target.n);
+    pub fn update_target(&mut self, target: Header) {
+        if let Some(old_target) = &self.current_target {
+            assert!(old_target.number < target.number);
         }
-        self.current_target = Some(target);
+        self.current_target = Some(target.clone());
         self.outbound_requests.clear();
         self.response_tx
             .send(SyncResponse::UpdateTarget(target))
@@ -342,7 +342,8 @@ impl<PT: PubKey> Stream for StateSync<PT> {
                 SyncRequest::Request(request) => {
                     if this
                         .current_target
-                        .is_some_and(|current_target| current_target.n != SeqNum(request.target))
+                        .as_ref()
+                        .is_some_and(|current_target| current_target.number != request.target)
                     {
                         tracing::debug!(
                             ?request,

@@ -1,7 +1,7 @@
 use std::{ops::Deref, time::Duration};
 
 use async_graphql::{Context, NewType, Object, Union};
-use monad_consensus_types::{metrics::Metrics, state_root_hash::StateRootHashInfo};
+use monad_consensus_types::{block::ExecutionResult, metrics::Metrics};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
     BlockSyncEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent, StateSyncEvent,
@@ -19,8 +19,9 @@ use crate::simulation::Simulation;
 type SwarmRelationType = DebugSwarmRelation;
 type SignatureType = <SwarmRelationType as SwarmRelation>::SignatureType;
 type SignatureCollectionType = <SwarmRelationType as SwarmRelation>::SignatureCollectionType;
+type ExecutionProtocolType = <SwarmRelationType as SwarmRelation>::ExecutionProtocolType;
 type TransportMessage = <SwarmRelationType as SwarmRelation>::TransportMessage;
-type MonadEventType = MonadEvent<SignatureType, SignatureCollectionType>;
+type MonadEventType = MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
 
 #[derive(NewType)]
 struct GraphQLNodeId(String);
@@ -217,7 +218,7 @@ enum GraphQLMonadEvent<'s> {
     BlockSyncEvent(GraphQLBlockSyncEvent<'s>),
     ValidatorEvent(GraphQLValidatorEvent<'s>),
     MempoolEvent(GraphQLMempoolEvent<'s>),
-    StateRootEvent(GraphQLStateRootEvent<'s>),
+    ExecutionResultEvent(GraphQLExecutionResultEvent<'s>),
     ControlPanelEvent(GraphQLControlPanelEvent<'s>),
     TimestampEvent(GraphQLTimestampEvent),
     StateSyncEvent(GraphQLStateSyncEvent<'s>),
@@ -230,7 +231,9 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             MonadEvent::BlockSyncEvent(event) => Self::BlockSyncEvent(GraphQLBlockSyncEvent(event)),
             MonadEvent::ValidatorEvent(event) => Self::ValidatorEvent(GraphQLValidatorEvent(event)),
             MonadEvent::MempoolEvent(event) => Self::MempoolEvent(GraphQLMempoolEvent(event)),
-            MonadEvent::StateRootEvent(event) => Self::StateRootEvent(GraphQLStateRootEvent(event)),
+            MonadEvent::ExecutionResultEvent(event) => {
+                Self::ExecutionResultEvent(GraphQLExecutionResultEvent(event))
+            }
             MonadEventType::ControlPanelEvent(event) => {
                 Self::ControlPanelEvent(GraphQLControlPanelEvent(event))
             }
@@ -243,7 +246,9 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
     }
 }
 
-struct GraphQLConsensusEvent<'s>(&'s ConsensusEvent<SignatureType, SignatureCollectionType>);
+struct GraphQLConsensusEvent<'s>(
+    &'s ConsensusEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+);
 #[Object]
 impl<'s> GraphQLConsensusEvent<'s> {
     async fn debug(&self) -> String {
@@ -251,7 +256,9 @@ impl<'s> GraphQLConsensusEvent<'s> {
     }
 }
 
-struct GraphQLBlockSyncEvent<'s>(&'s BlockSyncEvent<SignatureCollectionType>);
+struct GraphQLBlockSyncEvent<'s>(
+    &'s BlockSyncEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+);
 #[Object]
 impl<'s> GraphQLBlockSyncEvent<'s> {
     async fn debug(&self) -> String {
@@ -275,9 +282,9 @@ impl<'s> GraphQLMempoolEvent<'s> {
     }
 }
 
-struct GraphQLStateRootEvent<'s>(&'s StateRootHashInfo);
+struct GraphQLExecutionResultEvent<'s>(&'s ExecutionResult<ExecutionProtocolType>);
 #[Object]
-impl<'s> GraphQLStateRootEvent<'s> {
+impl<'s> GraphQLExecutionResultEvent<'s> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
@@ -301,7 +308,9 @@ impl GraphQLTimestampEvent {
     }
 }
 
-struct GraphQLStateSyncEvent<'s>(&'s StateSyncEvent<SignatureCollectionType>);
+struct GraphQLStateSyncEvent<'s>(
+    &'s StateSyncEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+);
 #[Object]
 impl<'s> GraphQLStateSyncEvent<'s> {
     async fn debug(&self) -> String {

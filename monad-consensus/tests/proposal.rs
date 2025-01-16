@@ -6,8 +6,10 @@ use monad_consensus::{
     validation::signing::Unvalidated,
 };
 use monad_consensus_types::{
-    block::{Block, BlockKind},
-    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    block::{
+        ConsensusBlockHeader, MockExecutionBody, MockExecutionProposedHeader, MockExecutionProtocol,
+    },
+    payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
@@ -19,7 +21,6 @@ use monad_crypto::{
     hasher::Hash,
     NopKeyPair, NopPubKey, NopSignature,
 };
-use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
 use monad_testutil::{
     signing::{MockSignatures, TestSigner},
@@ -37,6 +38,7 @@ type SignatureType = NopSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 type MockSignatureCollectionType = MockSignatures<SignatureType>;
 type SignatureCollectionType = MultiSig<NopSignature>;
+type ExecutionProtocolType = MockExecutionProtocol;
 
 static NUM_NODES: u32 = 4;
 static VAL_SET_UPDATE_INTERVAL: SeqNum = SeqNum(2000);
@@ -52,8 +54,13 @@ fn setup_block(
     qc_parent_round: Round,
     seq_num: SeqNum,
     signers: &[PubKeyType],
-) -> (Block<MockSignatures<SignatureType>>, Payload) {
-    let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
+) -> (
+    ConsensusBlockHeader<SignatureType, MockSignatures<SignatureType>, ExecutionProtocolType>,
+    ConsensusBlockBody<ExecutionProtocolType>,
+) {
+    let execution_body = MockExecutionBody {
+        data: vec![1, 2, 3, 4].into(),
+    };
     let vote = Vote {
         id: BlockId(Hash([0x00_u8; 32])),
         epoch: qc_epoch,
@@ -67,23 +74,24 @@ fn setup_block(
         MockSignatures::with_pubkeys(signers),
     );
 
-    let payload = Payload { txns };
+    let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner { execution_body });
 
     (
-        Block::<MockSignatures<SignatureType>>::new(
+        ConsensusBlockHeader::new(
             author,
-            0,
             block_epoch,
             block_round,
-            &ExecutionProtocol {
-                state_root: Default::default(),
-                seq_num: block_seq_num,
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::default(),
-            },
+            Vec::new(), // delayed_execution_results
+            MockExecutionProposedHeader {},
             payload.get_id(),
-            BlockKind::Executable,
-            &qc,
+            qc,
+            block_seq_num,
+            0,
+            RoundSignature::new(
+                block_round,
+                &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
+            ),
+            false, // is_null
         ),
         payload,
     )
@@ -141,7 +149,7 @@ fn define_proposal_with_tc(
     Vec<NopKeyPair>,
     EpochManager,
     ValidatorsEpochMapping<ValidatorSetFactory<NopPubKey>, MockSignatureCollectionType>,
-    ProposalMessage<MockSignatureCollectionType>,
+    ProposalMessage<SignatureType, MockSignatureCollectionType, ExecutionProtocolType>,
 ) {
     let (keys, cert_keys, vset, vmap) = create_keys_w_validators::<
         SignatureType,
@@ -218,8 +226,8 @@ fn define_proposal_with_tc(
     );
 
     let proposal = ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: Some(tc),
     };
 
@@ -273,8 +281,8 @@ fn test_verify_incorrect_block_epoch(known_round: Round, block_round: Round) {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
@@ -329,8 +337,8 @@ fn test_verify_author_not_sender() {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -384,8 +392,8 @@ fn test_verify_invalid_signature() {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -406,8 +414,8 @@ fn test_verify_invalid_signature() {
     );
 
     let other_proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: other_block,
-        payload: other_payload,
+        block_header: other_block,
+        block_body: other_payload,
         last_round_tc: None,
     });
 
@@ -464,8 +472,8 @@ fn test_verify_proposal_happy() {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -532,8 +540,8 @@ fn test_validate_missing_tc(qc_round: Round) {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -580,8 +588,8 @@ fn test_validate_incorrect_block_epoch(known_epoch: Epoch, block_epoch: Epoch) {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -627,8 +635,8 @@ fn test_validate_qc_epoch() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -674,8 +682,8 @@ fn test_validate_mismatch_qc_epoch() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -721,8 +729,8 @@ fn test_proposal_invalid_qc_validator_set() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -764,8 +772,8 @@ fn test_validate_insufficient_qc_stake() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -812,8 +820,8 @@ fn test_validate_qc_happy() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: None,
     });
 
@@ -1123,29 +1131,33 @@ fn test_validate_tc_invalid_tc_signature() {
     };
 
     let author = NodeId::new(keys[0].pubkey());
-    let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
-    let qc = QuorumCertificate::genesis_qc();
-    let payload = Payload { txns };
 
-    let block = Block::<SignatureCollectionType>::new(
-        author,
-        0,
-        block_epoch,
-        block_round,
-        &ExecutionProtocol {
-            state_root: Default::default(),
-            seq_num: block_seq_num,
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
+    let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+        execution_body: MockExecutionBody {
+            data: vec![1, 2, 3, 4].into(),
         },
-        payload.get_id(),
-        BlockKind::Executable,
-        &qc,
-    );
+    });
+    let block: ConsensusBlockHeader<NopSignature, MultiSig<NopSignature>, MockExecutionProtocol> =
+        ConsensusBlockHeader::new(
+            author,
+            block_epoch,
+            block_round,
+            Vec::new(), // delayed_execution_results
+            MockExecutionProposedHeader {},
+            payload.get_id(),
+            QuorumCertificate::genesis_qc(),
+            block_seq_num,
+            0,
+            RoundSignature::new(
+                block_round,
+                &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
+            ),
+            false, // is_null
+        );
 
     let proposal = ProposalMessage {
-        block,
-        payload,
+        block_header: block,
+        block_body: payload,
         last_round_tc: Some(tc),
     };
     let proposal = Unvalidated::new(proposal);

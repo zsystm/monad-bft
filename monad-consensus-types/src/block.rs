@@ -1,109 +1,40 @@
+use std::{fmt::Debug, ops::Deref};
+
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
+use bytes::Bytes;
 use monad_crypto::{
-    certificate_signature::PubKey,
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hashable, Hasher, HasherType},
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::{BlockId, EnumDiscriminant, Epoch, NodeId, Round, SeqNum};
+use monad_types::{
+    BlockId, Epoch, ExecutionProtocol, FinalizedHeader, MockableFinalizedHeader, NodeId, Round,
+    SeqNum,
+};
 use zerocopy::AsBytes;
 
 use crate::{
+    block_validator::BlockValidationError,
     checkpoint::RootInfo,
-    payload::{ExecutionProtocol, Payload, PayloadId, TransactionPayload},
+    payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash,
 };
 
 pub const GENESIS_TIMESTAMP: u128 = 0;
 
-/// Represent a range of blocks the last of which is `last_block_id` and includes
-/// all blocks upto to `root_seq_num`
-/// For a valid block range, the seq num of block `last_block_id` >= `root_seq_num`
+/// Represent a range of blocks the last of which is `last_block_id` and includes `num_blocks`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct BlockRange {
     pub last_block_id: BlockId,
-    pub root_seq_num: SeqNum,
+    pub num_blocks: SeqNum,
 }
 
 impl Hashable for BlockRange {
     fn hash(&self, state: &mut impl Hasher) {
         self.last_block_id.hash(state);
-        state.update(self.root_seq_num.as_bytes());
-    }
-}
-
-/// This trait represents a consensus block
-pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
-    type NodeIdPubKey: PubKey;
-    type TxnHash: PartialEq + Eq + std::hash::Hash;
-    /// Unique hash for the block
-    fn get_id(&self) -> BlockId;
-
-    /// Round in which this block was proposed
-    fn get_round(&self) -> Round;
-
-    /// Epoch in which this block was proposed
-    fn get_epoch(&self) -> Epoch;
-
-    /// Node which proposed this block
-    fn get_author(&self) -> NodeId<Self::NodeIdPubKey>;
-
-    /// Payload associated with this block
-    fn get_payload(&self) -> Payload;
-
-    /// Unique hash of the associated payload
-    fn get_payload_id(&self) -> PayloadId;
-
-    /// returns the BlockId for the block referenced by
-    /// the QC contained in this block
-    fn get_parent_id(&self) -> BlockId;
-
-    /// returns the Round for the block referenced by
-    /// the QC contained in this block
-    fn get_parent_round(&self) -> Round;
-
-    /// Sequence number when this block was proposed
-    fn get_seq_num(&self) -> SeqNum;
-
-    /// State root hash included in the block
-    fn get_state_root(&self) -> StateRootHash;
-
-    /// get list of all txn hashes in this block
-    fn get_txn_hashes(&self) -> Vec<Self::TxnHash>;
-
-    fn is_empty_block(&self) -> bool;
-
-    fn get_txn_list_len(&self) -> usize;
-
-    /// get a reference to the block's QC
-    fn get_qc(&self) -> &QuorumCertificate<SCT>;
-
-    fn get_timestamp(&self) -> u128;
-
-    fn get_unvalidated_block(self) -> Block<SCT>;
-
-    fn get_unvalidated_block_ref(&self) -> &Block<SCT>;
-
-    fn get_full_block(self) -> FullBlock<SCT>;
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum BlockKind {
-    Executable,
-    Null,
-}
-
-impl Hashable for BlockKind {
-    fn hash(&self, state: &mut impl Hasher) {
-        match self {
-            BlockKind::Executable => {
-                EnumDiscriminant(1).hash(state);
-            }
-            BlockKind::Null => {
-                EnumDiscriminant(2).hash(state);
-            }
-        }
+        state.update(self.num_blocks.as_bytes());
     }
 }
 
@@ -111,195 +42,156 @@ impl Hashable for BlockKind {
 /// the payload field is used to carry the data of the block
 /// which is agnostic to the actual protocol of consensus
 #[derive(Clone)]
-pub struct Block<SCT: SignatureCollection> {
-    /// proposer of this block
-    pub author: NodeId<SCT::NodeIdPubKey>,
-
-    /// Epoch this block was proposed in
-    pub epoch: Epoch,
-
+pub struct ConsensusBlockHeader<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     /// round this block was proposed in
     pub round: Round,
-
-    /// data related to the execution side of the protocol
-    pub execution: ExecutionProtocol,
-
-    /// identifier for the transaction payload of this block
-    pub payload_id: PayloadId,
-
-    pub block_kind: BlockKind,
-
+    /// Epoch this block was proposed in
+    pub epoch: Epoch,
     /// Certificate of votes for the parent block
     pub qc: QuorumCertificate<SCT>,
+    /// proposer of this block
+    pub author: NodeId<CertificateSignaturePubKey<ST>>,
 
+    pub seq_num: SeqNum,
     pub timestamp_ns: u128,
+    // This is SCT::SignatureType because SCT signatures are guaranteed to be deterministic
+    pub round_signature: RoundSignature<SCT::SignatureType>,
 
-    /// Unique hash used to identify the block
-    id: BlockId,
+    /// data related to the execution side of the protocol
+    pub delayed_execution_results: Vec<EPT::FinalizedHeader>,
+    pub execution_inputs: EPT::ProposedHeader,
+    /// identifier for the transaction payload of this block
+    pub block_body_id: ConsensusBlockBodyId,
+
+    // TODO delete once null blocks are gone
+    pub is_null: bool,
 }
 
-impl<SCT: SignatureCollection> PartialEq for Block<SCT> {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+impl<ST, SCT, EPT> ConsensusBlockHeader<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn get_id(&self) -> BlockId {
+        let mut hasher = HasherType::new();
+        self.hash(&mut hasher);
+        BlockId(hasher.hash())
+    }
+
+    pub fn get_parent_id(&self) -> BlockId {
+        self.qc.get_block_id()
     }
 }
-impl<SCT: SignatureCollection> Eq for Block<SCT> {}
 
-impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
+impl<ST, SCT, EPT> PartialEq for ConsensusBlockHeader<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.get_id() == other.get_id()
+    }
+}
+impl<ST, SCT, EPT> Eq for ConsensusBlockHeader<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+}
+
+impl<ST, SCT, EPT> Debug for ConsensusBlockHeader<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Block")
+        f.debug_struct("ConsensusBlockHeader")
             .field("author", &self.author)
             .field("epoch", &self.epoch)
             .field("round", &self.round)
-            .field("timestamp_ns", &self.timestamp_ns)
+            .field("block_body_id", &self.block_body_id)
             .field("qc", &self.qc)
-            .field("id", &self.id)
-            .field("payload_id", &self.payload_id)
-            .field("block_kind", &self.block_kind)
-            .field("seq_num", &self.execution.seq_num)
-            .field("execution_state_root", &self.execution.state_root)
+            .field("seq_num", &self.seq_num)
+            .field("timestamp_ns", &self.timestamp_ns)
+            .field("id", &self.get_id())
             .finish_non_exhaustive()
     }
 }
 
-impl<SCT: SignatureCollection> Hashable for Block<SCT> {
+impl<ST, SCT, EPT> Hashable for ConsensusBlockHeader<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn hash(&self, state: &mut impl Hasher) {
-        self.id.hash(state);
+        state.update(self.round.as_bytes());
+        state.update(self.epoch.as_bytes());
+        state.update(self.qc.get_block_id().0.as_bytes());
+        state.update(self.qc.get_hash().as_bytes());
+        self.author.hash(state);
+        state.update(self.seq_num.as_bytes());
+        state.update(self.timestamp_ns.as_bytes());
+        state.update(self.round_signature.get_hash());
+
+        let delayed_execution_results = alloy_rlp::encode(&self.delayed_execution_results);
+        state.update(&delayed_execution_results);
+
+        let execution_inputs = alloy_rlp::encode(&self.delayed_execution_results);
+        state.update(&execution_inputs);
+
+        state.update(self.block_body_id.0.as_bytes());
+        state.update(self.is_null.as_bytes());
     }
 }
 
-impl<SCT: SignatureCollection> Block<SCT> {
+impl<ST, SCT, EPT> ConsensusBlockHeader<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     // FIXME &QuorumCertificate -> QuorumCertificate
     pub fn new(
         author: NodeId<SCT::NodeIdPubKey>,
-        timestamp_ns: u128,
         epoch: Epoch,
         round: Round,
-        execution: &ExecutionProtocol,
-        payload_id: PayloadId,
-        block_kind: BlockKind,
-        qc: &QuorumCertificate<SCT>,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+        execution_inputs: EPT::ProposedHeader,
+        block_body_id: ConsensusBlockBodyId,
+        qc: QuorumCertificate<SCT>,
+        seq_num: SeqNum,
+        timestamp_ns: u128,
+        round_signature: RoundSignature<SCT::SignatureType>,
+        is_null: bool,
     ) -> Self {
         Self {
             author,
-            timestamp_ns,
             epoch,
             round,
-            execution: execution.clone(),
-            payload_id,
-            block_kind,
-            qc: qc.clone(),
-            id: {
-                let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
-                let mut state = HasherType::new();
-                author.hash(&mut state);
-                state.update(timestamp_ns.as_bytes());
-                state.update(epoch.as_bytes());
-                state.update(round.as_bytes());
-                execution.hash(&mut state);
-                //payload.hash(&mut state);
-                state.update(payload_id.0.as_bytes());
-                block_kind.hash(&mut state);
-                state.update(qc.get_block_id().0.as_bytes());
-                state.update(qc.get_hash().as_bytes());
-
-                BlockId(state.hash())
-            },
+            delayed_execution_results,
+            execution_inputs,
+            block_body_id,
+            qc,
+            seq_num,
+            timestamp_ns,
+            round_signature,
+            is_null,
         }
     }
 
-    /// Check if the block is a consensus protocol empty block. Note there's a
-    /// distinction between a block with no transactions
-    /// `TransactionPayload::List(FullTransactionList::empty())` and a consensus
-    /// protocol empty block `TransactionPayload::Empty`
+    // TODO delete once null blocks are gone
     pub fn is_empty_block(&self) -> bool {
-        matches!(self.block_kind, BlockKind::Null)
-    }
-}
-
-// TODO, this should be removed, we don't need to implement BlockType for Block because we won't
-// use this as a validatedBlock type going forward in the passthru policy, FullBlock can be used
-// there
-impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
-    type NodeIdPubKey = SCT::NodeIdPubKey;
-    type TxnHash = ();
-
-    fn get_id(&self) -> BlockId {
-        self.id
-    }
-
-    fn get_round(&self) -> Round {
-        self.round
-    }
-
-    fn get_epoch(&self) -> Epoch {
-        self.epoch
-    }
-
-    fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
-        self.author
-    }
-
-    fn get_payload(&self) -> Payload {
-        todo!()
-    }
-
-    fn get_payload_id(&self) -> PayloadId {
-        self.payload_id
-    }
-
-    fn get_parent_id(&self) -> BlockId {
-        self.qc.get_block_id()
-    }
-
-    fn get_parent_round(&self) -> Round {
-        self.qc.get_round()
-    }
-
-    fn get_seq_num(&self) -> SeqNum {
-        self.execution.seq_num
-    }
-
-    fn get_state_root(&self) -> StateRootHash {
-        self.execution.state_root
-    }
-
-    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
-        vec![]
-    }
-
-    fn is_empty_block(&self) -> bool {
-        self.is_empty_block()
-    }
-
-    fn get_txn_list_len(&self) -> usize {
-        /*
-        match &self.payload.txns {
-            TransactionPayload::List(list) => list.bytes().len(),
-            TransactionPayload::Null => 0,
-        }
-        */
-        0
-    }
-
-    fn get_qc(&self) -> &QuorumCertificate<SCT> {
-        &self.qc
-    }
-
-    fn get_timestamp(&self) -> u128 {
-        self.timestamp_ns
-    }
-
-    fn get_unvalidated_block(self) -> Block<SCT> {
-        self
-    }
-
-    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
-        self
-    }
-
-    fn get_full_block(self) -> FullBlock<SCT> {
-        todo!();
+        self.is_null
     }
 }
 
@@ -318,19 +210,20 @@ impl From<StateBackendError> for BlockPolicyError {
 
 /// Trait that represents how inner contents of a block should be validated
 #[auto_impl(Box)]
-pub trait BlockPolicy<SCT, SBT>
+pub trait BlockPolicy<ST, SCT, EPT, SBT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
     SBT: StateBackend,
 {
     type ValidatedBlock: Sized
         + Clone
         + PartialEq
         + Eq
-        + std::fmt::Debug
-        + BlockType<SCT, NodeIdPubKey = SCT::NodeIdPubKey>
-        + Hashable
-        + Send;
+        + Debug
+        + Send
+        + Deref<Target = ConsensusFullBlock<ST, SCT, EPT>>;
 
     fn check_coherency(
         &self,
@@ -352,12 +245,44 @@ where
 /// A block policy which does not validate the inner contents of the block
 #[derive(Copy, Clone, Default)]
 pub struct PassthruBlockPolicy;
-
-impl<SCT> BlockPolicy<SCT, InMemoryState> for PassthruBlockPolicy
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassthruWrappedBlock<ST, SCT, EPT>(pub ConsensusFullBlock<ST, SCT, EPT>)
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol;
+
+impl<ST, SCT, EPT> Deref for PassthruWrappedBlock<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type ValidatedBlock = FullBlock<SCT>;
+    type Target = ConsensusFullBlock<ST, SCT, EPT>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<ST, SCT, EPT> From<ConsensusFullBlock<ST, SCT, EPT>> for PassthruWrappedBlock<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(block: ConsensusFullBlock<ST, SCT, EPT>) -> Self {
+        Self(block)
+    }
+}
+
+impl<ST, SCT, EPT> BlockPolicy<ST, SCT, EPT, InMemoryState> for PassthruBlockPolicy
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    type ValidatedBlock = PassthruWrappedBlock<ST, SCT, EPT>;
 
     fn check_coherency(
         &self,
@@ -374,7 +299,7 @@ where
             } else {
                 (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
             };
-        if block.is_empty_block() {
+        if block.header().is_empty_block() {
             // Empty block doesn't occupy a sequence number
             if block.get_seq_num() != extending_seq_num {
                 return Err(BlockPolicyError::BlockNotCoherent);
@@ -397,101 +322,174 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct FullBlock<SCT: SignatureCollection> {
-    pub block: Block<SCT>,
-    pub payload: Payload,
+pub struct ConsensusFullBlock<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    header: ConsensusBlockHeader<ST, SCT, EPT>,
+    body: ConsensusBlockBody<EPT>,
 }
 
-impl<SCT: SignatureCollection> PartialEq for FullBlock<SCT> {
+impl<ST, SCT, EPT> PartialEq for ConsensusFullBlock<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn eq(&self, other: &Self) -> bool {
-        self.block.id == other.block.id
+        self.header.get_id() == other.header.get_id()
     }
 }
-impl<SCT: SignatureCollection> Eq for FullBlock<SCT> {}
+impl<ST, SCT, EPT> Eq for ConsensusFullBlock<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+}
 
-impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
-    type NodeIdPubKey = SCT::NodeIdPubKey;
-    type TxnHash = ();
+impl<ST, SCT, EPT> Hashable for ConsensusFullBlock<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        self.header().get_id().hash(state);
+    }
+}
 
-    fn get_id(&self) -> BlockId {
-        self.block.id
+impl<ST, SCT, EPT> ConsensusFullBlock<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn new(
+        header: ConsensusBlockHeader<ST, SCT, EPT>,
+        body: ConsensusBlockBody<EPT>,
+    ) -> Result<Self, BlockValidationError> {
+        if body.get_id() != header.block_body_id {
+            return Err(BlockValidationError::HeaderPayloadMismatchError);
+        }
+        Ok(Self { header, body })
     }
 
-    fn get_round(&self) -> Round {
-        self.block.round
+    pub fn header(&self) -> &ConsensusBlockHeader<ST, SCT, EPT> {
+        &self.header
+    }
+    pub fn body(&self) -> &ConsensusBlockBody<EPT> {
+        &self.body
     }
 
-    fn get_epoch(&self) -> Epoch {
-        self.block.epoch
+    pub fn get_parent_id(&self) -> BlockId {
+        self.header.qc.get_block_id()
+    }
+    pub fn get_id(&self) -> BlockId {
+        self.header.get_id()
+    }
+    pub fn get_body_id(&self) -> ConsensusBlockBodyId {
+        self.header.block_body_id
+    }
+    pub fn get_round(&self) -> Round {
+        self.header.round
+    }
+    pub fn get_parent_round(&self) -> Round {
+        self.header.qc.get_round()
+    }
+    pub fn get_qc(&self) -> &QuorumCertificate<SCT> {
+        &self.header.qc
+    }
+    pub fn get_epoch(&self) -> Epoch {
+        self.header.epoch
+    }
+    pub fn get_seq_num(&self) -> SeqNum {
+        self.header.seq_num
+    }
+    pub fn get_timestamp(&self) -> u128 {
+        self.header.timestamp_ns
+    }
+    pub fn get_author(&self) -> &NodeId<CertificateSignaturePubKey<ST>> {
+        &self.header.author
     }
 
-    fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
-        self.block.author
+    pub fn get_execution_results(&self) -> &Vec<EPT::FinalizedHeader> {
+        &self.header.delayed_execution_results
     }
 
-    fn get_payload(&self) -> Payload {
-        self.payload.clone()
+    pub fn split(self) -> (ConsensusBlockHeader<ST, SCT, EPT>, ConsensusBlockBody<EPT>) {
+        (self.header, self.body)
     }
+}
 
-    fn get_payload_id(&self) -> PayloadId {
-        self.block.payload_id
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedExecutionResult<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    pub block_id: BlockId,
+    pub seq_num: SeqNum,
+    pub round: Round,
+    pub result: EPT::FinalizedHeader,
+}
 
-    fn get_parent_id(&self) -> BlockId {
-        self.block.qc.get_block_id()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionResult<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    Finalized(SeqNum, EPT::FinalizedHeader),
+}
 
-    fn get_parent_round(&self) -> Round {
-        self.block.qc.get_round()
-    }
-
-    fn get_seq_num(&self) -> SeqNum {
-        self.block.execution.seq_num
-    }
-
-    fn get_state_root(&self) -> StateRootHash {
-        self.block.execution.state_root
-    }
-
-    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
-        vec![]
-    }
-
-    fn is_empty_block(&self) -> bool {
-        self.block.is_empty_block()
-    }
-
-    fn get_txn_list_len(&self) -> usize {
-        match &self.payload.txns {
-            TransactionPayload::List(list) => list.bytes().len(),
-            TransactionPayload::Null => 0,
+impl<EPT> ExecutionResult<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    pub fn seq_num(&self) -> SeqNum {
+        match self {
+            Self::Finalized(seq_num, _) => *seq_num,
         }
     }
+}
 
-    fn get_qc(&self) -> &QuorumCertificate<SCT> {
-        &self.block.qc
-    }
+pub struct ProposedExecutionInputs<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    pub header: EPT::ProposedHeader,
+    pub body: EPT::Body,
+}
 
-    fn get_timestamp(&self) -> u128 {
-        self.block.timestamp_ns
-    }
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct MockExecutionProtocol {}
 
-    fn get_unvalidated_block(self) -> Block<SCT> {
-        self.block
-    }
+impl ExecutionProtocol for MockExecutionProtocol {
+    type ProposedHeader = MockExecutionProposedHeader;
+    type Body = MockExecutionBody;
+    type FinalizedHeader = MockExecutionFinalizedHeader;
+}
 
-    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
-        &self.block
-    }
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]
+pub struct MockExecutionProposedHeader {}
 
-    fn get_full_block(self) -> FullBlock<SCT> {
-        self
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]
+pub struct MockExecutionBody {
+    pub data: Bytes,
+}
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct MockExecutionFinalizedHeader {
+    number: SeqNum,
+}
+impl FinalizedHeader for MockExecutionFinalizedHeader {
+    fn seq_num(&self) -> SeqNum {
+        self.number
     }
 }
 
-impl<SCT: SignatureCollection> Hashable for FullBlock<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        self.block.id.hash(state);
-        self.payload.hash(state);
+impl MockableFinalizedHeader for MockExecutionFinalizedHeader {
+    fn from_seq_num(seq_num: SeqNum) -> Self {
+        Self { number: seq_num }
     }
 }

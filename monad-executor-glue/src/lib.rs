@@ -13,19 +13,18 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::{BlockRange, FullBlock},
-    checkpoint::{Checkpoint, RootInfo},
+    block::{BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult},
+    checkpoint::Checkpoint,
     metrics::Metrics,
-    payload::PayloadId,
+    payload::ConsensusBlockBodyId,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHashInfo,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -77,13 +76,23 @@ pub enum TimerCommand<E> {
     ScheduleReset(TimeoutVariant),
 }
 
-pub enum LedgerCommand<SCT: SignatureCollection> {
-    LedgerCommit(Vec<FullBlock<SCT>>),
+pub enum LedgerCommand<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    LedgerCommit(Vec<ConsensusFullBlock<ST, SCT, EPT>>),
     LedgerFetchHeaders(BlockRange),
-    LedgerFetchPayload(PayloadId),
+    LedgerFetchPayload(ConsensusBlockBodyId),
 }
 
-impl<SCT: SignatureCollection> std::fmt::Debug for LedgerCommand<SCT> {
+impl<ST, SCT, EPT> std::fmt::Debug for LedgerCommand<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LedgerCommand::LedgerCommit(blocks) => {
@@ -101,8 +110,11 @@ impl<SCT: SignatureCollection> std::fmt::Debug for LedgerCommand<SCT> {
     }
 }
 
-pub enum CheckpointCommand<SCT: SignatureCollection> {
-    Save(Checkpoint<SCT>),
+#[derive(Clone)]
+pub struct CheckpointCommand<SCT: SignatureCollection> {
+    pub root_seq_num: SeqNum,
+    pub high_qc_round: Round,
+    pub checkpoint: Checkpoint<SCT>,
 }
 
 pub enum StateRootHashCommand<SCT>
@@ -212,42 +224,61 @@ pub enum TimestampCommand {
     AdjustDelta(TimestampAdjustment),
 }
 
-pub enum StateSyncCommand<PT: PubKey> {
+pub enum StateSyncCommand<ST, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    EPT: ExecutionProtocol,
+{
     /// The *last* RequestSync(n) called is guaranteed to be followed up with DoneSync(n).
     ///
     /// Note that if RequestSync(n') is invoked before receiving DoneSync(n), it is not guaranteed
     /// that DoneSync(n) will be received - so the caller should drop any DoneSync < n'
-    RequestSync(StateRootHashInfo),
-    Message((NodeId<PT>, StateSyncNetworkMessage)),
+    RequestSync(EPT::FinalizedHeader),
+    Message(
+        (
+            NodeId<CertificateSignaturePubKey<ST>>,
+            StateSyncNetworkMessage,
+        ),
+    ),
     StartExecution,
 }
 
-pub enum Command<E, OM, SCT: SignatureCollection> {
+pub enum Command<E, OM, ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
 
-    LedgerCommand(LedgerCommand<SCT>),
+    LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<SCT>),
     StateRootHashCommand(StateRootHashCommand<SCT>),
     LoopbackCommand(LoopbackCommand<E>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
     TimestampCommand(TimestampCommand),
-    StateSyncCommand(StateSyncCommand<SCT::NodeIdPubKey>),
+    StateSyncCommand(StateSyncCommand<ST, EPT>),
 }
 
-impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
+impl<E, OM, ST, SCT, EPT> Command<E, OM, ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn split_commands(
         commands: Vec<Self>,
     ) -> (
         Vec<RouterCommand<SCT::NodeIdPubKey, OM>>,
         Vec<TimerCommand<E>>,
-        Vec<LedgerCommand<SCT>>,
+        Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<SCT>>,
         Vec<StateRootHashCommand<SCT>>,
         Vec<LoopbackCommand<E>>,
         Vec<ControlPanelCommand<SCT>>,
         Vec<TimestampCommand>,
-        Vec<StateSyncCommand<SCT::NodeIdPubKey>>,
+        Vec<StateSyncCommand<ST, EPT>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -287,22 +318,32 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
+pub enum ConsensusEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     Message {
         sender: NodeId<SCT::NodeIdPubKey>,
-        unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
+        unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     },
     Timeout,
     /// a block that was previously requested
     /// this is an invariant
     BlockSync {
         block_range: BlockRange,
-        full_blocks: Vec<FullBlock<SCT>>,
+        full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
     },
     SendVote(Round),
 }
 
-impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
+impl<ST, SCT, EPT> Debug for ConsensusEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsensusEvent::Message {
@@ -331,7 +372,12 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
 
 /// BlockSync related events
 #[derive(Clone, PartialEq, Eq)]
-pub enum BlockSyncEvent<SCT: SignatureCollection> {
+pub enum BlockSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     /// A peer (not self) requesting for a missing block
     Request {
         sender: NodeId<SCT::NodeIdPubKey>,
@@ -353,15 +399,20 @@ pub enum BlockSyncEvent<SCT: SignatureCollection> {
     /// A peer (not self) sending us a block
     Response {
         sender: NodeId<SCT::NodeIdPubKey>,
-        response: BlockSyncResponseMessage<SCT>,
+        response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
     /// self sending us missing block (from ledger)
     SelfResponse {
-        response: BlockSyncResponseMessage<SCT>,
+        response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
 }
 
-impl<SCT: SignatureCollection> Debug for BlockSyncEvent<SCT> {
+impl<ST, SCT, EPT> Debug for BlockSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Request { sender, request } => f
@@ -481,6 +532,19 @@ pub enum StateSyncUpsertType {
     Storage,
     AccountDelete,
     StorageDelete,
+    Header,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct StateSyncUpsert {
+    pub upsert_type: StateSyncUpsertType,
+    pub data: Vec<u8>,
+}
+
+impl StateSyncUpsert {
+    pub fn new(upsert_type: StateSyncUpsertType, data: Vec<u8>) -> Self {
+        Self { upsert_type, data }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -491,7 +555,7 @@ pub struct StateSyncResponse {
 
     pub request: StateSyncRequest,
     // consensus state must validate that this sender is "trusted"
-    pub response: Vec<(StateSyncUpsertType, Vec<u8>)>,
+    pub response: Vec<StateSyncUpsert>,
     pub response_n: u64,
 }
 
@@ -515,7 +579,12 @@ pub enum StateSyncNetworkMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StateSyncEvent<SCT: SignatureCollection> {
+pub enum StateSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     Inbound(NodeId<SCT::NodeIdPubKey>, StateSyncNetworkMessage),
     Outbound(NodeId<SCT::NodeIdPubKey>, StateSyncNetworkMessage),
 
@@ -525,12 +594,12 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
     // Statesync-requested block
     BlockSync {
         block_range: BlockRange,
-        full_blocks: Vec<FullBlock<SCT>>,
+        full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
     },
 
-    /// Consensus request sync
+    // Statesync re-sync request
     RequestSync {
-        root: RootInfo,
+        root: ConsensusBlockHeader<ST, SCT, EPT>,
         high_qc: QuorumCertificate<SCT>,
     },
 }
@@ -553,33 +622,35 @@ where
 
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MonadEvent<ST, SCT>
+pub enum MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     /// Events for consensus state
-    ConsensusEvent(ConsensusEvent<ST, SCT>),
+    ConsensusEvent(ConsensusEvent<ST, SCT, EPT>),
     /// Events for block sync responder
-    BlockSyncEvent(BlockSyncEvent<SCT>),
+    BlockSyncEvent(BlockSyncEvent<ST, SCT, EPT>),
     /// Events to update validator set
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
     MempoolEvent(MempoolEvent<CertificateSignaturePubKey<ST>>),
-    /// State Root updates
-    StateRootEvent(StateRootHashInfo),
+    /// Execution updates
+    ExecutionResultEvent(ExecutionResult<EPT>),
     /// Events for the debug control panel
     ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
     TimestampUpdateEvent(u128),
     /// Events to statesync
-    StateSyncEvent(StateSyncEvent<SCT>),
+    StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
 }
 
-impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
+impl<ST, SCT, EPT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type ReadError = monad_proto::error::ProtoError;
 
@@ -588,20 +659,22 @@ where
     }
 }
 
-impl<ST, SCT> monad_types::Serializable<Bytes> for MonadEvent<ST, SCT>
+impl<ST, SCT, EPT> monad_types::Serializable<Bytes> for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)
     }
 }
 
-impl<ST, SCT> std::fmt::Display for MonadEvent<ST, SCT>
+impl<ST, SCT, EPT> std::fmt::Display for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     // TODO impl Display for each individual event instead
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -627,7 +700,7 @@ where
                     txns.len()
                 )
             }
-            MonadEvent::StateRootEvent(_) => "STATE_ROOT".to_string(),
+            MonadEvent::ExecutionResultEvent(_) => "EXECUTION_RESULT".to_string(),
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
@@ -640,22 +713,24 @@ where
 /// Wrapper around MonadEvent to capture more information that is useful in logs for
 /// retrospection
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogFriendlyMonadEvent<ST, SCT>
+pub struct LogFriendlyMonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub timestamp: DateTime<Utc>,
-    pub event: MonadEvent<ST, SCT>,
+    pub event: MonadEvent<ST, SCT, EPT>,
 }
 
 type EventHeaderType = u32;
 const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();
 
-impl<ST, SCT> monad_types::Deserializable<[u8]> for LogFriendlyMonadEvent<ST, SCT>
+impl<ST, SCT, EPT> monad_types::Deserializable<[u8]> for LogFriendlyMonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type ReadError = monad_proto::error::ProtoError;
     fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
@@ -676,10 +751,11 @@ where
     }
 }
 
-impl<ST, SCT> monad_types::Serializable<Bytes> for LogFriendlyMonadEvent<ST, SCT>
+impl<ST, SCT, EPT> monad_types::Serializable<Bytes> for LogFriendlyMonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     fn serialize(&self) -> Bytes {
         let mut b = BytesMut::new();

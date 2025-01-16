@@ -43,6 +43,7 @@ monad-wal = { path = "../monad-wal" }
 monad-triedb-cache = { path = "../monad-triedb-cache" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 
+alloy-primitives = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }

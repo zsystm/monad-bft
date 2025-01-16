@@ -7,7 +7,7 @@ import "block.proto";
 import "blocksync.proto";
 import "discovery.proto";
 import "signing.proto";
-import "state_root_hash.proto";
+import "execution.proto";
 import "timeout.proto";
 import "voting.proto";
 
@@ -20,14 +20,14 @@ message ProtoVoteMessage {
 message ProtoBlockSyncRequestMessage {
   oneof request_type {
     monad_proto.blocksync.ProtoBlockRange block_range = 1;
-    monad_proto.basic.ProtoPayloadId payload_id = 2;
+    monad_proto.basic.ProtoBlockBodyId block_body_id = 2;
   }
 }
 
 message ProtoBlockSyncResponseMessage {
   oneof blocksync_response {
     monad_proto.blocksync.ProtoBlockSyncHeadersResponse headers_response = 1;
-    monad_proto.blocksync.ProtoBlockSyncPayloadResponse payload_response = 2;
+    monad_proto.blocksync.ProtoBlockSyncBodyResponse body_response = 2;
   }
 }
 
@@ -37,8 +37,8 @@ message ProtoTimeoutMessage {
 }
 
 message ProtoProposalMessage {
-  monad_proto.block.ProtoBlock block = 1;
-  monad_proto.block.ProtoPayload payload = 2;
+  monad_proto.block.ProtoBlockHeader block_header = 1;
+  monad_proto.block.ProtoBlockBody block_body = 2;
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 3;
 }
 
@@ -73,6 +73,7 @@ enum ProtoStateSyncUpsertType {
   STORAGE = 2;
   ACCOUNT_DELETE = 3;
   STORAGE_DELETE = 4;
+  HEADER = 5;
 }
 
 message ProtoStateSyncUpsert {

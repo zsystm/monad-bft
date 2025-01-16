@@ -4,22 +4,28 @@ use bytes::Bytes;
 use monad_consensus_types::{
     signature_collection::SignatureCollection, validator_data::ValidatorSetDataWithEpoch,
 };
-use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+};
 use monad_proto::{
     error::ProtoError,
     proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
 };
+use monad_types::ExecutionProtocol;
 
 use crate::{
     BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, MempoolEvent, MonadEvent,
-    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
+    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsert,
     StateSyncUpsertType, StateSyncVersion, UpdateFullNodes, UpdatePeers, ValidatorEvent,
 };
 
-impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
-    for ProtoMonadEvent
+impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: &MonadEvent<S, SCT>) -> Self {
+    fn from(value: &MonadEvent<ST, SCT, EPT>) -> Self {
         let event = match value {
             MonadEvent::ConsensusEvent(event) => {
                 proto_monad_event::Event::ConsensusEvent(event.into())
@@ -31,10 +37,8 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
                 proto_monad_event::Event::ValidatorEvent(event.into())
             }
             MonadEvent::MempoolEvent(event) => proto_monad_event::Event::MempoolEvent(event.into()),
-            MonadEvent::StateRootEvent(info) => {
-                proto_monad_event::Event::StateRootEvent(ProtoStateUpdateEvent {
-                    info: Some(info.into()),
-                })
+            MonadEvent::ExecutionResultEvent(event) => {
+                proto_monad_event::Event::ExecutionResultEvent(event.into())
             }
             MonadEvent::ControlPanelEvent(event) => {
                 proto_monad_event::Event::ControlPanelEvent(event.into())
@@ -53,12 +57,15 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
     }
 }
 
-impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<ProtoMonadEvent>
-    for MonadEvent<S, SCT>
+impl<ST, SCT, EPT> TryFrom<ProtoMonadEvent> for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {
-        let event: MonadEvent<S, SCT> = match value.event {
+        let event: MonadEvent<ST, SCT, EPT> = match value.event {
             Some(proto_monad_event::Event::ConsensusEvent(event)) => {
                 MonadEvent::ConsensusEvent(event.try_into()?)
             }
@@ -71,15 +78,8 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             Some(proto_monad_event::Event::MempoolEvent(event)) => {
                 MonadEvent::MempoolEvent(event.try_into()?)
             }
-            Some(proto_monad_event::Event::StateRootEvent(event)) => {
-                let info = event
-                    .info
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "StateUpdateEvent::info".to_owned(),
-                    ))?
-                    .try_into()?;
-
-                MonadEvent::StateRootEvent(info)
+            Some(proto_monad_event::Event::ExecutionResultEvent(event)) => {
+                MonadEvent::ExecutionResultEvent(event.try_into()?)
             }
             Some(proto_monad_event::Event::ControlPanelEvent(e)) => {
                 MonadEvent::ControlPanelEvent(e.try_into()?)
@@ -98,8 +98,13 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
     }
 }
 
-impl<SCT: SignatureCollection> From<&BlockSyncEvent<SCT>> for ProtoBlockSyncEvent {
-    fn from(value: &BlockSyncEvent<SCT>) -> Self {
+impl<ST, SCT, EPT> From<&BlockSyncEvent<ST, SCT, EPT>> for ProtoBlockSyncEvent
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &BlockSyncEvent<ST, SCT, EPT>) -> Self {
         let event = match value {
             BlockSyncEvent::Request { sender, request } => {
                 proto_block_sync_event::Event::Request(ProtoBlockSyncRequestWithSender {
@@ -138,7 +143,12 @@ impl<SCT: SignatureCollection> From<&BlockSyncEvent<SCT>> for ProtoBlockSyncEven
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<SCT> {
+impl<ST, SCT, EPT> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockSyncEvent) -> Result<Self, Self::Error> {
@@ -664,6 +674,9 @@ impl From<&StateSyncUpsertType> for monad_proto::proto::message::ProtoStateSyncU
             StateSyncUpsertType::StorageDelete => {
                 monad_proto::proto::message::ProtoStateSyncUpsertType::StorageDelete
             }
+            StateSyncUpsertType::Header => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::Header
+            }
         }
     }
 }
@@ -678,15 +691,13 @@ impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncRes
             upserts: response
                 .response
                 .iter()
-                .map(
-                    |(upsert_type, data)| monad_proto::proto::message::ProtoStateSyncUpsert {
-                        r#type: monad_proto::proto::message::ProtoStateSyncUpsertType::from(
-                            upsert_type,
-                        )
-                        .into(),
-                        data: Bytes::copy_from_slice(data),
-                    },
-                )
+                .map(|upsert| monad_proto::proto::message::ProtoStateSyncUpsert {
+                    r#type: monad_proto::proto::message::ProtoStateSyncUpsertType::from(
+                        &upsert.upsert_type,
+                    )
+                    .into(),
+                    data: Bytes::copy_from_slice(&upsert.data),
+                })
                 .collect(),
             n: response.response_n,
         }
@@ -707,8 +718,13 @@ impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateS
     }
 }
 
-impl<SCT: SignatureCollection> From<&StateSyncEvent<SCT>> for ProtoStateSyncEvent {
-    fn from(value: &StateSyncEvent<SCT>) -> Self {
+impl<ST, SCT, EPT> From<&StateSyncEvent<ST, SCT, EPT>> for ProtoStateSyncEvent
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &StateSyncEvent<ST, SCT, EPT>) -> Self {
         match value {
             StateSyncEvent::Inbound(from, message) => Self {
                 event: Some(proto_state_sync_event::Event::Inbound(
@@ -793,6 +809,9 @@ impl From<monad_proto::proto::message::ProtoStateSyncUpsertType> for StateSyncUp
             monad_proto::proto::message::ProtoStateSyncUpsertType::StorageDelete => {
                 StateSyncUpsertType::StorageDelete
             }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::Header => {
+                StateSyncUpsertType::Header
+            }
         }
     }
 }
@@ -835,7 +854,10 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                                     ProtoError::DeserializeError("unknown upsert type".to_owned())
                                 })?
                                 .into();
-                            Ok((upsert_type, Vec::from(upsert.data)))
+                            Ok(StateSyncUpsert {
+                                upsert_type,
+                                data: Vec::from(upsert.data),
+                            })
                         })
                         .collect::<Result<_, ProtoError>>()?,
                     response_n: response.n,
@@ -845,7 +867,12 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoStateSyncEvent> for StateSyncEvent<SCT> {
+impl<ST, SCT, EPT> TryFrom<ProtoStateSyncEvent> for StateSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     type Error = ProtoError;
 
     fn try_from(e: ProtoStateSyncEvent) -> Result<Self, Self::Error> {
@@ -920,37 +947,5 @@ impl<SCT: SignatureCollection> TryFrom<ProtoStateSyncEvent> for StateSyncEvent<S
                 },
             }
         })
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use alloy_primitives::hex_literal::hex;
-    use bytes::Bytes;
-    use monad_crypto::NopSignature;
-    use monad_multi_sig::MultiSig;
-    use monad_types::{Deserializable, Serializable};
-
-    use super::*;
-
-    type MessageSignatureType = NopSignature;
-    type SignatureCollectionType = MultiSig<NopSignature>;
-
-    #[test]
-    fn test_mempool_event_roundtrip() {
-        // https://etherscan.io/tx/0xc97438c9ac71f94040abec76967bcaf16445ff747bcdeb383e5b94033cbed201
-        let tx = hex!("02f871018302877a8085070adf56b2825208948880bb98e7747f73b52a9cfa34dab9a4a06afa3887eecbb1ada2fad280c080a0d5e6f03b507cc86b59bed88c201f98c9ca6514dc5825f41aa923769cf0402839a0563f21850c0c212ce6f402f140acdcebbb541c9bb6a051070851efec99e4dd8d").as_slice().into();
-
-        let mempool_event =
-            MonadEvent::<MessageSignatureType, SignatureCollectionType>::MempoolEvent(
-                MempoolEvent::UserTxns(vec![tx]),
-            );
-
-        let mempool_event_bytes: Bytes = mempool_event.serialize();
-        assert_eq!(
-            mempool_event_bytes,
-            <MonadEvent::<MessageSignatureType, SignatureCollectionType> as Serializable<Bytes>>::serialize(&MonadEvent::<MessageSignatureType, SignatureCollectionType>::deserialize(mempool_event_bytes.as_ref()).expect("deserialization to succeed")
-            )
-        )
     }
 }

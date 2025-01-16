@@ -10,7 +10,6 @@ bench = false
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
@@ -31,6 +30,7 @@ monad-perf-util = { path = "../monad-perf-util" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
 
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
@@ -49,4 +49,3 @@ harness = false
 [[bench]]
 name = "update"
 harness = false
-

@@ -2,22 +2,20 @@ use std::collections::{BTreeMap, VecDeque};
 
 use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
 use alloy_primitives::{hex, Address, TxKind, B256};
-use alloy_rlp::Decodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::BlockPolicy,
-    payload::{BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT},
+    block::{BlockPolicy, GENESIS_TIMESTAMP},
+    payload::RoundSignature,
     txpool::TxPool,
 };
-use monad_crypto::NopSignature;
+use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
-use monad_eth_tx::EthSignedTransaction;
 use monad_eth_txpool::EthTxPool;
-use monad_eth_types::{Balance, EthAddress};
+use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -55,34 +53,43 @@ const S5: B256 = B256::new(hex!(
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState;
+type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
 
-type Pool = dyn TxPool<SignatureCollectionType, EthBlockPolicy, StateBackendType>;
+type Pool = dyn TxPool<
+    SignatureType,
+    SignatureCollectionType,
+    EthExecutionProtocol,
+    BlockPolicyType,
+    StateBackendType,
+>;
 
-fn make_test_block_policy() -> EthBlockPolicy {
+fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollectionType> {
     EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
 }
 
 enum TxPoolTestEvent<'a> {
     InsertTxs {
-        txs: Vec<(&'a EthSignedTransaction, bool)>,
+        txs: Vec<(&'a TxEnvelope, bool)>,
         expected_pool_size_change: usize,
     },
     CreateProposal {
         tx_limit: usize,
         gas_limit: u64,
-        expected_txs: Vec<&'a EthSignedTransaction>,
+        expected_txs: Vec<&'a TxEnvelope>,
         add_to_blocktree: bool,
     },
     CommitPendingBlocks {
         num_blocks: usize,
         expected_committed_seq_num: u64,
     },
-    Block(Box<dyn FnOnce(&mut EthTxPool<SignatureCollectionType, StateBackendType>)>),
+    Block(
+        Box<dyn FnOnce(&mut EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>)>,
+    ),
 }
 
 fn run_custom_eth_txpool_test<const N: usize>(
-    mut eth_block_policy: EthBlockPolicy,
-    nonces_override: Option<BTreeMap<EthAddress, u64>>,
+    mut eth_block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    nonces_override: Option<BTreeMap<Address, u64>>,
     events: [TxPoolTestEvent<'_>; N],
 ) {
     let state_backend = {
@@ -101,7 +108,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         .collect::<Vec<_>>(),
                     _ => vec![],
                 })
-                .map(|address| (EthAddress(address), 0))
+                .map(|address| (address, 0))
                 .collect()
         };
 
@@ -156,19 +163,22 @@ fn run_custom_eth_txpool_test<const N: usize>(
                 expected_txs,
                 add_to_blocktree,
             } => {
+                let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
                 let encoded_txns = Pool::create_proposal(
                     &mut pool,
                     SeqNum(current_seq_num),
                     tx_limit,
                     gas_limit,
+                    [0_u8; 20],
+                    GENESIS_TIMESTAMP + current_seq_num as u128,
+                    &RoundSignature::new(Round(0), &mock_keypair),
                     &eth_block_policy,
                     pending_blocks.iter().collect_vec(),
                     &state_backend,
                 )
                 .expect("create proposal succeeds");
 
-                let decoded_txns =
-                    Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+                let decoded_txns = encoded_txns.body.transactions;
 
                 let expected_txs = expected_txs.into_iter().cloned().collect_vec();
 
@@ -205,16 +215,12 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         .pop_front()
                         .expect("missing block in blocktree");
 
-                    BlockPolicy::<MockSignatures<SignatureType>, StateBackendType>::update_committed_block(
+                    BlockPolicy::<_, _, _, StateBackendType>::update_committed_block(
                         &mut eth_block_policy,
                         &block,
                     );
 
-                    TxPool::<
-                        MockSignatures<SignatureType>,
-                        EthBlockPolicy,
-                        StateBackendType,
-                    >::update_committed_block(&mut pool, &block);
+                    TxPool::update_committed_block(&mut pool, &block);
                 }
 
                 assert_eq!(
@@ -585,12 +591,9 @@ fn test_nonce_exists_in_committed_block() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
-    let nonces = [(
-        EthAddress(tx1.recover_signer().expect("signer is recoverable")),
-        1,
-    )]
-    .into_iter()
-    .collect();
+    let nonces = [(tx1.recover_signer().expect("signer is recoverable"), 1)]
+        .into_iter()
+        .collect();
 
     run_custom_eth_txpool_test(
         make_test_block_policy(),

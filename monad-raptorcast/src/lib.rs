@@ -25,7 +25,9 @@ use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand, UpdateFullNodes,
     UpdatePeers,
 };
-use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
+use monad_types::{
+    Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
+};
 
 pub mod udp;
 pub mod util;
@@ -452,8 +454,13 @@ where
                             None
                         }
                     },
-                    Err(_) => {
-                        tracing::warn!(?from, "failed to deserialize message");
+                    Err(err) => {
+                        tracing::warn!(
+                            ?from,
+                            ?err,
+                            decoded = hex::encode(&decoded),
+                            "failed to deserialize message"
+                        );
                         None
                     }
                 },
@@ -508,13 +515,16 @@ where
     }
 }
 
-impl<ST, SCT> From<RaptorCastEvent<MonadEvent<ST, SCT>, CertificateSignaturePubKey<ST>>>
-    for MonadEvent<ST, SCT>
+impl<ST, SCT, EPT> From<RaptorCastEvent<MonadEvent<ST, SCT, EPT>, CertificateSignaturePubKey<ST>>>
+    for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: RaptorCastEvent<MonadEvent<ST, SCT>, CertificateSignaturePubKey<ST>>) -> Self {
+    fn from(
+        value: RaptorCastEvent<MonadEvent<ST, SCT, EPT>, CertificateSignaturePubKey<ST>>,
+    ) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(peer_manager_response) => {

@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-proto = { path = "../monad-proto" }
 
+alloy-rlp = { workspace = true, features = ["derive"] }
 blake3 = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }

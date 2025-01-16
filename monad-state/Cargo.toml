@@ -15,7 +15,6 @@ monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-types = { path = "../monad-eth-types" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
@@ -29,10 +28,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-bls = { path = "../monad-bls" }
-monad-multi-sig = { path = "../monad-multi-sig" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 
-test-case = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }

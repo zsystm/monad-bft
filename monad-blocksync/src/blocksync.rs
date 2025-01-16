@@ -3,16 +3,16 @@ use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
 use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockRange, BlockType, FullBlock},
+    block::{BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock},
     metrics::Metrics,
-    payload::{Payload, PayloadId},
+    payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -23,7 +23,7 @@ use rand_chacha::ChaCha8Rng;
 use tracing::trace;
 
 use crate::messages::message::{
-    BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncRequestMessage,
+    BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncRequestMessage,
     BlockSyncResponseMessage,
 };
 
@@ -40,7 +40,12 @@ pub enum BlockSyncSelfRequester {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockSyncCommand<SCT: SignatureCollection> {
+pub enum BlockSyncCommand<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     /// Request sent to a peer
     SendRequest {
         to: NodeId<SCT::NodeIdPubKey>,
@@ -53,14 +58,17 @@ pub enum BlockSyncCommand<SCT: SignatureCollection> {
     /// Respond to an external block sync request
     SendResponse {
         to: NodeId<SCT::NodeIdPubKey>,
-        response: BlockSyncResponseMessage<SCT>,
+        response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
     /// Fetch a range of headers from consensus ledger
     FetchHeaders(BlockRange),
     /// Fetch a single payload from consensus ledger
-    FetchPayload(PayloadId),
+    FetchPayload(ConsensusBlockBodyId),
     /// Response to a BlockSyncEvent::SelfRequest
-    Emit(BlockSyncSelfRequester, (BlockRange, Vec<FullBlock<SCT>>)),
+    Emit(
+        BlockSyncSelfRequester,
+        (BlockRange, Vec<ConsensusFullBlock<ST, SCT, EPT>>),
+    ),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -75,26 +83,35 @@ pub struct SelfRequest<PT: PubKey> {
 
 /// State to keep track of self requests and requests from peers
 #[derive(Debug)]
-pub struct BlockSync<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> {
+pub struct BlockSync<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     /// Requests from peers
     /// The map stores some of the blocks fetched from consensus blocktree while the
     /// rest of the blocks from the requested range are fetched from ledger
     /// e.g. If NodeX requests a -> c and blocks b -> c are fetched from blocktree,
     /// stored in the map is [a -> b, (NodeX, b -> c)] while a -> b is fetched from ledger
-    headers_requests:
-        HashMap<BlockRange, BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<Block<SCT>>>>,
-    payload_requests: HashMap<PayloadId, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+    headers_requests: HashMap<
+        BlockRange,
+        BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<ConsensusBlockHeader<ST, SCT, EPT>>>,
+    >,
+    payload_requests:
+        HashMap<ConsensusBlockBodyId, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
     /// Headers requests for self
     self_headers_requests: HashMap<BlockRange, SelfRequest<CertificateSignaturePubKey<ST>>>,
     /// Payload requests for self
-    self_payload_requests: HashMap<PayloadId, Option<SelfRequest<CertificateSignaturePubKey<ST>>>>,
+    self_payload_requests:
+        HashMap<ConsensusBlockBodyId, Option<SelfRequest<CertificateSignaturePubKey<ST>>>>,
     /// Should be <= BLOCKSYNC_MAX_PAYLOAD_REQUESTS
     self_payload_requests_in_flight: usize,
     /// Parallel payload requests from self after receiving headers
     /// If payload is None, the payload request is still in flight and should be
     /// in self_payload_requests
-    self_completed_headers_requests: HashMap<BlockRange, SelfCompletedHeader<SCT>>,
+    self_completed_headers_requests: HashMap<BlockRange, SelfCompletedHeader<ST, SCT, EPT>>,
 
     self_request_mode: BlockSyncSelfRequester,
 
@@ -103,13 +120,26 @@ pub struct BlockSync<ST: CertificateSignatureRecoverable, SCT: SignatureCollecti
 
 // TODO move this to a separate file, restrict mutators to maintain invariants
 #[derive(Debug)]
-struct SelfCompletedHeader<SCT: SignatureCollection> {
+struct SelfCompletedHeader<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     requester: BlockSyncSelfRequester,
-    blocks: Vec<(Block<SCT>, Option<Payload>)>,
-    payload_cache: HashMap<PayloadId, Payload>,
+    blocks: Vec<(
+        ConsensusBlockHeader<ST, SCT, EPT>,
+        Option<ConsensusBlockBody<EPT>>,
+    )>,
+    payload_cache: HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EPT>>,
 }
 
-impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Default for BlockSync<ST, SCT> {
+impl<ST, SCT, EPT> Default for BlockSync<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn default() -> Self {
         Self {
             headers_requests: Default::default(),
@@ -124,9 +154,11 @@ impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Default for 
     }
 }
 
-impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> BlockSync<ST, SCT>
+impl<ST, SCT, EPT> BlockSync<ST, SCT, EPT>
 where
+    ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     fn clear_self_requests(&mut self) {
         self.self_headers_requests.clear();
@@ -143,27 +175,30 @@ where
     }
 }
 
-pub enum BlockCache<'a, SCT, BPT, SBT>
-where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
-    SBT: StateBackend,
-{
-    BlockTree(&'a BlockTree<SCT, BPT, SBT>),
-    BlockBuffer(&'a HashMap<PayloadId, Payload>),
-}
-
-pub struct BlockSyncWrapper<'a, ST, SCT, BPT, SBT, VTF>
+pub enum BlockCache<'a, ST, SCT, EPT, BPT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
+{
+    BlockTree(&'a BlockTree<ST, SCT, EPT, BPT, SBT>),
+    BlockBuffer(&'a HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EPT>>),
+}
+
+pub struct BlockSyncWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub block_sync: &'a mut BlockSync<ST, SCT>,
+    pub block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
-    pub block_cache: BlockCache<'a, SCT, BPT, SBT>,
+    pub block_cache: BlockCache<'a, ST, SCT, EPT, BPT, SBT>,
     pub metrics: &'a mut Metrics,
     pub nodeid: &'a NodeId<SCT::NodeIdPubKey>,
     pub current_epoch: Epoch,
@@ -171,11 +206,12 @@ where
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
 }
 
-impl<ST, SCT, BPT, SBT, VTF> BlockSyncWrapper<'_, ST, SCT, BPT, SBT, VTF>
+impl<ST, SCT, EPT, BPT, SBT, VTF> BlockSyncWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
@@ -184,7 +220,7 @@ where
         &mut self,
         requester: BlockSyncSelfRequester,
         block_range: BlockRange,
-    ) -> Vec<BlockSyncCommand<SCT>> {
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         trace!(?requester, ?block_range, "blocksync: self request");
         if requester != self.block_sync.self_request_mode {
             self.block_sync.clear_self_requests();
@@ -237,7 +273,7 @@ where
         &mut self,
         sender: NodeId<SCT::NodeIdPubKey>,
         request: BlockSyncRequestMessage,
-    ) -> Vec<BlockSyncCommand<SCT>> {
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         let mut cmds = Vec::new();
 
         match request {
@@ -249,24 +285,22 @@ where
                     BlockCache::BlockTree(blocktree) => blocktree
                         .get_parent_block_chain(&block_range.last_block_id)
                         .into_iter()
-                        .filter_map(|validated_block| {
-                            if validated_block.get_seq_num() >= block_range.root_seq_num {
-                                Some(validated_block.get_unvalidated_block_ref().clone())
-                            } else {
-                                None
-                            }
-                        })
+                        .map(|block| block.header().clone())
+                        .rev()
+                        .take(block_range.num_blocks.0 as usize)
+                        .rev()
                         .collect_vec(),
                     BlockCache::BlockBuffer(_) => Vec::new(), // TODO
                 };
 
                 // all blocks are cached if the first block is the non-empty block of requested
                 // root_seq_num.
-                if !cached_blocks.is_empty()
-                    && cached_blocks.first().unwrap().get_seq_num() == block_range.root_seq_num
-                    && !cached_blocks.first().unwrap().is_empty_block()
-                {
+                if cached_blocks.len() == block_range.num_blocks.0 as usize {
                     // reply with the cached blocks
+                    assert_eq!(
+                        Some(block_range.last_block_id),
+                        cached_blocks.last().map(|block| block.get_id())
+                    );
                     cmds.push(BlockSyncCommand::SendResponse {
                         to: sender,
                         response: BlockSyncResponseMessage::HeadersResponse(
@@ -277,11 +311,11 @@ where
                     // requested range is more than cached blocks, fetch rest from ledger
                     let last_block_id_to_fetch = cached_blocks
                         .first()
-                        .map(|block| block.get_qc().get_block_id())
+                        .map(|block| block.get_parent_id())
                         .unwrap_or(block_range.last_block_id);
                     let ledger_fetch_range = BlockRange {
                         last_block_id: last_block_id_to_fetch,
-                        root_seq_num: block_range.root_seq_num,
+                        num_blocks: block_range.num_blocks - SeqNum(cached_blocks.len() as u64),
                     };
 
                     let entry = self
@@ -301,7 +335,7 @@ where
                     cmds.push(BlockSyncCommand::SendResponse {
                         to: sender,
                         response: BlockSyncResponseMessage::PayloadResponse(
-                            BlockSyncPayloadResponse::Found(cached_payload),
+                            BlockSyncBodyResponse::Found(cached_payload),
                         ),
                     });
 
@@ -343,21 +377,12 @@ where
     }
 
     // TODO return more informative errors instead of bool
-    fn verify_block_headers(block_range: BlockRange, block_headers: &[Block<SCT>]) -> bool {
-        let num_blocks = block_headers.len() as u32;
-
-        // atleast one block header was received
-        if num_blocks == 0 {
-            return false;
-        }
-
-        // The seq num of the first header must be equal to the requested root seq num
-        if block_range.root_seq_num != block_headers.first().unwrap().get_seq_num() {
-            return false;
-        }
-
-        // The first header should not a be NULL block
-        if block_headers.first().unwrap().is_empty_block() {
+    fn verify_block_headers(
+        block_range: BlockRange,
+        block_headers: &[ConsensusBlockHeader<ST, SCT, EPT>],
+    ) -> bool {
+        let num_blocks = block_headers.len();
+        if num_blocks != block_range.num_blocks.0 as usize {
             return false;
         }
 
@@ -379,7 +404,10 @@ where
         true
     }
 
-    fn get_cached_payload(&self, payload_id: PayloadId) -> Option<Payload> {
+    fn get_cached_payload(
+        &self,
+        payload_id: ConsensusBlockBodyId,
+    ) -> Option<ConsensusBlockBody<EPT>> {
         if let Some(payload) = match self.block_cache {
             BlockCache::BlockBuffer(full_blocks) => full_blocks.get(&payload_id).cloned(),
             BlockCache::BlockTree(blocktree) => blocktree.get_payload(&payload_id),
@@ -397,7 +425,7 @@ where
     }
 
     #[must_use]
-    fn try_initiate_payload_requests_for_self(&mut self) -> Vec<BlockSyncCommand<SCT>> {
+    fn try_initiate_payload_requests_for_self(&mut self) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         let mut cmds = Vec::new();
 
         let payload_ids_to_request = self
@@ -415,7 +443,7 @@ where
                     self.block_sync.self_completed_headers_requests.iter_mut()
                 {
                     for (block, maybe_payload) in &mut completed_header.blocks {
-                        if block.payload_id == payload_id && maybe_payload.is_none() {
+                        if block.block_body_id == payload_id && maybe_payload.is_none() {
                             // clone incase there are multiple requests that require the same payload
                             *maybe_payload = Some(payload.clone());
                             completed_header
@@ -465,8 +493,8 @@ where
     fn handle_headers_response_for_self(
         &mut self,
         sender: Option<NodeId<CertificateSignaturePubKey<ST>>>,
-        headers_response: BlockSyncHeadersResponse<SCT>,
-    ) -> Vec<BlockSyncCommand<SCT>> {
+        headers_response: BlockSyncHeadersResponse<ST, SCT, EPT>,
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         let mut cmds = Vec::new();
 
         let block_range = headers_response.get_block_range();
@@ -512,7 +540,7 @@ where
                         block_headers.len() as u64;
 
                     // add payloads to be requested
-                    for payload_id in block_headers.iter().map(|block| block.payload_id) {
+                    for payload_id in block_headers.iter().map(|block| block.block_body_id) {
                         match self.block_sync.self_payload_requests.entry(payload_id) {
                             Entry::Vacant(entry) => {
                                 entry.insert(None);
@@ -607,8 +635,8 @@ where
     fn handle_payload_response_for_self(
         &mut self,
         sender: Option<NodeId<SCT::NodeIdPubKey>>,
-        payload_response: BlockSyncPayloadResponse,
-    ) -> Vec<BlockSyncCommand<SCT>> {
+        payload_response: BlockSyncBodyResponse<EPT>,
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         let mut cmds = Vec::new();
         let payload_id = payload_response.get_payload_id();
 
@@ -640,7 +668,7 @@ where
 
         let self_requester = self_request.requester;
         match payload_response {
-            BlockSyncPayloadResponse::Found(payload) => {
+            BlockSyncBodyResponse::Found(payload) => {
                 assert_eq!(self_requester, self.block_sync.self_request_mode);
 
                 trace!(?sender, ?payload_id, "blocksync: received payload response");
@@ -663,17 +691,17 @@ where
                     self.block_sync.self_completed_headers_requests.iter_mut()
                 {
                     for (block, maybe_payload) in &mut completed_header.blocks {
-                        if block.payload_id == payload_id && maybe_payload.is_none() {
+                        if block.block_body_id == payload_id && maybe_payload.is_none() {
                             // clone incase there are multiple requests that require the same payload
                             *maybe_payload = Some(payload.clone());
                             completed_header
                                 .payload_cache
-                                .insert(block.payload_id, payload.clone());
+                                .insert(block.block_body_id, payload.clone());
                         }
                     }
                 }
             }
-            BlockSyncPayloadResponse::NotAvailable(payload_id) => {
+            BlockSyncBodyResponse::NotAvailable(payload_id) => {
                 if sender.is_some() {
                     self.metrics.blocksync_events.payload_response_failed += 1;
                 } else {
@@ -708,7 +736,7 @@ where
     }
 
     #[must_use]
-    fn handle_completed_ranges(&mut self) -> Vec<BlockSyncCommand<SCT>> {
+    fn handle_completed_ranges(&mut self) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         let mut cmds = Vec::new();
 
         let completed_ranges = self
@@ -736,9 +764,9 @@ where
             let full_blocks = completed_header
                 .blocks
                 .into_iter()
-                .map(|(block, payload)| FullBlock {
-                    block,
-                    payload: payload.expect("asserted"),
+                .map(|(block, payload)| {
+                    ConsensusFullBlock::new(block, payload.expect("asserted"))
+                        .expect("blocksync'd block_body_id doesn't match")
                 })
                 .collect();
 
@@ -754,8 +782,8 @@ where
     #[must_use]
     pub fn handle_ledger_response(
         &mut self,
-        response: BlockSyncResponseMessage<SCT>,
-    ) -> Vec<BlockSyncCommand<SCT>> {
+        response: BlockSyncResponseMessage<ST, SCT, EPT>,
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         trace!(?response, "blocksync: self response from ledger");
         let mut cmds = Vec::new();
 
@@ -776,7 +804,7 @@ where
                             .last()
                             .map(|block| block.get_id())
                             .unwrap_or(block_range.last_block_id),
-                        root_seq_num: block_range.root_seq_num,
+                        num_blocks: block_range.num_blocks + SeqNum(cached_blocks.len() as u64),
                     };
                     let headers_response = match headers_response.clone() {
                         BlockSyncHeadersResponse::Found((_, mut requested_blocks)) => {
@@ -784,6 +812,10 @@ where
                             self.metrics
                                 .blocksync_events
                                 .peer_headers_request_successful += 1;
+                            assert!(requested_blocks
+                                .iter()
+                                .zip(requested_blocks.iter().skip(1))
+                                .all(|(b_1, b_2)| b_1.get_id() == b_2.get_parent_id()));
                             BlockSyncHeadersResponse::Found((
                                 requested_block_range,
                                 requested_blocks,
@@ -807,12 +839,12 @@ where
                 let payload_id = payload_response.get_payload_id();
 
                 match payload_response {
-                    BlockSyncPayloadResponse::Found(_) => {
+                    BlockSyncBodyResponse::Found(_) => {
                         self.metrics
                             .blocksync_events
                             .peer_payload_request_successful += 1
                     }
-                    BlockSyncPayloadResponse::NotAvailable(_) => {
+                    BlockSyncBodyResponse::NotAvailable(_) => {
                         self.metrics.blocksync_events.peer_payload_request_failed += 1
                     }
                 }
@@ -843,8 +875,8 @@ where
     pub fn handle_peer_response(
         &mut self,
         sender: NodeId<SCT::NodeIdPubKey>,
-        response: BlockSyncResponseMessage<SCT>,
-    ) -> Vec<BlockSyncCommand<SCT>> {
+        response: BlockSyncResponseMessage<ST, SCT, EPT>,
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         match response {
             BlockSyncResponseMessage::HeadersResponse(headers_response) => {
                 self.handle_headers_response_for_self(Some(sender), headers_response)
@@ -859,7 +891,7 @@ where
     pub fn handle_timeout(
         &mut self,
         request: BlockSyncRequestMessage,
-    ) -> Vec<BlockSyncCommand<SCT>> {
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         trace!(?request, "blocksync: self request timeout");
         self.metrics.blocksync_events.request_timeout += 1;
         let mut cmds = Vec::new();
@@ -930,18 +962,17 @@ mod test {
     use monad_blocktree::blocktree::BlockTree;
     use monad_consensus_types::{
         block::{
-            Block, BlockKind, BlockPolicy, BlockRange, BlockType, FullBlock, PassthruBlockPolicy,
-            GENESIS_TIMESTAMP,
+            BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, MockExecutionBody,
+            MockExecutionProposedHeader, MockExecutionProtocol, PassthruBlockPolicy,
+            PassthruWrappedBlock, GENESIS_TIMESTAMP,
         },
         checkpoint::RootInfo,
         metrics::Metrics,
         payload::{
-            ExecutionProtocol, FullTransactionList, Payload, PayloadId, RandaoReveal,
-            TransactionPayload,
+            ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature,
         },
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        state_root_hash::StateRootHash,
         voting::{ValidatorMapping, Vote},
     };
     use monad_crypto::{
@@ -952,12 +983,13 @@ mod test {
         hasher::{Hasher, HasherType},
         NopPubKey, NopSignature,
     };
-    use monad_eth_types::{Balance, EthAddress};
+    use monad_eth_types::Balance;
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
     use monad_testutil::validators::create_keys_w_validators;
     use monad_types::{
-        BlockId, Epoch, Hash, NodeId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM,
+        BlockId, Epoch, ExecutionProtocol, Hash, NodeId, Round, SeqNum, GENESIS_BLOCK_ID,
+        GENESIS_SEQ_NUM,
     };
     use monad_validator::{
         epoch_manager::EpochManager,
@@ -977,19 +1009,20 @@ mod test {
         messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
     };
 
-    struct BlockSyncContext<ST, SCT, BPT, SBT, VTF, LT>
+    struct BlockSyncContext<ST, SCT, EPT, BPT, SBT, VTF, LT>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<SCT, SBT>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
         SBT: StateBackend,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        block_sync: BlockSync<ST, SCT>,
+        block_sync: BlockSync<ST, SCT, EPT>,
 
         // TODO: include BlockBuffer
-        blocktree: BlockTree<SCT, BPT, SBT>,
+        blocktree: BlockTree<ST, SCT, EPT, BPT, SBT>,
         metrics: Metrics,
         nodeid: NodeId<SCT::NodeIdPubKey>,
         current_epoch: Epoch,
@@ -1004,20 +1037,37 @@ mod test {
     type PubKeyType = NopPubKey;
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<NopSignature>;
+    type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
     type StateBackendType = InMemoryState;
     type LeaderElectionType = SimpleRoundRobin<PubKeyType>;
 
-    impl<ST, SCT, BPT, SBT, VTF, LT> BlockSyncContext<ST, SCT, BPT, SBT, VTF, LT>
+    impl<BPT, SBT, VTF, LT>
+        BlockSyncContext<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+            BPT,
+            SBT,
+            VTF,
+            LT,
+        >
     where
-        ST: CertificateSignatureRecoverable,
-        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<SCT, SBT>,
+        BPT: BlockPolicy<SignatureType, SignatureCollectionType, ExecutionProtocolType, SBT>,
         SBT: StateBackend,
-        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
     {
-        fn wrapped_state(&mut self) -> BlockSyncWrapper<ST, SCT, BPT, SBT, VTF> {
+        fn wrapped_state(
+            &mut self,
+        ) -> BlockSyncWrapper<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+            BPT,
+            SBT,
+            VTF,
+        > {
             let block_cache = BlockCache::BlockTree(&self.blocktree);
             BlockSyncWrapper {
                 block_sync: &mut self.block_sync,
@@ -1034,7 +1084,8 @@ mod test {
             &mut self,
             requester: BlockSyncSelfRequester,
             block_range: BlockRange,
-        ) -> Vec<BlockSyncCommand<SCT>> {
+        ) -> Vec<BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
+        {
             self.wrapped_state()
                 .handle_self_request(requester, block_range)
         }
@@ -1050,24 +1101,35 @@ mod test {
 
         fn handle_peer_request(
             &mut self,
-            sender: NodeId<SCT::NodeIdPubKey>,
+            sender: NodeId<NopPubKey>,
             request: BlockSyncRequestMessage,
-        ) -> Vec<BlockSyncCommand<SCT>> {
+        ) -> Vec<BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
+        {
             self.wrapped_state().handle_peer_request(sender, request)
         }
 
         fn handle_ledger_response(
             &mut self,
-            response: BlockSyncResponseMessage<SCT>,
-        ) -> Vec<BlockSyncCommand<SCT>> {
+            response: BlockSyncResponseMessage<
+                SignatureType,
+                SignatureCollectionType,
+                ExecutionProtocolType,
+            >,
+        ) -> Vec<BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
+        {
             self.wrapped_state().handle_ledger_response(response)
         }
 
         fn handle_peer_response(
             &mut self,
-            sender: NodeId<SCT::NodeIdPubKey>,
-            response: BlockSyncResponseMessage<SCT>,
-        ) -> Vec<BlockSyncCommand<SCT>> {
+            sender: NodeId<NopPubKey>,
+            response: BlockSyncResponseMessage<
+                SignatureType,
+                SignatureCollectionType,
+                ExecutionProtocolType,
+            >,
+        ) -> Vec<BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
+        {
             self.wrapped_state().handle_peer_response(sender, response)
         }
 
@@ -1081,7 +1143,11 @@ mod test {
         }
 
         // TODO: update and use ProposalGen
-        fn get_blocks(&mut self, num_blocks: usize) -> Vec<FullBlock<SCT>> {
+        fn get_blocks(
+            &mut self,
+            num_blocks: usize,
+        ) -> Vec<ConsensusFullBlock<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
+        {
             let mut qc = QuorumCertificate::genesis_qc();
             let mut qc_seq_num = GENESIS_SEQ_NUM;
             let mut timestamp = 1;
@@ -1090,9 +1156,9 @@ mod test {
             let mut full_blocks = Vec::new();
 
             for i in 0..num_blocks {
-                let txns = TransactionPayload::List(FullTransactionList::new(
-                    Bytes::copy_from_slice(i.as_bytes()),
-                ));
+                let execution_body = MockExecutionBody {
+                    data: Bytes::copy_from_slice(i.as_bytes()),
+                };
 
                 let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");
                 let validators = self
@@ -1108,28 +1174,20 @@ mod test {
                     .find(|(k, _)| k.pubkey() == leader)
                     .expect("key not in valset");
 
-                let (seq_num, block_kind) = match txns {
-                    TransactionPayload::List(_) => (qc_seq_num + SeqNum(1), BlockKind::Executable),
-                    TransactionPayload::Null => (qc_seq_num, BlockKind::Null),
-                };
-                let payload = Payload { txns };
-                let block = Block::new(
+                let seq_num = qc_seq_num + SeqNum(1);
+                let body = ConsensusBlockBody::new(ConsensusBlockBodyInner { execution_body });
+                let header = ConsensusBlockHeader::new(
                     NodeId::new(leader_key.pubkey()),
-                    timestamp,
                     epoch,
                     round,
-                    &ExecutionProtocol {
-                        state_root: StateRootHash::default(),
-                        seq_num,
-                        beneficiary: EthAddress::default(),
-                        randao_reveal: RandaoReveal::new::<SCT::SignatureType>(
-                            round,
-                            leader_certkey,
-                        ),
-                    },
-                    payload.get_id(),
-                    block_kind,
-                    &qc,
+                    Vec::new(), // delayed_execution_results
+                    MockExecutionProposedHeader {},
+                    body.get_id(),
+                    qc,
+                    seq_num,
+                    timestamp,
+                    RoundSignature::new(round, leader_certkey),
+                    false, // is_null
                 );
 
                 let validator_cert_pubkeys = self
@@ -1137,12 +1195,13 @@ mod test {
                     .get_cert_pubkeys(&epoch)
                     .expect("should have the current validator certificate pubkeys");
 
-                qc = self.get_qc(&self.cert_keys, &block, validator_cert_pubkeys);
+                qc = self.get_qc(&self.cert_keys, &header, validator_cert_pubkeys);
                 qc_seq_num = seq_num;
                 timestamp += 1;
                 round += Round(1);
 
-                full_blocks.push(FullBlock { block, payload });
+                full_blocks
+                    .push(ConsensusFullBlock::new(header, body).expect("body matches header"));
             }
 
             full_blocks
@@ -1150,13 +1209,17 @@ mod test {
 
         fn get_qc(
             &self,
-            certkeys: &[SignatureCollectionKeyPairType<SCT>],
-            block: &Block<SCT>,
-            validator_mapping: &ValidatorMapping<
-                CertificateSignaturePubKey<ST>,
-                SignatureCollectionKeyPairType<SCT>,
+            certkeys: &[SignatureCollectionKeyPairType<SignatureCollectionType>],
+            block: &ConsensusBlockHeader<
+                SignatureType,
+                SignatureCollectionType,
+                ExecutionProtocolType,
             >,
-        ) -> QuorumCertificate<SCT> {
+            validator_mapping: &ValidatorMapping<
+                NopPubKey,
+                SignatureCollectionKeyPairType<SignatureCollectionType>,
+            >,
+        ) -> QuorumCertificate<SignatureCollectionType> {
             let vote = Vote {
                 id: block.get_id(),
                 epoch: block.epoch,
@@ -1169,7 +1232,7 @@ mod test {
 
             let mut sigs = Vec::new();
             for ck in certkeys {
-                let sig = <SCT::SignatureType as CertificateSignature>::sign(msg.as_ref(), ck);
+                let sig = NopSignature::sign(msg.as_ref(), ck);
 
                 for (node_id, pubkey) in validator_mapping.map.iter() {
                     if *pubkey == ck.pubkey() {
@@ -1178,7 +1241,8 @@ mod test {
                 }
             }
 
-            let sigcol = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
+            let sigcol =
+                SignatureCollectionType::new(sigs, validator_mapping, msg.as_ref()).unwrap();
 
             QuorumCertificate::new(vote, sigcol)
         }
@@ -1187,6 +1251,7 @@ mod test {
     fn setup() -> BlockSyncContext<
         SignatureType,
         SignatureCollectionType,
+        ExecutionProtocolType,
         BlockPolicyType,
         StateBackendType,
         ValidatorSetFactory<PubKeyType>,
@@ -1220,8 +1285,7 @@ mod test {
             round: Round(0),
             seq_num: GENESIS_SEQ_NUM,
             epoch: Epoch(1),
-            state_root: StateRootHash::default(),
-            timestamp_ns: GENESIS_TIMESTAMP.try_into().unwrap(),
+            timestamp_ns: GENESIS_TIMESTAMP,
         });
 
         BlockSyncContext {
@@ -1240,56 +1304,56 @@ mod test {
     }
 
     fn find_fetch_headers_commands(
-        cmds: &[BlockSyncCommand<SignatureCollectionType>],
-    ) -> Vec<&BlockSyncCommand<SignatureCollectionType>> {
+        cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
+    ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
         cmds.iter()
             .filter(|cmd| matches!(cmd, BlockSyncCommand::FetchHeaders(..)))
             .collect_vec()
     }
 
     fn find_fetch_payload_commands(
-        cmds: &[BlockSyncCommand<SignatureCollectionType>],
-    ) -> Vec<&BlockSyncCommand<SignatureCollectionType>> {
+        cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
+    ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
         cmds.iter()
             .filter(|cmd| matches!(cmd, BlockSyncCommand::FetchPayload(..)))
             .collect_vec()
     }
 
     fn find_send_request_commands(
-        cmds: &[BlockSyncCommand<SignatureCollectionType>],
-    ) -> Vec<&BlockSyncCommand<SignatureCollectionType>> {
+        cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
+    ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
         cmds.iter()
             .filter(|cmd| matches!(cmd, BlockSyncCommand::SendRequest { .. }))
             .collect_vec()
     }
 
     fn find_send_response_commands(
-        cmds: &[BlockSyncCommand<SignatureCollectionType>],
-    ) -> Vec<&BlockSyncCommand<SignatureCollectionType>> {
+        cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
+    ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
         cmds.iter()
             .filter(|cmd| matches!(cmd, BlockSyncCommand::SendResponse { .. }))
             .collect_vec()
     }
 
     fn find_schedule_timeout_commands(
-        cmds: &[BlockSyncCommand<SignatureCollectionType>],
-    ) -> Vec<&BlockSyncCommand<SignatureCollectionType>> {
+        cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
+    ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
         cmds.iter()
             .filter(|cmd| matches!(cmd, BlockSyncCommand::ScheduleTimeout(..)))
             .collect_vec()
     }
 
     fn find_reset_timeout_commands(
-        cmds: &[BlockSyncCommand<SignatureCollectionType>],
-    ) -> Vec<&BlockSyncCommand<SignatureCollectionType>> {
+        cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
+    ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
         cmds.iter()
             .filter(|cmd| matches!(cmd, BlockSyncCommand::ResetTimeout(..)))
             .collect_vec()
     }
 
     fn find_emit_commands(
-        cmds: &[BlockSyncCommand<SignatureCollectionType>],
-    ) -> Vec<&BlockSyncCommand<SignatureCollectionType>> {
+        cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
+    ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
         cmds.iter()
             .filter(|cmd| matches!(cmd, BlockSyncCommand::Emit(..)))
             .collect_vec()
@@ -1302,7 +1366,7 @@ mod test {
         let requester = BlockSyncSelfRequester::Consensus;
         let block_range = BlockRange {
             last_block_id: BlockId(Hash([0x00_u8; 32])),
-            root_seq_num: SeqNum(1),
+            num_blocks: SeqNum(1),
         };
 
         // requesting a block range should initiate a headers request
@@ -1355,7 +1419,7 @@ mod test {
         let requester = BlockSyncSelfRequester::Consensus;
         let block_range = BlockRange {
             last_block_id: full_blocks.last().unwrap().get_id(),
-            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+            num_blocks: full_blocks.last().unwrap().get_seq_num(),
         };
 
         // requesting a block range should initiate a headers request
@@ -1375,7 +1439,7 @@ mod test {
 
         let (headers, payloads): (Vec<_>, Vec<_>) = full_blocks
             .into_iter()
-            .map(|full_block| (full_block.block, full_block.payload))
+            .map(ConsensusFullBlock::split)
             .unzip();
         // valid headers response from a peer should initiate all its payload requests
         let cmds = context.handle_peer_response(
@@ -1442,7 +1506,11 @@ mod test {
         for full_block in full_blocks.iter().take(num_in_blocktree) {
             assert!(context
                 .blocktree
-                .add(full_block.clone(), &mut block_policy, &state_backend)
+                .add(
+                    PassthruWrappedBlock(full_block.clone()),
+                    &mut block_policy,
+                    &state_backend
+                )
                 .is_ok());
         }
 
@@ -1450,12 +1518,12 @@ mod test {
         let requester = BlockSyncSelfRequester::Consensus;
         let block_range = BlockRange {
             last_block_id: full_blocks.last().unwrap().get_id(),
-            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+            num_blocks: full_blocks.last().unwrap().get_seq_num(),
         };
 
         let (headers, payloads): (Vec<_>, Vec<_>) = full_blocks
             .into_iter()
-            .map(|full_block| (full_block.block, full_block.payload))
+            .map(ConsensusFullBlock::split)
             .unzip();
 
         // requesting a block range should initiate a headers request
@@ -1487,7 +1555,7 @@ mod test {
         let requester = BlockSyncSelfRequester::Consensus;
         let block_range = BlockRange {
             last_block_id: full_blocks.last().unwrap().get_id(),
-            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+            num_blocks: full_blocks.last().unwrap().get_seq_num(),
         };
 
         // requesting a block range should initiate a headers request
@@ -1507,7 +1575,7 @@ mod test {
 
         let (headers, payloads): (Vec<_>, Vec<_>) = full_blocks
             .into_iter()
-            .map(|full_block| (full_block.block, full_block.payload))
+            .map(ConsensusFullBlock::split)
             .unzip();
         // valid headers response from a peer should initiate all its payload requests
         let cmds = context.handle_peer_response(
@@ -1517,10 +1585,11 @@ mod test {
         // BLOCKSYNC_MAX_PAYLOAD_REQUESTS payload fetch commands and 1 reset timeout command
         assert_eq!(cmds.len(), BLOCKSYNC_MAX_PAYLOAD_REQUESTS + 1);
 
-        let payloads: BTreeMap<PayloadId, Payload> = payloads
-            .into_iter()
-            .map(|payload| (payload.get_id(), payload))
-            .collect();
+        let payloads: BTreeMap<ConsensusBlockBodyId, ConsensusBlockBody<ExecutionProtocolType>> =
+            payloads
+                .into_iter()
+                .map(|payload| (payload.get_id(), payload))
+                .collect();
 
         let fetch_payload_cmds = find_fetch_payload_commands(&cmds);
         assert_eq!(fetch_payload_cmds.len(), BLOCKSYNC_MAX_PAYLOAD_REQUESTS);
@@ -1555,7 +1624,7 @@ mod test {
         let requester = BlockSyncSelfRequester::Consensus;
         let block_range = BlockRange {
             last_block_id: full_blocks.last().unwrap().get_id(),
-            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+            num_blocks: full_blocks.last().unwrap().get_seq_num(),
         };
 
         // requesting a block range should initiate a headers request
@@ -1573,9 +1642,9 @@ mod test {
             _ => unreachable!(),
         };
 
-        let (headers, payloads): (Vec<Block<SignatureCollectionType>>, Vec<Payload>) = full_blocks
+        let (headers, payloads): (Vec<_>, Vec<_>) = full_blocks
             .iter()
-            .map(|full_block| (full_block.block.clone(), full_block.payload.clone()))
+            .map(|full_block| (full_block.header().clone(), full_block.body().clone()))
             .unzip();
         // valid headers response from a peer should initiate all its payload requests
         context.handle_peer_response(
@@ -1640,12 +1709,12 @@ mod test {
         let full_blocks = context.get_blocks(num_blocks);
         let block_range = BlockRange {
             last_block_id: full_blocks.last().unwrap().get_id(),
-            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+            num_blocks: full_blocks.last().unwrap().get_seq_num(),
         };
 
         let headers = full_blocks
             .iter()
-            .map(|full_block| full_block.block.clone())
+            .map(|full_block| full_block.header().clone())
             .collect_vec();
 
         let sender_nodeid = NodeId::new(NopPubKey::from_bytes(&[0x00_u8; 32]).unwrap());
@@ -1654,7 +1723,11 @@ mod test {
             for full_block in full_blocks {
                 assert!(context
                     .blocktree
-                    .add(full_block, &mut block_policy, &state_backend)
+                    .add(
+                        PassthruWrappedBlock(full_block),
+                        &mut block_policy,
+                        &state_backend
+                    )
                     .is_ok());
             }
             // headers are in blocktree, should emit response command with all the headers
@@ -1706,7 +1779,7 @@ mod test {
         let full_blocks = context.get_blocks(num_blocks);
         let block_range = BlockRange {
             last_block_id: full_blocks.last().unwrap().get_id(),
-            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+            num_blocks: full_blocks.last().unwrap().get_seq_num(),
         };
 
         let sender_nodeid = NodeId::new(NopPubKey::from_bytes(&[0x00_u8; 32]).unwrap());
@@ -1755,7 +1828,7 @@ mod test {
         let num_blocks = 1;
         let full_blocks = context.get_blocks(num_blocks);
 
-        let payload = full_blocks[0].payload.clone();
+        let payload = full_blocks[0].body().clone();
         let payload_id = payload.get_id();
 
         let sender_nodeid = NodeId::new(NopPubKey::from_bytes(&[0x00_u8; 32]).unwrap());
@@ -1763,7 +1836,11 @@ mod test {
         let cmds = if cached_in_blocktree {
             assert!(context
                 .blocktree
-                .add(full_blocks[0].clone(), &mut block_policy, &state_backend)
+                .add(
+                    PassthruWrappedBlock(full_blocks[0].clone()),
+                    &mut block_policy,
+                    &state_backend
+                )
                 .is_ok());
 
             // payload in blocktree, should emit response command with the requested payload
@@ -1807,7 +1884,7 @@ mod test {
         let num_blocks = 1;
         let full_blocks = context.get_blocks(num_blocks);
 
-        let payload = full_blocks[0].payload.clone();
+        let payload = full_blocks[0].body().clone();
         let payload_id = payload.get_id();
 
         let sender_nodeid = NodeId::new(NopPubKey::from_bytes(&[0x00_u8; 32]).unwrap());

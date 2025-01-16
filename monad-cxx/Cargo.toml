@@ -21,11 +21,6 @@ hex-literal = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
-monad-eth-tx = { path = "../monad-eth-tx" }
-
-[dev-dependencies]
-tempfile = { workspace = true }
-
 [build-dependencies]
 autocxx-build = { workspace = true }
 cmake = { workspace = true }

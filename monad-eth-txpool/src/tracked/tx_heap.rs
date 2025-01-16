@@ -1,9 +1,12 @@
 use std::collections::{BinaryHeap, VecDeque};
 
+use alloy_primitives::Address;
 use indexmap::IndexMap;
 use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_block_policy::{AccountNonceRetrievable, EthValidatedBlock};
-use monad_eth_types::EthAddress;
 
 use super::list::TrackedTxList;
 use crate::transaction::ValidEthTransaction;
@@ -12,7 +15,7 @@ use crate::transaction::ValidEthTransaction;
 struct OrderedTxGroup<'a> {
     tx: &'a ValidEthTransaction,
     virtual_time: u64,
-    address: &'a EthAddress,
+    address: &'a Address,
     queued: VecDeque<&'a ValidEthTransaction>,
 }
 
@@ -22,12 +25,13 @@ pub struct TrackedTxHeap<'a> {
 }
 
 impl<'a> TrackedTxHeap<'a> {
-    pub fn new<SCT>(
-        tracked_txs: &'a IndexMap<EthAddress, TrackedTxList>,
-        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
+    pub fn new<ST, SCT>(
+        tracked_txs: &'a IndexMap<Address, TrackedTxList>,
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
     ) -> Self
     where
-        SCT: SignatureCollection,
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         let pending_account_nonces = extending_blocks.get_account_nonces();
 
@@ -60,7 +64,7 @@ impl<'a> TrackedTxHeap<'a> {
         self.heap.len()
     }
 
-    pub fn addresses<'s>(&'s self) -> impl Iterator<Item = &'a EthAddress> + 's {
+    pub fn addresses<'s>(&'s self) -> impl Iterator<Item = &'a Address> + 's {
         self.heap.iter().map(
             |OrderedTxGroup {
                  tx: _,
@@ -73,7 +77,7 @@ impl<'a> TrackedTxHeap<'a> {
 
     pub fn drain_in_order_while(
         mut self,
-        mut f: impl FnMut(&EthAddress, &ValidEthTransaction) -> TrackedTxHeapDrainAction,
+        mut f: impl FnMut(&Address, &ValidEthTransaction) -> TrackedTxHeapDrainAction,
     ) {
         while let Some(OrderedTxGroup {
             tx,
@@ -99,7 +103,7 @@ impl<'a> TrackedTxHeap<'a> {
     #[inline]
     fn push(
         &mut self,
-        address: &'a EthAddress,
+        address: &'a Address,
         tx: &'a ValidEthTransaction,
         queued: VecDeque<&'a ValidEthTransaction>,
     ) {

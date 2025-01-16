@@ -17,7 +17,7 @@ use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSche
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_transformer::RandLatencyTransformer;
-use monad_types::{NodeId, SeqNum};
+use monad_types::{ExecutionProtocol, MockableFinalizedHeader, NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
@@ -27,10 +27,12 @@ use twin_reader::TWINS_STATE_ROOT_DELAY;
 
 use crate::twin_reader::{TwinsNodeConfig, TwinsTestCase};
 
-pub fn run_twins_test<ST, SCT, S>(seed: u64, test_case: TwinsTestCase<S>)
+pub fn run_twins_test<ST, SCT, EPT, S>(seed: u64, test_case: TwinsTestCase<S>)
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::FinalizedHeader: MockableFinalizedHeader,
     S: SwarmRelation<
         SignatureType = ST,
         SignatureCollectionType = SCT,
@@ -38,12 +40,12 @@ where
         Pipeline = MonadMessageTransformerPipeline<CertificateSignaturePubKey<ST>>,
         RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<ST>,
-            MonadMessage<ST, SCT>,
-            VerifiedMonadMessage<ST, SCT>,
+            MonadMessage<ST, SCT, EPT>,
+            VerifiedMonadMessage<ST, SCT, EPT>,
         >,
-        StateRootHashExecutor = MockStateRootHashNop<ST, SCT>,
-        StateSyncExecutor = MockStateSyncExecutor<ST, SCT>,
-        Ledger = MockLedger<ST, SCT>,
+        StateRootHashExecutor = MockStateRootHashNop<ST, SCT, EPT>,
+        StateSyncExecutor = MockStateSyncExecutor<ST, SCT, EPT>,
+        Ledger = MockLedger<ST, SCT, EPT>,
     >,
 {
     let TwinsTestCase {

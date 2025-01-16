@@ -2,12 +2,14 @@ pub mod convert;
 
 use std::{
     error::Error,
+    fmt::Debug,
     io,
     ops::{Add, AddAssign, Div, Rem, Sub, SubAssign},
     str::FromStr,
     time::{Duration, Instant},
 };
 
+use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodableWrapper};
 pub use monad_crypto::hasher::Hash;
 use monad_crypto::{
     certificate_signature::PubKey,
@@ -59,7 +61,7 @@ impl AddAssign for Round {
     }
 }
 
-impl std::fmt::Debug for Round {
+impl Debug for Round {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -91,7 +93,7 @@ impl Add for Epoch {
     }
 }
 
-impl std::fmt::Debug for Epoch {
+impl Debug for Epoch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -104,7 +106,19 @@ impl std::fmt::Debug for Epoch {
 /// the committed ledger has consecutive sequence numbers, with no holes in
 /// between.
 #[repr(transparent)]
-#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    AsBytes,
+    Deserialize,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct SeqNum(
     // FIXME get rid of this, we won't have u64::MAX
     /// Some serde libraries e.g. toml represent numbers as i64 so they don't
@@ -194,7 +208,7 @@ impl SeqNum {
     }
 }
 
-impl std::fmt::Debug for SeqNum {
+impl Debug for SeqNum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -255,9 +269,9 @@ impl<P: PubKey> NodeId<P> {
     }
 }
 
-impl<P: PubKey> std::fmt::Debug for NodeId<P> {
+impl<P: PubKey> Debug for NodeId<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&self.pubkey, f)
+        Debug::fmt(&self.pubkey, f)
     }
 }
 
@@ -299,7 +313,7 @@ pub struct BlockId(pub Hash);
 
 pub const GENESIS_BLOCK_ID: BlockId = BlockId(Hash([0_u8; 32]));
 
-impl std::fmt::Debug for BlockId {
+impl Debug for BlockId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -449,6 +463,50 @@ where
         }
         (self.trip)(elapsed)
     }
+}
+
+pub trait ExecutionProtocol:
+    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable + 'static
+{
+    /// inputs to execution
+    type ProposedHeader: Debug
+        + Clone
+        + PartialEq
+        + Eq
+        + Send
+        + Sync
+        + Unpin
+        + Encodable
+        + Decodable
+        // TODO delete Default once null blocks are gone
+        + Default;
+    type Body: Debug
+        + PartialEq
+        + Eq
+        + Send
+        + Sync
+        + Unpin
+        + Encodable
+        + Decodable
+        // TODO delete Default once null blocks are gone
+        + Default;
+
+    /// output of execution
+    type FinalizedHeader: FinalizedHeader;
+}
+
+pub trait FinalizedHeader:
+    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable
+{
+    fn seq_num(&self) -> SeqNum;
+}
+
+pub trait MockableFinalizedHeader: Sized {
+    fn from_seq_num(seq_num: SeqNum) -> Self;
+}
+
+pub trait MockableProposedHeader: Sized {
+    fn create(seq_num: SeqNum, timestamp_ns: u128, mix_hash: [u8; 32]) -> Self;
 }
 
 #[cfg(test)]

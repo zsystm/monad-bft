@@ -4147,6 +4147,7 @@ dependencies = [
 name = "monad-blocksync"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "itertools 0.10.5",
  "monad-blocktree",
@@ -4170,7 +4171,6 @@ dependencies = [
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
@@ -4213,13 +4213,13 @@ dependencies = [
  "monad-bls",
  "monad-consensus",
  "monad-consensus-types",
+ "monad-eth-types",
  "monad-secp",
  "monad-state",
  "monad-testutil",
  "monad-types",
  "monad-validator",
  "peak_alloc",
- "rand_chacha",
 ]
 
 [[package]]
@@ -4228,7 +4228,6 @@ version = "0.1.0"
 dependencies = [
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-types",
  "monad-multi-sig",
  "monad-proto",
  "monad-state-backend",
@@ -4245,10 +4244,6 @@ name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
- "alloy-primitives",
- "alloy-rlp",
- "bytes",
- "criterion",
  "itertools 0.10.5",
  "monad-blocktree",
  "monad-consensus",
@@ -4256,8 +4251,6 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
- "monad-eth-testutil",
- "monad-eth-tx",
  "monad-eth-txpool",
  "monad-eth-types",
  "monad-multi-sig",
@@ -4265,8 +4258,6 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
- "rand",
- "rayon",
  "test-case",
  "tracing",
  "tracing-test",
@@ -4276,11 +4267,11 @@ dependencies = [
 name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "auto_impl",
  "bytes",
  "hex",
  "monad-crypto",
- "monad-eth-types",
  "monad-proto",
  "monad-state-backend",
  "monad-types",
@@ -4288,7 +4279,6 @@ dependencies = [
  "rand",
  "rand_chacha",
  "serde",
- "tracing",
  "zerocopy 0.6.5",
 ]
 
@@ -4301,6 +4291,7 @@ dependencies = [
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
+ "monad-types",
  "serde_json",
  "tokio",
  "tokio-util",
@@ -4312,6 +4303,7 @@ dependencies = [
 name = "monad-crypto"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "blake3",
  "criterion",
  "hex",
@@ -4336,10 +4328,8 @@ dependencies = [
  "futures",
  "hex",
  "hex-literal",
- "monad-eth-tx",
  "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -4428,9 +4418,9 @@ dependencies = [
  "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-state-backend",
+ "monad-testutil",
  "monad-types",
  "sorted_vector_map",
  "tracing",
@@ -4444,11 +4434,13 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "monad-consensus-types",
+ "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-testutil",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-state-backend",
+ "monad-testutil",
+ "rayon",
  "tracing",
 ]
 
@@ -4461,7 +4453,6 @@ dependencies = [
  "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -4494,7 +4485,6 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-secp",
  "monad-testutil",
@@ -4507,17 +4497,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "monad-eth-tx"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "alloy-rlp",
- "bytes",
- "rayon",
 ]
 
 [[package]]
@@ -4537,7 +4516,6 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-testutil",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-perf-util",
  "monad-state-backend",
@@ -4554,7 +4532,10 @@ dependencies = [
 name = "monad-eth-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
+ "alloy-rlp",
+ "monad-types",
  "serde",
 ]
 
@@ -4570,7 +4551,6 @@ dependencies = [
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
  "bincode",
  "bytes",
  "chrono",
@@ -4578,7 +4558,6 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
- "monad-multi-sig",
  "monad-proto",
  "monad-types",
  "prost 0.12.6",
@@ -4602,7 +4581,7 @@ dependencies = [
  "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
+ "monad-eth-types",
  "monad-executor-glue",
  "monad-secp",
  "rand",
@@ -4650,7 +4629,7 @@ dependencies = [
  "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-types",
@@ -4670,6 +4649,7 @@ dependencies = [
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "bytes",
@@ -4685,7 +4665,6 @@ dependencies = [
  "monad-eth-block-validator",
  "monad-eth-ledger",
  "monad-eth-testutil",
- "monad-eth-tx",
  "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
@@ -4730,6 +4709,7 @@ dependencies = [
 name = "monad-node"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "bytes",
  "chrono",
  "clap 4.4.10",
@@ -4826,6 +4806,7 @@ dependencies = [
  "criterion",
  "futures",
  "futures-util",
+ "hex",
  "itertools 0.10.5",
  "lru",
  "monad-consensus-types",
@@ -4854,6 +4835,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-state",
+ "monad-types",
 ]
 
 [[package]]
@@ -4959,9 +4941,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-types",
  "monad-executor-glue",
- "monad-multi-sig",
  "monad-proto",
  "monad-secp",
  "monad-state-backend",
@@ -4969,7 +4949,6 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "prost 0.12.6",
- "test-case",
  "toml 0.7.8",
  "tracing",
 ]
@@ -4978,6 +4957,7 @@ dependencies = [
 name = "monad-state-backend"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "monad-eth-types",
  "monad-types",
  "serde",
@@ -4987,12 +4967,15 @@ dependencies = [
 name = "monad-statesync"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-rlp",
  "bindgen",
  "cmake",
  "criterion",
  "futures",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-types",
@@ -5013,10 +4996,8 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
- "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
- "monad-ipc",
  "monad-raptorcast",
  "monad-secp",
  "monad-state",
@@ -5043,13 +5024,11 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-types",
  "monad-mock-swarm",
  "monad-state",
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "zerocopy 0.6.5",
 ]
 
 [[package]]
@@ -5079,6 +5058,7 @@ dependencies = [
 name = "monad-triedb-cache"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "itertools 0.10.5",
  "monad-eth-types",
  "monad-state-backend",
@@ -5121,7 +5101,6 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-types",
  "monad-mock-swarm",
  "monad-router-scheduler",
  "monad-state",
@@ -5141,6 +5120,7 @@ dependencies = [
 name = "monad-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "hex",
  "monad-crypto",
  "monad-proto",
@@ -5158,14 +5138,13 @@ dependencies = [
  "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-state-backend",
- "monad-triedb",
+ "monad-triedb-utils",
  "monad-types",
  "ntest",
- "rand",
- "rand_chacha",
  "rayon",
  "serde_json",
  "sorted-vec",
@@ -5201,15 +5180,12 @@ dependencies = [
  "itertools 0.10.5",
  "monad-bls",
  "monad-consensus",
- "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor-glue",
- "monad-multi-sig",
  "monad-proto",
  "monad-secp",
- "monad-testutil",
  "monad-types",
- "monad-validator",
  "ratatui",
  "serde",
  "serde_json",

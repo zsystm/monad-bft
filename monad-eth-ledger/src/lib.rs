@@ -9,22 +9,21 @@ use std::{
 use alloy_consensus::Transaction;
 use futures::Stream;
 use monad_blocksync::messages::message::{
-    BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
+    BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
 };
 use monad_consensus_types::{
-    block::{BlockRange, BlockType, FullBlock},
-    payload::{PayloadId, TransactionPayload},
+    block::{BlockRange, ConsensusFullBlock},
+    payload::ConsensusBlockBodyId,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_tx::EthFullTransactionList;
-use monad_eth_types::EthAddress;
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::InMemoryState;
-use monad_types::{BlockId, Round, GENESIS_BLOCK_ID};
+use monad_types::{BlockId, Round};
 use monad_updaters::ledger::MockableLedger;
 
 /// A ledger for commited Monad Blocks
@@ -36,9 +35,9 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    blocks: BTreeMap<Round, FullBlock<SCT>>,
+    blocks: BTreeMap<Round, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>>,
     block_ids: HashMap<BlockId, Round>,
-    events: VecDeque<BlockSyncEvent<SCT>>,
+    events: VecDeque<BlockSyncEvent<ST, SCT, EthExecutionProtocol>>,
 
     state: InMemoryState,
 
@@ -64,11 +63,14 @@ where
         }
     }
 
-    fn get_headers(&self, block_range: BlockRange) -> BlockSyncHeadersResponse<SCT> {
+    fn get_headers(
+        &self,
+        block_range: BlockRange,
+    ) -> BlockSyncHeadersResponse<ST, SCT, EthExecutionProtocol> {
         let mut next_block_id = block_range.last_block_id;
 
         let mut headers = VecDeque::new();
-        loop {
+        while (headers.len() as u64) < block_range.num_blocks.0 {
             // TODO add max number of headers to read
             let Some(block_round) = self.block_ids.get(&next_block_id) else {
                 return BlockSyncHeadersResponse::NotAvailable(block_range);
@@ -78,36 +80,29 @@ where
                 .blocks
                 .get(block_round)
                 .expect("round to blockid invariant")
-                .get_unvalidated_block_ref();
-
-            if block_header.get_seq_num() < block_range.root_seq_num {
-                // if headers is empty here, then block range is invalid
-                break;
-            }
+                .header();
 
             headers.push_front(block_header.clone());
             next_block_id = block_header.get_parent_id();
-
-            if next_block_id == GENESIS_BLOCK_ID {
-                // don't try fetching genesis block
-                break;
-            }
         }
 
         BlockSyncHeadersResponse::Found((block_range, headers.into()))
     }
 
-    fn get_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
+    fn get_payload(
+        &self,
+        body_id: ConsensusBlockBodyId,
+    ) -> BlockSyncBodyResponse<EthExecutionProtocol> {
         // TODO: all payloads are stored in memory, facilitate blocksync for only the blocksyncable_range
         if let Some((_, full_block)) = self
             .blocks
             .iter()
-            .find(|(_, full_block)| full_block.get_payload_id() == payload_id)
+            .find(|(_, full_block)| full_block.get_body_id() == body_id)
         {
-            return BlockSyncPayloadResponse::Found(full_block.payload.clone());
+            return BlockSyncBodyResponse::Found(full_block.body().clone());
         }
 
-        BlockSyncPayloadResponse::NotAvailable(payload_id)
+        BlockSyncBodyResponse::NotAvailable(body_id)
     }
 }
 
@@ -116,27 +111,32 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Command = LedgerCommand<SCT>;
+    type Command = LedgerCommand<ST, SCT, EthExecutionProtocol>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(blocks) => {
                     for block in blocks {
-                        if let TransactionPayload::List(eth_txns_rlp) = &block.payload.txns {
-                            // generate eth block and update the state backend with committed nonces
-                            let new_account_nonces =
-                                EthFullTransactionList::rlp_decode(eth_txns_rlp.bytes().clone())
-                                    .expect("invalid eth tx in block")
-                                    .0
-                                    .into_iter()
-                                    .map(|tx| (EthAddress(tx.signer()), tx.nonce() + 1))
-                                    // collecting into a map will handle a sender sending multiple
-                                    // transactions gracefully
-                                    //
-                                    // this is because nonces are always increasing per account
-                                    .collect();
-                            let mut state = self.state.lock().unwrap();
+                        // generate eth block and update the state backend with committed nonces
+                        let new_account_nonces = block
+                            .body()
+                            .execution_body
+                            .transactions
+                            .iter()
+                            .map(|tx| {
+                                (
+                                    tx.recover_signer().expect("invalid eth tx in block"),
+                                    tx.nonce() + 1,
+                                )
+                            })
+                            // collecting into a map will handle a sender sending multiple
+                            // transactions gracefully
+                            //
+                            // this is because nonces are always increasing per account
+                            .collect();
+                        let mut state = self.state.lock().unwrap();
+                        if !block.header().is_empty_block() {
                             state.ledger_commit(block.get_seq_num(), new_account_nonces);
                         }
 
@@ -181,7 +181,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
@@ -201,14 +201,18 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    type Signature = ST;
     type SignatureCollection = SCT;
-    type Event = MonadEvent<ST, SCT>;
+    type ExecutionProtocol = EthExecutionProtocol;
+    type Event = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn ready(&self) -> bool {
         !self.events.is_empty()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<SCT>> {
+    fn get_finalized_blocks(
+        &self,
+    ) -> &BTreeMap<Round, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>> {
         &self.blocks
     }
 }

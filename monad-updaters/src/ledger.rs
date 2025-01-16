@@ -8,11 +8,11 @@ use std::{
 
 use futures::Stream;
 use monad_blocksync::messages::message::{
-    BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
+    BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
 };
 use monad_consensus_types::{
-    block::{BlockRange, BlockType, FullBlock},
-    payload::PayloadId,
+    block::{BlockRange, ConsensusFullBlock},
+    payload::ConsensusBlockBodyId,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -21,39 +21,66 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::InMemoryState;
-use monad_types::{BlockId, Round, GENESIS_BLOCK_ID};
+use monad_types::{BlockId, ExecutionProtocol, Round};
 
 pub trait MockableLedger:
-    Executor<Command = LedgerCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin
+    Executor<
+        Command = LedgerCommand<
+            Self::Signature,
+            Self::SignatureCollection,
+            Self::ExecutionProtocol,
+        >,
+    > + Stream<Item = Self::Event>
+    + Unpin
 {
-    type SignatureCollection: SignatureCollection;
+    type Signature: CertificateSignatureRecoverable;
+    type SignatureCollection: SignatureCollection<
+        NodeIdPubKey = CertificateSignaturePubKey<Self::Signature>,
+    >;
+    type ExecutionProtocol: ExecutionProtocol;
+
     type Event;
 
     fn ready(&self) -> bool;
-    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<Self::SignatureCollection>>;
+    fn get_finalized_blocks(
+        &self,
+    ) -> &BTreeMap<
+        Round,
+        ConsensusFullBlock<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>,
+    >;
 }
 
 impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
+    type Signature = T::Signature;
     type SignatureCollection = T::SignatureCollection;
+    type ExecutionProtocol = T::ExecutionProtocol;
+
     type Event = T::Event;
 
     fn ready(&self) -> bool {
         (**self).ready()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<Self::SignatureCollection>> {
-        (**self).get_blocks()
+    fn get_finalized_blocks(
+        &self,
+    ) -> &BTreeMap<
+        Round,
+        ConsensusFullBlock<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>,
+    > {
+        (**self).get_finalized_blocks()
     }
 }
 
-pub struct MockLedger<ST, SCT>
+pub struct MockLedger<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    blocks: BTreeMap<Round, FullBlock<SCT>>,
+    blocks: BTreeMap<Round, ConsensusFullBlock<ST, SCT, EPT>>,
     block_ids: HashMap<BlockId, Round>,
-    events: VecDeque<BlockSyncEvent<SCT>>,
+
+    events: VecDeque<BlockSyncEvent<ST, SCT, EPT>>,
 
     state_backend: InMemoryState,
 
@@ -61,10 +88,11 @@ where
     _phantom: PhantomData<ST>,
 }
 
-impl<ST, SCT> MockLedger<ST, SCT>
+impl<ST, SCT, EPT> MockLedger<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn new(state_backend: InMemoryState) -> Self {
         Self {
@@ -79,66 +107,56 @@ where
         }
     }
 
-    fn get_headers(&self, block_range: BlockRange) -> BlockSyncHeadersResponse<SCT> {
+    fn get_headers(&self, block_range: BlockRange) -> BlockSyncHeadersResponse<ST, SCT, EPT> {
         let mut next_block_id = block_range.last_block_id;
 
         let mut headers = VecDeque::new();
-        loop {
+        while (headers.len() as u64) < block_range.num_blocks.0 {
             // TODO add max number of headers to read
             let Some(block_round) = self.block_ids.get(&next_block_id) else {
                 return BlockSyncHeadersResponse::NotAvailable(block_range);
             };
-
             let block_header = self
                 .blocks
                 .get(block_round)
                 .expect("round to blockid invariant")
-                .get_unvalidated_block_ref();
-
-            if block_header.get_seq_num() < block_range.root_seq_num {
-                // if headers is empty here, then block range is invalid
-                break;
-            }
+                .header();
 
             headers.push_front(block_header.clone());
             next_block_id = block_header.get_parent_id();
-
-            if next_block_id == GENESIS_BLOCK_ID {
-                // don't try fetching genesis block
-                break;
-            }
         }
 
         BlockSyncHeadersResponse::Found((block_range, headers.into()))
     }
 
-    fn get_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
+    fn get_payload(&self, payload_id: ConsensusBlockBodyId) -> BlockSyncBodyResponse<EPT> {
         // TODO: all payloads are stored in memory, facilitate blocksync for only the blocksyncable_range
         if let Some((_, full_block)) = self
             .blocks
             .iter()
-            .find(|(_, full_block)| full_block.get_payload_id() == payload_id)
+            .find(|(_, full_block)| full_block.get_body_id() == payload_id)
         {
-            BlockSyncPayloadResponse::Found(full_block.payload.clone())
+            BlockSyncBodyResponse::Found(full_block.body().clone())
         } else {
-            BlockSyncPayloadResponse::NotAvailable(payload_id)
+            BlockSyncBodyResponse::NotAvailable(payload_id)
         }
     }
 }
 
-impl<ST, SCT> Executor for MockLedger<ST, SCT>
+impl<ST, SCT, EPT> Executor for MockLedger<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Command = LedgerCommand<SCT>;
+    type Command = LedgerCommand<ST, SCT, EPT>;
 
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
             match cmd {
                 LedgerCommand::LedgerCommit(blocks) => {
                     for block in blocks {
-                        if !block.is_empty_block() {
+                        if !block.header().is_empty_block() {
                             // mock ledger isn't used with real txs
                             self.state_backend
                                 .lock()
@@ -181,19 +199,19 @@ where
     }
 }
 
-impl<ST, SCT> Stream for MockLedger<ST, SCT>
+impl<ST, SCT, EPT> Stream for MockLedger<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
         if let Some(event) = this.events.pop_front() {
             return Poll::Ready(Some(MonadEvent::BlockSyncEvent(event)));
         }
-
         if this.waker.is_none() {
             this.waker = Some(cx.waker().clone());
         }
@@ -201,19 +219,22 @@ where
     }
 }
 
-impl<ST, SCT> MockableLedger for MockLedger<ST, SCT>
+impl<ST, SCT, EPT> MockableLedger for MockLedger<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
+    type Signature = ST;
     type SignatureCollection = SCT;
-    type Event = MonadEvent<ST, SCT>;
+    type ExecutionProtocol = EPT;
+    type Event = MonadEvent<ST, SCT, EPT>;
 
     fn ready(&self) -> bool {
         !self.events.is_empty()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<SCT>> {
+    fn get_finalized_blocks(&self) -> &BTreeMap<Round, ConsensusFullBlock<ST, SCT, EPT>> {
         &self.blocks
     }
 }

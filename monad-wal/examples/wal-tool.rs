@@ -18,8 +18,8 @@ use crossterm::{
 use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus::messages::consensus_message::ProtocolMessage;
-use monad_consensus_types::block::BlockType;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor_glue::{LogFriendlyMonadEvent, MonadEvent};
 use monad_secp::SecpSignature;
 use monad_types::Epoch;
@@ -33,8 +33,9 @@ use serde::Serialize;
 
 type SigType = SecpSignature;
 type SigColType = BlsSignatureCollection<CertificateSignaturePubKey<SigType>>;
-type WalEvent = MonadEvent<SigType, SigColType>;
-type WrappedEvent = LogFriendlyMonadEvent<SigType, SigColType>;
+type ExecutionPolicyType = EthExecutionProtocol;
+type WalEvent = MonadEvent<SigType, SigColType, ExecutionPolicyType>;
+type WrappedEvent = LogFriendlyMonadEvent<SigType, SigColType, ExecutionPolicyType>;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -419,7 +420,7 @@ impl Widget for &EventListWidget {
                 MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
                 MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
                 MonadEvent::MempoolEvent(_) => "MEMPOOL".to_string(),
-                MonadEvent::StateRootEvent(_) => "STATEROOT".to_string(),
+                MonadEvent::ExecutionResultEvent(_) => "EXECUTION_RESULT".to_string(),
                 MonadEvent::ControlPanelEvent(_) => "CONTROLPANEL".to_string(),
                 MonadEvent::TimestampUpdateEvent(_) => "TIMESTAMP".to_string(),
                 MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
@@ -493,9 +494,9 @@ impl StatExtractor {
                     match &msg.message {
                         ProtocolMessage::Proposal(p) => {
                             let (author, round, epoch) = (
-                                format!("{:?}", p.block.author.pubkey()),
-                                p.block.get_round(),
-                                p.block.epoch,
+                                format!("{:?}", p.block_header.author.pubkey()),
+                                p.block_header.round,
+                                p.block_header.epoch,
                             );
                             stat.block_time.insert(round.0, event.timestamp);
                             stat.leader.insert(round.0, BlockInfo { author, epoch });
@@ -556,7 +557,7 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
             MonadEvent::BlockSyncEvent(_) => "blocksyncevent",
             MonadEvent::ValidatorEvent(_) => "validatorevent",
             MonadEvent::MempoolEvent(_) => "mempoolevent",
-            MonadEvent::StateRootEvent(_) => "staterootevent",
+            MonadEvent::ExecutionResultEvent(_) => "executionresultevent",
             WalEvent::ControlPanelEvent(_) => "controlpanelevent",
             MonadEvent::TimestampUpdateEvent(_) => "timestampupdateevent",
             MonadEvent::StateSyncEvent(_) => "statesyncevent",

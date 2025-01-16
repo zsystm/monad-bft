@@ -10,15 +10,14 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable, PubKey,
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{NodeId, Round, Stake};
+use monad_types::{ExecutionProtocol, NodeId, Round, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -116,10 +115,11 @@ impl<S: CertificateSignatureRecoverable, M> Unverified<S, M> {
     }
 }
 
-impl<S, SCT> Unverified<S, Unvalidated<ConsensusMessage<SCT>>>
+impl<ST, SCT, EPT> Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
-    S: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<S>>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn is_proposal(&self) -> bool {
         matches!(&self.obj.obj.message, ProtocolMessage::Proposal(_))
@@ -153,18 +153,18 @@ impl<S: CertificateSignatureRecoverable, M> From<Verified<S, Validated<M>>>
     }
 }
 
-impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection>
-    Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>
+impl<ST, SCT, EPT> Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn verify<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         sender: &SCT::NodeIdPubKey,
-    ) -> Result<Verified<ST, Unvalidated<ConsensusMessage<SCT>>>, Error>
+    ) -> Result<Verified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -229,7 +229,12 @@ impl<M> AsRef<Unvalidated<M>> for Validated<M> {
     }
 }
 
-impl<SCT: SignatureCollection> Hashable for Validated<ConsensusMessage<SCT>> {
+impl<ST, SCT, EPT> Hashable for Validated<ConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn hash(&self, state: &mut impl Hasher) {
         self.as_ref().hash(state)
     }
@@ -252,19 +257,29 @@ impl<M> From<Validated<M>> for Unvalidated<M> {
     }
 }
 
-impl<M: Hashable> Hashable for Unvalidated<M> {
+impl<ST, SCT, EPT> Hashable for Unvalidated<ConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn hash(&self, state: &mut impl Hasher) {
         self.obj.hash(state)
     }
 }
 
-impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
+impl<ST, SCT, EPT> Unvalidated<ConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn validate<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         version: &str,
-    ) -> Result<Validated<ProtocolMessage<SCT>>, Error>
+    ) -> Result<Validated<ProtocolMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -296,7 +311,12 @@ impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
     }
 }
 
-impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
+impl<ST, SCT, EPT> Unvalidated<ProposalMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     // A verified proposal is one which is well-formed, has valid signatures for
     // the present TC or QC, and epoch number is consistent with local records
     // for block.round
@@ -304,7 +324,7 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<ProposalMessage<SCT>>, Error>
+    ) -> Result<Validated<ProposalMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -315,7 +335,7 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
             epoch_manager,
             val_epoch_map,
             &self.obj.last_round_tc,
-            &self.obj.block.qc,
+            &self.obj.block_header.qc,
         )?;
 
         Ok(Validated { message: self })
@@ -326,16 +346,16 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
         well_formed(
-            self.obj.block.round,
-            self.obj.block.qc.get_round(),
+            self.obj.block_header.round,
+            self.obj.block_header.qc.get_round(),
             &self.obj.last_round_tc,
         )
     }
 
     /// Check local epoch manager record for block.round is equal to block.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.block.round) {
-            Some(epoch) if self.obj.block.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.obj.block_header.round) {
+            Some(epoch) if self.obj.block_header.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
@@ -562,10 +582,14 @@ fn get_pubkey<ST: CertificateSignatureRecoverable>(
 ///
 /// Network serialization should use the interface functions in
 /// [crate::convert::interface] to avoid serializing unverified messages
-impl<ST: CertificateSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMessage<ST, SCT>>
+impl<ST, SCT, EPT> From<&UnverifiedConsensusMessage<ST, SCT, EPT>>
     for ProtoUnverifiedConsensusMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: &UnverifiedConsensusMessage<ST, SCT>) -> Self {
+    fn from(value: &UnverifiedConsensusMessage<ST, SCT, EPT>) -> Self {
         let oneof_message = match &value.obj.obj.message {
             ProtocolMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
@@ -614,13 +638,13 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::{Block, BlockKind},
-        payload::{
-            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+        block::{
+            ConsensusBlockHeader, MockExecutionBody, MockExecutionProposedHeader,
+            MockExecutionProtocol,
         },
+        payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        state_root_hash::StateRootHash,
         timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
         validation::Error,
         voting::{ValidatorMapping, Vote},
@@ -632,7 +656,6 @@ mod test {
         hasher::{Hash, Hashable, Hasher, HasherType},
         NopSignature,
     };
-    use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
@@ -1042,27 +1065,31 @@ mod test {
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
-        let payload = Payload {
-            txns: TransactionPayload::List(FullTransactionList::empty()),
-        };
-        let block = Block::<SignatureCollectionType>::new(
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: MockExecutionBody {
+                data: Default::default(),
+            },
+        });
+        let block = ConsensusBlockHeader::new(
             NodeId::new(author.pubkey()),
-            0,
             Epoch(2), // wrong epoch: should be 1
             Round(1),
-            &ExecutionProtocol {
-                state_root: StateRootHash::default(),
-                seq_num: GENESIS_SEQ_NUM + SeqNum(1),
-                beneficiary: EthAddress::from_bytes([0x00_u8; 20]),
-                randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),
-            },
+            Vec::new(), // delayed_execution_results
+            MockExecutionProposedHeader {},
             payload.get_id(),
-            BlockKind::Executable,
-            &QuorumCertificate::genesis_qc(),
+            QuorumCertificate::genesis_qc(),
+            GENESIS_SEQ_NUM + SeqNum(1),
+            1,
+            RoundSignature::new(Round(1), author_cert_key),
+            false,
         );
-        let proposal = ProposalMessage {
-            block,
-            payload,
+        let proposal: ProposalMessage<
+            SignatureType,
+            SignatureCollectionType,
+            MockExecutionProtocol,
+        > = ProposalMessage {
+            block_header: block,
+            block_body: payload,
             last_round_tc: None,
         };
 

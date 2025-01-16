@@ -33,13 +33,17 @@ pub struct MockExecutor<S: SwarmRelation> {
     ledger: S::Ledger,
     checkpoint: MockCheckpoint<S::SignatureCollectionType>,
     state_root_hash: S::StateRootHashExecutor,
-    loopback: LoopbackExecutor<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
-    ipc: MockIpcReceiver<S::SignatureType, S::SignatureCollectionType>,
+    loopback: LoopbackExecutor<
+        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+    >,
+    ipc: MockIpcReceiver<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     statesync: S::StateSyncExecutor,
     tick: Duration,
 
     timer: PriorityQueue<
-        TimerEvent<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
+        TimerEvent<
+            MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+        >,
         Reverse<Duration>,
     >,
 
@@ -183,7 +187,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
     }
 
     pub fn checkpoint(&self) -> Option<Checkpoint<S::SignatureCollectionType>> {
-        self.checkpoint.checkpoint.clone()
+        self.checkpoint
+            .checkpoint
+            .as_ref()
+            .map(|c| c.checkpoint.clone())
     }
 
     pub fn tick(&self) -> Duration {
@@ -257,9 +264,15 @@ impl<S: SwarmRelation> MockExecutor<S> {
 
 impl<S: SwarmRelation> Executor for MockExecutor<S> {
     type Command = Command<
-        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
-        VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+        VerifiedMonadMessage<
+            S::SignatureType,
+            S::SignatureCollectionType,
+            S::ExecutionProtocolType,
+        >,
+        S::SignatureType,
         S::SignatureCollectionType,
+        S::ExecutionProtocolType,
     >;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
@@ -349,7 +362,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
         until: Duration,
     ) -> Option<
         MockExecutorEvent<
-            MonadEvent<S::SignatureType, S::SignatureCollectionType>,
+            MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
             CertificateSignaturePubKey<S::SignatureType>,
             S::TransportMessage,
         >,
@@ -492,7 +505,7 @@ mod tests {
 
     use futures::{FutureExt, StreamExt};
     use monad_blocksync::messages::message::BlockSyncRequestMessage;
-    use monad_consensus_types::{block::BlockRange, payload::PayloadId};
+    use monad_consensus_types::{block::BlockRange, payload::ConsensusBlockBodyId};
     use monad_crypto::hasher::Hash;
     use monad_executor::Executor;
     use monad_executor_glue::TimerCommand;
@@ -504,29 +517,29 @@ mod tests {
         [
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x00_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x01_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x02_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x03_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
             BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x04_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             }),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x05_u8; 32]))),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x06_u8; 32]))),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x07_u8; 32]))),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x08_u8; 32]))),
-            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x09_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x05_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x06_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x07_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x08_u8; 32]))),
+            BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x09_u8; 32]))),
         ]
     }
 
@@ -736,7 +749,7 @@ mod tests {
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
             TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x00_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             })),
         )]);
 
@@ -753,13 +766,13 @@ mod tests {
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
             TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x01_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             })),
         )]);
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
             TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x02_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             })),
         )]);
 
@@ -777,13 +790,13 @@ mod tests {
         assert!(
             requests.contains(&BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x01_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             }))
         );
         assert!(
             requests.contains(&BlockSyncRequestMessage::Headers(BlockRange {
                 last_block_id: BlockId(Hash([0x02_u8; 32])),
-                root_seq_num: SeqNum(1),
+                num_blocks: SeqNum(1),
             }))
         );
     }

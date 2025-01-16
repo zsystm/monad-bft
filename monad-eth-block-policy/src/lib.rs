@@ -1,27 +1,29 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, marker::PhantomData, ops::Deref};
 
-use alloy_consensus::transaction::Transaction;
-use alloy_primitives::U256;
+use alloy_consensus::{
+    transaction::{Recovered, Transaction},
+    TxEnvelope,
+};
+use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
+    block::{BlockPolicy, BlockPolicyError, ConsensusFullBlock},
     checkpoint::RootInfo,
-    payload::{Payload, PayloadId, PROPOSAL_GAS_LIMIT},
-    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash,
 };
-use monad_crypto::hasher::{Hashable, Hasher};
-use monad_eth_tx::{EthSignedTransaction, EthTransaction, EthTxHash};
-use monad_eth_types::{Balance, EthAddress, Nonce};
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    hasher::{Hashable, Hasher},
+};
+use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, PROPOSAL_GAS_LIMIT};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
 use tracing::trace;
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
-    fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce>;
+    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce>;
 }
 pub enum ReserveBalanceCheck {
     Insert,
@@ -50,7 +52,7 @@ fn checked_from(arg: U256) -> u128 {
     }
 }
 
-fn compute_intrinsic_gas(tx: &EthSignedTransaction) -> u64 {
+fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
     // base stipend
     let mut intrinsic_gas = 21000;
 
@@ -85,14 +87,14 @@ fn compute_intrinsic_gas(tx: &EthSignedTransaction) -> u64 {
 }
 
 #[allow(clippy::unnecessary_fallible_conversions)]
-pub fn compute_txn_max_value(txn: &EthSignedTransaction) -> U256 {
+pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
     let txn_value = U256::try_from(txn.value()).unwrap();
     let gas_cost = U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas());
 
     checked_sum(txn_value, gas_cost)
 }
 
-pub fn compute_txn_max_value_to_u128(txn: &EthSignedTransaction) -> u128 {
+pub fn compute_txn_max_value_to_u128(txn: &TxEnvelope) -> u128 {
     let txn_value = compute_txn_max_value(txn);
     trace!(
         "compute_txn_max_value gas_cost + txn_value: {:?} ",
@@ -112,10 +114,7 @@ pub enum TransactionError {
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
-pub fn static_validate_transaction(
-    tx: &EthSignedTransaction,
-    chain_id: u64,
-) -> Result<(), TransactionError> {
+pub fn static_validate_transaction(tx: &TxEnvelope, chain_id: u64) -> Result<(), TransactionError> {
     // EIP-155
     // We allow legacy transactions without chain_id specified to pass through
     if let Some(tx_chain_id) = tx.chain_id() {
@@ -153,21 +152,39 @@ pub fn static_validate_transaction(
 /// A consensus block that has gone through the EthereumValidator and makes the decoded and
 /// verified transactions available to access
 #[derive(Debug, Clone)]
-pub struct EthValidatedBlock<SCT: SignatureCollection> {
-    pub block: Block<SCT>,
-    pub orig_payload: Payload,
-    pub validated_txns: Vec<EthTransaction>,
-    pub nonces: BTreeMap<EthAddress, Nonce>,
-    pub txn_fees: BTreeMap<EthAddress, U256>,
+pub struct EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
+    pub validated_txns: Vec<Recovered<TxEnvelope>>,
+    pub nonces: BTreeMap<Address, Nonce>,
+    pub txn_fees: BTreeMap<Address, U256>,
 }
 
-impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
-    pub fn get_validated_txn_hashes(&self) -> Vec<EthTxHash> {
+impl<ST, SCT> Deref for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    type Target = ConsensusFullBlock<ST, SCT, EthExecutionProtocol>;
+    fn deref(&self) -> &Self::Target {
+        &self.block
+    }
+}
+
+impl<ST, SCT> EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub fn get_validated_txn_hashes(&self) -> Vec<TxHash> {
         self.validated_txns.iter().map(|t| *t.tx_hash()).collect()
     }
 
     /// Returns the highest tx nonce per account in the block
-    pub fn get_nonces(&self) -> &BTreeMap<EthAddress, u64> {
+    pub fn get_nonces(&self) -> &BTreeMap<Address, u64> {
         &self.nonces
     }
 
@@ -178,101 +195,38 @@ impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> PartialEq for EthValidatedBlock<SCT> {
+impl<ST, SCT> PartialEq for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn eq(&self, other: &Self) -> bool {
         self.block == other.block
     }
 }
-impl<SCT: SignatureCollection> Eq for EthValidatedBlock<SCT> {}
+impl<ST, SCT> Eq for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+}
 
-impl<SCT: SignatureCollection> Hashable for EthValidatedBlock<SCT> {
+impl<ST, SCT> Hashable for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn hash(&self, state: &mut impl Hasher) {
         self.block.get_id().hash(state);
     }
 }
 
-impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
-    type NodeIdPubKey = SCT::NodeIdPubKey;
-    type TxnHash = EthTxHash;
-
-    fn get_id(&self) -> BlockId {
-        self.block.get_id()
-    }
-
-    fn get_round(&self) -> Round {
-        self.block.round
-    }
-
-    fn get_epoch(&self) -> Epoch {
-        self.block.epoch
-    }
-
-    fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
-        self.block.author
-    }
-
-    fn get_payload(&self) -> Payload {
-        self.orig_payload.clone()
-    }
-
-    fn get_payload_id(&self) -> PayloadId {
-        self.block.payload_id
-    }
-
-    fn get_parent_id(&self) -> BlockId {
-        self.block.qc.get_block_id()
-    }
-
-    fn get_parent_round(&self) -> Round {
-        self.block.qc.get_round()
-    }
-
-    fn get_seq_num(&self) -> SeqNum {
-        self.block.execution.seq_num
-    }
-
-    fn get_state_root(&self) -> StateRootHash {
-        self.block.execution.state_root
-    }
-
-    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
-        self.get_validated_txn_hashes()
-    }
-
-    fn get_qc(&self) -> &QuorumCertificate<SCT> {
-        &self.block.qc
-    }
-
-    fn get_timestamp(&self) -> u128 {
-        self.block.timestamp_ns
-    }
-
-    fn get_unvalidated_block(self) -> Block<SCT> {
-        self.block
-    }
-
-    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
-        &self.block
-    }
-
-    fn get_txn_list_len(&self) -> usize {
-        self.validated_txns.len()
-    }
-
-    fn is_empty_block(&self) -> bool {
-        self.block.is_empty_block()
-    }
-
-    fn get_full_block(self) -> FullBlock<SCT> {
-        FullBlock {
-            block: self.block,
-            payload: self.orig_payload,
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> AccountNonceRetrievable for EthValidatedBlock<SCT> {
-    fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce> {
+impl<ST, SCT> AccountNonceRetrievable for EthValidatedBlock<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce> {
         let mut account_nonces = BTreeMap::new();
         let block_nonces = self.get_nonces();
         for (&address, &txn_nonce) in block_nonces {
@@ -285,8 +239,12 @@ impl<SCT: SignatureCollection> AccountNonceRetrievable for EthValidatedBlock<SCT
     }
 }
 
-impl<SCT: SignatureCollection> AccountNonceRetrievable for Vec<&EthValidatedBlock<SCT>> {
-    fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce> {
+impl<ST, SCT> AccountNonceRetrievable for Vec<&EthValidatedBlock<ST, SCT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn get_account_nonces(&self) -> BTreeMap<Address, Nonce> {
         let mut account_nonces = BTreeMap::new();
         for block in self.iter() {
             let block_account_nonces = block.get_account_nonces();
@@ -300,30 +258,32 @@ impl<SCT: SignatureCollection> AccountNonceRetrievable for Vec<&EthValidatedBloc
 
 #[derive(Debug)]
 struct BlockAccountNonce {
-    nonces: BTreeMap<EthAddress, Nonce>,
+    nonces: BTreeMap<Address, Nonce>,
 }
 
 impl BlockAccountNonce {
-    fn get(&self, eth_address: &EthAddress) -> Option<Nonce> {
+    fn get(&self, eth_address: &Address) -> Option<Nonce> {
         self.nonces.get(eth_address).cloned()
     }
 }
 
 #[derive(Debug)]
 struct BlockTxnFees {
-    txn_fees: BTreeMap<EthAddress, U256>,
+    txn_fees: BTreeMap<Address, U256>,
 }
 
 impl BlockTxnFees {
-    fn get(&self, eth_address: &EthAddress) -> Option<U256> {
+    fn get(&self, eth_address: &Address) -> Option<U256> {
         self.txn_fees.get(eth_address).cloned()
     }
 }
 
 #[derive(Debug)]
-struct CommittedBlkBuffer {
+struct CommittedBlkBuffer<ST, SCT> {
     blocks: SortedVectorMap<SeqNum, (BlockAccountNonce, BlockTxnFees)>,
     size: usize, // should be execution delay
+
+    _phantom: PhantomData<(ST, SCT)>,
 }
 
 struct CommittedTxnFeeResult {
@@ -331,15 +291,21 @@ struct CommittedTxnFeeResult {
     next_validate: SeqNum, // next block number to validate; included for assertions only
 }
 
-impl CommittedBlkBuffer {
+impl<ST, SCT> CommittedBlkBuffer<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn new(size: usize) -> Self {
         Self {
             blocks: Default::default(),
             size,
+
+            _phantom: Default::default(),
         }
     }
 
-    fn get_nonce(&self, eth_address: &EthAddress) -> Option<Nonce> {
+    fn get_nonce(&self, eth_address: &Address) -> Option<Nonce> {
         let mut maybe_account_nonce = None;
 
         for (_, (account_nonces, _)) in self.blocks.iter() {
@@ -356,7 +322,7 @@ impl CommittedBlkBuffer {
     fn compute_txn_fee(
         &self,
         base_seq_num: SeqNum,
-        eth_address: &EthAddress,
+        eth_address: &Address,
     ) -> CommittedTxnFeeResult {
         let mut txn_fee: U256 = U256::ZERO;
         let mut next_validate = base_seq_num + SeqNum(1);
@@ -376,7 +342,7 @@ impl CommittedBlkBuffer {
         }
     }
 
-    fn update_committed_block<SCT: SignatureCollection>(&mut self, block: &EthValidatedBlock<SCT>) {
+    fn update_committed_block(&mut self, block: &EthValidatedBlock<ST, SCT>) {
         let block_number = block.get_seq_num();
         if let Some((&last_block_num, _)) = self.blocks.last_key_value() {
             assert_eq!(last_block_num + SeqNum(1), block_number);
@@ -413,12 +379,16 @@ impl CommittedBlkBuffer {
 }
 
 /// A block policy for ethereum payloads
-pub struct EthBlockPolicy {
+pub struct EthBlockPolicy<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     /// SeqNum of last committed block
     last_commit: SeqNum,
 
     // last execution-delay committed transactions
-    committed_cache: CommittedBlkBuffer,
+    committed_cache: CommittedBlkBuffer<ST, SCT>,
 
     /// Cost for including transaction in the consensus
     execution_delay: SeqNum,
@@ -427,7 +397,11 @@ pub struct EthBlockPolicy {
     chain_id: u64,
 }
 
-impl EthBlockPolicy {
+impl<ST, SCT> EthBlockPolicy<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     pub fn new(last_commit: SeqNum, execution_delay: u64, chain_id: u64) -> Self {
         Self {
             committed_cache: CommittedBlkBuffer::new(execution_delay as usize),
@@ -438,16 +412,13 @@ impl EthBlockPolicy {
     }
 
     /// returns account nonces at the start of the provided consensus block
-    pub fn get_account_base_nonces<'a, SCT>(
+    pub fn get_account_base_nonces<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
         state_backend: &impl StateBackend,
-        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
-        addresses: impl Iterator<Item = &'a EthAddress>,
-    ) -> Result<BTreeMap<&'a EthAddress, Nonce>, StateBackendError>
-    where
-        SCT: SignatureCollection,
-    {
+        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
+        addresses: impl Iterator<Item = &'a Address>,
+    ) -> Result<BTreeMap<&'a Address, Nonce>, StateBackendError> {
         // Layers of access
         // 1. extending_blocks: coherent blocks in the blocks tree
         // 2. committed_block_nonces: always buffers the nonce of last `delay`
@@ -494,13 +465,13 @@ impl EthBlockPolicy {
     }
 
     // Computes account balance available for the account
-    pub fn compute_account_base_balances<'a, SCT>(
+    pub fn compute_account_base_balances<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
         state_backend: &impl StateBackend,
-        extending_blocks: Option<&Vec<&EthValidatedBlock<SCT>>>,
-        addresses: impl Iterator<Item = &'a EthAddress>,
-    ) -> Result<BTreeMap<&'a EthAddress, Balance>, StateBackendError>
+        extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
+        addresses: impl Iterator<Item = &'a Address>,
+    ) -> Result<BTreeMap<&'a Address, Balance>, StateBackendError>
     where
         SCT: SignatureCollection,
     {
@@ -509,7 +480,7 @@ impl EthBlockPolicy {
         let extending_blocks = extending_blocks.map(|extending_blocks| {
             extending_blocks
                 .iter()
-                .filter(|block| !block.is_empty_block())
+                .filter(|block| !block.header().is_empty_block())
                 .collect_vec()
         });
 
@@ -620,12 +591,13 @@ impl EthBlockPolicy {
     }
 }
 
-impl<SCT, SBT> BlockPolicy<SCT, SBT> for EthBlockPolicy
+impl<ST, SCT, SBT> BlockPolicy<ST, SCT, EthExecutionProtocol, SBT> for EthBlockPolicy<ST, SCT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    type ValidatedBlock = EthValidatedBlock<SCT>;
+    type ValidatedBlock = EthValidatedBlock<ST, SCT>;
 
     fn check_coherency(
         &self,
@@ -641,7 +613,7 @@ where
             .chain(std::iter::once(&block))
             .next()
             .unwrap();
-        if first_block.is_empty_block() {
+        if first_block.header().is_empty_block() {
             assert_eq!(first_block.get_seq_num(), self.last_commit);
         } else {
             assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
@@ -655,7 +627,7 @@ where
             } else {
                 (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
             };
-        if block.is_empty_block() {
+        if block.header().is_empty_block() {
             // Empty block doesn't occupy a sequence number
             if block.get_seq_num() != extending_seq_num {
                 return Err(BlockPolicyError::BlockNotCoherent);
@@ -671,11 +643,16 @@ where
             return Err(BlockPolicyError::TimestampError);
         }
 
-        // TODO fix this unnecessary copy into a new vec to generate an owned EthAddress
+        // TODO delete once null blocks are gone
+        if block.header().is_empty_block() {
+            return Ok(());
+        }
+
+        // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let tx_signers = block
             .validated_txns
             .iter()
-            .map(|txn| EthAddress(txn.signer()))
+            .map(|txn| txn.signer())
             .collect_vec();
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -693,7 +670,7 @@ where
         )?;
 
         for txn in block.validated_txns.iter() {
-            let eth_address = EthAddress(txn.signer());
+            let eth_address = txn.signer();
             let txn_nonce = txn.nonce();
 
             let expected_nonce = account_nonces
@@ -743,7 +720,7 @@ where
     }
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
-        if block.is_empty_block() {
+        if block.header().is_empty_block() {
             // TODO this is error-prone, easy to forget
             // TODO write tests that fail if this doesn't exist
             return;
@@ -759,7 +736,7 @@ where
         // TODO write tests that fail if this doesn't exist
         let blocks = last_delay_non_null_committed_blocks
             .into_iter()
-            .filter(|block| !block.is_empty_block());
+            .filter(|block| !block.header().is_empty_block());
         for block in blocks {
             self.last_commit = block.get_seq_num();
             self.committed_cache.update_committed_block(block);
@@ -773,10 +750,14 @@ mod test {
     use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use monad_eth_types::EthAddress;
+    use monad_crypto::NopSignature;
+    use monad_testutil::signing::MockSignatures;
     use monad_types::SeqNum;
 
     use super::*;
+
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MockSignatures<SignatureType>;
 
     fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
         let secret_key = B256::repeat_byte(0xAu8).to_string();
@@ -787,13 +768,13 @@ mod test {
     #[test]
     fn test_compute_txn_fee() {
         // setup test addresses
-        let address1 = EthAddress(Address(FixedBytes([0x11; 20])));
-        let address2 = EthAddress(Address(FixedBytes([0x22; 20])));
-        let address3 = EthAddress(Address(FixedBytes([0x33; 20])));
-        let address4 = EthAddress(Address(FixedBytes([0x44; 20])));
+        let address1 = Address(FixedBytes([0x11; 20]));
+        let address2 = Address(FixedBytes([0x22; 20]));
+        let address3 = Address(FixedBytes([0x33; 20]));
+        let address4 = Address(FixedBytes([0x44; 20]));
 
         // add committed blocks to buffer
-        let mut buffer = CommittedBlkBuffer::new(3);
+        let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
         let block1 = (
             BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
@@ -867,12 +848,12 @@ mod test {
     #[test]
     fn test_compute_txn_fee_overflow() {
         // setup test addresses
-        let address1 = EthAddress(Address(FixedBytes([0x11; 20])));
-        let address2 = EthAddress(Address(FixedBytes([0x22; 20])));
-        let address3 = EthAddress(Address(FixedBytes([0x33; 20])));
+        let address1 = Address(FixedBytes([0x11; 20]));
+        let address2 = Address(FixedBytes([0x22; 20]));
+        let address3 = Address(FixedBytes([0x33; 20]));
 
         // add committed blocks to buffer
-        let mut buffer = CommittedBlkBuffer::new(3);
+        let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
         let block1 = (
             BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),

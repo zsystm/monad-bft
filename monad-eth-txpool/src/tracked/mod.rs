@@ -1,16 +1,18 @@
 use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
+use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
-    block::BlockType,
-    payload::{FullTransactionList, PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT},
-    signature_collection::SignatureCollection,
+    payload::PROPOSAL_SIZE_LIMIT, signature_collection::SignatureCollection,
     txpool::TxPoolInsertionError,
 };
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_tx::{EthFullTransactionList, EthTransaction};
-use monad_eth_types::EthAddress;
+use monad_eth_types::PROPOSAL_GAS_LIMIT;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
@@ -40,20 +42,21 @@ const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 10;
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
 /// account_nonce for the seqnum stored in last_commit_seq_num.
 #[derive(Clone, Debug)]
-pub struct TrackedTxMap<SCT, SBT> {
+pub struct TrackedTxMap<ST, SCT, SBT> {
     last_commit_seq_num: Option<SeqNum>,
     tx_expiry: Duration,
 
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
-    txs: IndexMap<EthAddress, TrackedTxList>,
+    txs: IndexMap<Address, TrackedTxList>,
 
-    _phantom: PhantomData<(SCT, SBT)>,
+    _phantom: PhantomData<(ST, SCT, SBT)>,
 }
 
-impl<SCT, SBT> TrackedTxMap<SCT, SBT>
+impl<ST, SCT, SBT> TrackedTxMap<ST, SCT, SBT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
     pub fn new(tx_expiry: Duration) -> Self {
@@ -95,13 +98,13 @@ where
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
-        block_policy: &EthBlockPolicy,
-        extending_blocks: Vec<&EthValidatedBlock<SCT>>,
+        block_policy: &EthBlockPolicy<ST, SCT>,
+        extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
-    ) -> Result<FullTransactionList, StateBackendError> {
+    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
         let Some(last_commit_seq_num) = self.last_commit_seq_num else {
-            return Ok(FullTransactionList::empty());
+            return Ok(Vec::new());
         };
 
         assert!(
@@ -116,7 +119,7 @@ where
                 "last commit update does not match block policy last commit"
             );
 
-            return Ok(FullTransactionList::empty());
+            return Ok(Vec::new());
         }
 
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
@@ -131,7 +134,7 @@ where
         )?;
 
         if self.txs.is_empty() || tx_limit == 0 {
-            return Ok(FullTransactionList::empty());
+            return Ok(Vec::new());
         }
 
         let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
@@ -155,22 +158,20 @@ where
             self.create_proposal_tx_list(tx_limit, proposal_gas_limit, tx_heap, account_balances)?;
 
         let proposal_num_tx = proposal_tx_list.len();
-        let proposal_rlp_tx_list = EthFullTransactionList(proposal_tx_list).rlp_encode();
 
         info!(
             ?proposed_seq_num,
             ?proposal_num_tx,
             proposal_total_gas,
-            proposal_tx_bytes = proposal_rlp_tx_list.len(),
             "created proposal"
         );
 
-        Ok(FullTransactionList::new(proposal_rlp_tx_list))
+        Ok(proposal_tx_list)
     }
 
     pub fn promote_pending(
         &mut self,
-        block_policy: &EthBlockPolicy,
+        block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
         max_promotable: usize,
@@ -196,7 +197,7 @@ where
         }
 
         let addresses = to_insert.len();
-        DropTimer::start(Duration::ZERO, |elapsed| {
+        let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
             debug!(?elapsed, addresses, "txpool promote_pending")
         });
 
@@ -209,7 +210,7 @@ where
         let account_nonces = block_policy.get_account_base_nonces(
             last_commit_seq_num + SeqNum(1),
             state_backend,
-            &Vec::<&EthValidatedBlock<SCT>>::default(),
+            &Vec::default(),
             addresses.iter(),
         )?;
 
@@ -241,8 +242,8 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
-        mut account_balances: BTreeMap<&EthAddress, u128>,
-    ) -> Result<(u64, Vec<EthTransaction>), StateBackendError> {
+        mut account_balances: BTreeMap<&Address, u128>,
+    ) -> Result<(u64, Vec<Recovered<TxEnvelope>>), StateBackendError> {
         assert!(tx_limit > 0);
 
         let mut txs = Vec::new();
@@ -297,10 +298,10 @@ where
 
     pub fn update_committed_block(
         &mut self,
-        committed_block: &EthValidatedBlock<SCT>,
+        committed_block: &EthValidatedBlock<ST, SCT>,
         pending: &mut PendingTxMap,
     ) {
-        if committed_block.is_empty_block() {
+        if committed_block.header().is_empty_block() {
             // TODO this is error-prone, easy to forget
             // TODO write tests that fail if this doesn't exist
             return;
@@ -364,7 +365,7 @@ where
         }
     }
 
-    pub fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<SCT>>) {
+    pub fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<ST, SCT>>) {
         self.txs.clear();
         self.last_commit_seq_num = last_delay_committed_blocks
             .last()

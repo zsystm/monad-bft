@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -10,7 +11,7 @@ use clap::CommandFactory;
 use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, payload::PROPOSAL_GAS_LIMIT};
+use monad_consensus_types::metrics::Metrics;
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -19,10 +20,11 @@ use monad_crypto::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
+use monad_eth_types::PROPOSAL_GAS_LIMIT;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ipc::IpcReceiver;
-use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
+use monad_ledger::MonadBlockFileLedger;
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 #[cfg(feature = "full-node")]
 use monad_router_filter::FullNodeRouterFilter;
@@ -63,7 +65,7 @@ mod cli;
 use cli::Cli;
 
 mod config;
-use config::{SignatureCollectionType, SignatureType};
+use config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
 
 mod error;
 use error::NodeSetupError;
@@ -157,8 +159,8 @@ async fn run(
 
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
-            MonadMessage<SignatureType, SignatureCollectionType>,
-            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+            MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         >(
             node_state.node_config.network.clone(),
             node_state.router_identity,
@@ -199,9 +201,6 @@ async fn run(
             node_state.execution_ledger_path,
             node_state.bft_block_header_path,
             node_state.bft_block_payload_path,
-            EthHeaderParam {
-                gas_limit: PROPOSAL_GAS_LIMIT,
-            },
         ),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
@@ -252,7 +251,7 @@ async fn run(
         ),
     };
 
-    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> = WALoggerConfig::new(
+    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
         node_state.wal_path.clone(), // output wal path
         false,                       // flush on every write
     );
@@ -265,7 +264,11 @@ async fn run(
         return Err(());
     };
 
-    let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
+    let triedb_handle = TriedbReader::try_new(node_state.triedb_path.as_path())
+        .expect("triedb should exist in path");
+    let mut last_ledger_tip = triedb_handle
+        .get_latest_finalized_block()
+        .unwrap_or(SeqNum(0));
     let builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
@@ -275,10 +278,10 @@ async fn run(
         // TODO(andr-dev): Add tx_expiry to node config
         #[cfg(not(feature = "full-node"))]
         transaction_pool: EthTxPool::new(true, Duration::from_secs(5)),
-        block_validator: EthValidator {
-            tx_limit: node_state.node_config.consensus.block_txn_limit,
-            chain_id: node_state.node_config.chain_id,
-        },
+        block_validator: EthValidator::new(
+            node_state.node_config.consensus.block_txn_limit,
+            node_state.node_config.chain_id,
+        ),
         // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only
         // mode
         block_policy: EthBlockPolicy::new(
@@ -287,15 +290,14 @@ async fn run(
             node_state.node_config.chain_id,
         ),
         state_backend: StateBackendCache::new(
-            TriedbReader::try_new(node_state.triedb_path.as_path())
-                .expect("triedb should exist in path"),
+            triedb_handle,
             SeqNum(node_state.node_config.consensus.execution_delay),
         ),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
         epoch_start_delay: Round(5000),
-        beneficiary: node_state.node_config.beneficiary,
+        beneficiary: node_state.node_config.beneficiary.into(),
         forkpoint: node_state.forkpoint_config.into(),
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
@@ -311,6 +313,7 @@ async fn run(
             vote_pace: Duration::from_millis(1000),
             timestamp_latency_estimate_ns: 20_000_000,
         },
+        _phantom: PhantomData,
     };
 
     let (mut state, init_commands) = builder.build();
@@ -475,7 +478,12 @@ async fn build_raptorcast_router<M, OM>(
     identity: <SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
     full_nodes: &[FullNodeIdentityConfig],
-) -> RaptorCast<SignatureType, M, OM, MonadEvent<SignatureType, SignatureCollectionType>>
+) -> RaptorCast<
+    SignatureType,
+    M,
+    OM,
+    MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
         + Deserializable<Bytes>

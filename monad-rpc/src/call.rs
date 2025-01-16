@@ -1,4 +1,4 @@
-use std::{cmp::min, path::Path};
+use std::cmp::min;
 
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
@@ -327,7 +327,6 @@ pub struct MonadEthCallParams {
 #[rpc(method = "eth_call", ignore = "chain_id")]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    execution_ledger_path: &Path,
     chain_id: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
@@ -403,15 +402,20 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     }
 
     let sender = params.transaction.from.unwrap_or_default();
+    let tx_chain_id = params
+        .transaction
+        .chain_id
+        .expect("chain id must be populated")
+        .to::<u64>();
     let txn: TxEnvelope = params.transaction.try_into()?;
     let block_number = header.header.number;
     match monad_cxx::eth_call(
+        tx_chain_id,
         txn,
         header.header,
         sender,
         block_number,
         &triedb_env.path(),
-        execution_ledger_path,
         state_overrides,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {

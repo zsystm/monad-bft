@@ -2,11 +2,8 @@ use bytes::Bytes;
 use monad_bls::BlsSignatureCollection;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use monad_consensus::messages::consensus_message::{ConsensusMessage, ProtocolMessage};
-use monad_consensus_types::{
-    payload::{FullTransactionList, TransactionPayload},
-    state_root_hash::StateRootHash,
-    voting::ValidatorMapping,
-};
+use monad_consensus_types::voting::ValidatorMapping;
+use monad_eth_types::EthExecutionProtocol;
 use monad_secp::SecpSignature;
 use monad_state::VerifiedMonadMessage;
 use monad_testutil::{proposal::ProposalGen, validators::create_keys_w_validators};
@@ -19,18 +16,11 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use peak_alloc::PeakAlloc;
-use rand_chacha::rand_core::{RngCore, SeedableRng};
 
 #[global_allocator]
 static PEAK_ALLOC: PeakAlloc = PeakAlloc;
 
 fn main() {
-    // created a serialized proposal message
-    // transaction hashes follow a random distribution
-    let mut transactions = [0x00_u8; 400 * 5000];
-    let mut rng = rand_chacha::ChaCha8Rng::from_entropy();
-    rng.fill_bytes(&mut transactions);
-
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<
         SecpSignature,
         BlsSignatureCollection<_>,
@@ -43,8 +33,8 @@ fn main() {
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(Epoch(1), validator_stakes, ValidatorMapping::new(valmap));
     let election = SimpleRoundRobin::default();
-    let mut propgen: ProposalGen<_, _> =
-        ProposalGen::<SecpSignature, BlsSignatureCollection<_>>::new();
+    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection<_>, EthExecutionProtocol> =
+        ProposalGen::new();
 
     let proposal = propgen
         .next_proposal(
@@ -53,17 +43,17 @@ fn main() {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionPayload::List(FullTransactionList::new(transactions.to_vec().into())),
-            StateRootHash::default(),
+            false,      // is_null
+            Vec::new(), // delayed_execution_results
         )
         .destructure()
         .2;
 
     let epoch = epoch_manager
-        .get_epoch(proposal.block.round)
+        .get_epoch(proposal.block_header.round)
         .expect("epoch exists");
     let proposer_leader = election.get_leader(
-        proposal.block.round,
+        proposal.block_header.round,
         val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
     );
     let leader_key = keys
@@ -71,11 +61,11 @@ fn main() {
         .find(|k| k.pubkey() == proposer_leader.pubkey())
         .expect("key in valset");
 
-    let proposal: VerifiedMonadMessage<_, _> = ConsensusMessage {
+    let proposal: VerifiedMonadMessage<_, _, _> = ConsensusMessage {
         version: "Example".into(),
         message: ProtocolMessage::Proposal(proposal),
     }
-    .sign::<SecpSignature>(leader_key)
+    .sign(leader_key)
     .into();
 
     let proposal_bytes: Bytes = proposal.serialize();

@@ -85,27 +85,6 @@ int triedb_read(
     return value_len;
 }
 
-int triedb_read_data(
-    triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
-    uint64_t block_id)
-{
-    auto result = db->db_.get_data(
-        monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
-    if (!result.has_value()) {
-        return -1;
-    }
-
-    auto const &value_view = result.value();
-    if ((value_view.size() >> std::numeric_limits<int>::digits) != 0) {
-        // value length doesn't fit in return type
-        return -2;
-    }
-    int const value_len = (int)value_view.size();
-    *value = new uint8_t[value_len];
-    memcpy((void *)*value, value_view.data(), value_len);
-    return value_len;
-}
-
 void triedb_async_read(
     triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
     void (*completed)(bytes value, int length, void *user), void *user)
@@ -250,30 +229,14 @@ int triedb_finalize(bytes value)
     return 0;
 }
 
-uint64_t triedb_earliest_block(triedb *db)
+uint64_t triedb_latest_finalized_block(triedb *db)
 {
-    uint64_t earliest_block_id = db->db_.get_earliest_block_id();
-
-    if (earliest_block_id != monad::mpt::INVALID_BLOCK_ID) {
-        return earliest_block_id;
-    }
-    else {
-        // no block has been produced
-        // FIXME we need an error value for this
-        return 0;
-    }
+    uint64_t latest_block_id = db->db_.get_latest_finalized_block_id();
+    return latest_block_id;
 }
 
-uint64_t triedb_latest_block(triedb *db)
+uint64_t triedb_earliest_finalized_block(triedb *db)
 {
-    uint64_t latest_block_id = db->db_.get_latest_block_id();
-
-    if (latest_block_id != monad::mpt::INVALID_BLOCK_ID) {
-        return latest_block_id;
-    }
-    else {
-        // no block has been produced
-        // FIXME we need an error value for this
-        return 0;
-    }
+    uint64_t earliest_block_id = db->db_.get_earliest_block_id();
+    return earliest_block_id;
 }

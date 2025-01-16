@@ -8,7 +8,7 @@ import "blocksync.proto";
 import "message.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
-import "state_root_hash.proto";
+import "execution.proto";
 import "timeout.proto";
 import "validator_data.proto";
 
@@ -43,8 +43,9 @@ message ProtoUpdateValidatorsEvent {
   monad_proto.basic.ProtoEpoch epoch = 2;
 }
 
-message ProtoStateUpdateEvent {
-  monad_proto.state_root_hash.ProtoStateRootHashInfo info = 1;
+message ProtoFinalizedExecutionResult {
+  monad_proto.basic.ProtoSeqNum seq_num = 1;
+  bytes result = 2;
 }
 
 message ProtoTimestampUpdate {
@@ -107,6 +108,12 @@ message ProtoMempoolEvent {
   oneof event {
     ProtoUserTx usertx = 1;
     ProtoForwardedTxs forwarded_txs = 2;
+  }
+}
+
+message ProtoExecutionResult {
+  oneof event {
+    ProtoFinalizedExecutionResult finalized = 2;
   }
 }
 
@@ -210,17 +217,8 @@ message ProtoDoneSync {
   monad_proto.basic.ProtoSeqNum seq_num = 1;
 }
 
-message ProtoRootInfo {
-  monad_proto.basic.ProtoRound round = 1;
-  monad_proto.basic.ProtoSeqNum seq_num = 2;
-  monad_proto.basic.ProtoEpoch epoch = 3;
-  monad_proto.basic.ProtoBlockId block_id = 4;
-  monad_proto.state_root_hash.ProtoStateRootHash state_root = 5;
-  uint64 timestamp_ns = 6;
-}
-
 message ProtoRequestSync {
-  ProtoRootInfo root = 1;
+  monad_proto.block.ProtoBlockHeader root = 3;
   monad_proto.quorum_certificate.ProtoQuorumCertificate high_qc = 2;
 }
 
@@ -240,7 +238,7 @@ message ProtoMonadEvent{
     ProtoBlockSyncEvent block_sync_event = 2;
     ProtoValidatorEvent validator_event = 3;
     ProtoMempoolEvent mempool_event = 4;
-    ProtoStateUpdateEvent state_root_event = 5;
+    ProtoExecutionResult execution_result_event = 5;
     ProtoControlPanelEvent control_panel_event = 7;
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;

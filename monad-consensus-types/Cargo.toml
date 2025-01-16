@@ -12,11 +12,11 @@ bench = false
 
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-types = { path = "../monad-eth-types" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 
+alloy-rlp = { workspace = true }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
@@ -24,5 +24,4 @@ prost = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
-tracing = { workspace = true }
 zerocopy = { workspace = true }

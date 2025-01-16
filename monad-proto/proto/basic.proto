@@ -34,14 +34,6 @@ message ProtoStake {
   int64 stake = 1;
 }
 
-message ProtoGas {
-  uint64 gas = 1;
-}
-
-message ProtoBloom {
-  bytes bloom = 1;
-}
-
-message ProtoPayloadId {
+message ProtoBlockBodyId {
   ProtoHash pid = 1;
 }

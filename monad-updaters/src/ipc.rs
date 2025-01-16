@@ -8,17 +8,20 @@ use std::{
 use bytes::Bytes;
 use futures::Stream;
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_executor_glue::{MempoolEvent, MonadEvent};
+use monad_types::ExecutionProtocol;
 
-pub struct MockIpcReceiver<ST, SCT> {
+pub struct MockIpcReceiver<ST, SCT, EPT> {
     transactions: Vec<Bytes>,
 
     waker: Option<Waker>,
-    _phantom: PhantomData<(ST, SCT)>,
+    _phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
-impl<ST, SCT> Default for MockIpcReceiver<ST, SCT> {
+impl<ST, SCT, EPT> Default for MockIpcReceiver<ST, SCT, EPT> {
     fn default() -> Self {
         Self {
             transactions: Default::default(),
@@ -28,7 +31,7 @@ impl<ST, SCT> Default for MockIpcReceiver<ST, SCT> {
     }
 }
 
-impl<ST, SCT> MockIpcReceiver<ST, SCT> {
+impl<ST, SCT, EPT> MockIpcReceiver<ST, SCT, EPT> {
     pub fn add_transaction(&mut self, txn: Bytes) {
         self.transactions.push(txn);
 
@@ -36,19 +39,19 @@ impl<ST, SCT> MockIpcReceiver<ST, SCT> {
             waker.wake()
         };
     }
-
     pub fn ready(&self) -> bool {
         !self.transactions.is_empty()
     }
 }
 
-impl<ST, SCT> Stream for MockIpcReceiver<ST, SCT>
+impl<ST, SCT, EPT> Stream for MockIpcReceiver<ST, SCT, EPT>
 where
     Self: Unpin,
     ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,

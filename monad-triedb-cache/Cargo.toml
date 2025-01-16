@@ -10,5 +10,7 @@ bench = false
 monad-state-backend = { path = "../monad-state-backend" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-types = { path = "../monad-types" }
+
+alloy-primitives = { workspace = true }
 itertools = { workspace = true }
 tracing = { workspace = true }

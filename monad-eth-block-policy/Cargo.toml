@@ -9,7 +9,6 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
@@ -21,5 +20,7 @@ sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-testutil = { path = "../monad-testutil" }
+
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }

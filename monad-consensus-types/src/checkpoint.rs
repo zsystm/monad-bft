@@ -3,17 +3,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash, validator_data::ValidatorSetDataWithEpoch,
+    validator_data::ValidatorSetDataWithEpoch,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootInfo {
     pub round: Round,
     pub seq_num: SeqNum,
     pub epoch: Epoch,
     pub block_id: BlockId,
-    pub state_root: StateRootHash,
-    pub timestamp_ns: u64, // FIXME: using u64 because toml doesn't support u128. Once we remove timestamp from checkpoint we should change it back
+    pub timestamp_ns: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,7 +21,7 @@ pub struct Checkpoint<SCT: SignatureCollection> {
     // TODO when we have a consensus genesis block, we only need root_id.
     // We need the full RootInfo right now because GENESIS_BLOCK_ID doesn't have an associated
     // block.
-    pub root: RootInfo,
+    pub root: BlockId,
     // TODO high_round?
     #[serde(bound(
         serialize = "SCT: SignatureCollection",

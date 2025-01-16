@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
     time::Duration,
 };
 
@@ -33,6 +34,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
     pub state_builder: MonadStateBuilder<
         S::SignatureType,
         S::SignatureCollectionType,
+        S::ExecutionProtocolType,
         S::BlockPolicyType,
         S::StateBackendType,
         S::ValidatorSetTypeFactory,
@@ -55,6 +57,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         state_builder: MonadStateBuilder<
             S::SignatureType,
             S::SignatureCollectionType,
+            S::ExecutionProtocolType,
             S::BlockPolicyType,
             S::StateBackendType,
             S::ValidatorSetTypeFactory,
@@ -90,6 +93,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         S: SwarmRelation<
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
+            ExecutionProtocolType = <DebugSwarmRelation as SwarmRelation>::ExecutionProtocolType,
             TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
             BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
             StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
@@ -117,6 +121,8 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 beneficiary: self.state_builder.beneficiary,
                 forkpoint: self.state_builder.forkpoint,
                 consensus_config: self.state_builder.consensus_config,
+
+                _phantom: PhantomData,
             },
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),
@@ -224,7 +230,7 @@ impl<S: SwarmRelation> Node<S> {
         )>,
     ) -> Option<(
         Duration,
-        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     )> {
         while let Some((tick, event_type)) = self.peek_event() {
             let _mock_swarm_span = tracing::trace_span!("mock_swarm_span", ?tick).entered();

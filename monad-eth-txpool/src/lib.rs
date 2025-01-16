@@ -1,16 +1,25 @@
 use std::time::Duration;
 
+use alloy_consensus::{
+    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
-    payload::FullTransactionList,
+    block::ProposedExecutionInputs,
+    payload::RoundSignature,
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
 };
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_tx::{EthSignedTransaction, EthTransaction};
-use monad_eth_types::{Balance, EthAddress};
+use monad_eth_types::{
+    Balance, EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS,
+    PROPOSAL_GAS_LIMIT,
+};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -31,15 +40,16 @@ const INSERT_TXS_MIN_PROMOTE: usize = 32;
 const INSERT_TXS_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
-pub struct EthTxPool<SCT, SBT> {
+pub struct EthTxPool<ST, SCT, SBT> {
     do_local_insert: bool,
     pending: PendingTxMap,
-    tracked: TrackedTxMap<SCT, SBT>,
+    tracked: TrackedTxMap<ST, SCT, SBT>,
 }
 
-impl<SCT, SBT> EthTxPool<SCT, SBT>
+impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
     pub fn new(do_local_insert: bool, tx_expiry: Duration) -> Self {
@@ -67,14 +77,10 @@ where
 
     pub fn promote_pending(
         &mut self,
-        block_policy: &EthBlockPolicy,
+        block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
         max_promotable: usize,
-    ) -> Result<(), StateBackendError>
-    where
-        SCT: SignatureCollection,
-        SBT: StateBackend,
-    {
+    ) -> Result<(), StateBackendError> {
         self.tracked.promote_pending(
             block_policy,
             state_backend,
@@ -85,8 +91,8 @@ where
 
     fn validate_and_insert_tx(
         &mut self,
-        tx: EthTransaction,
-        block_policy: &EthBlockPolicy,
+        tx: Recovered<TxEnvelope>,
+        block_policy: &EthBlockPolicy<ST, SCT>,
         account_balance: &Balance,
     ) -> Result<(), TxPoolInsertionError> {
         if !self.do_local_insert {
@@ -106,11 +112,11 @@ where
 
     fn validate_and_insert_txs(
         &mut self,
-        block_policy: &EthBlockPolicy,
+        block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &impl StateBackend,
-        txs: Vec<EthTransaction>,
+        txs: Vec<Recovered<TxEnvelope>>,
     ) -> Result<Vec<Result<(), TxPoolInsertionError>>, StateBackendError> {
-        let senders = txs.iter().map(|tx| EthAddress(tx.signer())).collect_vec();
+        let senders = txs.iter().map(|tx| tx.signer()).collect_vec();
 
         // BlockPolicy only guarantees that data is available for seqnum (N-k, N] for some execution
         // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit
@@ -118,7 +124,7 @@ where
         // the edge of the range.
         let block_seq_num = block_policy.get_last_commit() + SeqNum(1);
 
-        let sender_account_balances = block_policy.compute_account_base_balances::<SCT>(
+        let sender_account_balances = block_policy.compute_account_base_balances(
             block_seq_num,
             state_backend,
             None,
@@ -143,15 +149,17 @@ where
     }
 }
 
-impl<SCT, SBT> TxPool<SCT, EthBlockPolicy, SBT> for EthTxPool<SCT, SBT>
+impl<ST, SCT, SBT> TxPool<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
+    for EthTxPool<ST, SCT, SBT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
     fn insert_tx(
         &mut self,
         txns: Vec<Bytes>,
-        block_policy: &EthBlockPolicy,
+        block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
     ) -> Vec<Bytes> {
         if let Err(state_backend_error) = self.promote_pending(
@@ -173,9 +181,9 @@ where
         let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
             .into_par_iter()
             .filter_map(|raw_tx| {
-                let tx = EthSignedTransaction::decode(&mut raw_tx.as_ref()).ok()?;
+                let tx = TxEnvelope::decode(&mut raw_tx.as_ref()).ok()?;
                 let signer = tx.recover_signer().ok()?;
-                Some((EthTransaction::new_unchecked(tx, signer), raw_tx))
+                Some((Recovered::new_unchecked(tx, signer), raw_tx))
             })
             .unzip();
 
@@ -201,13 +209,21 @@ where
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
-        block_policy: &EthBlockPolicy,
-        extending_blocks: Vec<&EthValidatedBlock<SCT>>,
+        beneficiary: [u8; 20],
+        timestamp_ns: u128,
+        round_signature: &RoundSignature<SCT::SignatureType>,
+
+        block_policy: &EthBlockPolicy<ST, SCT>,
+        extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
-    ) -> Result<FullTransactionList, StateBackendError> {
+    ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
         self.tracked.evict_expired_txs();
 
-        self.tracked.create_proposal(
+        let timestamp_seconds = timestamp_ns / 1_000_000_000;
+        // u64::MAX seconds is ~500 Billion years
+        assert!(timestamp_seconds < u64::MAX.into());
+
+        let transactions = self.tracked.create_proposal(
             proposed_seq_num,
             tx_limit.min(MAX_PROPOSAL_SIZE),
             proposal_gas_limit,
@@ -215,17 +231,51 @@ where
             extending_blocks,
             state_backend,
             &mut self.pending,
-        )
+        )?;
+
+        let body = EthBlockBody {
+            transactions: transactions.into_iter().map(|tx| tx.into_tx()).collect(),
+            ommers: Vec::new(),
+            withdrawals: Vec::new(),
+        };
+        let header = ProposedEthHeader {
+            transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
+                &body.transactions,
+            ),
+            ommers_hash: {
+                assert_eq!(body.ommers.len(), 0);
+                *EMPTY_OMMER_ROOT_HASH
+            },
+            withdrawals_root: {
+                assert_eq!(body.withdrawals.len(), 0);
+                *EMPTY_WITHDRAWALS
+            },
+
+            beneficiary: beneficiary.into(),
+            difficulty: 0,
+            number: proposed_seq_num.0,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            timestamp: timestamp_seconds as u64,
+            mix_hash: round_signature.get_hash().0,
+            nonce: [0_u8; 8],
+            extra_data: [0_u8; 32],
+            base_fee_per_gas: BASE_FEE_PER_GAS,
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+            parent_beacon_block_root: [0_u8; 32],
+        };
+
+        Ok(ProposedExecutionInputs { header, body })
     }
 
-    fn update_committed_block(&mut self, committed_block: &EthValidatedBlock<SCT>) {
+    fn update_committed_block(&mut self, committed_block: &EthValidatedBlock<ST, SCT>) {
         self.tracked
             .update_committed_block(committed_block, &mut self.pending);
 
         self.tracked.evict_expired_txs();
     }
 
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<SCT>>) {
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<ST, SCT>>) {
         self.tracked.reset(last_delay_committed_blocks);
     }
 }

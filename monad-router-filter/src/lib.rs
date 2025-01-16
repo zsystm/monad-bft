@@ -9,19 +9,24 @@ use monad_crypto::certificate_signature::{
 use monad_executor::Executor;
 use monad_executor_glue::{ConsensusEvent, MonadEvent, RouterCommand};
 use monad_state::VerifiedMonadMessage;
+use monad_types::ExecutionProtocol;
 
-pub struct FullNodeRouterFilter<ST, SCT, R> {
+pub struct FullNodeRouterFilter<ST, SCT, EPT, R> {
     router: R,
-    _phantom: PhantomData<(ST, SCT)>,
+    _phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
-impl<ST, SCT, R> FullNodeRouterFilter<ST, SCT, R>
+impl<ST, SCT, EPT, R> FullNodeRouterFilter<ST, SCT, EPT, R>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
     R: Executor<
-            Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
-        > + Stream<Item = MonadEvent<ST, SCT>>
+            Command = RouterCommand<
+                CertificateSignaturePubKey<ST>,
+                VerifiedMonadMessage<ST, SCT, EPT>,
+            >,
+        > + Stream<Item = MonadEvent<ST, SCT, EPT>>
         + Unpin,
 {
     pub fn new(router: R) -> Self {
@@ -32,15 +37,17 @@ where
     }
 }
 
-impl<ST, SCT, R> Executor for FullNodeRouterFilter<ST, SCT, R>
+impl<ST, SCT, EPT, R> Executor for FullNodeRouterFilter<ST, SCT, EPT, R>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
     R: Executor<
-        Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
+        Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>,
     >,
 {
-    type Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>;
+    type Command =
+        RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let filtered = commands
@@ -70,15 +77,16 @@ where
     }
 }
 
-impl<ST, SCT, R> Stream for FullNodeRouterFilter<ST, SCT, R>
+impl<ST, SCT, EPT, R> Stream for FullNodeRouterFilter<ST, SCT, EPT, R>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    R: Stream<Item = MonadEvent<ST, SCT>> + Unpin,
+    EPT: ExecutionProtocol,
+    R: Stream<Item = MonadEvent<ST, SCT, EPT>> + Unpin,
 
     Self: Unpin,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,

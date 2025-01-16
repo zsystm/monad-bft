@@ -1,11 +1,17 @@
 use auto_impl::auto_impl;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::SeqNum;
+use monad_types::{ExecutionProtocol, SeqNum};
 
 use crate::{
-    block::{BlockPolicy, PassthruBlockPolicy},
-    payload::FullTransactionList,
+    block::{
+        BlockPolicy, MockExecutionBody, MockExecutionProposedHeader, MockExecutionProtocol,
+        PassthruBlockPolicy, ProposedExecutionInputs,
+    },
+    payload::RoundSignature,
     signature_collection::SignatureCollection,
 };
 
@@ -22,10 +28,12 @@ pub enum TxPoolInsertionError {
 /// This trait represents the storage of transactions that
 /// are potentially available for a proposal
 #[auto_impl(Box)]
-pub trait TxPool<SCT, BPT, SBT>
+pub trait TxPool<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     /// Handle transactions:
@@ -44,17 +52,20 @@ where
         block_policy: &BPT,
         state_backend: &SBT,
     ) -> Vec<Bytes>;
-
     /// Returns an RLP encoded lists of transactions to include in the proposal
     fn create_proposal(
         &mut self,
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         gas_limit: u64,
+        beneficiary: [u8; 20],
+        timestamp_ns: u128,
+        round_signature: &RoundSignature<SCT::SignatureType>,
+
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
         state_backend: &SBT,
-    ) -> Result<FullTransactionList, StateBackendError>;
+    ) -> Result<ProposedExecutionInputs<EPT>, StateBackendError>;
 
     /// Optional callback on block commit
     /// Can be used for clearing of stale txs from txpool
@@ -83,9 +94,11 @@ impl Default for MockTxPool {
     }
 }
 
-impl<SCT> TxPool<SCT, PassthruBlockPolicy, InMemoryState> for MockTxPool
+impl<ST, SCT> TxPool<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>
+    for MockTxPool
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn insert_tx(
         &mut self,
@@ -95,38 +108,48 @@ where
     ) -> Vec<Bytes> {
         vec![]
     }
-
     fn create_proposal(
         &mut self,
         _proposed_seq_num: SeqNum,
         tx_limit: usize,
         _gas_limit: u64,
+        _beneficiary: [u8; 20],
+        _timestamp_ns: u128,
+        _round_signature: &RoundSignature<SCT::SignatureType>,
+
         _block_policy: &PassthruBlockPolicy,
         _pending_blocks: Vec<
-            &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
+            &<PassthruBlockPolicy as BlockPolicy<ST, SCT, MockExecutionProtocol, InMemoryState>>::ValidatedBlock,
         >,
         _state_backend: &InMemoryState,
-    ) -> Result<FullTransactionList, StateBackendError> {
-        if tx_limit == 0 {
-            Ok(FullTransactionList::empty())
-        } else {
-            // Random non-empty value with size = num_fetch_txs * hash_size
-            let mut buf = vec![0; tx_limit * TXN_SIZE];
-            self.rng.fill_bytes(buf.as_mut_slice());
-            Ok(FullTransactionList::new(buf.into()))
-        }
+    ) -> Result<ProposedExecutionInputs<MockExecutionProtocol>, StateBackendError> {
+        let header = MockExecutionProposedHeader {};
+        let body = MockExecutionBody {
+            data: {
+                // Random non-empty value with size = num_fetch_txs * hash_size
+                let mut buf = BytesMut::zeroed(tx_limit * TXN_SIZE);
+                self.rng.fill_bytes(&mut buf);
+                buf.freeze()
+            },
+        };
+        Ok(ProposedExecutionInputs { header, body })
     }
 
     fn update_committed_block(
         &mut self,
-        _committed_block: &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
+        _committed_block: &<PassthruBlockPolicy as BlockPolicy<
+            ST,
+            SCT,
+            MockExecutionProtocol,
+            InMemoryState,
+        >>::ValidatedBlock,
     ) {
     }
 
     fn reset(
         &mut self,
         _last_delay_committed_blocks: Vec<
-            &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
+            &<PassthruBlockPolicy as BlockPolicy<ST, SCT, MockExecutionProtocol, InMemoryState>>::ValidatedBlock,
         >,
     ) {
     }

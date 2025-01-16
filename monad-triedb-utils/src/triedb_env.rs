@@ -19,7 +19,7 @@ use crate::{
         rlp_decode_account, rlp_decode_block_num, rlp_decode_storage_slot,
         rlp_decode_transaction_location,
     },
-    key::{create_triedb_key, KeyInput},
+    key::{create_triedb_key, KeyInput, Version},
 };
 
 type EthAddress = [u8; 20];
@@ -93,7 +93,7 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
             Ok(triedb_request) => {
                 match triedb_request {
                     TriedbRequest::BlockNumberRequest(block_num_request) => {
-                        let block_num = triedb_handle.latest_block();
+                        let block_num = triedb_handle.latest_finalized_block().unwrap_or_default();
                         let _ = block_num_request.request_sender.send(block_num);
                     }
                     TriedbRequest::TraverseRequest(traverse_request) => {
@@ -254,7 +254,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::Address(&addr));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::Address(&addr));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -316,7 +317,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::Storage(&addr, &at));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::Storage(&addr, &at));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -367,7 +369,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CodeHash(&code_hash));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::CodeHash(&code_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -413,8 +416,10 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(KeyInput::ReceiptIndex(Some(receipt_index)));
+        let (triedb_key, key_len_nibbles) = create_triedb_key(
+            Version::Finalized,
+            KeyInput::ReceiptIndex(Some(receipt_index)),
+        );
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -462,7 +467,8 @@ impl Triedb for TriedbEnv {
         let (request_sender, request_receiver) = oneshot::channel();
 
         // receipt_index set to None to indiciate return all receipts
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::ReceiptIndex(None));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::ReceiptIndex(None));
 
         if let Err(e) = self
             .mpsc_sender
@@ -511,7 +517,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxIndex(Some(txn_index)));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::TxIndex(Some(txn_index)));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -563,7 +570,8 @@ impl Triedb for TriedbEnv {
         let (request_sender, request_receiver) = oneshot::channel();
 
         // txn_index set to None to indiciate return all transactions
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxIndex(None));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::TxIndex(None));
 
         if let Err(e) = self
             .mpsc_sender
@@ -608,7 +616,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::BlockHeader);
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::BlockHeader);
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -664,7 +673,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxHash(&tx_hash));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::TxHash(&tx_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -721,7 +731,8 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::BlockHash(&block_hash));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::BlockHash(&block_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -772,7 +783,8 @@ impl Triedb for TriedbEnv {
     ) -> Result<Option<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(Some(txn_index)));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::CallFrame(Some(txn_index)));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -810,7 +822,8 @@ impl Triedb for TriedbEnv {
     async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(None));
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Finalized, KeyInput::CallFrame(None));
 
         if let Err(e) = self
             .mpsc_sender

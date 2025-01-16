@@ -3,15 +3,17 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_proto::{error::ProtoError, proto::message::*};
+use monad_types::ExecutionProtocol;
 
 use crate::{MonadMessage, VerifiedMonadMessage};
 
-impl<ST, SCT> From<&VerifiedMonadMessage<ST, SCT>> for ProtoMonadMessage
+impl<ST, SCT, EPT> From<&VerifiedMonadMessage<ST, SCT, EPT>> for ProtoMonadMessage
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: &VerifiedMonadMessage<ST, SCT>) -> Self {
+    fn from(value: &VerifiedMonadMessage<ST, SCT, EPT>) -> Self {
         Self {
             oneof_message: Some(match value {
                 VerifiedMonadMessage::Consensus(msg) => {
@@ -36,10 +38,11 @@ where
     }
 }
 
-impl<ST, SCT> TryFrom<ProtoMonadMessage> for MonadMessage<ST, SCT>
+impl<ST, SCT, EPT> TryFrom<ProtoMonadMessage> for MonadMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Error = ProtoError;
 

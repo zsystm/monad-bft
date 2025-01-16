@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use actix::prelude::*;
 use actix_http::body::BoxBody;
@@ -224,25 +224,15 @@ async fn rpc_select(
         "eth_call" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
-            let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
-                debug!("execution ledger path was not set");
-                return Err(JsonRpcError::method_not_supported());
-            };
-
             // acquire the concurrent requests permit
             let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
                 JsonRpcError::internal_error("eth_call concurrent requests limit".into())
             })?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_call(
-                triedb_env,
-                execution_ledger_path.as_path(),
-                app_state.chain_id,
-                params,
-            )
-            .await
-            .map(serialize_result)?
+            monad_eth_call(triedb_env, app_state.chain_id, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
@@ -407,25 +397,15 @@ async fn rpc_select(
                 return Err(JsonRpcError::method_not_supported());
             };
 
-            let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
-                debug!("execution ledger path was not set");
-                return Err(JsonRpcError::method_not_supported());
-            };
-
             // acquire the concurrent requests permit
             let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
                 JsonRpcError::internal_error("eth_estimateGas concurrent requests limit".into())
             })?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_estimateGas(
-                triedb_env,
-                execution_ledger_path.as_path(),
-                app_state.chain_id,
-                params,
-            )
-            .await
-            .map(serialize_result)?
+            monad_eth_estimateGas(triedb_env, app_state.chain_id, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_gasPrice" => {
             if let Some(triedb_env) = &app_state.triedb_reader {
@@ -517,15 +497,11 @@ async fn rpc_select(
     }
 }
 
-#[derive(Debug, Clone)]
-struct ExecutionLedgerPath(pub Option<PathBuf>);
-
 #[derive(Clone)]
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TxEnvelope>,
     triedb_reader: Option<TriedbEnv>,
     archive_reader: Option<ArchiveReaderType>,
-    execution_ledger_path: ExecutionLedgerPath,
     chain_id: u64,
     batch_request_limit: u16,
     max_response_size: u32,
@@ -547,7 +523,6 @@ impl MonadRpcResources {
         mempool_sender: flume::Sender<TxEnvelope>,
         triedb_reader: Option<TriedbEnv>,
         archive_reader: Option<ArchiveReaderType>,
-        execution_ledger_path: Option<PathBuf>,
         chain_id: u64,
         batch_request_limit: u16,
         max_response_size: u32,
@@ -559,7 +534,6 @@ impl MonadRpcResources {
             mempool_sender,
             triedb_reader,
             archive_reader,
-            execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
             chain_id,
             batch_request_limit,
             max_response_size,
@@ -708,7 +682,6 @@ async fn main() -> std::io::Result<()> {
         ipc_sender.clone(),
         triedb_env,
         archive_reader,
-        Some(args.execution_ledger_path),
         args.chain_id,
         args.batch_request_limit,
         args.max_response_size,
@@ -806,7 +779,6 @@ mod tests {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
             archive_reader: None,
-            execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 1337,
             batch_request_limit: 5,
             max_response_size: 25_000_000,

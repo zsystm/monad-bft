@@ -6,7 +6,7 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus_types::{
-        block::{BlockType, PassthruBlockPolicy},
+        block::{MockExecutionProtocol, PassthruBlockPolicy},
         block_validator::MockValidator,
         metrics::Metrics,
         txpool::MockTxPool,
@@ -47,33 +47,55 @@ mod test {
     impl SwarmRelation for ValidatorSwapSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type ExecutionProtocolType = MockExecutionProtocol;
         type StateBackendType = InMemoryState;
         type BlockPolicyType = PassthruBlockPolicy;
 
-        type TransportMessage =
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type TransportMessage = VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
 
         type BlockValidator = MockValidator;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
-        type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
+        type Ledger = MockLedger<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
 
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
-            MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+            MonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
+            VerifiedMonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
         >;
         type Pipeline = GenericTransformerPipeline<
             CertificateSignaturePubKey<Self::SignatureType>,
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor =
-            MockStateRootHashSwap<Self::SignatureType, Self::SignatureCollectionType>;
-        type StateSyncExecutor =
-            MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        type StateRootHashExecutor = MockStateRootHashSwap<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
+        type StateSyncExecutor = MockStateSyncExecutor<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
     }
 
     fn verify_nodes_in_epoch(nodes: Vec<&Node<impl SwarmRelation>>, epoch: Epoch) {
@@ -105,7 +127,7 @@ mod test {
 
         for node in nodes {
             let mut update_block = None;
-            for block in node.executor.ledger().get_blocks().values() {
+            for block in node.executor.ledger().get_finalized_blocks().values() {
                 if block.get_seq_num() == update_block_num {
                     update_block = Some(block);
                     break;
@@ -113,7 +135,7 @@ mod test {
             }
             let update_block = update_block.unwrap();
 
-            let update_block_round = update_block.block.round;
+            let update_block_round = update_block.get_round();
             let epoch_manager = node.state.epoch_manager();
             let epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
 
@@ -584,7 +606,7 @@ mod test {
             .map(|node| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .cloned()
                     .collect_vec()
@@ -594,14 +616,14 @@ mod test {
 
         for ledger in ledgers {
             for full_block in ledger {
-                if full_block.block.round < epoch_3_start_round {
+                if full_block.get_round() < epoch_3_start_round {
                     // the first two epochs both have genesis validators as the
                     // validator set
-                    assert!(genesis_validators.contains(&full_block.block.author));
-                } else if full_block.block.round < epoch_4_start_round {
-                    assert!(validators_epoch_3.contains(&full_block.block.author));
+                    assert!(genesis_validators.contains(full_block.get_author()));
+                } else if full_block.get_round() < epoch_4_start_round {
+                    assert!(validators_epoch_3.contains(full_block.get_author()));
                 } else {
-                    assert!(validators_epoch_4.contains(&full_block.block.author));
+                    assert!(validators_epoch_4.contains(full_block.get_author()));
                 }
             }
         }

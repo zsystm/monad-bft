@@ -4,47 +4,28 @@ package monad_proto.block;
 
 import "basic.proto";
 import "quorum_certificate.proto";
-import "state_root_hash.proto";
+import "signing.proto";
 
-message ProtoExecutionProtocol{
-  monad_proto.state_root_hash.ProtoStateRootHash state_root = 1;
-  monad_proto.basic.ProtoSeqNum seq_num = 2;
-  bytes beneficiary = 3;
-  bytes randao_reveal = 4;
+message ProtoBlockBody {
+  bytes execution_body = 1;
 }
 
-
-message ProtoEmptyBlockTransactionList {}
-
-message ProtoTransactionPayload {
-  oneof txns {
-    bytes list = 1;
-    ProtoEmptyBlockTransactionList empty = 2;
-    
-  }
-}
-
-message ProtoPayload {
-  ProtoTransactionPayload txns = 1;
-}
-
-enum ProtoBlockKind {
-  EXECUTABLE = 0;
-  NULL = 1;
-}
-
-message ProtoBlock {
+message ProtoBlockHeader {
   monad_proto.basic.ProtoNodeId author = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
   monad_proto.basic.ProtoRound round = 3;
-  ProtoExecutionProtocol execution = 4;
-  monad_proto.basic.ProtoPayloadId payload_id = 5;
-  ProtoBlockKind block_kind = 6;
-  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 7;
-  uint64 timestamp = 8;
+  repeated bytes delayed_execution_results = 4;
+  bytes execution_inputs = 10;
+  monad_proto.basic.ProtoBlockBodyId block_body_id = 5;
+  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 6;
+  monad_proto.basic.ProtoSeqNum seq_num = 8;
+  uint64 timestamp = 7;
+  monad_proto.signing.ProtoSignature round_signature = 9;
+
+  bool is_null = 11;
 }
 
 message ProtoFullBlock {
-    ProtoBlock block = 1;
-    ProtoPayload payload = 2;
+    ProtoBlockHeader header = 1;
+    ProtoBlockBody body = 2;
 }

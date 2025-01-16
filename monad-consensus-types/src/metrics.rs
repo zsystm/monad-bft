@@ -105,7 +105,6 @@ metrics!(
             failed_verify_randao_reveal_sig,
             commit_block,
             commit_empty_block,
-            committed_bytes,
             state_root_update,
             enter_new_round_qc,
             enter_new_round_tc,

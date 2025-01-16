@@ -7,42 +7,47 @@ use std::{
 };
 
 use monad_consensus_types::{
-    block::{Block, BlockType},
-    payload::{Payload, PayloadId},
+    block::ConsensusBlockHeader,
+    payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_proto::proto::block::{ProtoBlock, ProtoPayload};
-use monad_types::BlockId;
+use monad_proto::proto::block::{ProtoBlockBody, ProtoBlockHeader};
+use monad_types::{BlockId, ExecutionProtocol};
 use prost::Message;
 
-pub trait BlockPersist<ST, SCT>
+pub trait BlockPersist<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn write_bft_block(&self, block: &Block<SCT>) -> std::io::Result<()>;
-    fn write_bft_payload(&self, payload: &Payload) -> std::io::Result<()>;
+    fn write_bft_header(&self, block: &ConsensusBlockHeader<ST, SCT, EPT>) -> std::io::Result<()>;
+    fn write_bft_body(&self, payload: &ConsensusBlockBody<EPT>) -> std::io::Result<()>;
 
-    fn read_bft_block(&self, block_id: &BlockId) -> std::io::Result<Block<SCT>>;
-    fn read_bft_block_by_num(&self, block_num: u64) -> std::io::Result<Block<SCT>>;
-    fn read_bft_payload(&self, payload_id: &PayloadId) -> std::io::Result<Payload>;
-    fn read_encoded_eth_block(&self, block_num: u64) -> std::io::Result<Vec<u8>>;
+    fn read_bft_header(
+        &self,
+        block_id: &BlockId,
+    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>>;
+    fn read_bft_body(
+        &self,
+        payload_id: &ConsensusBlockBodyId,
+    ) -> std::io::Result<ConsensusBlockBody<EPT>>;
 }
 
 #[derive(Clone)]
-pub struct FileBlockPersist<ST, SCT>
+pub struct FileBlockPersist<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     block_dir_path: PathBuf,
     payload_dir_path: PathBuf,
-    eth_block_dir_path: PathBuf,
 
-    _pd: PhantomData<(ST, SCT)>,
+    _pd: PhantomData<(ST, SCT, EPT)>,
 }
 
 pub fn is_valid_bft_block_header_path(filepath: &OsStr) -> bool {
@@ -51,26 +56,25 @@ pub fn is_valid_bft_block_header_path(filepath: &OsStr) -> bool {
         .is_some_and(|filename| filename.ends_with(BLOCKDB_HEADER_EXTENSION))
 }
 
-impl<ST, SCT> FileBlockPersist<ST, SCT>
+impl<ST, SCT, EPT> FileBlockPersist<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    pub fn new(
-        block_dir_path: PathBuf,
-        payload_dir_path: PathBuf,
-        eth_block_dir_path: PathBuf,
-    ) -> Self {
+    pub fn new(block_dir_path: PathBuf, payload_dir_path: PathBuf) -> Self {
         Self {
             block_dir_path,
             payload_dir_path,
-            eth_block_dir_path,
 
             _pd: PhantomData,
         }
     }
 
-    pub fn read_bft_block_from_filepath(&self, filepath: &OsStr) -> std::io::Result<Block<SCT>> {
+    pub fn read_bft_header_from_filepath(
+        &self,
+        filepath: &OsStr,
+    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
         assert!(is_valid_bft_block_header_path(filepath));
         let mut file = File::open(filepath)?;
 
@@ -79,8 +83,9 @@ where
         file.read_exact(&mut buf)?;
 
         // TODO maybe expect is too strict
-        let proto_block = ProtoBlock::decode(buf.as_slice()).expect("local protoblock decode");
-        let block: Block<SCT> = proto_block
+        let proto_block =
+            ProtoBlockHeader::decode(buf.as_slice()).expect("local protoblock decode");
+        let block: ConsensusBlockHeader<ST, SCT, EPT> = proto_block
             .try_into()
             .expect("proto_block to block should not be invalid");
 
@@ -89,82 +94,73 @@ where
 }
 
 pub const BLOCKDB_HEADER_EXTENSION: &str = ".header";
-pub const BLOCKDB_PAYLOAD_EXTENSION: &str = ".payload";
+pub const BLOCKDB_PAYLOAD_EXTENSION: &str = ".body";
 
-impl<ST, SCT> BlockPersist<ST, SCT> for FileBlockPersist<ST, SCT>
+impl<ST, SCT, EPT> BlockPersist<ST, SCT, EPT> for FileBlockPersist<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn write_bft_block(&self, block: &Block<SCT>) -> std::io::Result<()> {
-        let proto_block: ProtoBlock = block.into();
+    fn write_bft_header(&self, block: &ConsensusBlockHeader<ST, SCT, EPT>) -> std::io::Result<()> {
+        let proto_block: ProtoBlockHeader = block.into();
         let encoded = proto_block.encode_to_vec();
 
         let filename = block.get_id().0.to_string();
         let mut file_path = PathBuf::from(&self.block_dir_path);
         file_path.push(format!("{}{}", filename, BLOCKDB_HEADER_EXTENSION));
 
+        // FIXME if already exists, don't recreate + update timestamp meta
         let mut f = File::create(file_path).unwrap();
         f.write_all(&encoded).unwrap();
 
         Ok(())
     }
 
-    fn write_bft_payload(&self, payload: &Payload) -> std::io::Result<()> {
-        let proto_payload: ProtoPayload = payload.into();
+    fn write_bft_body(&self, payload: &ConsensusBlockBody<EPT>) -> std::io::Result<()> {
+        let proto_payload: ProtoBlockBody = payload.into();
         let encoded = proto_payload.encode_to_vec();
 
         let filename = payload.get_id().0.to_string();
         let mut file_path = PathBuf::from(&self.payload_dir_path);
         file_path.push(format!("{}{}", filename, BLOCKDB_PAYLOAD_EXTENSION));
 
+        // FIXME if already exists, don't recreate + update timestamp meta
         let mut f = File::create(file_path).unwrap();
         f.write_all(&encoded).unwrap();
 
         Ok(())
     }
 
-    fn read_bft_block(&self, block_id: &BlockId) -> std::io::Result<Block<SCT>> {
+    fn read_bft_header(
+        &self,
+        block_id: &BlockId,
+    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
         let filename = block_id.0.to_string();
         let mut file_path = PathBuf::from(&self.block_dir_path);
         file_path.push(format!("{}{}", filename, BLOCKDB_HEADER_EXTENSION));
-        self.read_bft_block_from_filepath(file_path.as_os_str())
+        self.read_bft_header_from_filepath(file_path.as_os_str())
     }
 
-    fn read_bft_payload(&self, payload_id: &PayloadId) -> std::io::Result<Payload> {
+    fn read_bft_body(
+        &self,
+        payload_id: &ConsensusBlockBodyId,
+    ) -> std::io::Result<ConsensusBlockBody<EPT>> {
         let filename = payload_id.0.to_string();
         let mut file_path = PathBuf::from(&self.payload_dir_path);
         file_path.push(format!("{}{}", filename, BLOCKDB_PAYLOAD_EXTENSION));
         let mut file = File::open(file_path)?;
-
         let size = file.metadata()?.len();
         let mut buf = vec![0; size as usize];
         file.read_exact(&mut buf)?;
 
         // TODO maybe expect is too strict
-        let proto_payload =
-            ProtoPayload::decode(buf.as_slice()).expect("local protopayload decode");
-        let payload: Payload = proto_payload
+        let proto_body =
+            ProtoBlockBody::decode(buf.as_slice()).expect("local protoblockbody decode");
+        let body: ConsensusBlockBody<EPT> = proto_body
             .try_into()
-            .expect("proto_payload to payload should not be invalid");
+            .expect("proto_body to body should not be invalid");
 
-        Ok(payload)
-    }
-
-    fn read_bft_block_by_num(&self, _block_num: u64) -> std::io::Result<Block<SCT>> {
-        unimplemented!()
-    }
-
-    fn read_encoded_eth_block(&self, block_num: u64) -> std::io::Result<Vec<u8>> {
-        let filename = block_num.to_string();
-        let mut file_path = PathBuf::from(&self.eth_block_dir_path);
-        file_path.push(&filename);
-        let mut file = File::open(file_path)?;
-
-        let size = file.metadata().unwrap().len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf).unwrap();
-
-        Ok(buf)
+        Ok(body)
     }
 }

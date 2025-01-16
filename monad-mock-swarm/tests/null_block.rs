@@ -7,7 +7,7 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus_types::{
-        block::{BlockType, PassthruBlockPolicy},
+        block::{MockExecutionProtocol, PassthruBlockPolicy},
         block_validator::MockValidator,
         metrics::Metrics,
         signature_collection::SignatureCollectionPubKeyType,
@@ -50,23 +50,39 @@ mod test {
     impl SwarmRelation for NullBlockSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type ExecutionProtocolType = MockExecutionProtocol;
         type BlockPolicyType = PassthruBlockPolicy;
         type StateBackendType = InMemoryState;
 
-        type TransportMessage =
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type TransportMessage = VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
 
         type BlockValidator = MockValidator;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
-        type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
+        type Ledger = MockLedger<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
 
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
-            MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+            MonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
+            VerifiedMonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
         >;
 
         type Pipeline = GenericTransformerPipeline<
@@ -74,10 +90,16 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor =
-            MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
-        type StateSyncExecutor =
-            MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        type StateRootHashExecutor = MockStateRootHashNop<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
+        type StateSyncExecutor = MockStateSyncExecutor<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
@@ -244,10 +266,10 @@ mod test {
             .unwrap()
             .executor
             .ledger()
-            .get_blocks();
+            .get_finalized_blocks();
         let null_blocks_count = ledger
             .iter()
-            .filter(|(_r, b)| b.is_empty_block())
+            .filter(|(_r, b)| b.header().is_empty_block())
             .collect::<Vec<_>>()
             .len();
 

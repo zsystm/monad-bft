@@ -1,16 +1,14 @@
-use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
+use monad_consensus::messages::message::{TimeoutMessage, VoteMessage};
 use monad_consensus_types::{
-    block::{Block, BlockKind},
-    payload::{ExecutionProtocol, FullTransactionList, Payload, TransactionPayload},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     voting::Vote,
 };
 use monad_crypto::{
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
+    certificate_signature::CertificateSignature,
     hasher::{Hashable, Hasher, HasherType},
-    NopKeyPair, NopSignature,
+    NopSignature,
 };
 use monad_multi_sig::MultiSig;
 use monad_testutil::signing::*;
@@ -139,48 +137,6 @@ fn timeout_msg_hash() {
     let h1 = hasher.hash();
 
     let h2 = HasherType::hash_object(&tmo_msg);
-
-    assert_eq!(h1, h2);
-}
-
-#[test]
-fn proposal_msg_hash() {
-    use monad_testutil::signing::block_hash;
-
-    let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
-
-    let mut privkey: [u8; 32] = [127; 32];
-    let keypair = <NopKeyPair as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
-    let author = NodeId::new(keypair.pubkey());
-    let epoch = Epoch(1);
-    let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
-        Vote {
-            ..DontCare::dont_care()
-        },
-        MockSignatures::with_pubkeys(&[]),
-    );
-
-    let payload = Payload { txns };
-    let block = Block::<MockSignatures<SignatureType>>::new(
-        author,
-        0,
-        epoch,
-        round,
-        &ExecutionProtocol::dont_care(),
-        payload.get_id(),
-        BlockKind::Executable,
-        &qc,
-    );
-
-    let proposal: ProposalMessage<MockSignatures<SignatureType>> = ProposalMessage {
-        block: block.clone(),
-        payload,
-        last_round_tc: None,
-    };
-
-    let h1 = HasherType::hash_object(&proposal);
-    let h2 = block_hash(&block);
 
     assert_eq!(h1, h2);
 }

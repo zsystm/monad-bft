@@ -4,15 +4,17 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_proto::{error::ProtoError, proto::message::ProtoMonadMessage};
+use monad_types::ExecutionProtocol;
 use prost::Message;
 
 use crate::{MonadMessage, VerifiedMonadMessage};
 
 pub fn serialize_verified_monad_message<
-    MS: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<MS>>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 >(
-    msg: &VerifiedMonadMessage<MS, SCT>,
+    msg: &VerifiedMonadMessage<ST, SCT, EPT>,
 ) -> Bytes {
     let proto_msg: ProtoMonadMessage = {
         let mut _convert_span = tracing::trace_span!("convert_span").entered();
@@ -27,10 +29,13 @@ pub fn serialize_verified_monad_message<
     buf.into()
 }
 
-pub fn deserialize_monad_message<MS, SCT>(data: Bytes) -> Result<MonadMessage<MS, SCT>, ProtoError>
+pub fn deserialize_monad_message<ST, SCT, EPT>(
+    data: Bytes,
+) -> Result<MonadMessage<ST, SCT, EPT>, ProtoError>
 where
-    MS: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<MS>>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     let message_len = data.len();
     let msg = {

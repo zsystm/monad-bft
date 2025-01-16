@@ -10,6 +10,7 @@ mod controller;
 
 pub const EXECUTION_DELAY: u64 = 4;
 
+pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
 
 const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [

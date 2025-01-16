@@ -9,22 +9,28 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    signature_collection::SignatureCollection,
-    state_root_hash::{StateRootHash, StateRootHashInfo},
+    block::ExecutionResult, signature_collection::SignatureCollection,
     validator_data::ValidatorSetData,
 };
-use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
+use monad_eth_types::{EthExecutionProtocol, EthHeader};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
-use monad_triedb::TriedbHandle;
+use monad_triedb_utils::TriedbReader;
 use monad_types::{Epoch, SeqNum};
 use tracing::{debug, error, warn};
 
 use crate::state_root_hash::ValidatorSetUpdate;
 
 /// Updater that gets state root hash updates by polling triedb
-pub struct StateRootHashTriedbPoll<ST, SCT: SignatureCollection> {
-    triedb_recv: tokio::sync::mpsc::UnboundedReceiver<StateRootHashInfo>,
+pub struct StateRootHashTriedbPoll<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    triedb_recv: tokio::sync::mpsc::UnboundedReceiver<ExecutionResult<EthExecutionProtocol>>,
     seq_num_send: std::sync::mpsc::Sender<SeqNum>,
     cancel_below: Arc<Mutex<SeqNum>>,
 
@@ -41,7 +47,11 @@ pub struct StateRootHashTriedbPoll<ST, SCT: SignatureCollection> {
     phantom: PhantomData<ST>,
 }
 
-impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
+impl<ST, SCT> StateRootHashTriedbPoll<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     pub fn new(
         triedb_path: &Path,
         genesis_validator_data: ValidatorSetData<SCT>,
@@ -56,7 +66,7 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
         let path = triedb_path.to_path_buf();
         rayon::spawn(move || {
             // FIXME: handle error, maybe retry
-            let handle = TriedbHandle::try_new(path.as_path()).unwrap();
+            let handle = TriedbReader::try_new(path.as_path()).unwrap();
 
             loop {
                 let seq_num: SeqNum = seq_num_recv.recv().unwrap(); //FIXME
@@ -66,18 +76,15 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
                         break 'poll_triedb;
                     }
                     num_tries += 1;
-                    let result = handle.get_state_root(seq_num.0);
-                    debug!(?seq_num, ?result, "polled state_root_hash");
-                    if let Some(state_root) = result {
-                        let state_root = state_root
-                            .try_into()
-                            .expect("state root from triedb must be 32 Bytes");
-                        let s = StateRootHashInfo {
-                            state_root_hash: StateRootHash(Hash(state_root)),
-                            seq_num,
-                        };
-
-                        triedb_send.send(s).unwrap();
+                    let result: Option<EthHeader> = handle.get_finalized_eth_header(&seq_num);
+                    debug!(?seq_num, ?result, "polled eth_header");
+                    if let Some(eth_header) = result {
+                        triedb_send
+                            .send(ExecutionResult::Finalized(
+                                SeqNum(eth_header.0.number),
+                                eth_header,
+                            ))
+                            .unwrap();
                         break 'poll_triedb;
                     }
 
@@ -110,10 +117,10 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
 impl<ST, SCT> Stream for StateRootHashTriedbPoll<ST, SCT>
 where
     Self: Unpin,
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -132,13 +139,14 @@ where
         }
 
         let s = this.triedb_recv.poll_recv(cx);
-        s.map(|s| s.map(|info| MonadEvent::StateRootEvent(info)))
+        s.map(|s| s.map(|event| MonadEvent::ExecutionResultEvent(event)))
     }
 }
 
 impl<ST, SCT> Executor for StateRootHashTriedbPoll<ST, SCT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type Command = StateRootHashCommand<SCT>;
 

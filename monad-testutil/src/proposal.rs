@@ -5,11 +5,10 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockType},
-    payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
+    block::ConsensusBlockHeader,
+    payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHash,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     voting::{ValidatorMapping, Vote},
 };
@@ -20,8 +19,7 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
-use monad_eth_types::EthAddress;
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, MockableProposedHeader, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -30,7 +28,7 @@ use monad_validator::{
 };
 
 #[derive(Clone)]
-pub struct ProposalGen<ST, SCT> {
+pub struct ProposalGen<ST, SCT, EPT> {
     epoch: Epoch,
     round: Round,
     qc: QuorumCertificate<SCT>,
@@ -39,23 +37,27 @@ pub struct ProposalGen<ST, SCT> {
     high_qc_seq_num: SeqNum,
     last_tc: Option<TimeoutCertificate<SCT>>,
     timestamp: u128,
-    phantom: PhantomData<ST>,
+    phantom: PhantomData<(ST, EPT)>,
 }
 
-impl<ST, SCT> Default for ProposalGen<ST, SCT>
+impl<ST, SCT, EPT> Default for ProposalGen<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::ProposedHeader: MockableProposedHeader,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<ST, SCT> ProposalGen<ST, SCT>
+impl<ST, SCT, EPT> ProposalGen<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    EPT::ProposedHeader: MockableProposedHeader,
 {
     pub fn new() -> Self {
         let genesis_qc = QuorumCertificate::genesis_qc();
@@ -82,9 +84,9 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-        txns: TransactionPayload,
-        srh: StateRootHash,
-    ) -> Verified<ST, ProposalMessage<SCT>> {
+        is_null: bool,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+    ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         // high_qc is the highest qc seen in a proposal
         let (qc, last_seq_num) = if self.last_tc.is_some() {
             (&self.high_qc, self.high_qc_seq_num)
@@ -111,29 +113,32 @@ where
             })
             .expect("key not in valset");
 
-        let seq_num = match txns {
-            TransactionPayload::List(_) => last_seq_num + SeqNum(1),
-            TransactionPayload::Null => last_seq_num,
+        let seq_num = if is_null {
+            last_seq_num
+        } else {
+            last_seq_num + SeqNum(1)
         };
-        let block_kind = match txns {
-            TransactionPayload::List(_) => BlockKind::Executable,
-            TransactionPayload::Null => BlockKind::Null,
-        };
-        let payload = Payload { txns };
-        let block = Block::new(
+
+        let round_signature = RoundSignature::new(self.round, leader_certkey);
+        let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EPT::Body::default(),
+        });
+        let block_header = ConsensusBlockHeader::new(
             NodeId::new(leader_key.pubkey()),
-            self.timestamp,
             self.epoch,
             self.round,
-            &ExecutionProtocol {
-                state_root: srh,
-                seq_num,
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
+            delayed_execution_results,
+            if is_null {
+                EPT::ProposedHeader::default()
+            } else {
+                EPT::ProposedHeader::create(seq_num, self.timestamp, round_signature.get_hash().0)
             },
-            payload.get_id(),
-            block_kind,
-            qc,
+            block_body.get_id(),
+            qc.clone(),
+            seq_num,
+            self.timestamp,
+            round_signature,
+            is_null,
         );
 
         let validator_cert_pubkeys = val_epoch_map
@@ -141,12 +146,12 @@ where
             .expect("should have the current validator certificate pubkeys");
         self.high_qc = self.qc.clone();
         self.high_qc_seq_num = self.qc_seq_num;
-        self.qc = self.get_next_qc(certkeys, &block, validator_cert_pubkeys);
+        self.qc = self.get_next_qc(certkeys, &block_header, validator_cert_pubkeys);
         self.qc_seq_num = seq_num;
 
         let proposal = ProposalMessage {
-            block,
-            payload,
+            block_header,
+            block_body,
             last_round_tc: self.last_tc.clone(),
         };
         self.last_tc = None;
@@ -230,7 +235,7 @@ where
     fn get_next_qc(
         &self,
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
-        block: &Block<SCT>,
+        block: &ConsensusBlockHeader<ST, SCT, EPT>,
         validator_mapping: &ValidatorMapping<
             CertificateSignaturePubKey<ST>,
             SignatureCollectionKeyPairType<SCT>,

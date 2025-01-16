@@ -9,10 +9,6 @@ pub struct Cli {
     #[arg(long)]
     pub ipc_path: PathBuf,
 
-    /// Set the execution ledger path
-    #[arg(long)]
-    pub execution_ledger_path: PathBuf,
-
     /// Set the monad triedb path
     #[arg(long)]
     pub triedb_path: Option<PathBuf>,
@@ -26,7 +22,7 @@ pub struct Cli {
     pub rpc_port: u16,
 
     /// Set the chain ID
-    #[arg(long, default_value_t = 41454)]
+    #[arg(long)]
     pub chain_id: u64,
 
     /// Set the max number of requests in a batch request

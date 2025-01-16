@@ -1,6 +1,6 @@
+use alloy_primitives::Address;
 use indexmap::IndexMap;
 use monad_consensus_types::txpool::TxPoolInsertionError;
-use monad_eth_types::EthAddress;
 
 pub use self::list::PendingTxList;
 use crate::transaction::ValidEthTransaction;
@@ -17,7 +17,7 @@ const PROMOTE_TXS_WATERMARK: usize = MAX_TXS * 3 / 4;
 /// transactions in the txs map.
 #[derive(Clone, Debug, Default)]
 pub struct PendingTxMap {
-    txs: IndexMap<EthAddress, PendingTxList>,
+    txs: IndexMap<Address, PendingTxList>,
     num_txs: usize,
 }
 
@@ -61,7 +61,7 @@ impl PendingTxMap {
         Ok(())
     }
 
-    pub fn remove(&mut self, address: &EthAddress) -> Option<PendingTxList> {
+    pub fn remove(&mut self, address: &Address) -> Option<PendingTxList> {
         if let Some(tx) = self.txs.swap_remove(address) {
             self.num_txs = self
                 .num_txs
@@ -74,7 +74,7 @@ impl PendingTxMap {
         None
     }
 
-    pub fn split_off(&mut self, num_addresses: usize) -> IndexMap<EthAddress, PendingTxList> {
+    pub fn split_off(&mut self, num_addresses: usize) -> IndexMap<Address, PendingTxList> {
         if num_addresses >= self.txs.len() {
             self.num_txs = 0;
             return std::mem::take(&mut self.txs);

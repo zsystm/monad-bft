@@ -103,9 +103,7 @@ mod tests {
     use futures_util::{SinkExt as _, StreamExt as _};
     use tokio::sync::Semaphore;
 
-    use crate::{
-        create_app, tests::MonadRpcResourcesState, vpool, ExecutionLedgerPath, MonadRpcResources,
-    };
+    use crate::{create_app, tests::MonadRpcResourcesState, vpool, MonadRpcResources};
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TxEnvelope>();
@@ -113,7 +111,6 @@ mod tests {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
             archive_reader: None,
-            execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 41454,
             batch_request_limit: 1000,
             max_response_size: 25_000_000,

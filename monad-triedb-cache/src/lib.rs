@@ -4,8 +4,9 @@ use std::{
     time::Duration,
 };
 
+use alloy_primitives::Address;
 use itertools::Itertools;
-use monad_eth_types::{EthAccount, EthAddress};
+use monad_eth_types::EthAccount;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::warn;
@@ -13,7 +14,7 @@ use tracing::warn;
 #[derive(Debug)]
 pub struct StateBackendCache<SBT> {
     // used so that StateBackendCache can maintain a logically immutable interface
-    cache: Arc<Mutex<BTreeMap<SeqNum, BTreeMap<EthAddress, Option<EthAccount>>>>>,
+    cache: Arc<Mutex<BTreeMap<SeqNum, BTreeMap<Address, Option<EthAccount>>>>>,
     state_backend: SBT,
     execution_delay: SeqNum,
 }
@@ -38,7 +39,7 @@ where
     fn get_account_statuses<'a>(
         &self,
         block: SeqNum,
-        addresses: impl Iterator<Item = &'a EthAddress>,
+        addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         let addresses = addresses.collect_vec();
         if addresses.is_empty() {
@@ -54,7 +55,7 @@ where
         let cache_misses: Vec<_> = match cache.get(&block) {
             None => unique_addresses.collect(),
             Some(block_cache) => unique_addresses
-                .filter(|address| !block_cache.contains_key(address))
+                .filter(|address| !block_cache.contains_key(*address))
                 .collect(),
         };
 
@@ -104,15 +105,15 @@ where
         Ok(accounts_data)
     }
 
-    fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
+    fn raw_read_account(&self, block: SeqNum, address: &Address) -> Option<EthAccount> {
         self.state_backend.raw_read_account(block, address)
     }
 
-    fn raw_read_earliest_block(&self) -> SeqNum {
+    fn raw_read_earliest_block(&self) -> Option<SeqNum> {
         self.state_backend.raw_read_earliest_block()
     }
 
-    fn raw_read_latest_block(&self) -> SeqNum {
+    fn raw_read_latest_block(&self) -> Option<SeqNum> {
         self.state_backend.raw_read_latest_block()
     }
 }
