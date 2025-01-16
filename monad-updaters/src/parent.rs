@@ -88,15 +88,23 @@ where
 impl<E, R, T, L, C, S, IPC, CP, LO, TS, SS> Stream
     for ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS>
 where
-    R: Stream<Item = E> + Unpin,
-    T: Stream<Item = E> + Unpin,
-    L: Stream<Item = E> + Unpin,
-    S: Stream<Item = E> + Unpin,
-    IPC: Stream<Item = E> + Unpin,
-    CP: Stream<Item = E> + Unpin,
+    R: Stream + Unpin,
+    R::Item: Into<E>,
+    T: Stream + Unpin,
+    T::Item: Into<E>,
+    L: Stream + Unpin,
+    L::Item: Into<E>,
+    S: Stream + Unpin,
+    S::Item: Into<E>,
+    IPC: Stream + Unpin,
+    IPC::Item: Into<E>,
+    CP: Stream + Unpin,
+    CP::Item: Into<E>,
     LO: Stream<Item = E> + Unpin,
-    TS: Stream<Item = E> + Unpin,
-    SS: Stream<Item = E> + Unpin,
+    TS: Stream + Unpin,
+    TS::Item: Into<E>,
+    SS: Stream + Unpin,
+    SS::Item: Into<E>,
     Self: Unpin,
 {
     type Item = E;
@@ -104,15 +112,28 @@ where
         let this = self.deref_mut();
 
         futures::future::select_all(vec![
-            this.timer.next().boxed_local(),
-            this.control_panel.next().boxed_local(),
-            this.ledger.next().boxed_local(),
-            this.state_root_hash.next().boxed_local(),
-            this.timestamp.next().boxed_local(),
+            this.timer.by_ref().map(Into::into).next().boxed_local(),
+            this.control_panel
+                .by_ref()
+                .map(Into::into)
+                .next()
+                .boxed_local(),
+            this.ledger.by_ref().map(Into::into).next().boxed_local(),
+            this.state_root_hash
+                .by_ref()
+                .map(Into::into)
+                .next()
+                .boxed_local(),
+            this.timestamp.by_ref().map(Into::into).next().boxed_local(),
             this.loopback.next().boxed_local(),
-            this.router.next().boxed_local(), // TODO: consensus msgs should be prioritized
-            this.ipc.next().boxed_local(),    // ingesting txs is lowest priority
-            this.state_sync.next().boxed_local(),
+            // TODO: consensus msgs should be prioritized
+            this.router.by_ref().map(Into::into).next().boxed_local(),
+            this.ipc.by_ref().map(Into::into).next().boxed_local(), // ingesting txs is lowest priority
+            this.state_sync
+                .by_ref()
+                .map(Into::into)
+                .next()
+                .boxed_local(),
         ])
         .map(|(event, _, _)| event)
         .poll_unpin(cx)

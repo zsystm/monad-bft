@@ -11,19 +11,17 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
 
-pub struct MockIpcReceiver<ST, SCT> {
+pub struct MockIpcReceiver {
     transactions: Vec<Bytes>,
 
     waker: Option<Waker>,
-    _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<ST, SCT> Default for MockIpcReceiver<ST, SCT> {
+impl Default for MockIpcReceiver {
     fn default() -> Self {
         Self {
             transactions: Default::default(),
             waker: Default::default(),
-            _phantom: PhantomData,
         }
     }
 }
@@ -42,13 +40,11 @@ impl<ST, SCT> MockIpcReceiver<ST, SCT> {
     }
 }
 
-impl<ST, SCT> Stream for MockIpcReceiver<ST, SCT>
+impl Stream for MockIpcReceiver
 where
     Self: Unpin,
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MempoolEvent;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -61,9 +57,7 @@ where
             Poll::Pending
         } else {
             let txn_bytes = mem::take(&mut this.transactions);
-            Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(
-                txn_bytes,
-            ))))
+            Poll::Ready(Some(MempoolEvent::UserTxns(txn_bytes)))
         }
     }
 }

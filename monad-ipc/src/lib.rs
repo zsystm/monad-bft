@@ -17,20 +17,11 @@ use tokio::{
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 use tracing::{debug, error, trace, warn};
 
-pub struct IpcReceiver<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
+pub struct IpcReceiver {
     read_tx_batch_recv: mpsc::Receiver<Vec<Bytes>>,
-    _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<ST, SCT> IpcReceiver<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
+impl IpcReceiver {
     /// tx_batch_size: number of txs per batch
     /// max_queued_batches: max number of batches to queue
     /// queued_batches_watermark: warn if number of queued batches exceeds this
@@ -165,13 +156,11 @@ fn validate_ethtx(bytes: &mut &[u8]) -> bool {
     }
 }
 
-impl<ST, SCT> Stream for IpcReceiver<ST, SCT>
+impl Stream for IpcReceiver
 where
     Self: Unpin,
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MempoolEvent;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
