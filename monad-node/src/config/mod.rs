@@ -18,6 +18,10 @@ pub use fullnode::{FullNodeConfig, FullNodeIdentityConfig};
 mod network;
 pub use network::NodeNetworkConfig;
 
+mod sync_peers;
+#[allow(unused_imports)]
+pub use sync_peers::{BlockSyncPeersConfig, SyncPeerIdentityConfig};
+
 pub mod util;
 
 pub(crate) type SignatureType = SecpSignature;
@@ -48,6 +52,7 @@ pub struct NodeConfig {
 
     pub bootstrap: NodeBootstrapConfig,
     pub fullnode: FullNodeConfig,
+    pub blocksync_override: BlockSyncPeersConfig,
     pub network: NodeNetworkConfig,
 
     // TODO split network-wide configuration into separate file

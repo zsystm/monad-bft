@@ -264,11 +264,20 @@ async fn run(
         return Err(());
     };
 
+    let block_sync_override_peers = node_state
+        .node_config
+        .blocksync_override
+        .peers
+        .into_iter()
+        .map(|p| NodeId::new(p.secp256k1_pubkey))
+        .collect();
+
     let triedb_handle = TriedbReader::try_new(node_state.triedb_path.as_path())
         .expect("triedb should exist in path");
     let mut last_ledger_tip = triedb_handle
         .get_latest_finalized_block()
         .unwrap_or(SeqNum(0));
+
     let builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
@@ -299,6 +308,7 @@ async fn run(
         epoch_start_delay: Round(5000),
         beneficiary: node_state.node_config.beneficiary.into(),
         forkpoint: node_state.forkpoint_config.into(),
+        block_sync_override_peers,
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,

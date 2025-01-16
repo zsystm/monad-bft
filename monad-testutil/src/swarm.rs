@@ -84,6 +84,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             val_set_update_interval,
             epoch_start_delay,
             beneficiary: Default::default(),
+            block_sync_override_peers: Default::default(),
 
             consensus_config: ConsensusConfig {
                 execution_delay,

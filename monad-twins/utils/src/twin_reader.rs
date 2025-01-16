@@ -129,6 +129,7 @@ where
                 val_set_update_interval: self.state_config.val_set_update_interval,
                 epoch_start_delay: self.state_config.epoch_start_delay,
                 beneficiary: self.state_config.beneficiary,
+                block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
 
                 consensus_config: self.state_config.consensus_config,
 
@@ -344,6 +345,7 @@ where
             val_set_update_interval: SeqNum(2000),
             epoch_start_delay: Round(50),
             beneficiary: Default::default(),
+            block_sync_override_peers: Default::default(),
 
             consensus_config: ConsensusConfig {
                 execution_delay: SeqNum(TWINS_STATE_ROOT_DELAY),

@@ -115,6 +115,8 @@ where
 
     self_request_mode: BlockSyncSelfRequester,
 
+    override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+
     rng: ChaCha8Rng,
 }
 
@@ -134,13 +136,13 @@ where
     payload_cache: HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EPT>>,
 }
 
-impl<ST, SCT, EPT> Default for BlockSync<ST, SCT, EPT>
+impl<ST, SCT, EPT> BlockSync<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    fn default() -> Self {
+    pub fn new(override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>) -> Self {
         Self {
             headers_requests: Default::default(),
             payload_requests: Default::default(),
@@ -149,17 +151,11 @@ where
             self_payload_requests_in_flight: 0,
             self_completed_headers_requests: Default::default(),
             self_request_mode: BlockSyncSelfRequester::StateSync,
+            override_peers,
             rng: ChaCha8Rng::seed_from_u64(123456),
         }
     }
-}
 
-impl<ST, SCT, EPT> BlockSync<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
     fn clear_self_requests(&mut self) {
         self.self_headers_requests.clear();
         self.self_payload_requests.clear();
@@ -359,21 +355,33 @@ where
         self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
         current_epoch: Epoch,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        override_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
-        let validators = val_epoch_map
-            .get_val_set(&current_epoch)
-            .expect("current epoch exists");
-        let members = validators.get_members();
-        let members = members
-            .iter()
-            .filter(|(peer, _)| peer != &self_node_id)
-            .collect_vec();
-        assert!(!members.is_empty(), "no nodes to blocksync from");
-        *members
-            .choose_weighted(rng, |(_peer, weight)| weight.0)
-            .expect("nonempty")
-            .0
+        if !override_peers.is_empty() {
+            // uniformly choose from override peers
+            let remote_peers: Vec<&NodeId<_>> = override_peers
+                .iter()
+                .filter(|p| p != &self_node_id)
+                .collect();
+            assert!(!remote_peers.is_empty(), "no nodes to blocksync from");
+            **remote_peers.choose(rng).expect("non empty")
+        } else {
+            // stake-weighted choose from validators
+            let validators = val_epoch_map
+                .get_val_set(&current_epoch)
+                .expect("current epoch exists");
+            let members = validators.get_members();
+            let members = members
+                .iter()
+                .filter(|(peer, _)| peer != &self_node_id)
+                .collect_vec();
+            assert!(!members.is_empty(), "no nodes to blocksync from");
+            *members
+                .choose_weighted(rng, |(_peer, weight)| weight.0)
+                .expect("nonempty")
+                .0
+        }
     }
 
     // TODO return more informative errors instead of bool
@@ -580,6 +588,7 @@ where
                         self.nodeid,
                         self.current_epoch,
                         self.val_epoch_map,
+                        &self.block_sync.override_peers,
                         &mut self.block_sync.rng,
                     );
                     self_request.to = Some(to);
@@ -610,6 +619,7 @@ where
                     self.nodeid,
                     self.current_epoch,
                     self.val_epoch_map,
+                    &self.block_sync.override_peers,
                     &mut self.block_sync.rng,
                 );
                 self_request.to = Some(to);
@@ -713,6 +723,7 @@ where
                     self.nodeid,
                     self.current_epoch,
                     self.val_epoch_map,
+                    &self.block_sync.override_peers,
                     &mut self.block_sync.rng,
                 );
                 self_request.to = Some(to);
@@ -907,6 +918,7 @@ where
                             self.nodeid,
                             self.current_epoch,
                             self.val_epoch_map,
+                            &self.block_sync.override_peers,
                             &mut self.block_sync.rng,
                         );
                         self_request.to = Some(to);
@@ -934,6 +946,7 @@ where
                             self.nodeid,
                             self.current_epoch,
                             self.val_epoch_map,
+                            &self.block_sync.override_peers,
                             &mut self.block_sync.rng,
                         );
                         self_request.to = Some(to);
@@ -1289,7 +1302,7 @@ mod test {
         });
 
         BlockSyncContext {
-            block_sync: BlockSync::default(),
+            block_sync: BlockSync::new(Default::default()),
             blocktree,
             metrics: Metrics::default(),
             nodeid: NodeId::new(keys[0].pubkey()),

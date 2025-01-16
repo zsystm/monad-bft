@@ -199,6 +199,7 @@ where
         epoch_start_delay: config.epoch_start_delay,
         beneficiary: Default::default(),
         forkpoint: Forkpoint::genesis(config.validators),
+        block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
 
         _phantom: PhantomData,

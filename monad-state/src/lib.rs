@@ -582,6 +582,7 @@ where
     pub val_set_update_interval: SeqNum,
     pub epoch_start_delay: Round,
     pub beneficiary: [u8; 20],
+    pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 
     pub consensus_config: ConsensusConfig,
 
@@ -640,7 +641,7 @@ where
                     statesync_to_live_threshold,
                 ),
             ),
-            block_sync: BlockSync::default(),
+            block_sync: BlockSync::new(self.block_sync_override_peers),
 
             leader_election: self.leader_election,
             epoch_manager,
