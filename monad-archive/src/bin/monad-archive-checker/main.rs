@@ -1,17 +1,13 @@
 #![allow(async_fn_in_trait)]
 
-use std::sync::Arc;
-
 use alloy_consensus::ReceiptEnvelope;
 use clap::Parser;
-use eyre::Result;
 use futures::{future::join_all, join};
-use monad_archive::*;
-use tokio::{
-    sync::Semaphore,
-    time::{sleep, Duration},
+use monad_archive::{
+    fault::{BlockCheckResult, Fault, FaultWriter},
+    prelude::*,
 };
-use tracing::{debug, error, info, warn, Level};
+use tokio::sync::Semaphore;
 
 mod cli;
 
@@ -24,6 +20,9 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-archive-checker",
+        args.sources
+            .first()
+            .map_or("".to_owned(), |s| s.replica_name()), // TODO: improve naming
         Duration::from_secs(15),
     )?;
 
@@ -53,6 +52,13 @@ async fn main() -> Result<()> {
             "Start block: {}, end block: {}, latest block: {}",
             start_block_number, end_block_number, latest_block_number
         );
+
+        if let Some(stop_block_override) = args.stop_block {
+            if start_block_number > stop_block_override {
+                info!("Reached stop block override, stopping...");
+                return Ok(());
+            }
+        }
 
         if end_block_number <= start_block_number {
             info!("Nothing to do. Sleeping for 10s");
