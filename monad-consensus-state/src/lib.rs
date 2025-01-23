@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, LinkedList},
     ops::Deref,
     time::Duration,
 };
@@ -10,7 +10,7 @@ use monad_consensus::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    pacemaker::Pacemaker,
+    pacemaker::{Pacemaker, PacemakerCommand},
     validation::safety::Safety,
     vote_state::VoteState,
 };
@@ -79,6 +79,7 @@ where
 
     finalized_execution_results: BTreeMap<SeqNum, EPT::FinalizedHeader>,
     proposed_execution_results: BTreeMap<Round, ProposedExecutionResult<EPT>>,
+    pending_proposals: BTreeMap<SeqNum, LinkedList<(NodeId<SCT::NodeIdPubKey>, ProposalMessage<ST, SCT, EPT>)>>,
 }
 
 impl<ST, SCT, EPT, BPT, SBT> PartialEq for ConsensusState<ST, SCT, EPT, BPT, SBT>
@@ -210,6 +211,8 @@ pub enum StateRootAction {
     /// out-of-range. It's ok to insert to the block tree and observe if a QC
     /// forms on the block. But we shouldn't vote on the block
     Defer,
+    /// Execution result not ready
+    NotReady,
 }
 
 impl<ST, SCT, EPT, BPT, SBT> ConsensusState<ST, SCT, EPT, BPT, SBT>
@@ -275,6 +278,7 @@ where
 
             finalized_execution_results: Default::default(),
             proposed_execution_results: Default::default(),
+            pending_proposals: Default::default(),
         }
     }
 
@@ -341,6 +345,7 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         match execution_result {
             ExecutionResult::Finalized(seq_num, execution_result) => {
+                trace!("Received finilized StateRoot for {:?}", seq_num.0);
                 match self.consensus.finalized_execution_results.entry(seq_num) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
                         entry.insert(execution_result);
@@ -352,18 +357,66 @@ where
                 Vec::new()
             }
             ExecutionResult::Proposed(execution_result) => {
-                if execution_result.round <= self.consensus.pending_block_tree.root().round {
+                let seq_num = execution_result.seq_num;
+                let block_id = execution_result.block_id;
+                let round = execution_result.round;
+
+                if round <= self.consensus.pending_block_tree.root().round {
                     // not necessary, but here for clarity
                     // try_update_coherency would drop it anyways
                     //
                     // the execution result will be re-queried under the Finalized nibble
                     return Vec::new();
                 }
-                let block_id = execution_result.block_id;
                 self.consensus
                     .proposed_execution_results
-                    .insert(execution_result.round, execution_result);
-                self.try_update_coherency(block_id)
+                    .insert(round, execution_result);
+
+                trace!("Received proposed ExecutionResult for {:?}", seq_num.0);
+                let mut cmds =  Vec::new();
+                cmds.extend(self.try_update_coherency(block_id));
+
+                // check if this result is for a proposal N that is waiting on N-K
+                let expected_proposal_seqnum = seq_num + self.config.execution_delay;
+                match self.consensus.pending_proposals.get(&expected_proposal_seqnum) {
+                    Some(l) => {
+                        // if there are multiple pick the proposal with the highest round.
+                        if let Some(proposal) = l.iter().max_by_key(|p| p.1.block_header.round) {
+                            if proposal.1.block_header.round == round {
+                                // restart timer only if the round of the proposal and execution result is matching
+                                let restart_timer_cmds = self
+                                    .consensus
+                                    .pacemaker
+                                    .restart_timer()
+                                    .into_iter()
+                                    .map(|cmd| {
+                                        ConsensusCommand::from_pacemaker_command(
+                                            self.keypair,
+                                            self.cert_keypair,
+                                            self.version,
+                                            cmd,
+                                        )
+                                    });
+                                trace!("ExecutionResult is matched for proposal seq_num {:?} , round {:?}", expected_proposal_seqnum.0, round);
+                                cmds.extend(restart_timer_cmds);
+                                cmds.extend(self.handle_proposal_message(proposal.0, proposal.1.clone()));
+                                cmds
+                            }
+                            else {
+                                trace!("ExecutionResult round {:?} is not for the maximium round for proposals for seq_num {:?}", round, expected_proposal_seqnum.0);
+                                cmds
+                            }
+                        }
+                        else {
+                            warn!("ExecutionResult seq_num {:?} entry is empty", expected_proposal_seqnum.0);
+                            cmds
+                        }
+                    }
+                    None => {
+                        trace!("ExecutionResult no pending proposals for {:?}", expected_proposal_seqnum.0);
+                        cmds
+                    }
+                }
             }
         }
     }
@@ -387,8 +440,9 @@ where
         debug!(proposal = ?p, "Proposal Message");
         self.metrics.consensus_events.handle_proposal += 1;
 
-        let mut cmds = Vec::new();
 
+        let mut cmds = Vec::new();
+        let mut add_penging = true;
         let epoch = self
             .epoch_manager
             .get_epoch(p.block_header.round)
@@ -398,15 +452,52 @@ where
             .get_val_set(&epoch)
             .expect("proposal message was verified");
 
+        // Validate proposal seq_num.
+        let block_id = p.block_header.qc.get_block_id();
+        if let Some(parent_block) = self.consensus.pending_block_tree.get_block(&block_id)  {
+            if parent_block.get_seq_num() + SeqNum(1) != p.block_header.seq_num  {
+                info!("Proposal seq_num {:?} does not match parent block seq_num + 1 block_id {:?}", p.block_header.seq_num.0, block_id);
+                add_penging = false;
+            }
+        }
+
         let state_root_action = self.state_root_hash_validation(&p);
 
-        if matches!(state_root_action, StateRootAction::Reject) {
-            return cmds;
+        match state_root_action {
+            StateRootAction::Reject => {
+                trace!("StateRoot Reject {:?}", p.block_header.seq_num.0);
+                return cmds;
+            }
+            StateRootAction::NotReady => {
+                if add_penging {
+                    // store the pending proposal
+                    let proposal_round = p.block_header.round;
+                    if let Some(val) = self.consensus.pending_proposals.get_mut(&p.block_header.seq_num) {
+                        trace!("StateRoot NotReady proposal seq_num {:?} , round {:?} added to the list", &p.block_header.seq_num.0, p.block_header.round.0);
+                        val.push_back((author,p));
+                    }
+                    else {
+                        trace!("StateRoot NotReady proposal seq_num {:?} , round {:?} inserted to the list", p.block_header.seq_num.0, p.block_header.round.0);
+                        self.consensus.pending_proposals.insert(p.block_header.seq_num, LinkedList::from([(author, p)]));
+                    }
+                    // cancel the current round timer if the proposal round is current.
+                    if proposal_round == self.consensus.pacemaker.get_current_round() {
+                        cmds.push(ConsensusCommand::ScheduleReset);
+                    }
+                    return cmds;
+                }
+            }
+            StateRootAction::Defer => {
+                trace!("StateRoot Defer {:?}", p.block_header.seq_num.0);
+            }
+            StateRootAction::Proceed => {
+                trace!("StateRoot Proceed {:?}", p.block_header.seq_num.0);
+            }
         }
+
 
         // a valid proposal will advance the pacemaker round so capture the original round before
         // handling the proposal certificate
-        let original_round = self.consensus.pacemaker.get_current_round();
         cmds.extend(self.proposal_certificate_handling(&p));
 
         // author, leader, round checks
@@ -939,6 +1030,17 @@ where
                     self.consensus.finalized_execution_results.pop_first();
                 }
 
+                while self
+                    .consensus
+                    .pending_proposals
+                    .first_key_value()
+                    .is_some_and(|(&proposed_seq_num, _)| {
+                        proposed_seq_num <= last_committed_block.get_seq_num()
+                    })
+                {
+                    self.consensus.pending_proposals.pop_first();
+                }
+
                 // enter new pacemaker epoch if committing the boundary block
                 // bumps the current epoch
                 cmds.extend(
@@ -1393,12 +1495,24 @@ where
         let Some(expected_execution_results) =
             self.get_expected_execution_results(p.block_header.seq_num, &pending_blocktree_blocks)
         else {
-            warn!(
-                block_seq_num =? p.block_header.seq_num,
-                "execution result not ready, unable to verify"
-            );
-            self.metrics.consensus_events.rx_execution_lagging += 1;
-            return StateRootAction::Defer;
+            let next_seq_num =
+                if let Some(extending_block) = pending_blocktree_blocks.last() {
+                    extending_block.get_seq_num() + SeqNum(1)
+                } else {
+                    self.consensus.pending_block_tree.root().seq_num + SeqNum(1)
+                };
+
+                if next_seq_num == p.block_header.seq_num  {
+                    warn!(
+                        block_seq_num =? p.block_header.seq_num,
+                        "execution result not ready, unable to verify"
+                    );
+                    self.metrics.consensus_events.rx_execution_lagging += 1;
+                    return StateRootAction::NotReady;
+                }
+                else {
+                    return StateRootAction::Defer;
+                }
         };
 
         if expected_execution_results != p.block_header.delayed_execution_results {
