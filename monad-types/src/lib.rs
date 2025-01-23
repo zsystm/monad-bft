@@ -281,7 +281,7 @@ impl<P: PubKey> Hashable for NodeId<P> {
     }
 }
 
-fn serialize_pubkey<S, P>(pubkey: &P, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_pubkey<S, P>(pubkey: &P, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
     P: PubKey,
@@ -290,7 +290,7 @@ where
     serializer.serialize_str(&hex_str)
 }
 
-fn deserialize_pubkey<'de, D, P>(deserializer: D) -> Result<P, D::Error>
+pub fn deserialize_pubkey<'de, D, P>(deserializer: D) -> Result<P, D::Error>
 where
     D: Deserializer<'de>,
     P: PubKey,

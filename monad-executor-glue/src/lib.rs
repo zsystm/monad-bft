@@ -194,6 +194,12 @@ pub enum UpdateFullNodes<PT: PubKey> {
     Response,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ReloadConfig {
+    Request,
+    Response(String),
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum WriteCommand<SCT: SignatureCollection> {
     #[serde(bound = "SCT: SignatureCollection")]
@@ -204,6 +210,7 @@ pub enum WriteCommand<SCT: SignatureCollection> {
     UpdatePeers(UpdatePeers<SCT::NodeIdPubKey>),
     #[serde(bound = "SCT: SignatureCollection")]
     UpdateFullNodes(UpdateFullNodes<SCT::NodeIdPubKey>),
+    ReloadConfig(ReloadConfig),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -243,6 +250,10 @@ where
     StartExecution,
 }
 
+pub enum ConfigReloadCommand {
+    ReloadConfig,
+}
+
 pub enum Command<E, OM, ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -259,6 +270,7 @@ where
     ControlPanelCommand(ControlPanelCommand<SCT>),
     TimestampCommand(TimestampCommand),
     StateSyncCommand(StateSyncCommand<ST, EPT>),
+    ConfigReloadCommand(ConfigReloadCommand),
 }
 
 impl<E, OM, ST, SCT, EPT> Command<E, OM, ST, SCT, EPT>
@@ -279,6 +291,7 @@ where
         Vec<ControlPanelCommand<SCT>>,
         Vec<TimestampCommand>,
         Vec<StateSyncCommand<ST, EPT>>,
+        Vec<ConfigReloadCommand>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -289,6 +302,7 @@ where
         let mut control_panel_cmds = Vec::new();
         let mut timestamp_cmds = Vec::new();
         let mut state_sync_cmds = Vec::new();
+        let mut config_reload_cmds = Vec::new();
 
         for command in commands {
             match command {
@@ -301,6 +315,7 @@ where
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
                 Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::StateSyncCommand(cmd) => state_sync_cmds.push(cmd),
+                Command::ConfigReloadCommand(cmd) => config_reload_cmds.push(cmd),
             }
         }
         (
@@ -313,6 +328,7 @@ where
             control_panel_cmds,
             timestamp_cmds,
             state_sync_cmds,
+            config_reload_cmds,
         )
     }
 }
@@ -618,6 +634,27 @@ where
     UpdatePeers(UpdatePeers<SCT::NodeIdPubKey>),
     GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),
     UpdateFullNodes(UpdateFullNodes<SCT::NodeIdPubKey>),
+    ReloadConfig(ReloadConfig),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigUpdate<SCT>
+where
+    SCT: SignatureCollection,
+{
+    pub full_nodes: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub maybe_known_peers: Option<Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>>,
+    pub blocksync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub error_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    ConfigUpdate(ConfigUpdate<SCT>),
+    LoadError(String),
 }
 
 /// MonadEvent are inputs to MonadState
@@ -644,6 +681,8 @@ where
     TimestampUpdateEvent(u128),
     /// Events to statesync
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
+    /// Config updates
+    ConfigEvent(ConfigEvent<SCT>),
 }
 
 impl<ST, SCT, EPT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT, EPT>
@@ -704,6 +743,7 @@ where
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
+            MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
         };
 
         write!(f, "{}", s)

@@ -21,8 +21,8 @@ use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::NodeId;
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockableLedger,
-    loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
+    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ipc::MockIpcReceiver,
+    ledger::MockableLedger, loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
     statesync::MockableStateSync, timestamp::TimestampAdjuster,
 };
 use priority_queue::PriorityQueue;
@@ -38,6 +38,8 @@ pub struct MockExecutor<S: SwarmRelation> {
     >,
     ipc: MockIpcReceiver<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     statesync: S::StateSyncExecutor,
+    config_loader:
+        MockConfigLoader<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     tick: Duration,
 
     timer: PriorityQueue<
@@ -177,6 +179,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
             ipc: Default::default(),
             loopback: Default::default(),
             statesync,
+            config_loader: Default::default(),
 
             tick,
 
@@ -286,6 +289,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             control_panel_cmds,
             timestamp_cmds,
             statesync_cmds,
+            config_reload_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -317,6 +321,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         self.state_root_hash.exec(state_root_hash_cmds);
         self.loopback.exec(loopback_cmds);
         self.statesync.exec(statesync_cmds);
+        self.config_loader.exec(config_reload_cmds);
 
         for command in router_cmds {
             match command {

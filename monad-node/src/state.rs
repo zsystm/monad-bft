@@ -14,6 +14,7 @@ use crate::{cli::Cli, error::NodeSetupError};
 
 pub struct NodeState {
     pub node_config: NodeConfig,
+    pub node_config_path: PathBuf,
     pub forkpoint_config: ForkpointConfig,
 
     pub secp256k1_identity: KeyPair,
@@ -78,7 +79,7 @@ impl NodeState {
             hex::encode(bls_key.pubkey().compress())
         );
 
-        let node_config: NodeConfig = toml::from_str(&std::fs::read_to_string(node_config_path)?)?;
+        let node_config: NodeConfig = toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
         let forkpoint_config: ForkpointConfig =
             toml::from_str(&std::fs::read_to_string(&forkpoint_config_path)?)?;
 
@@ -107,6 +108,7 @@ impl NodeState {
 
         Ok(Self {
             node_config,
+            node_config_path,
             forkpoint_config,
 
             secp256k1_identity: secp_key,

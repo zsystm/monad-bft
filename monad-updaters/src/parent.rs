@@ -11,15 +11,16 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    CheckpointCommand, Command, ControlPanelCommand, LedgerCommand, LoopbackCommand, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, TimerCommand, TimestampCommand,
+    CheckpointCommand, Command, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
+    LoopbackCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, TimerCommand,
+    TimestampCommand,
 };
 use monad_types::ExecutionProtocol;
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS> {
+pub struct ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS, CL> {
     pub router: R,
     pub timer: T,
     pub ledger: L,
@@ -31,15 +32,15 @@ pub struct ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS> {
     pub control_panel: CP,
     pub loopback: LO,
     pub state_sync: SS,
+    pub config_loader: CL,
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE, E, OM, ST, SCT, EPT> Executor
-    for ParentExecutor<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE>
+impl<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE, CLE, E, OM, ST, SCT, EPT> Executor
+    for ParentExecutor<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE, CLE>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
-
     CE: Executor<Command = CheckpointCommand<SCT>>,
     LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
     SE: Executor<Command = StateRootHashCommand<SCT>>,
@@ -47,6 +48,7 @@ where
     LOE: Executor<Command = LoopbackCommand<E>>,
     TSE: Executor<Command = TimestampCommand>,
     SSE: Executor<Command = StateSyncCommand<ST, EPT>>,
+    CLE: Executor<Command = ConfigReloadCommand>,
 
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -66,6 +68,7 @@ where
             control_panel_cmds,
             timestamp_cmds,
             state_sync_cmds,
+            config_reload_cmds,
         ) = Command::split_commands(commands);
 
         self.router.exec(router_cmds);
@@ -77,6 +80,7 @@ where
         self.loopback.exec(loopback_cmds);
         self.control_panel.exec(control_panel_cmds);
         self.state_sync.exec(state_sync_cmds);
+        self.config_loader.exec(config_reload_cmds);
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
@@ -90,11 +94,12 @@ where
             .chain(self.loopback.metrics())
             .chain(self.control_panel.metrics())
             .chain(self.state_sync.metrics())
+            .chain(self.config_loader.metrics())
     }
 }
 
-impl<E, R, T, L, C, S, IPC, CP, LO, TS, SS> Stream
-    for ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS>
+impl<E, R, T, L, C, S, IPC, CP, LO, TS, SS, CL> Stream
+    for ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS, CL>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
@@ -105,6 +110,7 @@ where
     LO: Stream<Item = E> + Unpin,
     TS: Stream<Item = E> + Unpin,
     SS: Stream<Item = E> + Unpin,
+    CL: Stream<Item = E> + Unpin,
     Self: Unpin,
 {
     type Item = E;
@@ -121,13 +127,16 @@ where
             this.router.next().boxed_local(), // TODO: consensus msgs should be prioritized
             this.ipc.next().boxed_local(),    // ingesting txs is lowest priority
             this.state_sync.next().boxed_local(),
+            this.config_loader.next().boxed_local(),
         ])
         .map(|(event, _, _)| event)
         .poll_unpin(cx)
     }
 }
 
-impl<R, T, L, C, S, IPC, CP, LO, TS, SS> ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS> {
+impl<R, T, L, C, S, IPC, CP, LO, TS, SS, CL>
+    ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS, CL>
+{
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

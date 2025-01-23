@@ -424,6 +424,7 @@ impl Widget for &EventListWidget {
                 MonadEvent::ControlPanelEvent(_) => "CONTROLPANEL".to_string(),
                 MonadEvent::TimestampUpdateEvent(_) => "TIMESTAMP".to_string(),
                 MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
+                MonadEvent::ConfigEvent(_) => "CONFIG".to_string(),
             };
 
             let s = Span::styled(format!("{header_str:<20}"), Style::default().blue());
@@ -558,9 +559,10 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
             MonadEvent::ValidatorEvent(_) => "validatorevent",
             MonadEvent::MempoolEvent(_) => "mempoolevent",
             MonadEvent::ExecutionResultEvent(_) => "executionresultevent",
-            WalEvent::ControlPanelEvent(_) => "controlpanelevent",
+            MonadEvent::ControlPanelEvent(_) => "controlpanelevent",
             MonadEvent::TimestampUpdateEvent(_) => "timestampupdateevent",
             MonadEvent::StateSyncEvent(_) => "statesyncevent",
+            MonadEvent::ConfigEvent(_) => "configevent",
         };
 
         buckets

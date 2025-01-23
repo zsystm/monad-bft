@@ -20,10 +20,11 @@ use monad_state::{
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockLedger,
-    local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
-    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor, timer::TokioTimer,
-    tokio_timestamp::TokioTimestamp, BoxUpdater, Updater,
+    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ipc::MockIpcReceiver,
+    ledger::MockLedger, local_router::LocalPeerRouter, loopback::LoopbackExecutor,
+    parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
+    statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
@@ -89,6 +90,7 @@ pub fn make_monad_executor<ST, SCT>(
     LoopbackExecutor<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     TokioTimestamp<ST, SCT, MockExecutionProtocol>,
     MockStateSyncExecutor<ST, SCT, MockExecutionProtocol>,
+    MockConfigLoader<ST, SCT, MockExecutionProtocol>,
 >
 where
     ST: CertificateSignatureRecoverable + Unpin,
@@ -135,6 +137,7 @@ where
             // TODO do we test statesync in testground?
             Vec::new(),
         ),
+        config_loader: MockConfigLoader::default(),
     }
 }
 

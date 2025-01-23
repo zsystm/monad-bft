@@ -4,8 +4,8 @@ use async_graphql::{Context, NewType, Object, Union};
 use monad_consensus_types::{block::ExecutionResult, metrics::Metrics};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
-    BlockSyncEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent, StateSyncEvent,
-    ValidatorEvent,
+    BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
+    StateSyncEvent, ValidatorEvent,
 };
 use monad_mock_swarm::{
     node::Node,
@@ -222,6 +222,7 @@ enum GraphQLMonadEvent<'s> {
     ControlPanelEvent(GraphQLControlPanelEvent<'s>),
     TimestampEvent(GraphQLTimestampEvent),
     StateSyncEvent(GraphQLStateSyncEvent<'s>),
+    ConfigEvent(GraphQLConfigEvent<'s>),
 }
 
 impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
@@ -234,7 +235,7 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             MonadEvent::ExecutionResultEvent(event) => {
                 Self::ExecutionResultEvent(GraphQLExecutionResultEvent(event))
             }
-            MonadEventType::ControlPanelEvent(event) => {
+            MonadEvent::ControlPanelEvent(event) => {
                 Self::ControlPanelEvent(GraphQLControlPanelEvent(event))
             }
             MonadEvent::TimestampUpdateEvent(event) => {
@@ -242,6 +243,7 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
                                                                            // protocol and will be deleted
             }
             MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
+            MonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),
         }
     }
 }
@@ -313,6 +315,15 @@ struct GraphQLStateSyncEvent<'s>(
 );
 #[Object]
 impl<'s> GraphQLStateSyncEvent<'s> {
+    async fn debug(&self) -> String {
+        format!("{:?}", self.0)
+    }
+}
+
+struct GraphQLConfigEvent<'s>(&'s ConfigEvent<SignatureCollectionType>);
+
+#[Object]
+impl<'s> GraphQLConfigEvent<'s> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

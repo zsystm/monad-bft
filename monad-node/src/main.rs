@@ -10,9 +10,11 @@ use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::metrics::Metrics;
+use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
-use monad_crypto::certificate_signature::{CertificateSignature, CertificateSignaturePubKey};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
@@ -21,10 +23,8 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ipc::IpcReceiver;
 use monad_ledger::MonadBlockFileLedger;
-use monad_node::config::{
-    ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig,
-    SignatureCollectionType, SignatureType,
-};
+use monad_node::config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
+use monad_node_config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_statesync::StateSync;
@@ -34,8 +34,8 @@ use monad_types::{
     Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
 use monad_updaters::{
-    checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
-    timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
+    parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
     triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
 };
 use monad_validator::{
@@ -123,6 +123,8 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
+            SignatureType,
+            SignatureCollectionType,
             MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
             VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         >(
@@ -236,6 +238,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .expect("invalid file name")
                 .to_owned(),
         ),
+        config_loader: ConfigLoader::new(node_state.node_config_path),
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
@@ -442,19 +445,16 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
     Ok(())
 }
 
-async fn build_raptorcast_router<M, OM>(
+async fn build_raptorcast_router<ST, SCT, M, OM>(
     network_config: NodeNetworkConfig,
-    identity: <SignatureType as CertificateSignature>::KeyPairType,
-    peers: &[NodeBootstrapPeerConfig],
-    full_nodes: &[FullNodeIdentityConfig],
-) -> RaptorCast<
-    SignatureType,
-    M,
-    OM,
-    MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
->
+    identity: ST::KeyPairType,
+    peers: &[NodeBootstrapPeerConfig<CertificateSignaturePubKey<ST>>],
+    full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
+) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
 where
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
         + Deserializable<Bytes>
         + From<OM>
         + Send
@@ -467,7 +467,12 @@ where
         key: identity,
         known_addresses: peers
             .iter()
-            .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
+            .map(|peer| {
+                (
+                    NodeId::new(peer.secp256k1_pubkey),
+                    resolve_domain(&peer.address),
+                )
+            })
             .collect(),
         full_nodes: full_nodes
             .iter()
@@ -481,10 +486,6 @@ where
         up_bandwidth_mbps: network_config.max_mbps.into(),
         mtu: network_config.mtu,
     })
-}
-
-fn build_node_id(peer: &NodeBootstrapPeerConfig) -> NodeId<monad_secp::PubKey> {
-    NodeId::new(peer.secp256k1_pubkey.to_owned())
 }
 
 fn resolve_domain(domain: &String) -> SocketAddr {

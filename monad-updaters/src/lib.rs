@@ -4,6 +4,7 @@ use futures::Stream;
 use monad_executor::Executor;
 
 pub mod checkpoint;
+pub mod config_loader;
 pub mod ipc;
 pub mod ledger;
 pub mod loopback;

@@ -14,9 +14,10 @@ use monad_proto::{
 use monad_types::ExecutionProtocol;
 
 use crate::{
-    BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, MempoolEvent, MonadEvent,
-    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsert,
-    StateSyncUpsertType, StateSyncVersion, UpdateFullNodes, UpdatePeers, ValidatorEvent,
+    BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
+    MempoolEvent, MonadEvent, ReloadConfig, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsert, StateSyncUpsertType, StateSyncVersion,
+    UpdateFullNodes, UpdatePeers, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -52,6 +53,7 @@ where
             MonadEvent::StateSyncEvent(event) => {
                 proto_monad_event::Event::StateSyncEvent(event.into())
             }
+            MonadEvent::ConfigEvent(event) => proto_monad_event::Event::ConfigEvent(event.into()),
         };
         Self { event: Some(event) }
     }
@@ -89,6 +91,9 @@ where
             }
             Some(proto_monad_event::Event::StateSyncEvent(event)) => {
                 MonadEvent::StateSyncEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::ConfigEvent(event)) => {
+                MonadEvent::ConfigEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -471,6 +476,26 @@ where
                     )),
                 },
             },
+            ControlPanelEvent::ReloadConfig(reload_config) => match reload_config {
+                ReloadConfig::Request => ProtoControlPanelEvent {
+                    event: Some(proto_control_panel_event::Event::ReloadConfigEvent(
+                        ProtoReloadConfigEvent {
+                            req_resp: Some(proto_reload_config_event::ReqResp::Req(
+                                ProtoReloadConfigReq {},
+                            )),
+                        },
+                    )),
+                },
+                ReloadConfig::Response(msg) => ProtoControlPanelEvent {
+                    event: Some(proto_control_panel_event::Event::ReloadConfigEvent(
+                        ProtoReloadConfigEvent {
+                            req_resp: Some(proto_reload_config_event::ReqResp::Resp(
+                                ProtoReloadConfigResp { msg: msg.into() },
+                            )),
+                        },
+                    )),
+                },
+            },
         }
     }
 }
@@ -633,8 +658,26 @@ where
                             ControlPanelEvent::UpdateFullNodes(UpdateFullNodes::Request(node_ids))
                         }
                         proto_update_full_nodes_event::ReqResp::Resp(
-                            proto_update_full_nodes_resp,
+                            _proto_update_full_nodes_resp,
                         ) => ControlPanelEvent::UpdateFullNodes(UpdateFullNodes::Response),
+                    }
+                }
+                proto_control_panel_event::Event::ReloadConfigEvent(proto_reload_config_event) => {
+                    let req_resp = proto_reload_config_event.req_resp.ok_or(
+                        ProtoError::MissingRequiredField(
+                            "ControlPanel::ReloadConfigEvent.req_resp".to_owned(),
+                        ),
+                    )?;
+
+                    match req_resp {
+                        proto_reload_config_event::ReqResp::Req(_proto_reload_config_req) => {
+                            ControlPanelEvent::ReloadConfig(ReloadConfig::Request)
+                        }
+                        proto_reload_config_event::ReqResp::Resp(proto_reload_config_resp) => {
+                            ControlPanelEvent::ReloadConfig(ReloadConfig::Response(
+                                proto_reload_config_resp.msg,
+                            ))
+                        }
                     }
                 }
             }
@@ -947,5 +990,107 @@ where
                 },
             }
         })
+    }
+}
+
+impl<SCT: SignatureCollection> From<&ConfigEvent<SCT>> for ProtoConfigEvent {
+    fn from(value: &ConfigEvent<SCT>) -> Self {
+        match value {
+            ConfigEvent::ConfigUpdate(config_update) => {
+                let full_nodes = config_update.full_nodes.iter().map(Into::into).collect();
+
+                let maybe_known_peers =
+                    config_update.maybe_known_peers.as_ref().map(|known_peers| {
+                        ProtoConfigKnownPeers {
+                            known_peers: known_peers
+                                .iter()
+                                .map(|(node_id, addr)| ProtoPeerRecord {
+                                    node_id: Some(node_id.into()),
+                                    addr: Some(socket_addr_to_proto(addr)),
+                                })
+                                .collect(),
+                        }
+                    });
+
+                let blocksync_override_peers = config_update
+                    .blocksync_override_peers
+                    .iter()
+                    .map(Into::into)
+                    .collect();
+
+                Self {
+                    event: Some(proto_config_event::Event::Update(ProtoConfigUpdate {
+                        full_nodes,
+                        maybe_known_peers,
+                        blocksync_override_peers,
+                        error_message: config_update.error_message.clone(),
+                    })),
+                }
+            }
+            ConfigEvent::LoadError(msg) => Self {
+                event: Some(proto_config_event::Event::Error(ProtoConfigLoadError {
+                    msg: msg.into(),
+                })),
+            },
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoConfigEvent> for ConfigEvent<SCT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoConfigEvent) -> Result<Self, Self::Error> {
+        let event = match value.event.ok_or(ProtoError::MissingRequiredField(
+            "ConfigEvent::event".to_owned(),
+        ))? {
+            proto_config_event::Event::Update(proto_config_update) => {
+                let mut full_nodes = Vec::with_capacity(proto_config_update.full_nodes.len());
+                for proto_node_id in proto_config_update.full_nodes {
+                    full_nodes.push(proto_node_id.try_into()?);
+                }
+
+                let maybe_known_peers = if let Some(proto_known_peers) =
+                    proto_config_update.maybe_known_peers
+                {
+                    let mut known_peers = Vec::with_capacity(proto_known_peers.known_peers.len());
+                    for proto_record in proto_known_peers.known_peers {
+                        let record = (
+                            proto_record
+                                .node_id
+                                .ok_or(ProtoError::MissingRequiredField(
+                                    "ControlPanel::GetPeersEvent.resp.record.node_id".to_owned(),
+                                ))?
+                                .try_into()?,
+                            proto_to_socket_addr(proto_record.addr.ok_or(
+                                ProtoError::MissingRequiredField(
+                                    "ControlPanel::GetPeersEvent.resp.record.addr".to_owned(),
+                                ),
+                            )?)?,
+                        );
+                        known_peers.push(record);
+                    }
+                    Some(known_peers)
+                } else {
+                    None
+                };
+
+                let mut blocksync_override_peers =
+                    Vec::with_capacity(proto_config_update.blocksync_override_peers.len());
+                for proto_node_id in proto_config_update.blocksync_override_peers {
+                    blocksync_override_peers.push(proto_node_id.try_into()?);
+                }
+
+                ConfigEvent::ConfigUpdate(ConfigUpdate {
+                    full_nodes,
+                    maybe_known_peers,
+                    blocksync_override_peers,
+                    error_message: proto_config_update.error_message,
+                })
+            }
+            proto_config_event::Event::Error(proto_config_load_error) => {
+                ConfigEvent::LoadError(proto_config_load_error.msg)
+            }
+        };
+        Ok(event)
     }
 }

@@ -4362,7 +4362,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
- "monad-node",
+ "monad-node-config",
  "monad-secp",
  "monad-types",
  "serde_json",
@@ -4709,7 +4709,6 @@ dependencies = [
 name = "monad-node"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
  "bytes",
  "chrono",
  "clap 4.4.10",
@@ -4729,6 +4728,7 @@ dependencies = [
  "monad-ipc",
  "monad-keystore",
  "monad-ledger",
+ "monad-node-config",
  "monad-raptorcast",
  "monad-router-filter",
  "monad-secp",
@@ -4745,12 +4745,22 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "rayon",
- "serde",
  "thiserror 1.0.50",
  "tokio",
  "toml 0.7.8",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "monad-node-config"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "monad-crypto",
+ "monad-eth-types",
+ "monad-types",
+ "serde",
 ]
 
 [[package]]
@@ -5139,6 +5149,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-node-config",
  "monad-state-backend",
  "monad-triedb-utils",
  "monad-types",

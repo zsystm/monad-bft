@@ -189,6 +189,19 @@ message ProtoUpdateFullNodesEvent {
   }
 }
 
+message ProtoReloadConfigReq {}
+
+message ProtoReloadConfigResp {
+  string msg = 1;
+}
+
+message ProtoReloadConfigEvent {
+  oneof req_resp {
+    ProtoReloadConfigReq req = 1;
+    ProtoReloadConfigResp resp = 2;
+  }  
+}
+
 message ProtoControlPanelEvent {
   oneof event {
     ProtoGetValidatorSetEvent get_validator_set_event = 1;
@@ -200,6 +213,7 @@ message ProtoControlPanelEvent {
     ProtoUpdatePeersEvent update_peers_event = 7;
     ProtoGetFullNodesEvent get_full_nodes_event = 8;
     ProtoUpdateFullNodesEvent update_full_nodes_event = 9;
+    ProtoReloadConfigEvent reload_config_event = 10;
   }
 }
 
@@ -232,6 +246,28 @@ message ProtoStateSyncEvent {
   }
 }
 
+message ProtoConfigKnownPeers {
+  repeated ProtoPeerRecord known_peers = 1;
+}
+
+message ProtoConfigUpdate {
+  repeated monad_proto.basic.ProtoNodeId full_nodes = 1;
+  optional ProtoConfigKnownPeers maybe_known_peers = 2;
+  repeated monad_proto.basic.ProtoNodeId blocksync_override_peers = 3;
+  string error_message = 4;
+}
+
+message ProtoConfigLoadError {
+  string msg = 1;
+}
+
+message ProtoConfigEvent {
+  oneof event {
+    ProtoConfigUpdate update = 1;
+    ProtoConfigLoadError error = 2;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
@@ -242,5 +278,6 @@ message ProtoMonadEvent{
     ProtoControlPanelEvent control_panel_event = 7;
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;
+    ProtoConfigEvent config_event = 10;
   }
 }

@@ -28,6 +28,7 @@ monad-executor-glue = { path = "../monad-executor-glue" }
 monad-ipc = { path = "../monad-ipc" }
 monad-keystore = { path = "../monad-keystore" }
 monad-ledger = { path = "../monad-ledger" }
+monad-node-config = { path = "../monad-node-config" }
 monad-raptorcast = { path = "../monad-raptorcast" }
 monad-router-filter = { path = "../monad-router-filter", optional = true }
 monad-secp = { path = "../monad-secp" }
@@ -43,7 +44,6 @@ monad-updaters = { path = "../monad-updaters", features = [
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
-alloy-primitives = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -54,7 +54,6 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rayon = { workspace = true }
-serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }

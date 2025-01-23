@@ -156,6 +156,14 @@ where
         }
     }
 
+    pub fn set_override_peers(
+        &mut self,
+        override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) {
+        let override_peers = override_peers.into_iter().unique().collect();
+        self.override_peers = override_peers;
+    }
+
     fn clear_self_requests(&mut self) {
         self.self_headers_requests.clear();
         self.self_payload_requests.clear();
@@ -358,7 +366,9 @@ where
         override_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
-        if !override_peers.is_empty() {
+        if !override_peers.is_empty()
+            || (override_peers.len() == 1 && &override_peers[0] == self_node_id)
+        {
             // uniformly choose from override peers
             let remote_peers: Vec<&NodeId<_>> = override_peers
                 .iter()

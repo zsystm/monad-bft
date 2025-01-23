@@ -32,10 +32,11 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, ClearMetrics, Command, ConsensusEvent, ControlPanelCommand, ControlPanelEvent,
-    GetFullNodes, GetMetrics, GetPeers, GetValidatorSet, LedgerCommand, MempoolEvent, Message,
-    MonadEvent, ReadCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent,
-    StateSyncNetworkMessage, UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
+    BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
+    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
+    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -942,11 +943,61 @@ where
                         ))]
                     }
                 },
+                ControlPanelEvent::ReloadConfig(req_resp) => match req_resp {
+                    ReloadConfig::Request => {
+                        vec![Command::ConfigReloadCommand(
+                            ConfigReloadCommand::ReloadConfig,
+                        )]
+                    }
+                    ReloadConfig::Response(resp) => {
+                        vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
+                            WriteCommand::ReloadConfig(ReloadConfig::Response(resp)),
+                        ))]
+                    }
+                },
             },
             MonadEvent::TimestampUpdateEvent(t) => {
                 self.block_timestamp.update_time(t);
                 vec![]
             }
+            MonadEvent::ConfigEvent(config_event) => match config_event {
+                ConfigEvent::ConfigUpdate(config_update) => {
+                    self.block_sync
+                        .set_override_peers(config_update.blocksync_override_peers);
+                    let mut cmds = Vec::new();
+                    cmds.push(Command::RouterCommand(RouterCommand::UpdateFullNodes(
+                        config_update.full_nodes,
+                    )));
+
+                    // maybe_known_peers is None when domain fails to resolve.
+                    // Skip updating known_peers
+                    if let Some(known_peers) = config_update.maybe_known_peers {
+                        cmds.push(Command::RouterCommand(RouterCommand::UpdatePeers(
+                            known_peers,
+                        )));
+                    }
+
+                    if config_update.error_message.is_empty() {
+                        cmds.push(Command::ControlPanelCommand(ControlPanelCommand::Write(
+                            WriteCommand::ReloadConfig(ReloadConfig::Response(
+                                "Success".to_string(),
+                            )),
+                        )));
+                    } else {
+                        cmds.push(Command::ControlPanelCommand(ControlPanelCommand::Write(
+                            WriteCommand::ReloadConfig(ReloadConfig::Response(
+                                config_update.error_message,
+                            )),
+                        )));
+                    }
+                    cmds
+                }
+                ConfigEvent::LoadError(err_msg) => {
+                    vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
+                        WriteCommand::ReloadConfig(ReloadConfig::Response(err_msg)),
+                    ))]
+                }
+            },
         }
     }
 
