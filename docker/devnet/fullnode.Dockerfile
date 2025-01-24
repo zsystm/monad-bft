@@ -66,7 +66,7 @@ ARG TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --features full-node --bin monad-keystore --bin debug-node --example wal2json --example wal-tool && \
     mv target/release/monad-node node && \
     mv target/release/monad-keystore keystore && \
