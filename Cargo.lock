@@ -5248,11 +5248,14 @@ dependencies = [
  "futures",
  "futures-util",
  "itertools 0.10.5",
+ "libc",
  "monad-archive",
+ "monad-crypto",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-ethcall",
+ "monad-event-ring",
  "monad-rpc-docs",
  "monad-triedb-utils",
  "monad-types",
@@ -5273,6 +5276,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "vergen-git2",
+ "zstd",
 ]
 
 [[package]]
