@@ -24,9 +24,12 @@ rand = { workspace = true }
 
 [dev-dependencies]
 alloy-json-rpc = { workspace = true }
+alloy-network = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-client = { workspace = true }
 alloy-rpc-types = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+alloy-rpc-types-trace = { workspace = true }
 alloy-transport = { workspace = true }
 alloy-transport-http = { workspace = true, features = ["reqwest-rustls-tls"] }
 clap = { workspace = true, features = ["derive"] }
@@ -38,7 +41,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tracing = { workspace = true, features = ["log", "std"] }
-tracing-subscriber = { workspace = true, features = ["env-filter", "std"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "std"] }
 url = { workspace = true }
 alloy-sol-macro = { workspace = true }
 alloy-sol-types = { workspace = true }

@@ -29,6 +29,7 @@ jobs:
           - { name: "monad-tx-gen", file: "docker/txgen/Dockerfile" }
           - { name: "monad-archive", file: "docker/archive/Dockerfile" }
           - { name: "monad-archive", file: "docker/archive/Dockerfile", target: -debug }
+          - { name: "rpc-request-generator", file: "docker/rpc-request-gen/Dockerfile" }
 
     permissions:
       contents: read
