@@ -10,24 +10,29 @@ use monad_consensus::{
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
-    block::{BlockRange, ConsensusBlockHeader, OptimisticCommit},
+    block::{BlockPolicy, BlockRange, ConsensusBlockHeader, OptimisticPolicyCommit},
     checkpoint::Checkpoint,
+    payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    timeout::TimeoutCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_state_backend::StateBackend;
 use monad_types::{Epoch, ExecutionProtocol, Round, RouterTarget, SeqNum};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
 #[derive(Debug)]
-pub enum ConsensusCommand<ST, SCT, EPT>
+pub enum ConsensusCommand<ST, SCT, EPT, BPT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
 {
     EnterRound(Epoch, Round),
     /// Attempt to send a message to RouterTarget
@@ -42,8 +47,24 @@ where
     },
     /// Cancel scheduled (if exists) timeout event
     ScheduleReset,
+    /// Creates a proposal
+    CreateProposal {
+        epoch: Epoch,
+        round: Round,
+        seq_num: SeqNum,
+        high_qc: QuorumCertificate<SCT>,
+        round_signature: RoundSignature<SCT::SignatureType>,
+        last_round_tc: Option<TimeoutCertificate<SCT>>,
+
+        tx_limit: usize,
+        beneficiary: [u8; 20],
+        timestamp_ns: u128,
+
+        extending_blocks: Vec<BPT::ValidatedBlock>,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+    },
     /// Commit blocks to ledger
-    LedgerCommit(OptimisticCommit<ST, SCT, EPT>),
+    CommitBlocks(OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>),
     /// Requests BlockSync
     /// Serviced by block_sync in MonadState
     RequestSync(BlockRange),
@@ -74,11 +95,13 @@ where
     },
 }
 
-impl<ST, SCT, EPT> ConsensusCommand<ST, SCT, EPT>
+impl<ST, SCT, EPT, BPT, SBT> ConsensusCommand<ST, SCT, EPT, BPT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
 {
     pub fn from_pacemaker_command(
         keypair: &ST::KeyPairType,
@@ -105,11 +128,13 @@ where
     }
 }
 
-impl<ST, SCT, EPT> From<VoteStateCommand> for ConsensusCommand<ST, SCT, EPT>
+impl<ST, SCT, EPT, BPT, SBT> From<VoteStateCommand> for ConsensusCommand<ST, SCT, EPT, BPT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
 {
     fn from(value: VoteStateCommand) -> Self {
         //TODO-3 VoteStateCommand used for evidence collection

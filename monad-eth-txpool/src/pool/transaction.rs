@@ -3,9 +3,7 @@ use std::cmp::Ordering;
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection, txpool::TxPoolInsertionError,
-};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -14,6 +12,8 @@ use monad_eth_block_policy::{
 };
 use monad_eth_types::{Balance, Nonce, BASE_FEE_PER_GAS};
 use tracing::trace;
+
+use super::error::TxPoolInsertionError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {

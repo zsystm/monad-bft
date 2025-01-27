@@ -23,7 +23,7 @@ use monad_validator::{
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -44,11 +44,11 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT)>,
+    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT)>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
-    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -59,7 +59,7 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,
@@ -137,12 +137,24 @@ where
     command: BlockSyncCommand<ST, SCT, EPT>,
 }
 
-impl<ST, SCT, EPT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
-    for Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
+impl<ST, SCT, EPT, BPT, SBT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
+    for Vec<
+        Command<
+            MonadEvent<ST, SCT, EPT>,
+            VerifiedMonadMessage<ST, SCT, EPT>,
+            ST,
+            SCT,
+            EPT,
+            BPT,
+            SBT,
+        >,
+    >
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
 {
     fn from(wrapped: WrappedBlockSyncCommand<ST, SCT, EPT>) -> Self {
         match wrapped.command {

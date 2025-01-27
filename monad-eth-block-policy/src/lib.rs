@@ -384,6 +384,7 @@ where
 }
 
 /// A block policy for ethereum payloads
+#[derive(Debug)]
 pub struct EthBlockPolicy<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,

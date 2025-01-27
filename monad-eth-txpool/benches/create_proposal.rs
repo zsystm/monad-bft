@@ -1,6 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use itertools::Itertools;
-use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature, txpool::TxPool};
+use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature};
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -28,8 +27,7 @@ fn criterion_benchmark(c: &mut Criterion) {
              proposal_tx_limit,
              gas_limit,
          }| {
-            TxPool::create_proposal(
-                pool,
+            pool.create_proposal(
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
                 *gas_limit,
@@ -37,9 +35,9 @@ fn criterion_benchmark(c: &mut Criterion) {
                 GENESIS_TIMESTAMP
                     + block_policy.get_last_commit().0 as u128
                     + pending_blocks.len() as u128,
-                &RoundSignature::new(Round(0), &mock_keypair),
+                RoundSignature::new(Round(0), &mock_keypair),
+                pending_blocks.to_owned(),
                 block_policy,
-                pending_blocks.iter().collect_vec(),
                 state_backend,
                 metrics,
             )

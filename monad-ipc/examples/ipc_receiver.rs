@@ -144,7 +144,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         debug!("received tx");
                     }
                 }
-                MempoolEvent::ForwardedTxns { .. } => {}
+                MempoolEvent::Proposal { .. }
+                | MempoolEvent::ForwardedTxns { .. }
+                | MempoolEvent::ForwardTxs(_) => {}
             },
 
             _ => Err("Wrong MonadEvent variant")?,

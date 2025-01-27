@@ -27,3 +27,8 @@ message ProtoFullBlock {
     ProtoBlockHeader header = 1;
     ProtoBlockBody body = 2;
 }
+
+message ProtoProposedExecutionInputs {
+  bytes header = 1;
+  bytes body = 2;
+}

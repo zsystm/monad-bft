@@ -47,6 +47,7 @@ where
         StateSyncExecutor = MockStateSyncExecutor<ST, SCT, EPT>,
         Ledger = MockLedger<ST, SCT, EPT>,
     >,
+    S::TxPoolExecutor: Default,
 {
     let TwinsTestCase {
         description: _,
@@ -98,6 +99,7 @@ where
                 validators.validators.clone(),
                 SeqNum(TWINS_STATE_ROOT_DELAY), // ?? val_set_interval?
             ),
+            S::TxPoolExecutor::default(),
             MockLedger::new(state_backend.clone()),
             MockStateSyncExecutor::new(
                 state_backend,

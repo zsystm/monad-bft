@@ -136,7 +136,7 @@ impl<SCT: SignatureCollection> From<&Timeout<SCT>> for ProtoTimeout {
     fn from(value: &Timeout<SCT>) -> Self {
         Self {
             tminfo: Some((&value.tminfo).into()),
-            last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
+            last_round_tc: value.last_round_tc.as_ref().map(Into::into),
         }
     }
 }
@@ -152,7 +152,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoTimeout> for Timeout<SCT> {
                     "Timeout.tminfo".to_owned(),
                 ))?
                 .try_into()?,
-            last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,
+            last_round_tc: value.last_round_tc.map(TryInto::try_into).transpose()?,
         })
     }
 }

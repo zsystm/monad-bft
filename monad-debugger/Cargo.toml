@@ -19,21 +19,20 @@ monad-crypto = { path = "../monad-crypto" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-router-scheduler = { path = "../monad-router-scheduler" }
+monad-state-backend = { path = "../monad-state-backend" }
 monad-testutil = { path = "../monad-testutil" }
 monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
-wasm-bindgen = { workspace = true }
-monad-state-backend = { path = "../monad-state-backend" }
-
-console_error_panic_hook = { workspace = true }
 
 async-graphql = { workspace = true }
+console_error_panic_hook = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true, features = ["js"] }
 hex = { workspace = true }
 serde_json = { workspace = true }
+wasm-bindgen = { workspace = true }
 
 [package.metadata.cargo-shear]
 ignored = ["getrandom"]

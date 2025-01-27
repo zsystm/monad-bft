@@ -1,9 +1,8 @@
 use alloy_primitives::Address;
 use indexmap::IndexMap;
-use monad_consensus_types::txpool::TxPoolInsertionError;
 
 pub use self::list::PendingTxList;
-use crate::transaction::ValidEthTransaction;
+use super::{error::TxPoolInsertionError, transaction::ValidEthTransaction};
 
 mod list;
 

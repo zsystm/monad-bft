@@ -5,8 +5,7 @@ use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
-    metrics::TxPoolEvents, payload::PROPOSAL_SIZE_LIMIT, signature_collection::SignatureCollection,
-    txpool::TxPoolInsertionError,
+    payload::PROPOSAL_SIZE_LIMIT, signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -18,7 +17,12 @@ use tracing::{debug, error, info, trace};
 use tx_heap::TrackedTxHeapDrainAction;
 
 use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
-use crate::{pending::PendingTxMap, transaction::ValidEthTransaction};
+use super::{
+    error::TxPoolInsertionError,
+    pending::{PendingTxList, PendingTxMap},
+    transaction::ValidEthTransaction,
+};
+use crate::metrics::TxPoolMetrics;
 
 mod list;
 mod tx_heap;
@@ -105,7 +109,7 @@ where
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
-        metrics: &mut TxPoolEvents,
+        metrics: &mut TxPoolMetrics,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
         let Some(last_commit_seq_num) = self.last_commit_seq_num else {
             return Ok(Vec::new());
@@ -180,7 +184,7 @@ where
         state_backend: &SBT,
         pending: &mut PendingTxMap,
         max_promotable: usize,
-        metrics: &mut TxPoolEvents,
+        metrics: &mut TxPoolMetrics,
     ) -> Result<(), StateBackendError> {
         let Some(last_commit_seq_num) = self.last_commit_seq_num else {
             return Ok(());
@@ -306,9 +310,9 @@ where
 
     pub fn update_committed_block(
         &mut self,
-        committed_block: &EthValidatedBlock<ST, SCT>,
+        committed_block: EthValidatedBlock<ST, SCT>,
         pending: &mut PendingTxMap,
-        metrics: &mut TxPoolEvents,
+        metrics: &mut TxPoolMetrics,
     ) {
         {
             let seqnum = committed_block.get_seq_num();
@@ -362,7 +366,7 @@ where
         }
     }
 
-    pub fn evict_expired_txs(&mut self, metrics: &mut TxPoolEvents) {
+    pub fn evict_expired_txs(&mut self, metrics: &mut TxPoolMetrics) {
         let num_txs = self.num_txs();
 
         if num_txs < EVICT_ADDRESSES_WATERMARK {
@@ -389,7 +393,7 @@ where
         }
     }
 
-    pub fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<ST, SCT>>) {
+    pub fn reset(&mut self, last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>) {
         self.txs.clear();
         self.last_commit_seq_num = last_delay_committed_blocks
             .last()
@@ -399,8 +403,8 @@ where
     fn finalize_promotion(
         v: indexmap::map::VacantEntry<'_, Address, TrackedTxList>,
         account_nonce: u64,
-        pending_tx_list: crate::pending::PendingTxList,
-        metrics: &mut TxPoolEvents,
+        pending_tx_list: PendingTxList,
+        metrics: &mut TxPoolMetrics,
     ) {
         let pending_num_txs = pending_tx_list.num_txs();
 

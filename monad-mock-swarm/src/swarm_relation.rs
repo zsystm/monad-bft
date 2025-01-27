@@ -3,13 +3,14 @@ use monad_consensus_types::{
     block::{BlockPolicy, MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
     signature_collection::SignatureCollection,
-    txpool::{MockTxPool, TxPool},
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
-use monad_executor_glue::{LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand};
+use monad_executor_glue::{
+    LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand, TxPoolCommand,
+};
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
@@ -20,6 +21,7 @@ use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
     statesync::{MockStateSyncExecutor, MockableStateSync},
+    txpool::{MockTxPoolExecutor, MockableTxPool},
 };
 use monad_validator::{
     leader_election::LeaderElection,
@@ -36,7 +38,6 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::StateBackendType,
     <S as SwarmRelation>::ValidatorSetTypeFactory,
     <S as SwarmRelation>::LeaderElection,
-    <S as SwarmRelation>::TxPool,
     <S as SwarmRelation>::BlockValidator,
 >;
 pub trait SwarmRelation
@@ -77,15 +78,6 @@ where
         + Unpin;
     type LeaderElection: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>>
         + Send
-        + Sync
-        + Unpin;
-    type TxPool: TxPool<
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            Self::ExecutionProtocolType,
-            Self::BlockPolicyType,
-            Self::StateBackendType,
-        > + Send
         + Sync
         + Unpin;
     type Ledger: MockableLedger<
@@ -132,6 +124,20 @@ where
         > + Send
         + Sync
         + Unpin;
+    type TxPoolExecutor: MockableTxPool<
+            Signature = Self::SignatureType,
+            SignatureCollection = Self::SignatureCollectionType,
+            ExecutionProtocol = Self::ExecutionProtocolType,
+            BlockPolicy = Self::BlockPolicyType,
+            StateBackend = Self::StateBackendType,
+            Event = MonadEvent<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
+        > + Send
+        + Sync
+        + Unpin;
     type StateSyncExecutor: MockableStateSync<
             Signature = Self::SignatureType,
             SignatureCollection = Self::SignatureCollectionType,
@@ -165,16 +171,6 @@ impl SwarmRelation for DebugSwarmRelation {
     type LeaderElection = Box<
         dyn LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>>
             + Send
-            + Sync,
-    >;
-    type TxPool = Box<
-        dyn TxPool<
-                Self::SignatureType,
-                Self::SignatureCollectionType,
-                Self::ExecutionProtocolType,
-                Self::BlockPolicyType,
-                Self::StateBackendType,
-            > + Send
             + Sync,
     >;
     type Ledger = Box<
@@ -242,6 +238,33 @@ impl SwarmRelation for DebugSwarmRelation {
             > + Send
             + Sync,
     >;
+    type TxPoolExecutor = Box<
+        dyn MockableTxPool<
+                Signature = Self::SignatureType,
+                SignatureCollection = Self::SignatureCollectionType,
+                ExecutionProtocol = Self::ExecutionProtocolType,
+                BlockPolicy = Self::BlockPolicyType,
+                StateBackend = Self::StateBackendType,
+                Event = MonadEvent<
+                    Self::SignatureType,
+                    Self::SignatureCollectionType,
+                    Self::ExecutionProtocolType,
+                >,
+                Command = TxPoolCommand<
+                    Self::SignatureType,
+                    Self::SignatureCollectionType,
+                    Self::ExecutionProtocolType,
+                    Self::BlockPolicyType,
+                    Self::StateBackendType,
+                >,
+                Item = MonadEvent<
+                    Self::SignatureType,
+                    Self::SignatureCollectionType,
+                    Self::ExecutionProtocolType,
+                >,
+            > + Send
+            + Sync,
+    >;
     type StateSyncExecutor = Box<
         dyn MockableStateSync<
                 Signature = Self::SignatureType,
@@ -271,7 +294,6 @@ impl SwarmRelation for NoSerSwarm {
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type TxPool = MockTxPool;
     type Ledger =
         MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
 
@@ -299,6 +321,13 @@ impl SwarmRelation for NoSerSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type TxPoolExecutor = MockTxPoolExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+        Self::BlockPolicyType,
+        Self::StateBackendType,
+    >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
         Self::SignatureCollectionType,
@@ -319,7 +348,6 @@ impl SwarmRelation for BytesSwarm {
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type TxPool = MockTxPool;
     type Ledger =
         MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
 
@@ -347,6 +375,13 @@ impl SwarmRelation for BytesSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type TxPoolExecutor = MockTxPoolExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+        Self::BlockPolicyType,
+        Self::StateBackendType,
+    >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
         Self::SignatureCollectionType,
@@ -372,7 +407,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type TxPool = MockTxPool;
     type Ledger =
         MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
 
@@ -397,6 +431,13 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
+    >;
+    type TxPoolExecutor = MockTxPoolExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+        Self::BlockPolicyType,
+        Self::StateBackendType,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,

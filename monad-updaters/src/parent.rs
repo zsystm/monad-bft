@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -13,14 +13,15 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     CheckpointCommand, Command, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
     LoopbackCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, TimerCommand,
-    TimestampCommand,
+    TimestampCommand, TxPoolCommand,
 };
+use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS, CL> {
+pub struct ParentExecutor<R, T, L, C, S, TS, IPC, TP, CP, LO, SS, CL> {
     pub router: R,
     pub timer: T,
     pub ledger: L,
@@ -29,6 +30,7 @@ pub struct ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS, CL> {
     pub timestamp: TS,
     /// ipc is a Stream, not an executor
     pub ipc: IPC,
+    pub txpool: TP,
     pub control_panel: CP,
     pub loopback: LO,
     pub state_sync: SS,
@@ -36,27 +38,31 @@ pub struct ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS, CL> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE, CLE, E, OM, ST, SCT, EPT> Executor
-    for ParentExecutor<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, SSE, CLE>
+impl<RE, TE, LE, CE, SE, TSE, IPCE, TPE, CPE, LOE, SSE, CLE, E, OM, ST, SCT, EPT, BPT, SBT> Executor
+    for ParentExecutor<RE, TE, LE, CE, SE, TSE, IPCE, TPE, CPE, LOE, SSE, CLE>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
-    CE: Executor<Command = CheckpointCommand<SCT>>,
     LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
+    CE: Executor<Command = CheckpointCommand<SCT>>,
     SE: Executor<Command = StateRootHashCommand<SCT>>,
+    TSE: Executor<Command = TimestampCommand>,
+
+    TPE: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
-    TSE: Executor<Command = TimestampCommand>,
     SSE: Executor<Command = StateSyncCommand<ST, EPT>>,
     CLE: Executor<Command = ConfigReloadCommand>,
 
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
 {
-    type Command = Command<E, OM, ST, SCT, EPT>;
+    type Command = Command<E, OM, ST, SCT, EPT, BPT, SBT>;
 
-    fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT>>) {
+    fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT, BPT, SBT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,
@@ -64,9 +70,10 @@ where
             ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
-            loopback_cmds,
-            control_panel_cmds,
             timestamp_cmds,
+            txpool_cmds,
+            control_panel_cmds,
+            loopback_cmds,
             state_sync_cmds,
             config_reload_cmds,
         ) = Command::split_commands(commands);
@@ -77,8 +84,9 @@ where
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
         self.timestamp.exec(timestamp_cmds);
-        self.loopback.exec(loopback_cmds);
+        self.txpool.exec(txpool_cmds);
         self.control_panel.exec(control_panel_cmds);
+        self.loopback.exec(loopback_cmds);
         self.state_sync.exec(state_sync_cmds);
         self.config_loader.exec(config_reload_cmds);
     }
@@ -91,29 +99,34 @@ where
             .chain(self.checkpoint.metrics())
             .chain(self.state_root_hash.metrics())
             .chain(self.timestamp.metrics())
-            .chain(self.loopback.metrics())
+            .chain(self.txpool.metrics())
             .chain(self.control_panel.metrics())
+            .chain(self.loopback.metrics())
             .chain(self.state_sync.metrics())
             .chain(self.config_loader.metrics())
     }
 }
 
-impl<E, R, T, L, C, S, IPC, CP, LO, TS, SS, CL> Stream
-    for ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS, CL>
+impl<E, R, T, L, C, S, TS, IPC, TP, CP, LO, SS, CL> Stream
+    for ParentExecutor<R, T, L, C, S, TS, IPC, TP, CP, LO, SS, CL>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
     L: Stream<Item = E> + Unpin,
     S: Stream<Item = E> + Unpin,
+
     IPC: Stream<Item = E> + Unpin,
+    TP: Stream<Item = E> + Unpin,
     CP: Stream<Item = E> + Unpin,
     LO: Stream<Item = E> + Unpin,
     TS: Stream<Item = E> + Unpin,
     SS: Stream<Item = E> + Unpin,
     CL: Stream<Item = E> + Unpin,
+
     Self: Unpin,
 {
     type Item = E;
+
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
@@ -121,6 +134,7 @@ where
             this.timer.next().boxed_local(),
             this.control_panel.next().boxed_local(),
             this.ledger.next().boxed_local(),
+            this.txpool.next().boxed_local(),
             this.state_root_hash.next().boxed_local(),
             this.timestamp.next().boxed_local(),
             this.loopback.next().boxed_local(),
@@ -134,8 +148,8 @@ where
     }
 }
 
-impl<R, T, L, C, S, IPC, CP, LO, TS, SS, CL>
-    ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS, SS, CL>
+impl<R, T, L, C, S, TS, IPC, TP, CP, LO, SS, CL>
+    ParentExecutor<R, T, L, C, S, TS, IPC, TP, CP, LO, SS, CL>
 {
     pub fn ledger(&self) -> &L {
         &self.ledger

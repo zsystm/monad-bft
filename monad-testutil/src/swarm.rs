@@ -21,7 +21,6 @@ pub fn make_state_configs<S: SwarmRelation>(
 
     validator_set_factory: impl Fn() -> S::ValidatorSetTypeFactory,
     leader_election: impl Fn() -> S::LeaderElection,
-    transaction_pool: impl Fn() -> S::TxPool,
     block_validator: impl Fn() -> S::BlockValidator,
     block_policy: impl Fn() -> S::BlockPolicyType,
     state_backend: impl Fn() -> S::StateBackendType,
@@ -42,7 +41,6 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::StateBackendType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
-        S::TxPool,
         S::BlockValidator,
     >,
 > {
@@ -71,7 +69,6 @@ pub fn make_state_configs<S: SwarmRelation>(
         .map(|(key, certkey)| MonadStateBuilder {
             validator_set_factory: validator_set_factory(),
             leader_election: leader_election(),
-            transaction_pool: transaction_pool(),
             block_validator: block_validator(),
             block_policy: block_policy(),
             state_backend: state_backend(),

@@ -9,7 +9,6 @@ mod test {
         block::{MockExecutionProtocol, PassthruBlockPolicy},
         block_validator::MockValidator,
         metrics::Metrics,
-        txpool::MockTxPool,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -38,6 +37,7 @@ mod test {
         ledger::{MockLedger, MockableLedger},
         state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap},
         statesync::MockStateSyncExecutor,
+        txpool::MockTxPoolExecutor,
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -61,7 +61,6 @@ mod test {
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-        type TxPool = MockTxPool;
         type Ledger = MockLedger<
             Self::SignatureType,
             Self::SignatureCollectionType,
@@ -90,6 +89,13 @@ mod test {
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
+        >;
+        type TxPoolExecutor = MockTxPoolExecutor<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+            Self::BlockPolicyType,
+            Self::StateBackendType,
         >;
         type StateSyncExecutor = MockStateSyncExecutor<
             Self::SignatureType,
@@ -185,7 +191,6 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
@@ -216,6 +221,7 @@ mod test {
                             validators.validators.clone(),
                             val_set_update_interval,
                         ),
+                        MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -289,7 +295,6 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
@@ -323,6 +328,7 @@ mod test {
                             validators.validators.clone(),
                             val_set_update_interval,
                         ),
+                        MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -465,7 +471,6 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
@@ -516,6 +521,7 @@ mod test {
                             validators.validators.clone(),
                             val_set_update_interval,
                         ),
+                        MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -674,7 +680,6 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
@@ -705,6 +710,7 @@ mod test {
                             validators.validators.clone(),
                             val_set_update_interval,
                         ),
+                        MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,

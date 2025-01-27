@@ -15,18 +15,21 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{
-        BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult, OptimisticCommit,
+        BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult,
+        OptimisticCommit, ProposedExecutionInputs,
     },
     checkpoint::Checkpoint,
     metrics::Metrics,
-    payload::ConsensusBlockBodyId,
+    payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
+    timeout::TimeoutCertificate,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_state_backend::StateBackend;
 use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
 use serde::{Deserialize, Serialize};
 
@@ -260,30 +263,74 @@ pub enum ConfigReloadCommand {
     ReloadConfig,
 }
 
-pub enum Command<E, OM, ST, SCT, EPT>
+pub enum TxPoolCommand<ST, SCT, EPT, BPT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
+{
+    /// Used to update the nonces of tracked txs
+    BlockCommit(Vec<BPT::ValidatedBlock>),
+
+    CreateProposal {
+        epoch: Epoch,
+        round: Round,
+        seq_num: SeqNum,
+        high_qc: QuorumCertificate<SCT>,
+        round_signature: RoundSignature<SCT::SignatureType>,
+        last_round_tc: Option<TimeoutCertificate<SCT>>,
+
+        tx_limit: usize,
+        beneficiary: [u8; 20],
+        timestamp_ns: u128,
+
+        extending_blocks: Vec<BPT::ValidatedBlock>,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+    },
+
+    // TODO(andr-dev): This variant should be removed once IPC is refactored into the txpool
+    InsertTxs {
+        txs: Vec<Bytes>,
+        owned: bool,
+    },
+
+    // Emitted after blocksync is completed
+    Reset {
+        last_delay_committed_blocks: Vec<BPT::ValidatedBlock>,
+    },
+}
+
+pub enum Command<E, OM, ST, SCT, EPT, BPT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
 {
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
-
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<SCT>),
     StateRootHashCommand(StateRootHashCommand<SCT>),
-    LoopbackCommand(LoopbackCommand<E>),
-    ControlPanelCommand(ControlPanelCommand<SCT>),
     TimestampCommand(TimestampCommand),
+
+    TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
+    ControlPanelCommand(ControlPanelCommand<SCT>),
+    LoopbackCommand(LoopbackCommand<E>),
     StateSyncCommand(StateSyncCommand<ST, EPT>),
     ConfigReloadCommand(ConfigReloadCommand),
 }
 
-impl<E, OM, ST, SCT, EPT> Command<E, OM, ST, SCT, EPT>
+impl<E, OM, ST, SCT, EPT, BPT, SBT> Command<E, OM, ST, SCT, EPT, BPT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
 {
     pub fn split_commands(
         commands: Vec<Self>,
@@ -293,9 +340,10 @@ where
         Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<SCT>>,
         Vec<StateRootHashCommand<SCT>>,
-        Vec<LoopbackCommand<E>>,
-        Vec<ControlPanelCommand<SCT>>,
         Vec<TimestampCommand>,
+        Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
+        Vec<ControlPanelCommand<SCT>>,
+        Vec<LoopbackCommand<E>>,
         Vec<StateSyncCommand<ST, EPT>>,
         Vec<ConfigReloadCommand>,
     ) {
@@ -304,9 +352,10 @@ where
         let mut ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
-        let mut loopback_cmds = Vec::new();
-        let mut control_panel_cmds = Vec::new();
         let mut timestamp_cmds = Vec::new();
+        let mut txpool_cmds = Vec::new();
+        let mut control_panel_cmds = Vec::new();
+        let mut loopback_cmds = Vec::new();
         let mut state_sync_cmds = Vec::new();
         let mut config_reload_cmds = Vec::new();
 
@@ -317,22 +366,25 @@ where
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
-                Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
-                Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
                 Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
+                Command::TxPoolCommand(cmd) => txpool_cmds.push(cmd),
+                Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
+                Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
                 Command::StateSyncCommand(cmd) => state_sync_cmds.push(cmd),
                 Command::ConfigReloadCommand(cmd) => config_reload_cmds.push(cmd),
             }
         }
+
         (
             router_cmds,
             timer_cmds,
             ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
-            loopback_cmds,
-            control_panel_cmds,
             timestamp_cmds,
+            txpool_cmds,
+            control_panel_cmds,
+            loopback_cmds,
             state_sync_cmds,
             config_reload_cmds,
         )
@@ -478,19 +530,59 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum MempoolEvent<PT: PubKey> {
+pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
+    Proposal {
+        epoch: Epoch,
+        round: Round,
+        seq_num: SeqNum,
+        high_qc: QuorumCertificate<SCT>,
+        timestamp_ns: u128,
+        round_signature: RoundSignature<SCT::SignatureType>,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+        proposed_execution_inputs: ProposedExecutionInputs<EPT>,
+        last_round_tc: Option<TimeoutCertificate<SCT>>,
+    },
+
+    // TODO(andr-dev): Remove these two variants after IPC is refactored into txpool
+    //  - This currently has the unintended side effect that these two mempool events
+    //    are actually emitted from IPC and never from txpool which is confusing
     /// Txns that are incoming via RPC (users)
     UserTxns(Vec<Bytes>),
     /// Txns that are incoming via other nodes
     ForwardedTxns {
-        sender: NodeId<PT>,
+        sender: NodeId<SCT::NodeIdPubKey>,
         txns: Vec<Bytes>,
     },
+
+    /// Txs that should be forwarded to upcoming leaders
+    ForwardTxs(Vec<Bytes>),
 }
 
-impl<PT: PubKey> Debug for MempoolEvent<PT> {
+impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SCT, EPT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Proposal {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+            } => f
+                .debug_struct("Proposal")
+                .field("epoch", epoch)
+                .field("round", round)
+                .field("seq_num", seq_num)
+                .field("high_qc", high_qc)
+                .field("timestamp_ns", timestamp_ns)
+                .field("round_signature", round_signature)
+                .field("delayed_execution_results", delayed_execution_results)
+                .field("proposed_execution_inputs", proposed_execution_inputs)
+                .field("last_round_tc", last_round_tc)
+                .finish(),
             Self::UserTxns(txns) => f
                 .debug_struct("UserTxns")
                 .field(
@@ -500,11 +592,15 @@ impl<PT: PubKey> Debug for MempoolEvent<PT> {
                 .finish(),
             Self::ForwardedTxns { sender, txns } => f
                 .debug_struct("ForwardedTxns")
-                .field("sender", &sender)
+                .field("sender", sender)
                 .field(
                     "txns_len_bytes",
                     &txns.iter().map(Bytes::len).sum::<usize>(),
                 )
+                .finish(),
+            Self::ForwardTxs(txs) => f
+                .debug_struct("ForwardTxs")
+                .field("txs_len_bytes", &txs.iter().map(Bytes::len).sum::<usize>())
                 .finish(),
         }
     }
@@ -763,7 +859,7 @@ where
     /// Events to update validator set
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
-    MempoolEvent(MempoolEvent<CertificateSignaturePubKey<ST>>),
+    MempoolEvent(MempoolEvent<SCT, EPT>),
     /// Execution updates
     ExecutionResultEvent(ExecutionResult<EPT>),
     /// Events for the debug control panel
@@ -821,6 +917,9 @@ where
             MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
             MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
             MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
+            MonadEvent::MempoolEvent(MempoolEvent::Proposal { round, seq_num, .. }) => {
+                format!("MempoolEvent::Proposal -- round {round:?}, seq_num {seq_num:?}")
+            }
             MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns)) => {
                 format!("MempoolEvent::UserTxns -- number of txns: {}", txns.len())
             }
@@ -829,6 +928,9 @@ where
                     "MempoolEvent::ForwardedTxns -- from {sender} number of txns: {}",
                     txns.len()
                 )
+            }
+            MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(txs)) => {
+                format!("MempoolEvent::ForwardTxs -- number of txns: {}", txs.len())
             }
             MonadEvent::ExecutionResultEvent(_) => "EXECUTION_RESULT".to_string(),
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),

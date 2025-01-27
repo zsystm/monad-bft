@@ -34,7 +34,13 @@ impl<'a> From<&'a ExecutorMetrics> for ExecutorMetricsChain<'a> {
 
 #[derive(Default)]
 pub struct ExecutorMetricsChain<'a>(Vec<&'a ExecutorMetrics>);
+
 impl<'a> ExecutorMetricsChain<'a> {
+    pub fn push(mut self, metrics: &'a ExecutorMetrics) -> Self {
+        self.0.push(metrics);
+        self
+    }
+
     pub fn chain(mut self, metrics: ExecutorMetricsChain<'a>) -> Self {
         self.0.extend(metrics.0);
         self

@@ -5,7 +5,6 @@ use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
     signature_collection::SignatureCollection,
-    txpool::MockTxPool,
     validator_data::ValidatorSetData,
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -22,7 +21,7 @@ use monad_updaters::{
     ledger::MockLedger, local_router::LocalPeerRouter, loopback::LoopbackExecutor,
     parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    BoxUpdater, Updater,
+    txpool::MockTxPoolExecutor, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
@@ -83,10 +82,11 @@ pub fn make_monad_executor<ST, SCT>(
     MockLedger<ST, SCT, MockExecutionProtocol>,
     MockCheckpoint<SCT>,
     BoxUpdater<'static, StateRootHashCommand<SCT>, MonadEvent<ST, SCT, MockExecutionProtocol>>,
+    TokioTimestamp<ST, SCT, MockExecutionProtocol>,
     MockIpcReceiver<ST, SCT, MockExecutionProtocol>,
+    MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>,
     ControlPanelIpcReceiver<ST, SCT, MockExecutionProtocol>,
     LoopbackExecutor<MonadEvent<ST, SCT, MockExecutionProtocol>>,
-    TokioTimestamp<ST, SCT, MockExecutionProtocol>,
     MockStateSyncExecutor<ST, SCT, MockExecutionProtocol>,
     MockConfigLoader<ST, SCT, MockExecutionProtocol>,
 >
@@ -123,6 +123,7 @@ where
         },
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         ipc: MockIpcReceiver::default(),
+        txpool: MockTxPoolExecutor::default(),
         control_panel: ControlPanelIpcReceiver::new(
             format!("./monad_controlpanel_{}.sock", index).into(),
             reload_handle,
@@ -147,7 +148,6 @@ type MonadStateType<ST, SCT> = MonadState<
     InMemoryState,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
-    MockTxPool,
     MockValidator,
 >;
 
@@ -179,6 +179,8 @@ pub fn make_monad_state<ST, SCT>(
             ST,
             SCT,
             MockExecutionProtocol,
+            PassthruBlockPolicy,
+            InMemoryState,
         >,
     >,
 )
@@ -189,7 +191,6 @@ where
     MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
-        transaction_pool: MockTxPool::default(),
         block_validator: MockValidator {},
         block_policy: PassthruBlockPolicy {},
         state_backend,

@@ -8,15 +8,13 @@ use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
-    metrics::TxPoolEvents,
     payload::RoundSignature,
-    txpool::TxPool,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
-use monad_eth_txpool::EthTxPool;
-use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT};
+use monad_eth_txpool::{EthTxPool, TxPoolMetrics};
+use monad_eth_types::{Balance, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -54,15 +52,6 @@ const S5: B256 = B256::new(hex!(
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 type StateBackendType = InMemoryState;
-type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
-
-type Pool = dyn TxPool<
-    SignatureType,
-    SignatureCollectionType,
-    EthExecutionProtocol,
-    BlockPolicyType,
-    StateBackendType,
->;
 
 fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollectionType> {
     EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
@@ -117,10 +106,10 @@ fn run_custom_eth_txpool_test<const N: usize>(
     };
 
     let mut pool = EthTxPool::default_testing();
-    let mut metrics = TxPoolEvents::default();
+    let mut metrics = TxPoolMetrics::default();
 
     pool.update_committed_block(
-        &generate_block_with_txs(Round(0), SeqNum(0), Vec::default()),
+        generate_block_with_txs(Round(0), SeqNum(0), Vec::default()),
         &mut metrics,
     );
 
@@ -137,8 +126,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                 let pool_previous_num_txs = pool.num_txs();
 
                 for (tx, inserted) in txs {
-                    let inserted_txs = Pool::insert_tx(
-                        &mut pool,
+                    let inserted_txs = pool.insert_txs(
                         vec![Bytes::from(alloy_rlp::encode(tx))],
                         &eth_block_policy,
                         &state_backend,
@@ -166,20 +154,20 @@ fn run_custom_eth_txpool_test<const N: usize>(
                 add_to_blocktree,
             } => {
                 let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
-                let encoded_txns = Pool::create_proposal(
-                    &mut pool,
-                    SeqNum(current_seq_num),
-                    tx_limit,
-                    gas_limit,
-                    [0_u8; 20],
-                    GENESIS_TIMESTAMP + current_seq_num as u128,
-                    &RoundSignature::new(Round(0), &mock_keypair),
-                    &eth_block_policy,
-                    pending_blocks.iter().collect_vec(),
-                    &state_backend,
-                    &mut metrics,
-                )
-                .expect("create proposal succeeds");
+                let encoded_txns = pool
+                    .create_proposal(
+                        SeqNum(current_seq_num),
+                        tx_limit,
+                        gas_limit,
+                        [0_u8; 20],
+                        GENESIS_TIMESTAMP + current_seq_num as u128,
+                        RoundSignature::new(Round(0), &mock_keypair),
+                        pending_blocks.iter().cloned().collect_vec(),
+                        &eth_block_policy,
+                        &state_backend,
+                        &mut metrics,
+                    )
+                    .expect("create proposal succeeds");
 
                 let decoded_txns = encoded_txns.body.transactions;
 
@@ -223,7 +211,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         &block,
                     );
 
-                    TxPool::update_committed_block(&mut pool, &block, &mut metrics);
+                    pool.update_committed_block(block, &mut metrics);
                 }
 
                 assert_eq!(

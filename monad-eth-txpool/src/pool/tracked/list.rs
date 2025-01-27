@@ -4,11 +4,12 @@ use std::{
 };
 
 use alloy_primitives::Address;
-use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::Nonce;
 use tracing::error;
 
-use crate::{pending::PendingTxList, transaction::ValidEthTransaction};
+use crate::pool::{
+    error::TxPoolInsertionError, pending::PendingTxList, transaction::ValidEthTransaction,
+};
 
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
 /// that all the transactions in the txs map have a nonce at least account_nonce. Similar to

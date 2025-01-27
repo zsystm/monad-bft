@@ -9,7 +9,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{AccountNonceRetrievable, EthValidatedBlock};
 
 use super::list::TrackedTxList;
-use crate::transaction::ValidEthTransaction;
+use crate::pool::transaction::ValidEthTransaction;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct OrderedTxGroup<'a> {

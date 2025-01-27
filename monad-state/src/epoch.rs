@@ -16,7 +16,7 @@ use monad_validator::{
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct EpochChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+pub(super) struct EpochChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -28,7 +28,7 @@ where
 {
     val_epoch_map: &'a mut ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT)>,
+    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT)>,
 }
 
 pub(super) enum EpochCommand<PT>
@@ -38,8 +38,8 @@ where
     AddEpochValidatorSet(Epoch, Vec<(NodeId<PT>, Stake)>),
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
-    EpochChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+    EpochChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -50,7 +50,7 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,
@@ -77,12 +77,24 @@ where
     }
 }
 
-impl<ST, SCT, EPT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
-    for Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
+impl<ST, SCT, EPT, BPT, SBT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
+    for Vec<
+        Command<
+            MonadEvent<ST, SCT, EPT>,
+            VerifiedMonadMessage<ST, SCT, EPT>,
+            ST,
+            SCT,
+            EPT,
+            BPT,
+            SBT,
+        >,
+    >
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
 {
     fn from(command: EpochCommand<CertificateSignaturePubKey<ST>>) -> Self {
         match command {

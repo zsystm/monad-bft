@@ -1,12 +1,8 @@
 use std::{fmt::Debug, marker::PhantomData, ops::Deref};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
-use blocksync::BlockSyncChildState;
 use bytes::{Bytes, BytesMut};
-use consensus::ConsensusChildState;
-use epoch::EpochChildState;
 use itertools::Itertools;
-use mempool::MempoolChildState;
 use monad_blocksync::{
     blocksync::{BlockSync, BlockSyncSelfRequester},
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
@@ -24,7 +20,6 @@ use monad_consensus_types::{
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    txpool::TxPool,
     validation,
     validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
     voting::ValidatorMapping,
@@ -36,7 +31,7 @@ use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
     LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
     UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
@@ -50,13 +45,16 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use statesync::BlockBuffer;
+
+use self::{
+    blocksync::BlockSyncChildState, consensus::ConsensusChildState, epoch::EpochChildState,
+    statesync::BlockBuffer,
+};
 
 mod blocksync;
 mod consensus;
 pub mod convert;
 mod epoch;
-mod mempool;
 mod statesync;
 
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
@@ -302,7 +300,7 @@ where
     }
 }
 
-pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -329,8 +327,6 @@ where
     epoch_manager: EpochManager,
     /// Maps the epoch number to validator stakes and certificate pubkeys
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
-    /// Transaction pool is the source of Proposals
-    txpool: TT,
 
     block_timestamp: BlockTimestamp,
     block_validator: BVT,
@@ -345,7 +341,7 @@ where
     version: MonadVersion,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT> MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -353,7 +349,6 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     pub fn consensus(&self) -> Option<&ConsensusState<ST, SCT, EPT, BPT, SBT>> {
@@ -638,7 +633,7 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -646,12 +641,10 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     pub validator_set_factory: VTF,
     pub leader_election: LT,
-    pub transaction_pool: TT,
     pub block_validator: BVT,
     pub block_policy: BPT,
     pub state_backend: SBT,
@@ -668,8 +661,7 @@ where
     pub _phantom: PhantomData<EPT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
-    MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -678,14 +670,23 @@ where
     SBT: StateBackend,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
-        Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>,
+        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>,
+        Vec<
+            Command<
+                MonadEvent<ST, SCT, EPT>,
+                VerifiedMonadMessage<ST, SCT, EPT>,
+                ST,
+                SCT,
+                EPT,
+                BPT,
+                SBT,
+            >,
+        >,
     ) {
         assert_eq!(
             self.forkpoint.validate(&self.validator_set_factory,),
@@ -725,7 +726,6 @@ where
             leader_election: self.leader_election,
             epoch_manager,
             val_epoch_map,
-            txpool: self.transaction_pool,
 
             block_timestamp,
             block_validator: self.block_validator,
@@ -758,7 +758,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT> MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -767,14 +767,22 @@ where
     SBT: StateBackend,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     pub fn update(
         &mut self,
         event: MonadEvent<ST, SCT, EPT>,
-    ) -> Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
-    {
+    ) -> Vec<
+        Command<
+            MonadEvent<ST, SCT, EPT>,
+            VerifiedMonadMessage<ST, SCT, EPT>,
+            ST,
+            SCT,
+            EPT,
+            BPT,
+            SBT,
+        >,
+    > {
         let _event_span = tracing::debug_span!("event_span", ?event).entered();
 
         match event {
@@ -783,7 +791,7 @@ where
 
                 consensus_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
 
@@ -792,7 +800,7 @@ where
 
                 block_sync_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
 
@@ -801,24 +809,20 @@ where
 
                 validator_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
 
-            MonadEvent::MempoolEvent(mempool_event) => {
-                let mempool_cmds = MempoolChildState::new(self).update(mempool_event);
-
-                mempool_cmds
-                    .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
-                    .collect::<Vec<_>>()
+            MonadEvent::MempoolEvent(event) => {
+                // TODO(andr-dev): Don't allow ConsensusChildState to produce Command<...> directly (requires IPC->TxPool refactor)
+                ConsensusChildState::new(self).handle_mempool_event(event)
             }
             MonadEvent::ExecutionResultEvent(event) => {
                 self.metrics.consensus_events.state_root_update += 1;
                 let consensus_cmds = ConsensusChildState::new(self).handle_execution_result(event);
                 consensus_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
             MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
@@ -1080,8 +1084,17 @@ where
 
     fn maybe_start_consensus(
         &mut self,
-    ) -> Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
-    {
+    ) -> Vec<
+        Command<
+            MonadEvent<ST, SCT, EPT>,
+            VerifiedMonadMessage<ST, SCT, EPT>,
+            ST,
+            SCT,
+            EPT,
+            BPT,
+            SBT,
+        >,
+    > {
         let ConsensusMode::Sync {
             high_qc,
             block_buffer,
@@ -1176,7 +1189,7 @@ where
         let mut commands = Vec::new();
 
         let delay = self.consensus_config.execution_delay;
-        let delay_validated_blocks_from_root: Vec<_> = root_parent_chain
+        let last_delay_committed_blocks: Vec<_> = root_parent_chain
             .iter()
             .map(|full_block| {
                 self.block_validator
@@ -1190,21 +1203,23 @@ where
                     .expect("majority committed invalid block")
             })
             .take(delay.0 as usize)
+            .rev()
             .collect();
-        // reset block_policy
+
+        // reset block_policy and txpool
         self.block_policy
-            .reset(delay_validated_blocks_from_root.iter().rev().collect());
-        self.txpool.reset(
-            delay_validated_blocks_from_root.iter().rev().collect(),
-            &mut self.metrics.txpool_events,
-        );
+            .reset(last_delay_committed_blocks.iter().collect());
+        commands.push(Command::TxPoolCommand(TxPoolCommand::Reset {
+            last_delay_committed_blocks: last_delay_committed_blocks.clone(),
+        }));
+
         // commit blocks
-        for block in delay_validated_blocks_from_root.iter().rev() {
+        for block in last_delay_committed_blocks {
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                OptimisticCommit::Proposed(block.deref().clone()),
+                OptimisticCommit::Proposed(block.deref().to_owned()),
             )));
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                OptimisticCommit::Finalized(block.deref().clone()),
+                OptimisticCommit::Finalized(block.deref().to_owned()),
             )));
             commands.push(Command::StateRootHashCommand(
                 StateRootHashCommand::RequestFinalized(block.get_seq_num()),
@@ -1254,7 +1269,7 @@ where
                 consensus
                     .handle_validated_proposal(sender, proposal)
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into),
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into),
             );
         }
         commands

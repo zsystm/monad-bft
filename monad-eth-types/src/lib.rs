@@ -86,7 +86,7 @@ impl MockableFinalizedHeader for EthHeader {
     }
 }
 
-#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
     pub transactions: Vec<TxEnvelope>,
@@ -94,9 +94,9 @@ pub struct EthBlockBody {
     pub withdrawals: Vec<Withdrawal>,
 }
 
-#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Ommer {}
-#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Withdrawal {}
 
 impl Debug for EthBlockBody {

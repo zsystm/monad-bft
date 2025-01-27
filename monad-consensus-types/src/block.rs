@@ -394,6 +394,7 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProposedExecutionInputs<EPT>
 where
     EPT: ExecutionProtocol,
@@ -434,6 +435,25 @@ impl MockableFinalizedHeader for MockExecutionFinalizedHeader {
     }
 }
 
+// This type is one level "higher" than the OptimisticCommit type below in that this type retains
+// the block policy's validated block type. This is useful when passing blocks to executors like the
+// txpool which leverage information about the block body itself, which is only available at the
+// block policy validated level, rather than using it in a "type abstracted" way like the ledger
+// which uses the "Encodable" trait to simply write the bytes to a file without needing to inspect
+// the body itself.
+#[derive(Debug)]
+pub enum OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
+{
+    Proposed(BPT::ValidatedBlock),
+    Finalized(BPT::ValidatedBlock),
+}
+
 #[derive(Debug)]
 pub enum OptimisticCommit<ST, SCT, EPT>
 where
@@ -443,4 +463,20 @@ where
 {
     Proposed(ConsensusFullBlock<ST, SCT, EPT>),
     Finalized(ConsensusFullBlock<ST, SCT, EPT>),
+}
+impl<ST, SCT, EPT, BPT, SBT> From<&OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>>
+    for OptimisticCommit<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
+{
+    fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT>) -> Self {
+        match value {
+            OptimisticPolicyCommit::Proposed(block) => Self::Proposed(block.deref().to_owned()),
+            OptimisticPolicyCommit::Finalized(block) => Self::Finalized(block.deref().to_owned()),
+        }
+    }
 }

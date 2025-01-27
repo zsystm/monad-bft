@@ -2,11 +2,10 @@ use alloy_consensus::{Transaction, TxEnvelope};
 use alloy_primitives::{Uint, B256};
 use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_types::{metrics::TxPoolEvents, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx};
-use monad_eth_txpool::EthTxPool;
+use monad_eth_txpool::{EthTxPool, TxPoolMetrics};
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -36,7 +35,7 @@ pub struct BenchController<'a> {
     pub state_backend: StateBackendType,
     pub pool: Pool,
     pub pending_blocks: Vec<EthValidatedBlock<SignatureType, SignatureCollectionType>>,
-    pub metrics: TxPoolEvents,
+    pub metrics: TxPoolMetrics,
     pub proposal_tx_limit: usize,
     pub gas_limit: u64,
 }
@@ -55,11 +54,11 @@ impl<'a> BenchController<'a> {
 
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
-        let mut metrics = TxPoolEvents::default();
+        let mut metrics = TxPoolMetrics::default();
         let mut pool = Self::create_pool(block_policy, &state_backend, &txs, &mut metrics);
 
         pool.update_committed_block(
-            &generate_block_with_txs(Round(0), block_policy.get_last_commit(), Vec::default()),
+            generate_block_with_txs(Round(0), block_policy.get_last_commit(), Vec::default()),
             &mut metrics,
         );
 
@@ -89,20 +88,20 @@ impl<'a> BenchController<'a> {
         block_policy: &BlockPolicyType,
         state_backend: &StateBackendType,
         txs: &[TxEnvelope],
-        metrics: &mut TxPoolEvents,
+        metrics: &mut TxPoolMetrics,
     ) -> Pool {
         let mut pool = Pool::default_testing();
 
-        assert!(!Pool::insert_tx(
-            &mut pool,
-            txs.iter()
-                .map(|t| Bytes::from(alloy_rlp::encode(t)))
-                .collect(),
-            block_policy,
-            state_backend,
-            metrics
-        )
-        .is_empty());
+        assert!(!pool
+            .insert_txs(
+                txs.iter()
+                    .map(|t| Bytes::from(alloy_rlp::encode(t)))
+                    .collect(),
+                block_policy,
+                state_backend,
+                metrics
+            )
+            .is_empty());
 
         pool
     }

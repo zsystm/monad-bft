@@ -526,6 +526,7 @@ pub trait ExecutionProtocol:
         // TODO delete Default once null blocks are gone
         + Default;
     type Body: Debug
+        + Clone
         + PartialEq
         + Eq
         + Send

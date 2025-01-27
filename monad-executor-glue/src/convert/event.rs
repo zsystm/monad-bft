@@ -1,11 +1,15 @@
 use std::{net::SocketAddr, str::FromStr};
 
-use bytes::Bytes;
+use alloy_rlp::{Decodable, Encodable};
+use bytes::{Bytes, BytesMut};
 use monad_consensus_types::{
-    signature_collection::SignatureCollection, validator_data::ValidatorSetDataWithEpoch,
+    convert::signing::{certificate_signature_to_proto, proto_to_certificate_signature},
+    payload::RoundSignature,
+    signature_collection::SignatureCollection,
+    validator_data::ValidatorSetDataWithEpoch,
 };
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_proto::{
     error::ProtoError,
@@ -272,9 +276,39 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<S
     }
 }
 
-impl<PT: PubKey> From<&MempoolEvent<PT>> for ProtoMempoolEvent {
-    fn from(value: &MempoolEvent<PT>) -> Self {
+impl<SCT: SignatureCollection, EPT: ExecutionProtocol> From<&MempoolEvent<SCT, EPT>>
+    for ProtoMempoolEvent
+{
+    fn from(value: &MempoolEvent<SCT, EPT>) -> Self {
         let event = match value {
+            MempoolEvent::Proposal {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+            } => proto_mempool_event::Event::Proposal(ProtoProposal {
+                epoch: Some(epoch.into()),
+                round: Some(round.into()),
+                seq_num: Some(seq_num.into()),
+                high_qc: Some(high_qc.into()),
+                timestamp_ns: *timestamp_ns as u64,
+                round_signature: Some(certificate_signature_to_proto(&round_signature.0)),
+                delayed_execution_results: delayed_execution_results
+                    .iter()
+                    .map(|result| {
+                        let mut buf = BytesMut::new();
+                        result.encode(&mut buf);
+                        buf.into()
+                    })
+                    .collect(),
+                proposed_execution_inputs: Some(proposed_execution_inputs.into()),
+                last_round_tc: last_round_tc.as_ref().map(Into::into),
+            }),
             MempoolEvent::UserTxns(tx) => {
                 proto_mempool_event::Event::Usertx(ProtoUserTx { tx: tx.clone() })
             }
@@ -286,16 +320,78 @@ impl<PT: PubKey> From<&MempoolEvent<PT>> for ProtoMempoolEvent {
                     }),
                 })
             }
+            MempoolEvent::ForwardTxs(txs) => {
+                proto_mempool_event::Event::ForwardTxs(ProtoForwardTxs {
+                    txs: txs.to_owned(),
+                })
+            }
         };
         Self { event: Some(event) }
     }
 }
 
-impl<PT: PubKey> TryFrom<ProtoMempoolEvent> for MempoolEvent<PT> {
+impl<SCT: SignatureCollection, EPT: ExecutionProtocol> TryFrom<ProtoMempoolEvent>
+    for MempoolEvent<SCT, EPT>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoMempoolEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
+            Some(proto_mempool_event::Event::Proposal(ProtoProposal {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+            })) => MempoolEvent::Proposal {
+                epoch: epoch
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "MempoolEvent::Proposal.epoch".to_owned(),
+                    ))?
+                    .try_into()?,
+                round: round
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "MempoolEvent::Proposal.round".to_owned(),
+                    ))?
+                    .try_into()?,
+                seq_num: seq_num
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "MempoolEvent::Proposal.seq_num".to_owned(),
+                    ))?
+                    .try_into()?,
+                high_qc: high_qc
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "MempoolEvent::Proposal.high_qc".to_owned(),
+                    ))?
+                    .try_into()?,
+                timestamp_ns: timestamp_ns as u128,
+                round_signature: RoundSignature(proto_to_certificate_signature(
+                    round_signature.ok_or(ProtoError::MissingRequiredField(
+                        "MempoolEvent::Proposal.round_signature".to_owned(),
+                    ))?,
+                )?),
+                delayed_execution_results: delayed_execution_results
+                    .into_iter()
+                    .map(|delayed_execution_result| {
+                        EPT::FinalizedHeader::decode(&mut delayed_execution_result.as_ref())
+                            .map_err(|_err| {
+                                ProtoError::DeserializeError(
+                                    "MempoolEvent::Proposal.delayed_execution_results".to_owned(),
+                                )
+                            })
+                    })
+                    .collect::<Result<_, _>>()?,
+                proposed_execution_inputs: proposed_execution_inputs
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "MempoolEvent::Proposal.proposed_execution_inputs".to_owned(),
+                    ))?
+                    .try_into()?,
+                last_round_tc: last_round_tc.map(TryInto::try_into).transpose()?,
+            },
             Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTxns(tx.tx),
             Some(proto_mempool_event::Event::ForwardedTxs(forwarded)) => {
                 MempoolEvent::ForwardedTxns {
@@ -312,6 +408,9 @@ impl<PT: PubKey> TryFrom<ProtoMempoolEvent> for MempoolEvent<PT> {
                         ))?
                         .tx,
                 }
+            }
+            Some(proto_mempool_event::Event::ForwardTxs(ProtoForwardTxs { txs })) => {
+                MempoolEvent::ForwardTxs(txs)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),

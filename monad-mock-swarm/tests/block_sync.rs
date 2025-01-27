@@ -7,7 +7,6 @@ mod test {
     use itertools::Itertools;
     use monad_consensus_types::{
         block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-        txpool::MockTxPool,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_mock_swarm::{
@@ -34,6 +33,7 @@ mod test {
         ledger::{MockLedger, MockableLedger},
         state_root_hash::MockStateRootHashNop,
         statesync::MockStateSyncExecutor,
+        txpool::MockTxPoolExecutor,
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -48,7 +48,6 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
@@ -89,6 +88,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -173,7 +173,6 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
@@ -208,6 +207,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -260,7 +260,6 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
@@ -295,6 +294,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -402,7 +402,6 @@ mod test {
             num_nodes, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
@@ -439,6 +438,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockTxPoolExecutor::default(),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,

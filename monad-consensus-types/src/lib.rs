@@ -7,7 +7,6 @@ pub mod payload;
 pub mod quorum_certificate;
 pub mod signature_collection;
 pub mod timeout;
-pub mod txpool;
 pub mod validation;
 pub mod validator_data;
 pub mod voting;

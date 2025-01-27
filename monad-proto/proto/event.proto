@@ -99,21 +99,37 @@ message ProtoValidatorEvent {
   }
 }
 
+message ProtoProposal {
+  monad_proto.basic.ProtoEpoch epoch = 1;
+  monad_proto.basic.ProtoRound round = 2;
+  monad_proto.basic.ProtoSeqNum seq_num = 3;
+  monad_proto.quorum_certificate.ProtoQuorumCertificate high_qc = 4;
+  uint64 timestamp_ns = 5;
+  monad_proto.signing.ProtoSignature round_signature = 6;
+  repeated bytes delayed_execution_results = 7;
+  monad_proto.block.ProtoProposedExecutionInputs proposed_execution_inputs = 8;
+  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 9;
+}
+
 message ProtoUserTx {
   repeated bytes tx = 1;
 }
-
-message ProtoClearMempool {}
 
 message ProtoForwardedTxs {
   monad_proto.basic.ProtoNodeId sender = 1;
   monad_proto.message.ProtoForwardedTx forwarded_tx = 2;
 }
 
+message ProtoForwardTxs {
+  repeated bytes txs = 1;
+}
+
 message ProtoMempoolEvent {
   oneof event {
-    ProtoUserTx usertx = 1;
-    ProtoForwardedTxs forwarded_txs = 2;
+    ProtoProposal proposal = 1;
+    ProtoUserTx usertx = 2;
+    ProtoForwardedTxs forwarded_txs = 3;
+    ProtoForwardTxs forward_txs = 4;
   }
 }
 

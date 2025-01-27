@@ -7,7 +7,6 @@ use monad_crypto::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
-use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthExecutionProtocol};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
@@ -24,6 +23,7 @@ use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor,
+    txpool::MockTxPoolExecutor,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rayon::prelude::*;
@@ -49,8 +49,6 @@ impl SwarmRelation for ForkpointSwarm {
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type Ledger =
         MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
-    type TxPool =
-        EthTxPool<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -75,6 +73,13 @@ impl SwarmRelation for ForkpointSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
+    >;
+    type TxPoolExecutor = MockTxPoolExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+        Self::BlockPolicyType,
+        Self::StateBackendType,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
@@ -210,7 +215,6 @@ fn forkpoint_restart_f(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        EthTxPool::default_testing,
         || EthValidator::new(0, 0),
         || {
             EthBlockPolicy::new(
@@ -229,6 +233,14 @@ fn forkpoint_restart_f(
         statesync_threshold, // state_sync_threshold
     );
 
+    let create_block_policy = || {
+        EthBlockPolicy::new(
+            GENESIS_SEQ_NUM,
+            state_root_delay.0,
+            10, // chain_id
+        )
+    };
+
     // Enumerate different restarting node id to cover all the leader cases
     for (i, restart_pubkey) in state_configs
         .iter()
@@ -243,15 +255,8 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            EthTxPool::default_testing,
             || EthValidator::new(0, 0),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    state_root_delay.0,
-                    10, // chain_id
-                )
-            },
+            create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,    // execution_delay
             delta,               // delta
@@ -265,7 +270,6 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            EthTxPool::default_testing,
             || EthValidator::new(0, 0),
             || {
                 EthBlockPolicy::new(
@@ -305,6 +309,7 @@ fn forkpoint_restart_f(
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
+                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -394,6 +399,7 @@ fn forkpoint_restart_f(
             restart_builder,
             NoSerRouterConfig::new(all_peers.clone()).build(),
             MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
+            MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_backend.clone()),
             MockLedger::new(restart_builder_state_backend.clone()),
             MockStateSyncExecutor::new(
                 restart_builder_state_backend,
@@ -528,7 +534,6 @@ fn forkpoint_restart_below_all(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        EthTxPool::default_testing,
         || EthValidator::new(0, 0),
         || {
             EthBlockPolicy::new(
@@ -559,6 +564,14 @@ fn forkpoint_restart_below_all(
 
     let c_iter = comb_iters.into_iter().flatten();
 
+    let create_block_policy = || {
+        EthBlockPolicy::new(
+            GENESIS_SEQ_NUM,
+            state_root_delay.0,
+            10, // chain_id
+        )
+    };
+
     for restart_pubkeys in c_iter {
         let restart_node_ids = restart_pubkeys
             .iter()
@@ -571,15 +584,8 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            EthTxPool::default_testing,
             || EthValidator::new(0, 0),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    state_root_delay.0,
-                    10, // chain_id
-                )
-            },
+            create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,    // execution_delay
             delta,               // delta
@@ -593,15 +599,8 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            EthTxPool::default_testing,
             || EthValidator::new(0, 0),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    state_root_delay.0,
-                    10, // chain_id
-                )
-            },
+            create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             state_root_delay,    // execution_delay
             delta,               // delta
@@ -628,6 +627,7 @@ fn forkpoint_restart_below_all(
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
+                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -733,6 +733,7 @@ fn forkpoint_restart_below_all(
                 builder,
                 NoSerRouterConfig::new(all_peers.clone()).build(),
                 MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
+                MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                 MockLedger::new(state_backend.clone()),
                 MockStateSyncExecutor::new(
                     state_backend,

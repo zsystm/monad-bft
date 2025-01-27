@@ -94,6 +94,9 @@ metrics!(
             created_tc,
             process_old_qc,
             process_qc,
+            // TODO(andr-dev, PR): Add metric to differentiate emitting
+            // TxPoolCommand::CreateProposal vs consensus state creating + broadcasting finalized
+            // proposal
             creating_proposal,
             rx_execution_lagging,
             rx_bad_state_root,
@@ -106,38 +109,6 @@ metrics!(
             enter_new_round_qc,
             enter_new_round_tc,
             trigger_state_sync
-        ]
-    ),
-    (
-        TxPoolEvents,
-        txpool_events,
-        [
-            // TxPool Insertions
-            insert_mempool_txs,
-            insert_forwarded_txs,
-            drop_invalid_bytes,
-            drop_not_well_formed,
-            drop_nonce_too_low,
-            drop_fee_too_low,
-            drop_insufficient_balance,
-            drop_pool_full,
-            drop_existing_higher_priority,
-            // TxPool Pending Map
-            pending_addresses,
-            pending_txs,
-            pending_promote_addresses,
-            pending_promote_txs,
-            pending_drop_unknown_addresses,
-            pending_drop_unknown_txs,
-            pending_drop_low_nonce_addresses,
-            pending_drop_low_nonce_txs,
-            // TxPool Tracked Map
-            tracked_addresses,
-            tracked_txs,
-            tracked_evict_expired_addresses,
-            tracked_evict_expired_txs,
-            tracked_remove_committed_addresses,
-            tracked_remove_committed_txs,
         ]
     ),
     (

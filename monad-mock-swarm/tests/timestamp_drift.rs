@@ -1,9 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, txpool::MockTxPool,
-};
+use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
@@ -20,6 +18,7 @@ use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    txpool::MockTxPoolExecutor,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 
@@ -36,7 +35,6 @@ fn drift_one_node() {
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
@@ -74,6 +72,7 @@ fn drift_one_node() {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockTxPoolExecutor::default(),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(
                         state_backend,

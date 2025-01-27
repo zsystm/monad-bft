@@ -21,7 +21,7 @@ use super::signing::{certificate_signature_to_proto, proto_to_certificate_signat
 use crate::{
     block::{
         BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult,
-        ProposedExecutionResult,
+        ProposedExecutionInputs, ProposedExecutionResult,
     },
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
     signature_collection::SignatureCollection,
@@ -370,6 +370,44 @@ where
             seq_num,
             round,
             result,
+        })
+    }
+}
+
+impl<EPT> From<&ProposedExecutionInputs<EPT>> for ProtoProposedExecutionInputs
+where
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &ProposedExecutionInputs<EPT>) -> Self {
+        Self {
+            header: {
+                let mut buf = BytesMut::new();
+                value.header.encode(&mut buf);
+                buf.into()
+            },
+            body: {
+                let mut buf = BytesMut::new();
+                value.body.encode(&mut buf);
+                buf.into()
+            },
+        }
+    }
+}
+
+impl<EPT> TryFrom<ProtoProposedExecutionInputs> for ProposedExecutionInputs<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoProposedExecutionInputs) -> Result<Self, Self::Error> {
+        Ok(Self {
+            header: EPT::ProposedHeader::decode(&mut value.header.as_ref()).map_err(|_| {
+                ProtoError::DeserializeError("ProposedExecutionInputs.header".to_string())
+            })?,
+            body: EPT::Body::decode(&mut value.body.as_ref()).map_err(|_| {
+                ProtoError::DeserializeError("ProposedExecutionInputs.body".to_string())
+            })?,
         })
     }
 }

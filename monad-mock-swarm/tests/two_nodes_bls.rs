@@ -5,7 +5,6 @@ use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
-    txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_mock_swarm::{
@@ -25,6 +24,7 @@ use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyT
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    txpool::MockTxPoolExecutor,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 struct BLSSwarm;
@@ -46,7 +46,6 @@ impl SwarmRelation for BLSSwarm {
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type TxPool = MockTxPool;
     type Ledger =
         MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
 
@@ -74,6 +73,13 @@ impl SwarmRelation for BLSSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type TxPoolExecutor = MockTxPoolExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+        Self::BlockPolicyType,
+        Self::StateBackendType,
+    >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
         Self::SignatureCollectionType,
@@ -92,7 +98,6 @@ fn two_nodes_bls() {
         2, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
@@ -120,6 +125,7 @@ fn two_nodes_bls() {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockTxPoolExecutor::default(),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(
                         state_backend,

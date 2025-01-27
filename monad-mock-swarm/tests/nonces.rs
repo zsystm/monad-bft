@@ -16,7 +16,6 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
-    use monad_eth_txpool::EthTxPool;
     use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
@@ -38,7 +37,7 @@ mod test {
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
         ledger::MockableLedger, state_root_hash::MockStateRootHashNop,
-        statesync::MockStateSyncExecutor,
+        statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
@@ -67,8 +66,6 @@ mod test {
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-        type TxPool =
-            EthTxPool<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
         type Ledger = MockEthLedger<Self::SignatureType, Self::SignatureCollectionType>;
 
         type RouterScheduler = NoSerRouterScheduler<
@@ -95,6 +92,13 @@ mod test {
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
         >;
+        type TxPoolExecutor = MockTxPoolExecutor<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+            Self::BlockPolicyType,
+            Self::StateBackendType,
+        >;
         type StateSyncExecutor = MockStateSyncExecutor<
             Self::SignatureType,
             Self::SignatureCollectionType,
@@ -115,13 +119,14 @@ mod test {
         let existing_nonces: BTreeMap<_, _> =
             existing_accounts.into_iter().map(|acc| (acc, 0)).collect();
 
+        let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337);
+
         let state_configs = make_state_configs::<EthSwarm>(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            EthTxPool::default_testing,
             || EthValidator::new(10_000, 1337),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            create_block_policy,
             || {
                 InMemoryStateInner::new(
                     Balance::MAX,
@@ -153,6 +158,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockEthLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,

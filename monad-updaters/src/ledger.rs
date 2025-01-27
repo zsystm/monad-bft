@@ -221,6 +221,7 @@ where
     EPT: ExecutionProtocol,
 {
     type Item = MonadEvent<ST, SCT, EPT>;
+
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 

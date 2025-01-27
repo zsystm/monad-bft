@@ -10,14 +10,14 @@ bench = false
 
 [dependencies]
 monad-blocksync = { path = "../monad-blocksync" }
-monad-consensus-types = { version = "0.1.0", path = "../monad-consensus-types" }
-monad-crypto = { version = "0.1.0", path = "../monad-crypto" }
-monad-state-backend = { version = "0.1.0", path = "../monad-state-backend" }
-monad-eth-types = { version = "0.1.0", path = "../monad-eth-types" }
-monad-executor = { version = "0.1.0", path = "../monad-executor" }
-monad-executor-glue = { version = "0.1.0", path = "../monad-executor-glue" }
-monad-types = { version = "0.1.0", path = "../monad-types" }
-monad-updaters = { version = "0.1.0", path = "../monad-updaters" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-eth-types = { path = "../monad-eth-types" }
+monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-state-backend = { path = "../monad-state-backend" }
+monad-types = { path = "../monad-types" }
+monad-updaters = { path = "../monad-updaters" }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 futures = { workspace = true }

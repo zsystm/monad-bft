@@ -17,7 +17,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
-use monad_eth_txpool::EthTxPool;
+use monad_eth_txpool::EthTxPoolExecutor;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ipc::IpcReceiver;
@@ -188,6 +188,18 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             .collect()
     };
 
+    // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only mode
+    let create_block_policy = || {
+        EthBlockPolicy::new(
+            GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
+            node_state.node_config.consensus.execution_delay,
+            node_state.node_config.chain_id,
+        )
+    };
+
+    let triedb_handle = TriedbReader::try_new(node_state.triedb_path.as_path())
+        .expect("triedb should exist in path");
+
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
@@ -210,6 +222,17 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             node_state.node_config.ipc_queued_batches_watermark as usize, // queued_batches_watermark
         )
         .expect("uds bind failed"),
+
+        txpool: EthTxPoolExecutor::new(
+            create_block_policy(),
+            StateBackendCache::new(
+                triedb_handle.clone(),
+                SeqNum(node_state.node_config.consensus.execution_delay),
+            ),
+            !cfg!(feature = "full-node"),
+            // TODO(andr-dev): Add tx_expiry to node config
+            Duration::from_secs(5),
+        ),
         control_panel: ControlPanelIpcReceiver::new(
             node_state.control_panel_ipc_path,
             reload_handle,
@@ -257,8 +280,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .map(|p| NodeId::new(p.secp256k1_pubkey))
         .collect();
 
-    let triedb_handle = TriedbReader::try_new(node_state.triedb_path.as_path())
-        .expect("triedb should exist in path");
     let mut last_ledger_tip = triedb_handle
         .get_latest_finalized_block()
         .unwrap_or(SeqNum(0));
@@ -266,22 +287,11 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
-        #[cfg(feature = "full-node")]
-        transaction_pool: EthTxPool::new(false, Duration::from_secs(0)),
-        // TODO(andr-dev): Add tx_expiry to node config
-        #[cfg(not(feature = "full-node"))]
-        transaction_pool: EthTxPool::new(true, Duration::from_secs(5)),
         block_validator: EthValidator::new(
             node_state.node_config.consensus.block_txn_limit,
             node_state.node_config.chain_id,
         ),
-        // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only
-        // mode
-        block_policy: EthBlockPolicy::new(
-            GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
-            node_state.node_config.consensus.execution_delay,
-            node_state.node_config.chain_id,
-        ),
+        block_policy: create_block_policy(),
         state_backend: StateBackendCache::new(
             triedb_handle,
             SeqNum(node_state.node_config.consensus.execution_delay),
