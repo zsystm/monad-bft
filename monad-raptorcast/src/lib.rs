@@ -13,8 +13,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-    CertificateSignatureRecoverable, PubKey,
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::{
     async_rtrb::{make_producer_consumer, WakeableConsumer},

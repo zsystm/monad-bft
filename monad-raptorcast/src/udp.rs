@@ -13,15 +13,11 @@ use itertools::Itertools;
 use lru::LruCache;
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable, PubKey,
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hasher, HasherType},
 };
-use monad_dataplane::{
-    async_rtrb::WakeableProducer,
-    event_loop::RecvMsg,
-};
+use monad_dataplane::{async_rtrb::WakeableProducer, event_loop::RecvMsg};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
