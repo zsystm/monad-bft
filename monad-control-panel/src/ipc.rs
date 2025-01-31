@@ -12,9 +12,10 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
-    GetValidatorSet, MonadEvent, ReadCommand, UpdateFullNodes, UpdatePeers, UpdateValidatorSet,
-    WriteCommand,
+    GetValidatorSet, MonadEvent, ReadCommand, ReloadConfig, UpdateFullNodes, UpdatePeers,
+    UpdateValidatorSet, WriteCommand,
 };
+use monad_types::ExecutionProtocol;
 use tokio::{
     net::{unix::OwnedReadHalf, UnixListener},
     sync::{broadcast, mpsc},
@@ -25,12 +26,13 @@ use tracing_subscriber::{reload::Handle, EnvFilter, Registry};
 
 pub type ReloadHandle = Handle<EnvFilter, Registry>;
 
-pub struct ControlPanelIpcReceiver<ST, SCT>
+pub struct ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    receiver: mpsc::Receiver<MonadEvent<ST, SCT>>,
+    receiver: mpsc::Receiver<MonadEvent<ST, SCT, EPT>>,
     client_sender: broadcast::Sender<ControlPanelCommand<SCT>>,
 
     metrics: ExecutorMetrics,
@@ -38,22 +40,24 @@ where
     reload_handle: ReloadHandle,
 }
 
-impl<ST, SCT> Stream for ControlPanelIpcReceiver<ST, SCT>
+impl<ST, SCT, EPT> Stream for ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.receiver.poll_recv(cx)
     }
 }
 
-impl<ST, SCT> ControlPanelIpcReceiver<ST, SCT>
+impl<ST, SCT, EPT> ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn new(
         bind_path: PathBuf,
@@ -116,7 +120,7 @@ where
 
     async fn new_connection(
         mut read: FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
-        event_channel: mpsc::Sender<MonadEvent<ST, SCT>>,
+        event_channel: mpsc::Sender<MonadEvent<ST, SCT, EPT>>,
     ) {
         while let Some(Ok(bytes)) = read.next().await {
             debug!("control panel ipc server bytes: {:?}", &bytes);
@@ -203,7 +207,7 @@ where
                     WriteCommand::UpdateValidatorSet(update_validator_set) => {
                         match update_validator_set {
                             UpdateValidatorSet::Request(parsed_validator_set) => {
-                                let event = MonadEvent::<ST, SCT>::ControlPanelEvent(
+                                let event = MonadEvent::ControlPanelEvent(
                                     ControlPanelEvent::UpdateValidators(parsed_validator_set),
                                 );
                                 let Ok(_) = event_channel.send(event.clone()).await else {
@@ -250,16 +254,29 @@ where
                         }
                         m => error!("unhandled message {:?}", m),
                     },
+                    WriteCommand::ReloadConfig(reload_config) => match reload_config {
+                        ReloadConfig::Request => {
+                            let event = MonadEvent::ControlPanelEvent(
+                                ControlPanelEvent::ReloadConfig(ReloadConfig::Request),
+                            );
+                            let Ok(_) = event_channel.send(event.clone()).await else {
+                                error!("failed to forward request {:?} to executor, closing connection", &event);
+                                break;
+                            };
+                        }
+                        m => error!("unhandled message {:?}", m),
+                    },
                 },
             }
         }
     }
 }
 
-impl<ST, SCT> Executor for ControlPanelIpcReceiver<ST, SCT>
+impl<ST, SCT, EPT> Executor for ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     type Command = ControlPanelCommand<SCT>;
 

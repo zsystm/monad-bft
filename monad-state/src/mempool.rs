@@ -11,7 +11,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{Command, MempoolEvent, MonadEvent, RouterCommand};
 use monad_state_backend::StateBackend;
-use monad_types::{NodeId, Round, RouterTarget};
+use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -24,17 +24,17 @@ use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+pub(super) struct MempoolChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
-    ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     txpool: &'a mut TT,
     block_policy: &'a BPT,
@@ -42,32 +42,31 @@ where
 
     metrics: &'a mut Metrics,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
-    consensus: &'a ConsensusMode<SCT, BPT, SBT>,
+    consensus: &'a ConsensusMode<ST, SCT, EPT, BPT, SBT>,
     leader_election: &'a LT,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
-
     _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT)>,
 }
-
 pub(super) enum MempoolCommand<PT: PubKey> {
     ForwardTxns(Vec<NodeId<PT>>, Vec<Bytes>),
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
-    MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+    MempoolChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,
@@ -103,19 +102,18 @@ where
     ) -> Vec<MempoolCommand<CertificateSignaturePubKey<ST>>> {
         let ConsensusMode::Live(consensus) = self.consensus else {
             tracing::trace!("ignoring MempoolEvent, not live yet");
-            self.txpool.clear();
             return vec![];
         };
         match event {
             MempoolEvent::UserTxns(txns) => {
-                let num_txns = txns.len() as u64;
-                let valid_encoded_txs =
-                    self.txpool
-                        .insert_tx(txns, self.block_policy, self.state_backend);
+                let valid_encoded_txs = self.txpool.insert_tx(
+                    txns,
+                    self.block_policy,
+                    self.state_backend,
+                    &mut self.metrics.txpool_events,
+                );
 
-                let num_valid_txns = valid_encoded_txs.len() as u64;
-                self.metrics.txpool_events.local_inserted_txns += num_valid_txns;
-                self.metrics.txpool_events.dropped_txns += num_txns - num_valid_txns;
+                self.metrics.txpool_events.insert_mempool_txs += valid_encoded_txs.len() as u64;
 
                 // Current round leader will only include txn in proposal if it
                 // hasn't observed a TC we locally formed. In all other case,
@@ -137,12 +135,15 @@ where
             }
             MempoolEvent::ForwardedTxns { sender, txns } => {
                 let num_txns = txns.len() as u64;
-                let valid_encoded_txs =
-                    self.txpool
-                        .insert_tx(txns, self.block_policy, self.state_backend);
+                let valid_encoded_txs = self.txpool.insert_tx(
+                    txns,
+                    self.block_policy,
+                    self.state_backend,
+                    &mut self.metrics.txpool_events,
+                );
 
                 let num_valid_txns = valid_encoded_txs.len() as u64;
-                self.metrics.txpool_events.external_inserted_txns += num_valid_txns;
+                self.metrics.txpool_events.insert_forwarded_txs += num_valid_txns;
 
                 if num_valid_txns != num_txns {
                     tracing::warn!(?sender, "sender forwarded bad txns");
@@ -150,19 +151,16 @@ where
 
                 vec![]
             }
-            MempoolEvent::Clear => {
-                self.txpool.clear();
-                vec![]
-            }
         }
     }
 }
 
-impl<ST, SCT> From<MempoolCommand<CertificateSignaturePubKey<ST>>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
+impl<ST, SCT, EPT> From<MempoolCommand<CertificateSignaturePubKey<ST>>>
+    for Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     fn from(value: MempoolCommand<CertificateSignaturePubKey<ST>>) -> Self {
         match value {

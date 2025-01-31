@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use alloy_primitives::{hex::FromHex, TxHash};
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::Encodable;
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
@@ -9,7 +9,6 @@ use aws_sdk_dynamodb::{
 };
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -17,38 +16,50 @@ use tokio_retry::{
 };
 use tracing::error;
 
-use crate::{metrics::Metrics, IndexStore, IndexStoreReader, TxIndexedData};
+use super::retry_strategy;
+use crate::prelude::*;
 
 const AWS_DYNAMODB_ERRORS: &str = "aws_dynamodb_errors";
 const AWS_DYNAMODB_WRITES: &str = "aws_dynamodb_writes";
 const AWS_DYNAMODB_READS: &str = "aws_dynamodb_reads";
 
 #[derive(Clone)]
-pub struct DynamoDBArchive {
+pub struct DynamoDBArchive<BDR = BlockDataReaderErased> {
     pub client: Client,
     pub table: String,
     pub semaphore: Arc<Semaphore>,
     pub metrics: Metrics,
+    pub block_data_reader: BDR,
 }
 
-impl IndexStoreReader for DynamoDBArchive {
+impl<BDR: BlockDataReader> IndexStoreReader for DynamoDBArchive<BDR> {
     async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>> {
         let str_keys = keys
             .iter()
             .map(|h| format!("{:x}", h))
             .collect::<Vec<String>>();
-        let output = self
-            .batch_get(&str_keys)
-            .await?
-            .into_iter()
-            .filter_map(|(k, map)| {
+        let output = self.batch_get(&str_keys).await?;
+
+        Ok(futures::stream::iter(output)
+            .filter_map(|(k, map)| async {
+                let bytes = log_result(extract_data_from_map(map))?;
+
+                let decoded = log_result(
+                    IndexDataStorageRepr::decode(&bytes)
+                        .wrap_err("Failed to decode index data repr in DynamoDBArchive"),
+                )?;
+                let latest =
+                    log_result(decoded.convert(&self.block_data_reader).await.wrap_err(
+                        "Failed to convert to latest index data repr in DynamoDBArchive",
+                    ))?;
+
                 Some((
                     TxHash::from_hex(k).ok()?, // fmt
-                    decode_from_map(&map, "data")?,
+                    latest,
                 ))
             })
-            .collect::<HashMap<TxHash, TxIndexedData>>();
-        Ok(output)
+            .collect::<HashMap<TxHash, TxIndexedData>>()
+            .await)
     }
 
     async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>> {
@@ -58,11 +69,11 @@ impl IndexStoreReader for DynamoDBArchive {
     }
 }
 
-impl IndexStore for DynamoDBArchive {
+impl<BDR: BlockDataReader + Send + Sync + 'static> IndexStore for DynamoDBArchive<BDR> {
     async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
         let mut requests = Vec::with_capacity(kvs.size_hint().0);
         for data in kvs {
-            let hash = format!("{:x}", data.tx.tx_hash());
+            let hash = format!("{:x}", data.tx.tx.tx_hash());
             let mut attribute_map = HashMap::new();
             attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hash));
 
@@ -100,13 +111,20 @@ impl IndexStore for DynamoDBArchive {
     }
 }
 
-impl DynamoDBArchive {
+impl<BDR: BlockDataReader> DynamoDBArchive<BDR> {
     const READ_BATCH_SIZE: usize = 100;
     const WRITE_BATCH_SIZE: usize = 25;
 
-    pub fn new(table: String, config: &SdkConfig, concurrency: usize, metrics: Metrics) -> Self {
+    pub fn new(
+        block_data_reader: BDR,
+        table: String,
+        config: &SdkConfig,
+        concurrency: usize,
+        metrics: Metrics,
+    ) -> Self {
         let client = Client::new(config);
         Self {
+            block_data_reader,
             client,
             table,
             semaphore: Arc::new(Semaphore::new(concurrency)),
@@ -248,6 +266,16 @@ impl DynamoDBArchive {
     }
 }
 
+fn log_result<T>(res: Result<T>) -> Option<T> {
+    match res {
+        Ok(x) => Some(x),
+        Err(e) => {
+            error!("{e:?}");
+            None
+        }
+    }
+}
+
 fn split_into_batches(values: Vec<WriteRequest>, batch_size: usize) -> Vec<Vec<WriteRequest>> {
     values
         .chunks(batch_size)
@@ -255,20 +283,16 @@ fn split_into_batches(values: Vec<WriteRequest>, batch_size: usize) -> Vec<Vec<W
         .collect()
 }
 
-fn decode_from_map<T: Decodable>(
-    item: &HashMap<String, AttributeValue>,
-    key: &'static str,
-) -> Option<T> {
-    if let Some(attr) = item.get(key) {
-        if let AttributeValue::B(tx_blob) = attr {
-            return T::decode(&mut tx_blob.as_ref()).ok();
+fn extract_data_from_map(mut item: HashMap<String, AttributeValue>) -> Result<Vec<u8>> {
+    if let Some(attr) = item.remove("data") {
+        if let AttributeValue::B(blob) = attr {
+            Ok(blob.into_inner())
         } else {
-            error!("failed to get {key} from attr");
+            bail!("failed to get binary data from attr map");
         }
     } else {
-        error!("{key} not found");
+        bail!("data not found");
     }
-    None
 }
 
 fn extract_txhash_from_map(
@@ -284,12 +308,6 @@ fn extract_txhash_from_map(
         dbg!("txhash attr not found");
     }
     None
-}
-
-pub fn retry_strategy() -> std::iter::Map<ExponentialBackoff, fn(Duration) -> Duration> {
-    ExponentialBackoff::from_millis(10)
-        .max_delay(Duration::from_secs(1))
-        .map(jitter)
 }
 
 fn inc_err(metrics: &Metrics) {

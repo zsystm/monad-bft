@@ -7,6 +7,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{bytes::BytesMut, Address, Bytes, PrimitiveSignature, B256, U256, U64};
 use alloy_rlp::Encodable;
 use autocxx::{block, moveit::moveit, WithinBox};
+use ffi::monad_chain_config;
 use futures::pin_mut;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string, Value};
@@ -68,12 +69,12 @@ pub struct StateOverrideObject {
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
 pub fn eth_call(
+    chain_id: u64,
     transaction: TxEnvelope,
     block_header: Header,
     sender: Address,
     block_number: u64,
     triedb_path: &Path,
-    blockdb_path: &Path,
     state_override_set: &StateOverrideSet,
 ) -> CallResult {
     // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
@@ -109,7 +110,6 @@ pub fn eth_call(
     }
 
     cxx::let_cxx_string!(triedb_path = triedb_path.to_str().unwrap().to_string());
-    cxx::let_cxx_string!(blockdb_path = blockdb_path.to_str().unwrap().to_string());
 
     moveit! {
         let mut cxx_state_override_set = ffi::monad_state_override_set::new();
@@ -200,15 +200,28 @@ pub fn eth_call(
         }
     }
 
+    // TODO: lift magic numbers into global configs
+    let cxx_monad_chain_config = match chain_id {
+        1 => monad_chain_config::CHAIN_CONFIG_ETHEREUM_MAINNET,
+        20143 => monad_chain_config::CHAIN_CONFIG_MONAD_DEVNET,
+        10143 => monad_chain_config::CHAIN_CONFIG_MONAD_TESTNET,
+        _ => {
+            return CallResult::Failure(FailureCallResult {
+                message: "unsupported chain id".to_string(),
+                data: Some(chain_id.to_string()),
+            });
+        }
+    };
+
     moveit! {
         let result = ffi::eth_call(
-        &cxx_rlp_encoded_tx,
-        &cxx_rlp_encoded_block_header,
-        &cxx_rlp_encoded_sender,
-        block_number,
-        &triedb_path,
-        &blockdb_path,
-        &cxx_state_override_set);
+            cxx_monad_chain_config,
+            &cxx_rlp_encoded_tx,
+            &cxx_rlp_encoded_block_header,
+            &cxx_rlp_encoded_sender,
+            block_number,
+            &triedb_path,
+            &cxx_state_override_set);
     }
 
     let status_code = result.deref().get_status_code().0 as i32;
@@ -280,7 +293,6 @@ mod tests {
     use alloy_rlp::Encodable;
     use hex::FromHex;
     use hex_literal::hex;
-    use monad_eth_tx::EthTransaction;
 
     use super::*;
     use crate::eth_call;
@@ -300,9 +312,10 @@ mod tests {
             Path::new(&testdb_path).to_owned()
         };
         let result = eth_call(
+            20143,
             TxEnvelope::Legacy(
                 TxLegacy {
-                    chain_id: Some(41454),
+                    chain_id: Some(20143),
                     nonce: 0,
                     gas_price: 0,
                     gas_limit: 1000000000,
@@ -325,7 +338,6 @@ mod tests {
             hex!("0000000000000000000000000000000000000000").into(),
             0,
             path.as_path(),
-            Path::new(""),
             &StateOverrideSet::new(),
         );
         unsafe {
@@ -337,7 +349,7 @@ mod tests {
                 panic!("Call failed: {}", msg.message);
             }
             CallResult::Success(res) => {
-                assert_eq!(hex::encode(res.output_data), "0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a1ee00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
+                assert_eq!(hex::encode(res.output_data), "0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000279f00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
             }
         }
     }
@@ -354,7 +366,7 @@ mod tests {
 
         let txn = TxEnvelope::Legacy(
             TxLegacy {
-                chain_id: Some(41454),
+                chain_id: Some(20143),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 30000,
@@ -375,18 +387,17 @@ mod tests {
         let sender: Address = hex!("0000000000000000000001000000000000000000").into();
         let block_number = 0;
         let triedb_path: &Path = path.as_path();
-        let blockdb_path = Path::new("");
 
         // without override, passing
         {
             let state_overrides: StateOverrideSet = StateOverrideSet::new();
             let result = eth_call(
+                20143,
                 txn.clone(),
                 header.clone(),
                 sender,
                 block_number,
                 triedb_path,
-                blockdb_path,
                 &state_overrides,
             );
 
@@ -417,12 +428,12 @@ mod tests {
                 };
 
             let result = eth_call(
+                20143,
                 txn,
                 header,
                 sender,
                 block_number,
                 triedb_path,
-                blockdb_path,
                 &state_overrides_object.state_override_set,
             );
 
@@ -453,7 +464,7 @@ mod tests {
 
         let mut txn = TxEnvelope::Legacy(
             TxLegacy {
-                chain_id: Some(41454),
+                chain_id: Some(20143),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 1000000000,
@@ -474,16 +485,15 @@ mod tests {
         let sender: Address = hex!("0000000000000000000000000000000000000000").into();
         let block_number = 0;
         let triedb_path: &Path = path.as_path();
-        let blockdb_path = Path::new("");
 
         {
             let result = eth_call(
+                20143,
                 txn.clone(),
                 header.clone(),
                 sender,
                 block_number,
                 triedb_path,
-                blockdb_path,
                 &StateOverrideSet::new(),
             );
             match result {
@@ -500,7 +510,7 @@ mod tests {
         {
             let txn = TxEnvelope::Legacy(
                 TxLegacy {
-                    chain_id: Some(41454),
+                    chain_id: Some(20143),
                     nonce: 0,
                     gas_price: 0,
                     gas_limit: 1000000000,
@@ -529,12 +539,12 @@ mod tests {
                 };
 
             let result = eth_call(
+                20143,
                 txn,
                 header.clone(),
                 sender,
                 block_number,
                 triedb_path,
-                blockdb_path,
                 &state_overrides_object.state_override_set,
             );
             match result {
@@ -555,11 +565,11 @@ mod tests {
     #[ignore]
     #[test]
     fn test_sha256_precompile() {
-        let temp_blockdb_file = tempfile::TempDir::with_prefix("blockdb").unwrap();
         let result = eth_call(
+            20143,
             TxEnvelope::Legacy(
                 TxLegacy {
-                    chain_id: Some(1337),
+                    chain_id: Some(20143),
                     nonce: 0,
                     gas_price: 0,
                     gas_limit: 100000,
@@ -577,7 +587,6 @@ mod tests {
             hex!("95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5").into(),
             0,
             Path::new("/home/rgarc/test.db"),
-            temp_blockdb_file.path(),
             &StateOverrideSet::new(), // state overrides
         );
 

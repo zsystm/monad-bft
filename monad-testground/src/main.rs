@@ -9,6 +9,7 @@ use futures_util::{FutureExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
+    block::MockExecutionProtocol,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::{ValidatorData, ValidatorSetData},
 };
@@ -44,7 +45,7 @@ where
 {
     pub num_nodes: usize,
     pub simulation_length: Duration,
-    pub executor_config: ExecutorConfig<ST, SCT>,
+    pub executor_config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
     pub state_config: StateConfig<ST, SCT>,
 }
 
@@ -299,7 +300,6 @@ where
                     consensus_config: ConsensusConfig {
                         execution_delay: SeqNum::MAX,
                         proposal_txn_limit: args.proposal_size,
-                        proposal_gas_limit: 800_000_000,
                         delta: Duration::from_millis(args.delta_ms),
                         statesync_to_live_threshold: SeqNum(600),
                         live_to_statesync_threshold: SeqNum(900),
@@ -326,6 +326,7 @@ async fn run<ST, SCT>(
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
+    let nodeid = config.executor_config.nodeid;
     let (mut state, init_commands) = make_monad_state(state_backend.clone(), config.state_config);
     let mut executor = make_monad_executor(index, state_backend, config.executor_config);
 
@@ -336,8 +337,8 @@ async fn run<ST, SCT>(
     let mut last_printed_len = 0;
     const BLOCK_INTERVAL: usize = 100;
 
-    let mut last_ledger_len = executor.ledger().get_blocks().len();
-    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
+    let mut last_ledger_len = executor.ledger().get_finalized_blocks().len();
+    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid);
     if let Some(cx) = &cx {
         ledger_span.set_parent(cx.clone());
     }
@@ -348,10 +349,10 @@ async fn run<ST, SCT>(
             let commands = state.update(event);
             executor.exec(commands);
         }
-        let ledger_len = executor.ledger().get_blocks().len();
+        let ledger_len = executor.ledger().get_finalized_blocks().len();
         if ledger_len > last_ledger_len {
             last_ledger_len = ledger_len;
-            ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
+            ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid);
             if let Some(cx) = &cx {
                 ledger_span.set_parent(cx.clone());
             }

@@ -1,41 +1,41 @@
-use std::time::Duration;
+use std::{marker::PhantomData, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator,
-    signature_collection::SignatureCollection, state_root_hash::StateRootHash, txpool::MockTxPool,
+    block::{MockExecutionProtocol, PassthruBlockPolicy},
+    block_validator::MockValidator,
+    signature_collection::SignatureCollection,
+    txpool::MockTxPool,
     validator_data::ValidatorSetData,
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::EthAddress;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
-use monad_ipc::IpcReceiver;
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
-use monad_state::{
-    Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
-};
+use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockLedger, local_router::LocalPeerRouter,
-    loopback::LoopbackExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
+    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ipc::MockIpcReceiver,
+    ledger::MockLedger, local_router::LocalPeerRouter, loopback::LoopbackExecutor,
+    parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
     BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
 
-pub enum RouterConfig<ST, SCT>
+pub enum RouterConfig<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     Local(
         /// Must be passed ahead-of-time because they can't be instantiated individually
-        LocalPeerRouter<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
+        LocalPeerRouter<MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
     ),
     RaptorCast(RaptorCastConfig<ST>),
 }
@@ -54,12 +54,13 @@ where
     },
 }
 
-pub struct ExecutorConfig<ST, SCT>
+pub struct ExecutorConfig<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    pub router_config: RouterConfig<ST, SCT>,
+    pub router_config: RouterConfig<ST, SCT, EPT>,
     pub ledger_config: LedgerConfig,
     pub state_root_hash_config: StateRootHashConfig<SCT>,
     pub nodeid: NodeId<SCT::NodeIdPubKey>,
@@ -68,22 +69,26 @@ where
 pub fn make_monad_executor<ST, SCT>(
     index: usize,
     state_backend: InMemoryState,
-    config: ExecutorConfig<ST, SCT>,
+    config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
-        RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
-        MonadEvent<ST, SCT>,
+        RouterCommand<
+            CertificateSignaturePubKey<ST>,
+            VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+        >,
+        MonadEvent<ST, SCT, MockExecutionProtocol>,
     >,
-    TokioTimer<MonadEvent<ST, SCT>>,
-    MockLedger<ST, SCT>,
+    TokioTimer<MonadEvent<ST, SCT, MockExecutionProtocol>>,
+    MockLedger<ST, SCT, MockExecutionProtocol>,
     MockCheckpoint<SCT>,
-    BoxUpdater<'static, StateRootHashCommand<SCT>, MonadEvent<ST, SCT>>,
-    IpcReceiver<ST, SCT>,
-    ControlPanelIpcReceiver<ST, SCT>,
-    LoopbackExecutor<MonadEvent<ST, SCT>>,
-    TokioTimestamp<ST, SCT>,
-    MockStateSyncExecutor<ST, SCT>,
+    BoxUpdater<'static, StateRootHashCommand<SCT>, MonadEvent<ST, SCT, MockExecutionProtocol>>,
+    MockIpcReceiver<ST, SCT, MockExecutionProtocol>,
+    ControlPanelIpcReceiver<ST, SCT, MockExecutionProtocol>,
+    LoopbackExecutor<MonadEvent<ST, SCT, MockExecutionProtocol>>,
+    TokioTimestamp<ST, SCT, MockExecutionProtocol>,
+    MockStateSyncExecutor<ST, SCT, MockExecutionProtocol>,
+    MockConfigLoader<ST, SCT, MockExecutionProtocol>,
 >
 where
     ST: CertificateSignatureRecoverable + Unpin,
@@ -97,9 +102,9 @@ where
             RouterConfig::Local(router) => Updater::boxed(router),
             RouterConfig::RaptorCast(config) => Updater::boxed(RaptorCast::<
                 ST,
-                MonadMessage<ST, SCT>,
-                VerifiedMonadMessage<ST, SCT>,
-                MonadEvent<ST, SCT>,
+                MonadMessage<ST, SCT, MockExecutionProtocol>,
+                VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+                MonadEvent<ST, SCT, MockExecutionProtocol>,
             >::new(config)),
         },
         timer: TokioTimer::default(),
@@ -117,13 +122,7 @@ where
             )),
         },
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        ipc: IpcReceiver::new(
-            format!("./monad_mempool_{}.sock", index).into(),
-            500, // tx_batch_size
-            6,   // max_queued_batches
-            3,   // queued_batches_watermark
-        )
-        .expect("uds bind failed"),
+        ipc: MockIpcReceiver::default(),
         control_panel: ControlPanelIpcReceiver::new(
             format!("./monad_controlpanel_{}.sock", index).into(),
             reload_handle,
@@ -136,12 +135,14 @@ where
             // TODO do we test statesync in testground?
             Vec::new(),
         ),
+        config_loader: MockConfigLoader::default(),
     }
 }
 
 type MonadStateType<ST, SCT> = MonadState<
     ST,
     SCT,
+    MockExecutionProtocol,
     PassthruBlockPolicy,
     InMemoryState,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
@@ -171,14 +172,21 @@ pub fn make_monad_state<ST, SCT>(
     config: StateConfig<ST, SCT>,
 ) -> (
     MonadStateType<ST, SCT>,
-    Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>,
+    Vec<
+        Command<
+            MonadEvent<ST, SCT, MockExecutionProtocol>,
+            VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+            ST,
+            SCT,
+            MockExecutionProtocol,
+        >,
+    >,
 )
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     MonadStateBuilder {
-        version: MonadVersion::new("TESTGROUND"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: MockTxPool::default(),
@@ -189,9 +197,12 @@ where
         certkey: config.cert_key,
         val_set_update_interval: config.val_set_update_interval,
         epoch_start_delay: config.epoch_start_delay,
-        beneficiary: EthAddress::default(),
-        forkpoint: Forkpoint::genesis(config.validators, StateRootHash::default()),
+        beneficiary: Default::default(),
+        forkpoint: Forkpoint::genesis(config.validators),
+        block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
+
+        _phantom: PhantomData,
     }
     .build()
 }

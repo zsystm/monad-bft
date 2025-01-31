@@ -1,24 +1,24 @@
 use std::{collections::BTreeMap, ops::Deref};
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     convert::signing::certificate_signature_to_proto,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::TimeoutCertificate,
+    timeout::{TimeoutCertificate, TimeoutDigest},
     validation::Error,
     voting::ValidatorMapping,
 };
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable, PubKey,
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{NodeId, Round, Stake};
+use monad_types::{ExecutionProtocol, NodeId, Stake, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -96,7 +96,7 @@ impl<S: CertificateSignatureRecoverable, M> AsRef<Unverified<S, M>> for Verified
 /// An unverified message is a message with a signature, but the signature hasn't
 /// been verified. It does not allow access the message content. For safety, a
 /// message received on the wire is only deserializable to an unverified message
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Unverified<S, M> {
     obj: M,
     author_signature: S,
@@ -116,10 +116,11 @@ impl<S: CertificateSignatureRecoverable, M> Unverified<S, M> {
     }
 }
 
-impl<S, SCT> Unverified<S, Unvalidated<ConsensusMessage<SCT>>>
+impl<ST, SCT, EPT> Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
-    S: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<S>>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn is_proposal(&self) -> bool {
         matches!(&self.obj.obj.message, ProtocolMessage::Proposal(_))
@@ -153,18 +154,18 @@ impl<S: CertificateSignatureRecoverable, M> From<Verified<S, Validated<M>>>
     }
 }
 
-impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection>
-    Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>
+impl<ST, SCT, EPT> Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn verify<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         sender: &SCT::NodeIdPubKey,
-    ) -> Result<Verified<ST, Unvalidated<ConsensusMessage<SCT>>>, Error>
+    ) -> Result<Verified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -229,13 +230,19 @@ impl<M> AsRef<Unvalidated<M>> for Validated<M> {
     }
 }
 
-impl<SCT: SignatureCollection> Hashable for Validated<ConsensusMessage<SCT>> {
+impl<ST, SCT, EPT> Hashable for Validated<ConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn hash(&self, state: &mut impl Hasher) {
         self.as_ref().hash(state)
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// TODO RlpEncodableWrapper?
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Unvalidated<M> {
     obj: M,
 }
@@ -252,19 +259,29 @@ impl<M> From<Validated<M>> for Unvalidated<M> {
     }
 }
 
-impl<M: Hashable> Hashable for Unvalidated<M> {
+impl<ST, SCT, EPT> Hashable for Unvalidated<ConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     fn hash(&self, state: &mut impl Hasher) {
         self.obj.hash(state)
     }
 }
 
-impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
+impl<ST, SCT, EPT> Unvalidated<ConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn validate<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-        version: &str,
-    ) -> Result<Validated<ProtocolMessage<SCT>>, Error>
+        version: u32,
+    ) -> Result<Validated<ProtocolMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -296,7 +313,12 @@ impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
     }
 }
 
-impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
+impl<ST, SCT, EPT> Unvalidated<ProposalMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     // A verified proposal is one which is well-formed, has valid signatures for
     // the present TC or QC, and epoch number is consistent with local records
     // for block.round
@@ -304,7 +326,7 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<ProposalMessage<SCT>>, Error>
+    ) -> Result<Validated<ProposalMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -315,7 +337,7 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
             epoch_manager,
             val_epoch_map,
             &self.obj.last_round_tc,
-            &self.obj.block.qc,
+            &self.obj.block_header.qc,
         )?;
 
         Ok(Validated { message: self })
@@ -326,16 +348,16 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
         well_formed(
-            self.obj.block.round,
-            self.obj.block.qc.get_round(),
+            self.obj.block_header.round,
+            self.obj.block_header.qc.get_round(),
             &self.obj.last_round_tc,
         )
     }
 
     /// Check local epoch manager record for block.round is equal to block.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.block.round) {
-            Some(epoch) if self.obj.block.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.obj.block_header.round) {
+            Some(epoch) if self.obj.block_header.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
@@ -475,11 +497,12 @@ where
             return Err(Error::InvalidTcRound);
         }
 
-        let mut h = HasherType::new();
-        h.update(tc.epoch);
-        h.update(tc.round);
-        h.update(t.high_qc_round.qc_round);
-        let msg = h.hash();
+        let td = TimeoutDigest {
+            epoch: tc.epoch,
+            round: tc.round,
+            high_qc_round: t.high_qc_round.qc_round,
+        };
+        let msg = alloy_rlp::encode(td);
 
         // TODO-3: evidence collection
         let signers = t
@@ -509,14 +532,14 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
-    if qc.get_round() == Round(0) {
+    if qc.get_round() == GENESIS_ROUND {
         if qc == &QuorumCertificate::genesis_qc() {
             return Ok(());
         } else {
             return Err(Error::InvalidSignature);
         }
     }
-    let qc_msg = HasherType::hash_object(&qc.info);
+    let qc_msg = alloy_rlp::encode(qc.info);
     let node_ids = qc
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
@@ -562,10 +585,14 @@ fn get_pubkey<ST: CertificateSignatureRecoverable>(
 ///
 /// Network serialization should use the interface functions in
 /// [crate::convert::interface] to avoid serializing unverified messages
-impl<ST: CertificateSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMessage<ST, SCT>>
+impl<ST, SCT, EPT> From<&UnverifiedConsensusMessage<ST, SCT, EPT>>
     for ProtoUnverifiedConsensusMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(value: &UnverifiedConsensusMessage<ST, SCT>) -> Self {
+    fn from(value: &UnverifiedConsensusMessage<ST, SCT, EPT>) -> Self {
         let oneof_message = match &value.obj.obj.message {
             ProtocolMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
@@ -580,7 +607,7 @@ impl<ST: CertificateSignature, SCT: SignatureCollection> From<&UnverifiedConsens
         Self {
             author_signature: Some(certificate_signature_to_proto(&value.author_signature)),
             oneof_message: Some(oneof_message),
-            version: value.obj.obj.version.clone(),
+            version: value.obj.obj.version,
         }
     }
 }
@@ -614,14 +641,17 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::{Block, BlockKind},
-        payload::{
-            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+        block::{
+            ConsensusBlockHeader, MockExecutionBody, MockExecutionProposedHeader,
+            MockExecutionProtocol,
         },
+        payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        state_root_hash::StateRootHash,
-        timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
+        timeout::{
+            HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutDigest,
+            TimeoutInfo,
+        },
         validation::Error,
         voting::{ValidatorMapping, Vote},
     };
@@ -629,10 +659,9 @@ mod test {
         certificate_signature::{
             CertificateKeyPair, CertificateSignature, CertificateSignatureRecoverable,
         },
-        hasher::{Hash, Hashable, Hasher, HasherType},
+        hasher::{Hash, Hasher, HasherType},
         NopSignature,
     };
-    use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
@@ -678,11 +707,12 @@ mod test {
         .iter()
         .zip(0..3)
         .map(|(x, i)| {
-            let mut h = HasherType::new();
-            h.update(Epoch(1));
-            h.update(Round(5));
-            x.hash(&mut h);
-            let msg = h.hash();
+            let td = TimeoutDigest {
+                epoch: Epoch(1),
+                round: Round(5),
+                high_qc_round: x.qc_round,
+            };
+            let msg = alloy_rlp::encode(td);
 
             let sigs = vec![(NodeId::new(keypairs[i].pubkey()), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &certkeys[i]))];
 
@@ -720,7 +750,7 @@ mod test {
         let vset = ValidatorSetFactory::default().create(stake_list).unwrap();
         let val_mapping = ValidatorMapping::new(voting_identity);
 
-        let msg = HasherType::hash_object(&vote);
+        let msg = alloy_rlp::encode(vote);
         let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keypair);
 
         let vote2 = Vote {
@@ -762,7 +792,7 @@ mod test {
 
         let vmap = ValidatorMapping::new(voting_identity);
 
-        let msg = HasherType::hash_object(&vote);
+        let msg = alloy_rlp::encode(vote);
         let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keys[0]);
 
         let sigs = vec![(NodeId::new(keypairs[0].pubkey()), s)];
@@ -796,11 +826,12 @@ mod test {
         .zip(keypairs[..2].iter())
         .zip(certkeys[..2].iter())
         .map(|((x, keypair), certkey)| {
-            let mut h = HasherType::new();
-            h.update(epoch);
-            h.update(round);
-            x.hash(&mut h);
-            let msg = h.hash();
+            let td = TimeoutDigest {
+                epoch: Epoch(1),
+                round: Round(5),
+                high_qc_round: x.qc_round,
+            };
+            let msg = alloy_rlp::encode(td);
 
             let sigs = vec![(NodeId::new(keypair.pubkey()), < <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), certkey))];
 
@@ -835,7 +866,7 @@ mod test {
             high_qc: QuorumCertificate::genesis_qc(),
         };
 
-        let tmo_digest = tmo_info.timeout_digest();
+        let tmo_digest = alloy_rlp::encode(tmo_info.timeout_digest());
 
         let keypair = get_key::<SignatureType>(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
@@ -894,7 +925,7 @@ mod test {
             ..DontCare::dont_care()
         };
 
-        let msg = HasherType::hash_object(&vote);
+        let msg = alloy_rlp::encode(vote);
         let mut sigs = Vec::new();
 
         for (key, certkey) in keypairs.iter().zip(certkeys.iter()) {
@@ -957,7 +988,7 @@ mod test {
             ..DontCare::dont_care()
         };
 
-        let msg = HasherType::hash_object(&vote);
+        let msg = alloy_rlp::encode(vote);
         let mut sigs = Vec::new();
 
         for (key, certkey) in keypairs.iter().zip(certkeys.iter()) {
@@ -1010,8 +1041,6 @@ mod test {
 
         let vm = VoteMessage::<SignatureCollectionType>::new(vote, &certkeypair);
 
-        let expected_vote_hash = HasherType::hash_object(&vote);
-
         let svm = Verified::<SignatureType, _>::new(vm, &keypair);
         let (author, signature, _) = svm.destructure();
         let msg = HasherType::hash_object(&vm);
@@ -1020,9 +1049,7 @@ mod test {
             keypair.pubkey()
         );
         assert_eq!(author, NodeId::new(keypair.pubkey()));
-
-        let vote_hash = HasherType::hash_object(&vm.vote);
-        assert_eq!(expected_vote_hash, vote_hash);
+        assert_eq!(vote, vm.vote);
     }
 
     #[test]
@@ -1042,27 +1069,30 @@ mod test {
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
-        let payload = Payload {
-            txns: TransactionPayload::List(FullTransactionList::empty()),
-        };
-        let block = Block::<SignatureCollectionType>::new(
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: MockExecutionBody {
+                data: Default::default(),
+            },
+        });
+        let block = ConsensusBlockHeader::new(
             NodeId::new(author.pubkey()),
-            0,
             Epoch(2), // wrong epoch: should be 1
             Round(1),
-            &ExecutionProtocol {
-                state_root: StateRootHash::default(),
-                seq_num: GENESIS_SEQ_NUM + SeqNum(1),
-                beneficiary: EthAddress::from_bytes([0x00_u8; 20]),
-                randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),
-            },
+            Vec::new(), // delayed_execution_results
+            MockExecutionProposedHeader {},
             payload.get_id(),
-            BlockKind::Executable,
-            &QuorumCertificate::genesis_qc(),
+            QuorumCertificate::genesis_qc(),
+            GENESIS_SEQ_NUM + SeqNum(1),
+            1,
+            RoundSignature::new(Round(1), author_cert_key),
         );
-        let proposal = ProposalMessage {
-            block,
-            payload,
+        let proposal: ProposalMessage<
+            SignatureType,
+            SignatureCollectionType,
+            MockExecutionProtocol,
+        > = ProposalMessage {
+            block_header: block,
+            block_body: payload,
             last_round_tc: None,
         };
 
@@ -1150,7 +1180,7 @@ mod test {
             parent_round: Round(9),
         };
 
-        let msg = HasherType::hash_object(&vote);
+        let msg = alloy_rlp::encode(vote);
         let mut sigs = Vec::new();
         for ck in cert_keys.iter() {
             let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), ck);
@@ -1192,7 +1222,7 @@ mod test {
             parent_round: Round(9),
         };
 
-        let msg = HasherType::hash_object(&vote);
+        let msg = alloy_rlp::encode(vote);
         let mut sigs = Vec::new();
         for ck in cert_keys.iter() {
             let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), ck);
@@ -1214,7 +1244,7 @@ mod test {
             high_qc: qc.clone(),
         };
 
-        let tmo_digest = tminfo.timeout_digest();
+        let tmo_digest = alloy_rlp::encode(tminfo.timeout_digest());
         let mut tc_sigs = Vec::new();
         for (key, certkey) in keys.iter().zip(cert_keys.iter()) {
             let node_id = NodeId::new(key.pubkey());

@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use alloy_consensus::ReceiptEnvelope;
 use alloy_primitives::{BlockHash, TxHash};
 use eyre::Result;
-use url::Url;
+use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 
-use crate::*;
+use crate::{cli::AwsCliArgs, prelude::*, storage::CloudProxyReader};
 
 pub enum LatestKind {
     Uploaded,
@@ -37,12 +36,22 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> ArchiveReader<BStore, IS
         concurrency: usize,
     ) -> Result<ArchiveReader<BlockDataArchive, CloudProxyReader>> {
         let url = url::Url::parse(url)?;
-        let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket.clone(), concurrency)?;
-        let block_data_reader = BlockDataArchive::new(BlobStoreErased::S3Bucket(S3Bucket::new(
+        let block_data_reader = BlockDataArchive::new(
+            AwsCliArgs {
+                bucket: bucket.clone(),
+                concurrency,
+                region,
+            }
+            .build_blob_store(&Metrics::none())
+            .await,
+        );
+        let cloud_proxy_reader = CloudProxyReader::new(
+            block_data_reader.clone().into(),
+            api_key,
+            url,
             bucket,
-            &get_aws_config(region).await,
-            Metrics::none(),
-        )));
+            concurrency,
+        )?;
 
         Ok(ArchiveReader::new(block_data_reader, cloud_proxy_reader))
     }
@@ -79,7 +88,7 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> BlockDataReader
         self.block_data_reader.get_block_by_hash(block_hash).await
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithLogIndex>> {
         self.block_data_reader
             .get_block_receipts(block_number)
             .await

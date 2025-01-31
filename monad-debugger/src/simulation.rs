@@ -21,6 +21,7 @@ pub struct Simulation {
         MonadEvent<
             <DebugSwarmRelation as SwarmRelation>::SignatureType,
             <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
+            <DebugSwarmRelation as SwarmRelation>::ExecutionProtocolType,
         >,
     )>,
     event_cache_size: usize,

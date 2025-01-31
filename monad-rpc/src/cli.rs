@@ -9,10 +9,6 @@ pub struct Cli {
     #[arg(long)]
     pub ipc_path: PathBuf,
 
-    /// Set the execution ledger path
-    #[arg(long)]
-    pub execution_ledger_path: PathBuf,
-
     /// Set the monad triedb path
     #[arg(long)]
     pub triedb_path: Option<PathBuf>,
@@ -26,7 +22,7 @@ pub struct Cli {
     pub rpc_port: u16,
 
     /// Set the chain ID
-    #[arg(long, default_value_t = 41454)]
+    #[arg(long)]
     pub chain_id: u64,
 
     /// Set the max number of requests in a batch request
@@ -41,6 +37,10 @@ pub struct Cli {
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 
+    /// Service name to set for metrics
+    #[arg(long)]
+    pub metrics_service_name: Option<String>,
+
     /// Allow pre EIP-155 transactions
     #[arg(long, default_value_t = false)]
     pub allow_unprotected_txs: bool,
@@ -52,11 +52,6 @@ pub struct Cli {
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]
     pub triedb_max_concurrent_requests: u32,
-
-    /// Set the transaction entry capacity limit for the virtual mempool.
-    /// This capacity is set for each sub-pool, and entries are dropped once the capacity is reached.
-    #[arg(long, default_value_t = 20_000)]
-    pub vpool_capacity: usize,
 
     /// Set the s3 bucket name to read archive data from
     #[arg(long)]

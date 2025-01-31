@@ -12,11 +12,11 @@ monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
+alloy-rlp = { workspace = true }
 itertools = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing = { workspace = true }
-zerocopy = { workspace = true }
 
 [dev-dependencies]
 monad-eth-types = { path = "../monad-eth-types" }

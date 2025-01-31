@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_consensus::{
     messages::{
@@ -10,24 +8,22 @@ use monad_consensus::{
 };
 use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockType},
+    block::{BlockPolicy, ExecutionResult, OptimisticCommit},
     block_validator::BlockValidator,
     metrics::Metrics,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHashInfo,
     txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand,
+    MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
+    TimestampCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{NodeId, SeqNum};
+use monad_types::{ExecutionProtocol, NodeId, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
@@ -39,18 +35,19 @@ use crate::{
     VerifiedMonadMessage,
 };
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
-    consensus: &'a mut ConsensusMode<SCT, BPT, SBT>,
+    consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, SBT>,
 
     metrics: &'a mut Metrics,
     txpool: &'a mut TT,
@@ -64,30 +61,29 @@ where
 
     block_timestamp: &'a BlockTimestamp,
     block_validator: &'a BVT,
-    beneficiary: &'a EthAddress,
+    beneficiary: &'a [u8; 20],
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
     consensus_config: &'a ConsensusConfig,
 
     keypair: &'a ST::KeyPairType,
     cert_keypair: &'a SignatureCollectionKeyPairType<SCT>,
-
-    _phantom: PhantomData<()>,
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
-    ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+    ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
     SBT: StateBackend,
-    BPT: BlockPolicy<SCT, SBT>,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
@@ -110,14 +106,13 @@ where
 
             keypair: &monad_state.keypair,
             cert_keypair: &monad_state.cert_keypair,
-            _phantom: PhantomData,
         }
     }
 
     pub(super) fn update(
         &mut self,
-        event: ConsensusEvent<ST, SCT>,
-    ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
+        event: ConsensusEvent<ST, SCT, EPT>,
+    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT>> {
         let live = match self.consensus {
             ConsensusMode::Live(live) => live,
             ConsensusMode::Sync {
@@ -234,8 +229,8 @@ where
 
     pub(super) fn handle_execution_result(
         &mut self,
-        execution_result: StateRootHashInfo,
-    ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
+        execution_result: ExecutionResult<EPT>,
+    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT>> {
         let ConsensusMode::Live(mode) = self.consensus else {
             unreachable!("handle_execution_result when not live")
         };
@@ -276,8 +271,8 @@ where
     pub(super) fn handle_validated_proposal(
         &mut self,
         author: NodeId<CertificateSignaturePubKey<ST>>,
-        validated_proposal: ProposalMessage<SCT>,
-    ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
+        validated_proposal: ProposalMessage<ST, SCT, EPT>,
+    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT>> {
         let ConsensusMode::Live(mode) = self.consensus else {
             unreachable!("handle_validated_proposal when not live")
         };
@@ -323,10 +318,13 @@ where
         metrics: &mut Metrics,
 
         sender: NodeId<CertificateSignaturePubKey<ST>>,
-        message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
+        message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     ) -> Result<
-        (NodeId<CertificateSignaturePubKey<ST>>, ProtocolMessage<SCT>),
-        Vec<ConsensusCommand<ST, SCT>>,
+        (
+            NodeId<CertificateSignaturePubKey<ST>>,
+            ProtocolMessage<ST, SCT, EPT>,
+        ),
+        Vec<ConsensusCommand<ST, SCT, EPT>>,
     > {
         let verified_message = message
             .verify(epoch_manager, val_epoch_map, &sender.pubkey())
@@ -351,23 +349,25 @@ where
     }
 }
 
-pub(super) struct WrappedConsensusCommand<ST, SCT>
+pub(super) struct WrappedConsensusCommand<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     state_root_delay: SeqNum,
-    command: ConsensusCommand<ST, SCT>,
+    command: ConsensusCommand<ST, SCT, EPT>,
 }
 
-impl<ST, SCT> From<WrappedConsensusCommand<ST, SCT>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
+impl<ST, SCT, EPT> From<WrappedConsensusCommand<ST, SCT, EPT>>
+    for Vec<Command<MonadEvent<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>, ST, SCT, EPT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    fn from(wrapped: WrappedConsensusCommand<ST, SCT>) -> Self {
-        let mut parent_cmds: Vec<Command<_, _, _>> = Vec::new();
+    fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT>) -> Self {
+        let mut parent_cmds: Vec<Command<_, _, _, _, _>> = Vec::new();
 
         match wrapped.command {
             ConsensusCommand::EnterRound(epoch, round) => parent_cmds.push(Command::RouterCommand(
@@ -410,38 +410,50 @@ where
                     MonadEvent::StateSyncEvent(StateSyncEvent::RequestSync { root, high_qc }),
                 )));
             }
-            ConsensusCommand::LedgerCommit(blocks) => {
-                let last_block = blocks.iter().last().expect("LedgerCommit no blocks");
-                parent_cmds.extend(blocks.iter().filter_map(|block| {
-                    if !block.is_empty_block() {
-                        Some(Command::StateRootHashCommand(
-                            StateRootHashCommand::Request(block.get_seq_num()),
-                        ))
-                    } else {
-                        None
+            ConsensusCommand::LedgerCommit(cmd) => {
+                match cmd {
+                    OptimisticCommit::Proposed(block) => {
+                        let block_id = block.get_id();
+                        let round = block.get_round();
+                        let seq_num = block.get_seq_num();
+                        parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+                            OptimisticCommit::Proposed(block),
+                        )));
+                        parent_cmds.push(Command::StateRootHashCommand(
+                            StateRootHashCommand::RequestProposed(block_id, seq_num, round),
+                        ));
                     }
-                }));
-                parent_cmds.push(Command::StateRootHashCommand(
-                    // upon committing block N, we no longer need state_root_N-delay
-                    // therefore, we cancel below state_root_N-delay+1
-                    //
-                    // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
-                    // exactly `delay` number of roots
-                    StateRootHashCommand::CancelBelow(
-                        (last_block.get_seq_num() + SeqNum(1)).max(wrapped.state_root_delay)
-                            - wrapped.state_root_delay,
-                    ),
-                ));
-                parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(blocks)));
+                    OptimisticCommit::Finalized(block) => {
+                        let finalized_seq_num = block.get_seq_num();
+                        parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+                            OptimisticCommit::Finalized(block),
+                        )));
+                        parent_cmds.push(Command::StateRootHashCommand(
+                            StateRootHashCommand::RequestFinalized(finalized_seq_num),
+                        ));
+                        parent_cmds.push(Command::StateRootHashCommand(
+                            // upon committing block N, we no longer need state_root_N-delay
+                            // therefore, we cancel below state_root_N-delay+1
+                            //
+                            // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
+                            // exactly `delay` number of roots
+                            StateRootHashCommand::CancelBelow(
+                                (finalized_seq_num + SeqNum(1)).max(wrapped.state_root_delay)
+                                    - wrapped.state_root_delay,
+                            ),
+                        ));
+                    }
+                }
             }
-            ConsensusCommand::CheckpointSave(checkpoint) => parent_cmds.push(
-                Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
-            ),
-            ConsensusCommand::ClearMempool => {
-                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::MempoolEvent(MempoolEvent::Clear),
-                )));
-            }
+            ConsensusCommand::CheckpointSave {
+                root_seq_num,
+                high_qc_round,
+                checkpoint,
+            } => parent_cmds.push(Command::CheckpointCommand(CheckpointCommand {
+                root_seq_num,
+                high_qc_round,
+                checkpoint,
+            })),
             ConsensusCommand::TimestampUpdate(t) => {
                 parent_cmds.push(Command::TimestampCommand(TimestampCommand::AdjustDelta(t)))
             }

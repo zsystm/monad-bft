@@ -13,7 +13,6 @@ bench = false
 monad-consensus-state = { path = "../../monad-consensus-state" }
 monad-consensus-types = { path = "../../monad-consensus-types" }
 monad-crypto = { path = "../../monad-crypto" }
-monad-eth-types = { path = "../../monad-eth-types" }
 monad-mock-swarm = { path = "../../monad-mock-swarm" }
 monad-router-scheduler = { path = "../../monad-router-scheduler" }
 monad-state = { path = "../../monad-state" }

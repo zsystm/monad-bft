@@ -1,7 +1,4 @@
-use std::{
-    ops::{Div, Sub},
-    path::Path,
-};
+use std::ops::{Div, Sub};
 
 use alloy_consensus::{Transaction as _, TxEnvelope};
 use alloy_primitives::{TxKind, U256, U64};
@@ -34,7 +31,6 @@ pub struct MonadEthEstimateGasParams {
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    execution_ledger_path: &Path,
     chain_id: u64,
     params: MonadEthEstimateGasParams,
 ) -> JsonRpcResult<Quantity> {
@@ -88,6 +84,12 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         params.tx.chain_id = Some(U64::from(chain_id));
     }
 
+    let sender = params.tx.from.unwrap_or_default();
+    let tx_chain_id = params
+        .tx
+        .chain_id
+        .expect("chain id must be populated")
+        .to::<u64>();
     let mut txn: TxEnvelope = params.tx.clone().try_into()?;
 
     if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() {
@@ -95,12 +97,12 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     }
 
     let (gas_used, gas_refund) = match monad_cxx::eth_call(
+        tx_chain_id,
         txn.clone(),
         header.header.clone(),
         sender,
         block_number,
         &triedb_env.path(),
-        execution_ledger_path,
         state_override_set,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
@@ -120,12 +122,12 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
             match monad_cxx::eth_call(
+                tx_chain_id,
                 txn.clone(),
                 header.header.clone(),
                 sender,
                 block_number,
                 &triedb_env.path(),
-                execution_ledger_path,
                 state_override_set,
             ) {
                 monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
@@ -154,12 +156,12 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         txn = params.tx.clone().try_into()?;
 
         match monad_cxx::eth_call(
+            tx_chain_id,
             txn.clone(),
             header.header.clone(),
             sender,
             block_number,
             &triedb_env.path(),
-            execution_ledger_path,
             state_override_set,
         ) {
             monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {

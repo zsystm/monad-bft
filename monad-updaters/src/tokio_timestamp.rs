@@ -8,22 +8,25 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, TimestampCommand};
+use monad_types::ExecutionProtocol;
 use tokio::time::{Duration, Interval};
 
 use crate::timestamp::TimestampAdjuster;
 
-pub struct TokioTimestamp<ST, SCT> {
+pub struct TokioTimestamp<ST, SCT, EPT> {
     /// create timestamp events at this interval
     interval: Interval,
     adjuster: TimestampAdjuster,
     metrics: ExecutorMetrics,
-    _phantom: PhantomData<(ST, SCT)>,
+    _phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
-impl<ST, SCT> TokioTimestamp<ST, SCT> {
+impl<ST, SCT, EPT> TokioTimestamp<ST, SCT, EPT> {
     pub fn new(period: Duration, max_delta_ns: u128, adjustment_period: usize) -> Self {
         Self {
             interval: tokio::time::interval(period),
@@ -34,7 +37,7 @@ impl<ST, SCT> TokioTimestamp<ST, SCT> {
     }
 }
 
-impl<ST, SCT> Executor for TokioTimestamp<ST, SCT> {
+impl<ST, SCT, EPT> Executor for TokioTimestamp<ST, SCT, EPT> {
     type Command = TimestampCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
@@ -44,19 +47,19 @@ impl<ST, SCT> Executor for TokioTimestamp<ST, SCT> {
             }
         }
     }
-
     fn metrics(&self) -> ExecutorMetricsChain {
         self.metrics.as_ref().into()
     }
 }
 
-impl<ST, SCT> Stream for TokioTimestamp<ST, SCT>
+impl<ST, SCT, EPT> Stream for TokioTimestamp<ST, SCT, EPT>
 where
     Self: Unpin,
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EPT>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
@@ -66,9 +69,8 @@ where
                 let epoch_time = start
                     .duration_since(UNIX_EPOCH)
                     .expect("Clock may have gone backwards");
-                let mut t = epoch_time.as_nanos();
+                let t = epoch_time.as_nanos();
                 // t += self.adjuster.get_adjustment();
-
                 Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(t)))
             }
             Poll::Pending => Poll::Pending,

@@ -3,8 +3,7 @@ use std::{error::Error, path::PathBuf};
 use alloy_primitives::{Uint, B256};
 use clap::Parser;
 use monad_eth_testutil::secret_to_eth_address;
-use monad_eth_types::EthAddress;
-use monad_triedb_utils::TriedbReader;
+use monad_triedb_utils::{key::Version, TriedbReader};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -19,15 +18,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let reader = TriedbReader::try_new(triedb_path.as_path()).unwrap();
 
-    let block_id = reader.get_latest_block();
-    println!("latest block id: {}", block_id);
+    let block_id = reader
+        .get_latest_finalized_block()
+        .expect("latest_finalized_block is none");
+    println!("latest block id: {:?}", block_id);
 
     let num_accounts = 1000;
-    let eth_addresses: Vec<EthAddress> = (0..num_accounts)
+    let eth_addresses: Vec<_> = (0..num_accounts)
         .map(|idx| secret_to_eth_address(B256::from(Uint::from(10000 + idx))))
         .collect();
     let results = reader
-        .get_accounts_async(eth_addresses.iter(), block_id)
+        .get_accounts_async(&block_id, Version::Finalized, eth_addresses.iter())
         .unwrap();
     println!("{:?}", results);
 

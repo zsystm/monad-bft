@@ -3,7 +3,9 @@ use std::{collections::BTreeSet, time::Duration};
 use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, txpool::MockTxPool,
+    block::{MockExecutionProtocol, PassthruBlockPolicy},
+    block_validator::MockValidator,
+    txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_mock_swarm::{
@@ -30,23 +32,36 @@ impl SwarmRelation for BLSSwarm {
     type SignatureType = SecpSignature;
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
+    type ExecutionProtocolType = MockExecutionProtocol;
     type StateBackendType = InMemoryState;
     type BlockPolicyType = PassthruBlockPolicy;
 
-    type TransportMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = VerifiedMonadMessage<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 
     type BlockValidator = MockValidator;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
+    type Ledger =
+        MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
-        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        MonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >,
+        VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -54,10 +69,16 @@ impl SwarmRelation for BLSSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor =
-        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
-    type StateSyncExecutor =
-        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateRootHashExecutor = MockStateRootHashNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
+    type StateSyncExecutor = MockStateSyncExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 }
 
 #[test]

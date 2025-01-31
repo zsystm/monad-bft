@@ -1,18 +1,19 @@
 use std::collections::BTreeMap;
 
-use alloy_consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope, TxLegacy};
+use alloy_consensus::{
+    transaction::Recovered, SignableTransaction, Transaction, TxEip1559, TxEnvelope, TxLegacy,
+};
 use alloy_primitives::{keccak256, Address, FixedBytes, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_consensus_types::{
-    block::{Block, BlockKind},
-    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    block::{ConsensusBlockHeader, ConsensusFullBlock},
+    payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::{compute_txn_max_value, EthValidatedBlock};
-use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
-use monad_eth_types::EthAddress;
+use monad_eth_types::EthBlockBody;
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
@@ -68,65 +69,53 @@ pub fn make_eip1559_tx(
     transaction.into_signed(signature).into()
 }
 
-pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> EthAddress {
+pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {
     let kp = KeyPair::from_bytes(secret.as_mut_slice()).unwrap();
     let pubkey_bytes = kp.pubkey().bytes();
     assert!(pubkey_bytes.len() == 65);
     let hash = keccak256(&pubkey_bytes[1..]);
-    EthAddress(Address::from_slice(&hash[12..]))
+    Address::from_slice(&hash[12..])
 }
 
 pub fn generate_block_with_txs(
     round: Round,
     seq_num: SeqNum,
-    txs: Vec<EthSignedTransaction>,
-) -> EthValidatedBlock<MockSignatures<NopSignature>> {
-    let payload = {
-        let full_txs = EthFullTransactionList(
-            txs.clone()
-                .into_iter()
-                .map(|signed_txn| {
-                    let sender_address = signed_txn.recover_signer().unwrap();
-                    EthTransaction::new_unchecked(signed_txn, sender_address)
-                })
-                .collect(),
-        );
-
-        Payload {
-            txns: TransactionPayload::List(FullTransactionList::new(full_txs.rlp_encode())),
-        }
-    };
+    txs: Vec<TxEnvelope>,
+) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
+    let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+        execution_body: EthBlockBody {
+            transactions: txs.clone(),
+            ommers: Vec::default(),
+            withdrawals: Vec::default(),
+        },
+    });
 
     let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
 
-    let block = Block::new(
+    let header = ConsensusBlockHeader::new(
         NodeId::new(keypair.pubkey()),
-        0,
         Epoch(1),
         round,
-        &ExecutionProtocol {
-            state_root: Default::default(),
-            seq_num,
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),
-        },
-        payload.get_id(),
-        BlockKind::Executable,
-        &QuorumCertificate::genesis_qc(),
+        Default::default(), // delayed_execution_results
+        Default::default(), // execution_inputs
+        body.get_id(),
+        QuorumCertificate::genesis_qc(),
+        seq_num,
+        0,
+        RoundSignature::new(Round(1), &keypair),
     );
 
     let validated_txns: Vec<_> = txs
         .into_iter()
         .map(|tx| {
             let signer = tx.recover_signer().expect("valid tx");
-            EthTransaction::new_unchecked(tx, signer)
+            Recovered::new_unchecked(tx, signer)
         })
         .collect();
 
-    let nonces = validated_txns
-        .iter()
-        .map(|t| (EthAddress(t.signer()), t.nonce()))
-        .fold(BTreeMap::default(), |mut map, (address, nonce)| {
+    let nonces = validated_txns.iter().map(|t| (t.signer(), t.nonce())).fold(
+        BTreeMap::default(),
+        |mut map, (address, nonce)| {
             match map.entry(address) {
                 std::collections::btree_map::Entry::Vacant(v) => {
                     v.insert(nonce);
@@ -137,19 +126,19 @@ pub fn generate_block_with_txs(
             }
 
             map
-        });
+        },
+    );
 
     let txn_fees = validated_txns
         .iter()
-        .map(|t| (EthAddress(t.signer()), compute_txn_max_value(t)))
+        .map(|t| (t.signer(), compute_txn_max_value(t)))
         .fold(BTreeMap::new(), |mut costs, (address, cost)| {
             *costs.entry(address).or_insert(U256::ZERO) += cost;
             costs
         });
 
     EthValidatedBlock {
-        block,
-        orig_payload: payload,
+        block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
         validated_txns,
         nonces,
         txn_fees,
@@ -168,7 +157,7 @@ mod test {
         let eth_address_converted = secret_to_eth_address(secret);
 
         let tx = make_legacy_tx(secret, 0, 0, 0, 0);
-        let eth_address_recovered = EthAddress(tx.recover_signer().unwrap());
+        let eth_address_recovered = tx.recover_signer().unwrap();
 
         assert_eq!(eth_address_converted, eth_address_recovered);
     }

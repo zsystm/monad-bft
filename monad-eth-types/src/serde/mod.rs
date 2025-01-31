@@ -3,17 +3,15 @@ use std::{fmt, str::FromStr};
 use alloy_primitives::{Address, FixedBytes, U160};
 use serde::{de::Visitor, Deserializer};
 
-use crate::EthAddress;
-
 /// Deserialize Eth address from a hex string or raw bytes
-pub fn deserialize_eth_address_from_str<'de, D>(deserializer: D) -> Result<EthAddress, D::Error>
+pub fn deserialize_eth_address_from_str<'de, D>(deserializer: D) -> Result<Address, D::Error>
 where
     D: Deserializer<'de>,
 {
     struct EthAddressVisitor;
 
     impl<'de> Visitor<'de> for EthAddressVisitor {
-        type Value = EthAddress;
+        type Value = Address;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             formatter.write_str("EthAddress as a hex string or an array of bytes")
@@ -23,7 +21,7 @@ where
         where
             E: serde::de::Error,
         {
-            Ok(EthAddress(Address(U160::from_str(value).unwrap().into())))
+            Ok(Address(U160::from_str(value).unwrap().into()))
         }
 
         fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
@@ -44,7 +42,7 @@ where
                 ));
             }
 
-            Ok(EthAddress(Address(FixedBytes(bytes))))
+            Ok(Address(FixedBytes(bytes)))
         }
     }
 

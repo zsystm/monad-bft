@@ -5,10 +5,9 @@ mod test {
         time::Duration,
     };
 
-    use alloy_primitives::B256;
-    use alloy_rlp::Decodable;
+    use alloy_consensus::{Transaction, TxEnvelope};
+    use alloy_primitives::{Address, B256};
     use itertools::Itertools;
-    use monad_consensus_types::payload::{TransactionPayload, BASE_FEE_PER_GAS};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -17,9 +16,8 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
-    use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
-    use monad_eth_types::{Balance, EthAddress};
+    use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -51,23 +49,40 @@ mod test {
     impl SwarmRelation for EthSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type ExecutionProtocolType = EthExecutionProtocol;
         type StateBackendType = InMemoryState;
-        type BlockPolicyType = EthBlockPolicy;
+        type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
 
-        type TransportMessage =
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type TransportMessage = VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
 
-        type BlockValidator = EthValidator;
+        type BlockValidator = EthValidator<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::StateBackendType,
+        >;
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-        type TxPool = EthTxPool<Self::SignatureCollectionType, Self::StateBackendType>;
+        type TxPool =
+            EthTxPool<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
         type Ledger = MockEthLedger<Self::SignatureType, Self::SignatureCollectionType>;
 
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
-            MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+            MonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
+            VerifiedMonadMessage<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::ExecutionProtocolType,
+            >,
         >;
 
         type Pipeline = GenericTransformerPipeline<
@@ -75,10 +90,16 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type StateRootHashExecutor =
-            MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
-        type StateSyncExecutor =
-            MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        type StateRootHashExecutor = MockStateRootHashNop<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
+        type StateSyncExecutor = MockStateSyncExecutor<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >;
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
@@ -87,7 +108,7 @@ mod test {
 
     fn generate_eth_swarm(
         num_nodes: u16,
-        existing_accounts: impl IntoIterator<Item = EthAddress>,
+        existing_accounts: impl IntoIterator<Item = Address>,
     ) -> Nodes<EthSwarm> {
         let execution_delay = SeqNum(4);
 
@@ -159,29 +180,21 @@ mod test {
     fn verify_transactions_in_ledger(
         swarm: &Nodes<EthSwarm>,
         node_ids: Vec<ID<NopPubKey>>,
-        txns: Vec<EthSignedTransaction>,
+        txns: Vec<TxEnvelope>,
     ) -> bool {
         let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| *t.tx_hash()));
         for node_id in node_ids {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
-            for (round, block) in state.executor.ledger().get_blocks() {
-                let decoded_txns = match &block.payload.txns {
-                    TransactionPayload::List(rlp) => {
-                        Vec::<EthSignedTransaction>::decode(&mut rlp.as_ref()).unwrap()
-                    }
-                    TransactionPayload::Null => Vec::new(),
-                };
-
-                let decoded_txn_hashes: HashSet<_> =
-                    HashSet::from_iter(decoded_txns.iter().map(|t| *t.tx_hash()));
-                for txn_hash in decoded_txn_hashes {
-                    if txns_to_see.contains(&txn_hash) {
-                        txns_to_see.remove(&txn_hash);
+            for (round, block) in state.executor.ledger().get_finalized_blocks() {
+                for txn in &block.body().execution_body.transactions {
+                    let txn_hash = txn.tx_hash();
+                    if txns_to_see.contains(txn_hash) {
+                        txns_to_see.remove(txn_hash);
                     } else {
                         println!(
-                            "Unexpected transaction in block round {}. NodeID: {}, TxnHash: {}",
-                            round.0, node_id, txn_hash
+                            "Unexpected transaction in block round {}. SeqNum: {}, NodeID: {}, TxnHash: {}, Nonce: {}",
+                            round.0, block.get_seq_num().0, node_id, txn_hash, txn.nonce()
                         );
                         return false;
                     }

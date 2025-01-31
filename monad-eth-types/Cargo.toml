@@ -7,5 +7,9 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-types = { path = "../monad-types" }
+
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-rlp = { workspace = true, features = ["derive"] }
 serde = { workspace = true }

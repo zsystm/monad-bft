@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use monad_archive::{ArchiveArgs, BlockDataReaderArgs};
+use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-archive", about, long_about = None)]
@@ -26,15 +26,14 @@ pub struct Cli {
     #[arg(long)]
     pub start_block: Option<u64>,
 
-    /// Path to folder containing bft block bodies
+    /// Override block number to stop at
+    #[arg(long)]
+    pub stop_block: Option<u64>,
+
+    /// Path to folder containing bft blocks
     /// If set, archiver will upload these files to blob store provided in archive_sink
     #[arg(long)]
-    pub bft_block_body_path: Option<PathBuf>,
-
-    /// Override for bft header path
-    /// Will default to `bft_block_path` otherwise
-    #[arg(long)]
-    pub bft_block_header_path: Option<PathBuf>,
+    pub bft_block_path: Option<PathBuf>,
 
     #[arg(long, default_value_t = 5)]
     pub bft_block_poll_freq_secs: u64,

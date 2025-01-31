@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
-use monad_consensus_types::block::BlockType;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
@@ -9,7 +8,7 @@ use monad_crypto::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
-use monad_eth_types::Balance;
+use monad_eth_types::{Balance, EthExecutionProtocol};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::SwarmRelation, terminator::UntilTerminator,
@@ -33,23 +32,38 @@ pub struct ForkpointSwarm;
 impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type ExecutionProtocolType = EthExecutionProtocol;
     type StateBackendType = InMemoryState;
-    type BlockPolicyType = EthBlockPolicy;
+    type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type TransportMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = VerifiedMonadMessage<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 
-    type BlockValidator = EthValidator;
+    type BlockValidator =
+        EthValidator<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type TxPool = EthTxPool<Self::SignatureCollectionType, Self::StateBackendType>;
+    type Ledger =
+        MockLedger<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
+    type TxPool =
+        EthTxPool<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
-        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        MonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >,
+        VerifiedMonadMessage<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::ExecutionProtocolType,
+        >,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -57,10 +71,16 @@ impl SwarmRelation for ForkpointSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor =
-        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
-    type StateSyncExecutor =
-        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateRootHashExecutor = MockStateRootHashNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
+    type StateSyncExecutor = MockStateSyncExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 }
 
 #[test]
@@ -191,7 +211,7 @@ fn forkpoint_restart_f(
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         EthTxPool::default_testing,
-        Default::default,
+        || EthValidator::new(0, 0),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -224,7 +244,7 @@ fn forkpoint_restart_f(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthTxPool::default_testing,
-            Default::default,
+            || EthValidator::new(0, 0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -246,7 +266,7 @@ fn forkpoint_restart_f(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthTxPool::default_testing,
-            Default::default,
+            || EthValidator::new(0, 0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -342,14 +362,7 @@ fn forkpoint_restart_f(
             // Restart node from old forkpoint
             failed_node.get_forkpoint()
         };
-        assert_eq!(
-            forkpoint.validate(
-                state_root_delay,
-                &ValidatorSetFactory::default(),
-                epoch_length
-            ),
-            Ok(())
-        );
+        assert_eq!(forkpoint.validate(&ValidatorSetFactory::default(),), Ok(()));
         let network_current_epoch = swarm
             .states()
             .iter()
@@ -437,13 +450,13 @@ fn forkpoint_restart_f(
         let maybe_last_block = restarted_node
             .executor
             .ledger()
-            .get_blocks()
+            .get_finalized_blocks()
             .values()
             .last();
         // SeqNum(terminate_block as u64 - 2): if all nodes are in sync, the
         // shortest ledger is at most 2 blocks behind the longest
         let restarted_node_caught_up = maybe_last_block
-            .map(|fb| fb.block.execution.seq_num >= SeqNum(terminate_block as u64 - 2))
+            .map(|fb| fb.header().seq_num >= SeqNum(terminate_block as u64 - 2))
             .unwrap_or(false);
 
         let test_result = restarted_node_caught_up
@@ -516,7 +529,7 @@ fn forkpoint_restart_below_all(
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         EthTxPool::default_testing,
-        Default::default,
+        || EthValidator::new(0, 0),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -559,7 +572,7 @@ fn forkpoint_restart_below_all(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthTxPool::default_testing,
-            Default::default,
+            || EthValidator::new(0, 0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -581,7 +594,7 @@ fn forkpoint_restart_below_all(
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthTxPool::default_testing,
-            Default::default,
+            || EthValidator::new(0, 0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -710,14 +723,7 @@ fn forkpoint_restart_below_all(
 
             let mut builder = state_configs_dup.swap_remove(builder_pos);
             let forkpoint = node.get_forkpoint();
-            assert_eq!(
-                forkpoint.validate(
-                    state_root_delay,
-                    &ValidatorSetFactory::default(),
-                    epoch_length
-                ),
-                Ok(())
-            );
+            assert_eq!(forkpoint.validate(&ValidatorSetFactory::default(),), Ok(()));
 
             let validators = forkpoint.validator_sets[0].clone();
             builder.forkpoint = forkpoint;
@@ -768,7 +774,7 @@ fn forkpoint_restart_below_all(
             .map(|(_id, node)| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .last()
                     .map(|block| block.get_seq_num().0)
@@ -783,7 +789,7 @@ fn forkpoint_restart_below_all(
             .map(|(_id, node)| {
                 node.executor
                     .ledger()
-                    .get_blocks()
+                    .get_finalized_blocks()
                     .values()
                     .last()
                     .map(|block| block.get_seq_num().0)

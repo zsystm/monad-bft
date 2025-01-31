@@ -1,6 +1,7 @@
 FROM ubuntu:24.04 AS base
 
 WORKDIR /usr/src/monad-bft
+
 RUN apt update && apt install -y \
   binutils \
   ca-certificates \
@@ -65,7 +66,7 @@ ARG TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
     cp `ls -Lt $(find target/release | grep -e "libevmone.so") | awk -F/ '!seen[$NF]++'` . && \
@@ -76,23 +77,22 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" 
     cp `ls -Lt $(find target/release | grep -e "lib${TRIEDB_TARGET}.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "lib${ETH_CALL_TARGET}.so") | awk -F/ '!seen[$NF]++'` .
 
-RUN strip \
-    rpc \
-    *.so \
-    *.so.*
+# Debug runner
+FROM base AS runner-debug
 
-# Runner
-FROM base AS runner
 WORKDIR /usr/src/monad-bft
-
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=1
 
 COPY --from=builder /usr/src/monad-bft/rpc /usr/local/bin/monad-rpc
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 
-ENV RUST_LOG=info
-CMD monad-rpc \
-    --ipc-path /monad/mempool.sock \
-    --execution-ledger-path /monad/ledger \
-    --triedb-path /monad/triedb
+# Runner
+FROM runner-debug AS runner
+
+RUN strip \
+    /usr/local/bin/monad-rpc \
+    /usr/local/lib/*.so \
+    /usr/local/lib/*.so.*

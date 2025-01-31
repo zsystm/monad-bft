@@ -13,11 +13,10 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage};
-use monad_types::NodeId;
-
-use crate::ffi::Target;
+use monad_types::{NodeId, SeqNum};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 pub mod bindings {
@@ -89,24 +88,20 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Command = StateSyncCommand<CertificateSignaturePubKey<ST>>;
+    type Command = StateSyncCommand<ST, EthExecutionProtocol>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                StateSyncCommand::RequestSync(state_root_info) => {
+                StateSyncCommand::RequestSync(header) => {
                     let statesync = match &mut self.mode {
                         StateSyncMode::Sync(sync) => sync,
                         StateSyncMode::Live(_) => {
                             unreachable!("Live -> Sync is not a valid state transition")
                         }
                     };
-                    statesync.update_target(Target {
-                        n: state_root_info.seq_num,
-                        state_root: state_root_info.state_root_hash.0 .0,
-                    });
-
-                    self.metrics[GAUGE_STATESYNC_LAST_TARGET] = state_root_info.seq_num.0;
+                    self.metrics[GAUGE_STATESYNC_LAST_TARGET] = header.0.number;
+                    statesync.update_target(header.0);
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
                     }
@@ -165,7 +160,7 @@ where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -189,7 +184,9 @@ where
                                 StateSyncNetworkMessage::Request(request),
                             )
                         }
-                        SyncRequest::DoneSync(target) => StateSyncEvent::DoneSync(target.n),
+                        SyncRequest::DoneSync(target) => {
+                            StateSyncEvent::DoneSync(SeqNum(target.number))
+                        }
                     };
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(event)));
                 }

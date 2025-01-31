@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
     fs,
+    marker::PhantomData,
     time::Duration,
 };
 
@@ -12,7 +13,6 @@ use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHash,
     txpool::TxPool,
     validator_data::ValidatorSetData,
 };
@@ -23,13 +23,12 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
-use monad_eth_types::EthAddress;
 use monad_mock_swarm::{swarm_relation::SwarmRelation, terminator::ProgressTerminator};
-use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
 use monad_testutil::validators::complete_keys_w_validators;
 use monad_transformer::ID;
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_validator::{
     leader_election::LeaderElection,
     validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
@@ -70,19 +69,20 @@ struct TwinsTestCaseRaw {
     expected_block: Option<BTreeMap<String, usize>>,
 }
 
-pub struct FullTwinsNodeConfig<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     id: ID<CertificateSignaturePubKey<ST>>,
-    state_config: MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>,
+    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
     partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 
@@ -94,23 +94,23 @@ where
     is_honest: bool,
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT> Clone
-    for FullTwinsNodeConfig<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT> Clone
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT> + Clone,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT> + Clone,
     SBT: StateBackend + Clone,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-    TT: TxPool<SCT, BPT, SBT> + Default,
-    BVT: BlockValidator<SCT, BPT, SBT> + Clone,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT> + Default,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT> + Clone,
 {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
             state_config: MonadStateBuilder {
-                version: MonadVersion::new("TWINS_TEST"),
                 validator_set_factory: self.state_config.validator_set_factory.clone(),
                 leader_election: self.state_config.leader_election.clone(),
                 transaction_pool: TT::default(),
@@ -128,8 +128,11 @@ where
                 val_set_update_interval: self.state_config.val_set_update_interval,
                 epoch_start_delay: self.state_config.epoch_start_delay,
                 beneficiary: self.state_config.beneficiary,
+                block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
 
                 consensus_config: self.state_config.consensus_config,
+
+                _phantom: PhantomData,
             },
             partition: self.partition.clone(),
             default_partition: self.default_partition.clone(),
@@ -143,17 +146,18 @@ where
     }
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT> Debug
-    for FullTwinsNodeConfig<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT> Debug
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -164,37 +168,39 @@ where
     }
 }
 
-pub struct TwinsNodeConfig<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
     pub id: ID<CertificateSignaturePubKey<ST>>,
-    pub state_config: MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>,
+    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>,
     pub partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     pub default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
-    From<FullTwinsNodeConfig<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>>
-    for TwinsNodeConfig<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
+    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>>
+    for TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, SBT>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, SBT>,
-    BVT: BlockValidator<SCT, BPT, SBT>,
+    TT: TxPool<ST, SCT, EPT, BPT, SBT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
-    fn from(value: FullTwinsNodeConfig<ST, SCT, BPT, SBT, VTF, LT, TT, BVT>) -> Self {
+    fn from(value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>) -> Self {
         let FullTwinsNodeConfig {
             id,
             state_config,
@@ -227,6 +233,7 @@ where
         TwinsNodeConfig<
             S::SignatureType,
             S::SignatureCollectionType,
+            S::ExecutionProtocolType,
             S::BlockPolicyType,
             S::StateBackendType,
             S::ValidatorSetTypeFactory,
@@ -311,6 +318,7 @@ where
         .map(|(key, certkey)| MonadStateBuilder::<
             S::SignatureType,
             S::SignatureCollectionType,
+            S::ExecutionProtocolType,
             S::BlockPolicyType,
             S::StateBackendType,
             S::ValidatorSetTypeFactory,
@@ -318,7 +326,6 @@ where
             S::TxPool,
             S::BlockValidator,
         > {
-            version: MonadVersion::new("TWINS_TEST"),
             validator_set_factory: S::ValidatorSetTypeFactory::default(),
             leader_election: S::LeaderElection::default(),
             transaction_pool: S::TxPool::default(),
@@ -328,19 +335,19 @@ where
                 u128::MAX,
                 monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
             ),
-            forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
+            forkpoint: Forkpoint::genesis(validator_data.clone()),
 
             key,
             certkey,
 
             val_set_update_interval: SeqNum(2000),
             epoch_start_delay: Round(50),
-            beneficiary: EthAddress::default(),
+            beneficiary: Default::default(),
+            block_sync_override_peers: Default::default(),
 
             consensus_config: ConsensusConfig {
                 execution_delay: SeqNum(TWINS_STATE_ROOT_DELAY),
                 proposal_txn_limit: 10,
-                proposal_gas_limit: 30_000_000,
                 delta: Duration::from_millis(delta_ms),
                 statesync_to_live_threshold: SeqNum(600),
                 live_to_statesync_threshold: SeqNum(900),
@@ -348,6 +355,8 @@ where
                 vote_pace: Duration::from_millis(vote_pace_ms),
                 timestamp_latency_estimate_ns: 10_000_000,
             },
+
+            _phantom: PhantomData,
         })
         .collect();
 
@@ -394,6 +403,8 @@ where
         let mut twin = original.clone();
         let identifier = TWINS_DUP_IDENTIFIER + idx;
         twin.id = twin.id.as_non_unique(identifier);
+        twin.state_config.state_backend =
+            InMemoryStateInner::genesis(u128::MAX, monad_types::SeqNum(TWINS_STATE_ROOT_DELAY));
         duplicates
             .get_mut(twin.id.get_peer_id())
             .expect("mimic target doesn't exists when reading test case")

@@ -56,11 +56,11 @@ void monad_state_override_set::set_override_state(
 }
 
 monad_evmc_result eth_call(
-    std::vector<uint8_t> const &rlp_encoded_transaction,
-    std::vector<uint8_t> const &rlp_encoded_block_header,
-    std::vector<uint8_t> const &rlp_encoded_sender, uint64_t const block_number,
-    std::string const &triedb_path, std::string const &block_db_path,
-    monad_state_override_set const &state_overides)
+    monad_chain_config const chain_config, std::vector<uint8_t> const &rlp_txn,
+    std::vector<uint8_t> const &rlp_header,
+    std::vector<uint8_t> const &rlp_sender, uint64_t const block_number,
+    std::string const &triedb_path,
+    monad_state_override_set const &state_overrides)
 {
     static constexpr auto N = 32;
     std::array<uint8_t, N> data = {

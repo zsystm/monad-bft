@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
     time::Duration,
 };
 
@@ -14,7 +15,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
-use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_transformer::{LinkMessage, Pipeline, ID};
 use monad_validator::validator_set::{
     BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
@@ -33,6 +34,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
     pub state_builder: MonadStateBuilder<
         S::SignatureType,
         S::SignatureCollectionType,
+        S::ExecutionProtocolType,
         S::BlockPolicyType,
         S::StateBackendType,
         S::ValidatorSetTypeFactory,
@@ -55,6 +57,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         state_builder: MonadStateBuilder<
             S::SignatureType,
             S::SignatureCollectionType,
+            S::ExecutionProtocolType,
             S::BlockPolicyType,
             S::StateBackendType,
             S::ValidatorSetTypeFactory,
@@ -90,6 +93,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         S: SwarmRelation<
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
+            ExecutionProtocolType = <DebugSwarmRelation as SwarmRelation>::ExecutionProtocolType,
             TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
             BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
             StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
@@ -101,7 +105,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         NodeBuilder {
             id: self.id,
             state_builder: MonadStateBuilder {
-                version: MonadVersion::new("MOCK_SWARM"),
                 validator_set_factory: BoxedValidatorSetTypeFactory::new(
                     self.state_builder.validator_set_factory,
                 ),
@@ -116,7 +119,10 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 epoch_start_delay: self.state_builder.epoch_start_delay,
                 beneficiary: self.state_builder.beneficiary,
                 forkpoint: self.state_builder.forkpoint,
+                block_sync_override_peers: self.state_builder.block_sync_override_peers,
                 consensus_config: self.state_builder.consensus_config,
+
+                _phantom: PhantomData,
             },
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),
@@ -224,7 +230,7 @@ impl<S: SwarmRelation> Node<S> {
         )>,
     ) -> Option<(
         Duration,
-        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     )> {
         while let Some((tick, event_type)) = self.peek_event() {
             let _mock_swarm_span = tracing::trace_span!("mock_swarm_span", ?tick).entered();

@@ -3,8 +3,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::Address;
 use monad_consensus_types::txpool::TxPoolInsertionError;
-use monad_eth_types::{EthAddress, Nonce};
+use monad_eth_types::Nonce;
 use tracing::error;
 
 use crate::{pending::PendingTxList, transaction::ValidEthTransaction};
@@ -95,36 +96,38 @@ impl TrackedTxList {
     }
 
     pub fn update_account_nonce(
-        mut this: indexmap::map::OccupiedEntry<'_, EthAddress, TrackedTxList>,
+        mut this: indexmap::map::OccupiedEntry<'_, Address, TrackedTxList>,
         account_nonce: u64,
-    ) {
+    ) -> Option<indexmap::map::OccupiedEntry<'_, Address, TrackedTxList>> {
         this.get_mut().account_nonce = account_nonce;
 
         let Some((lowest_nonce, _)) = this.get().txs.first_key_value() else {
             error!("txpool invalid tracked tx list state");
 
             this.swap_remove();
-            return;
+            return None;
         };
 
         if lowest_nonce >= &account_nonce {
-            return;
+            return Some(this);
         }
 
         let txs = this.get_mut().txs.split_off(&account_nonce);
 
         if txs.is_empty() {
             this.swap_remove();
-            return;
+            return None;
         }
 
         this.get_mut().txs = txs;
+
+        Some(this)
     }
 
     pub fn evict_expired_txs(
-        mut this: indexmap::map::IndexedEntry<'_, EthAddress, TrackedTxList>,
+        mut this: indexmap::map::IndexedEntry<'_, Address, TrackedTxList>,
         tx_expiry: Duration,
-    ) -> Option<indexmap::map::IndexedEntry<'_, EthAddress, TrackedTxList>> {
+    ) -> Option<indexmap::map::IndexedEntry<'_, Address, TrackedTxList>> {
         let now = Instant::now();
 
         this.get_mut()

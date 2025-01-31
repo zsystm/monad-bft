@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use monad_bls::BlsSignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor_glue::{LogFriendlyMonadEvent, MonadEvent};
 use monad_proto::proto::event::ProtoMonadEvent;
 use monad_secp::SecpSignature;
@@ -18,8 +19,9 @@ struct Args {
 
 type SigType = SecpSignature;
 type SigColType = BlsSignatureCollection<CertificateSignaturePubKey<SigType>>;
-type WalEvent = MonadEvent<SigType, SigColType>;
-type WrappedEvent = LogFriendlyMonadEvent<SigType, SigColType>;
+type ExecutionProtocolType = EthExecutionProtocol;
+type WalEvent = MonadEvent<SigType, SigColType, ExecutionProtocolType>;
+type WrappedEvent = LogFriendlyMonadEvent<SigType, SigColType, ExecutionProtocolType>;
 
 fn main() {
     let args = Args::parse();

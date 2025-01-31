@@ -1,11 +1,18 @@
+use alloy_rlp::{bytes, encode_list, Decodable, Encodable, Header};
 use monad_consensus_types::{
-    block::{Block, BlockRange},
-    payload::{Payload, PayloadId},
+    block::{BlockRange, ConsensusBlockHeader},
+    payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     signature_collection::SignatureCollection,
 };
-use monad_crypto::hasher::{Hashable, Hasher};
-use monad_types::EnumDiscriminant;
-use zerocopy::AsBytes;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
+use monad_types::ExecutionProtocol;
+
+const BLOCK_SYNC_REQUEST_MESSAGE_NAME: &str = "BlockSyncRequestMessage";
+const BLOCK_SYNC_RESPONSE_MESSAGE_NAME: &str = "BlockSyncResponseMessage";
+const BLOCK_SYNC_HEADERS_RESPONSE_NAME: &str = "BlockSyncHeadersResponse";
+const BLOCK_SYNC_PAYLOAD_RESPONSE_NAME: &str = "BlockSyncBodyResponse";
 
 /// Request block sync message sent to a peer
 ///
@@ -14,32 +21,61 @@ use zerocopy::AsBytes;
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum BlockSyncRequestMessage {
     Headers(BlockRange),
-    Payload(PayloadId),
+    Payload(ConsensusBlockBodyId),
 }
 
-impl Hashable for BlockSyncRequestMessage {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
+impl Encodable for BlockSyncRequestMessage {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_REQUEST_MESSAGE_NAME;
         match self {
-            BlockSyncRequestMessage::Headers(block_range) => {
-                EnumDiscriminant(1).hash(state);
-                block_range.hash(state);
+            Self::Headers(b) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &b];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
-            BlockSyncRequestMessage::Payload(payload_id) => {
-                EnumDiscriminant(2).hash(state);
-                state.update(payload_id.0.as_bytes());
+            Self::Payload(id) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &id];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
     }
 }
 
+impl Decodable for BlockSyncRequestMessage {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_REQUEST_MESSAGE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncRequestMessage",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Headers(BlockRange::decode(&mut payload)?)),
+            2 => Ok(Self::Payload(ConsensusBlockBodyId::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncRequestMessage",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockSyncHeadersResponse<SCT: SignatureCollection> {
-    Found((BlockRange, Vec<Block<SCT>>)),
+pub enum BlockSyncHeadersResponse<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    Found((BlockRange, Vec<ConsensusBlockHeader<ST, SCT, EPT>>)),
     NotAvailable(BlockRange),
 }
 
-impl<SCT: SignatureCollection> BlockSyncHeadersResponse<SCT> {
+impl<ST, SCT, EPT> BlockSyncHeadersResponse<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn get_block_range(&self) -> BlockRange {
         match self {
             BlockSyncHeadersResponse::Found((block_range, _)) => *block_range,
@@ -48,102 +84,211 @@ impl<SCT: SignatureCollection> BlockSyncHeadersResponse<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> Hashable for BlockSyncHeadersResponse<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
+impl<ST, SCT, EPT> Encodable for BlockSyncHeadersResponse<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_HEADERS_RESPONSE_NAME;
         match self {
-            BlockSyncHeadersResponse::Found((block_range, blocks)) => {
-                EnumDiscriminant(1).hash(state);
-                block_range.hash(state);
-                for block in blocks {
-                    block.hash(state);
-                }
+            Self::Found((block_range, blocks)) => {
+                let enc: [&dyn Encodable; 4] = [&name, &1u8, &block_range, &blocks];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
-            BlockSyncHeadersResponse::NotAvailable(block_range) => {
-                EnumDiscriminant(2).hash(state);
-                block_range.hash(state);
+            Self::NotAvailable(block_range) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &block_range];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for BlockSyncHeadersResponse<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_HEADERS_RESPONSE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncHeaderResponse",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Found((
+                BlockRange::decode(&mut payload)?,
+                Vec::<_>::decode(&mut payload)?,
+            ))),
+            2 => Ok(Self::NotAvailable(BlockRange::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncHeadersResponse",
+            )),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockSyncPayloadResponse {
-    Found(Payload),
-    NotAvailable(PayloadId),
+pub enum BlockSyncBodyResponse<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    Found(ConsensusBlockBody<EPT>),
+    NotAvailable(ConsensusBlockBodyId),
 }
 
-impl BlockSyncPayloadResponse {
-    pub fn get_payload_id(&self) -> PayloadId {
+impl<EPT> BlockSyncBodyResponse<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    pub fn get_payload_id(&self) -> ConsensusBlockBodyId {
         match self {
-            BlockSyncPayloadResponse::Found(payload) => payload.get_id(),
-            BlockSyncPayloadResponse::NotAvailable(payload_id) => *payload_id,
+            BlockSyncBodyResponse::Found(payload) => payload.get_id(),
+            BlockSyncBodyResponse::NotAvailable(payload_id) => *payload_id,
         }
     }
 }
 
-impl Hashable for BlockSyncPayloadResponse {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
+impl<EPT> Encodable for BlockSyncBodyResponse<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_PAYLOAD_RESPONSE_NAME;
         match self {
-            BlockSyncPayloadResponse::Found(payload) => {
-                EnumDiscriminant(1).hash(state);
-                payload.hash(state);
+            Self::Found(payload) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &payload];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
-            BlockSyncPayloadResponse::NotAvailable(payload_id) => {
-                EnumDiscriminant(2).hash(state);
-                state.update(payload_id.0.as_bytes());
+            Self::NotAvailable(payload_id) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &payload_id];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
+        }
+    }
+}
+
+impl<EPT> Decodable for BlockSyncBodyResponse<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_PAYLOAD_RESPONSE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncBodyResponse",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Found(ConsensusBlockBody::decode(&mut payload)?)),
+            2 => Ok(Self::NotAvailable(ConsensusBlockBodyId::decode(
+                &mut payload,
+            )?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncBodyResponse",
+            )),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockSyncResponseMessage<SCT: SignatureCollection> {
-    HeadersResponse(BlockSyncHeadersResponse<SCT>),
-    PayloadResponse(BlockSyncPayloadResponse),
+pub enum BlockSyncResponseMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    HeadersResponse(BlockSyncHeadersResponse<ST, SCT, EPT>),
+    PayloadResponse(BlockSyncBodyResponse<EPT>),
 }
 
-impl<SCT: SignatureCollection> BlockSyncResponseMessage<SCT> {
+impl<ST, SCT, EPT> BlockSyncResponseMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
     pub fn found_headers(
         block_range: BlockRange,
-        headers: Vec<Block<SCT>>,
-    ) -> BlockSyncResponseMessage<SCT> {
+        headers: Vec<ConsensusBlockHeader<ST, SCT, EPT>>,
+    ) -> BlockSyncResponseMessage<ST, SCT, EPT> {
         BlockSyncResponseMessage::HeadersResponse(BlockSyncHeadersResponse::Found((
             block_range,
             headers,
         )))
     }
 
-    pub fn headers_not_available(block_range: BlockRange) -> BlockSyncResponseMessage<SCT> {
+    pub fn headers_not_available(
+        block_range: BlockRange,
+    ) -> BlockSyncResponseMessage<ST, SCT, EPT> {
         BlockSyncResponseMessage::HeadersResponse(BlockSyncHeadersResponse::NotAvailable(
             block_range,
         ))
     }
 
-    pub fn found_payload(payload: Payload) -> BlockSyncResponseMessage<SCT> {
-        BlockSyncResponseMessage::PayloadResponse(BlockSyncPayloadResponse::Found(payload))
+    pub fn found_payload(body: ConsensusBlockBody<EPT>) -> BlockSyncResponseMessage<ST, SCT, EPT> {
+        BlockSyncResponseMessage::PayloadResponse(BlockSyncBodyResponse::Found(body))
     }
 
-    pub fn payload_not_available(payload_id: PayloadId) -> BlockSyncResponseMessage<SCT> {
-        BlockSyncResponseMessage::PayloadResponse(BlockSyncPayloadResponse::NotAvailable(
-            payload_id,
+    pub fn payload_not_available(
+        block_body_id: ConsensusBlockBodyId,
+    ) -> BlockSyncResponseMessage<ST, SCT, EPT> {
+        BlockSyncResponseMessage::PayloadResponse(BlockSyncBodyResponse::NotAvailable(
+            block_body_id,
         ))
     }
 }
 
-impl<SCT: SignatureCollection> Hashable for BlockSyncResponseMessage<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
+impl<ST, SCT, EPT> Encodable for BlockSyncResponseMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_RESPONSE_MESSAGE_NAME;
         match self {
-            BlockSyncResponseMessage::HeadersResponse(headers_response) => {
-                EnumDiscriminant(1).hash(state);
-                headers_response.hash(state);
+            Self::HeadersResponse(resp) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &resp];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
-            BlockSyncResponseMessage::PayloadResponse(payload_response) => {
-                EnumDiscriminant(2).hash(state);
-                payload_response.hash(state)
+            Self::PayloadResponse(resp) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &resp];
+                encode_list::<_, dyn Encodable>(&enc, out);
             }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for BlockSyncResponseMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_RESPONSE_MESSAGE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncResponseMessage",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::HeadersResponse(BlockSyncHeadersResponse::decode(
+                &mut payload,
+            )?)),
+            2 => Ok(Self::PayloadResponse(BlockSyncBodyResponse::decode(
+                &mut payload,
+            )?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncResponseMessage",
+            )),
         }
     }
 }

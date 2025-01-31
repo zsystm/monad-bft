@@ -1,11 +1,11 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use itertools::Itertools;
-use monad_consensus_types::txpool::TxPool;
+use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature, txpool::TxPool};
+use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair};
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_state_backend::InMemoryState;
-use monad_types::{SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
-use self::common::{run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY};
+use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
 mod common;
 
@@ -14,6 +14,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // policy state we want to benchmark
     let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
 
+    let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
     run_txpool_benches(
         c,
         "create_proposal",
@@ -23,17 +24,24 @@ fn criterion_benchmark(c: &mut Criterion) {
              block_policy,
              pool,
              pending_blocks,
+             metrics,
              proposal_tx_limit,
              gas_limit,
          }| {
-            TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::create_proposal(
+            TxPool::create_proposal(
                 pool,
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
                 *gas_limit,
+                [0_u8; 20],
+                GENESIS_TIMESTAMP
+                    + block_policy.get_last_commit().0 as u128
+                    + pending_blocks.len() as u128,
+                &RoundSignature::new(Round(0), &mock_keypair),
                 block_policy,
                 pending_blocks.iter().collect_vec(),
                 state_backend,
+                metrics,
             )
             .unwrap();
         },

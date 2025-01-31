@@ -12,7 +12,7 @@ use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
     ReadCommand, UpdateValidatorSet, WriteCommand,
 };
-use monad_node::config::{
+use monad_node_config::{
     FullNodeConfig, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
 };
 use monad_secp::SecpSignature;
@@ -79,6 +79,8 @@ enum Commands {
         #[arg(short, long, value_name = "FILE")]
         path: PathBuf,
     },
+    /// Reload node config
+    ReloadConfig,
 }
 
 struct Read {
@@ -252,9 +254,10 @@ fn main() -> Result<(), Error> {
             }
         }
         Commands::UpdatePeers { path } => {
-            let new_peer_config =
-                toml::from_str::<NodeBootstrapConfig>(&std::fs::read_to_string(path).unwrap())
-                    .map_err(Error::other)?;
+            let new_peer_config = toml::from_str::<
+                NodeBootstrapConfig<CertificateSignaturePubKey<SignatureType>>,
+            >(&std::fs::read_to_string(path).unwrap())
+            .map_err(Error::other)?;
 
             let mut new_peers = Vec::with_capacity(new_peer_config.peers.len());
 
@@ -317,9 +320,10 @@ fn main() -> Result<(), Error> {
             }
         }
         Commands::UpdateFullNodes { path } => {
-            let full_node_config =
-                toml::from_str::<FullNodeConfig>(&std::fs::read_to_string(path).unwrap())
-                    .map_err(Error::other)?;
+            let full_node_config = toml::from_str::<
+                FullNodeConfig<CertificateSignaturePubKey<SignatureType>>,
+            >(&std::fs::read_to_string(path).unwrap())
+            .map_err(Error::other)?;
 
             let mut new_full_nodes = Vec::with_capacity(full_node_config.identities.len());
             for node in full_node_config.identities {
@@ -337,6 +341,24 @@ fn main() -> Result<(), Error> {
             )) = response
             {
                 println!("Full node list updated");
+            } else {
+                println!(
+                    "unexpected response{}",
+                    serde_json::to_string(&response).unwrap()
+                )
+            }
+        }
+        Commands::ReloadConfig => {
+            rt.block_on(write.send(Command::Write(WriteCommand::ReloadConfig(
+                monad_executor_glue::ReloadConfig::Request,
+            ))))?;
+
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            if let ControlPanelCommand::Write(WriteCommand::ReloadConfig(
+                monad_executor_glue::ReloadConfig::Response(msg),
+            )) = response
+            {
+                println!("{}", msg);
             } else {
                 println!(
                     "unexpected response{}",

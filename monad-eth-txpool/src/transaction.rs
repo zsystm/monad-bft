@@ -1,27 +1,36 @@
 use std::cmp::Ordering;
 
-use alloy_consensus::Transaction;
+use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
-use monad_consensus_types::{payload::BASE_FEE_PER_GAS, txpool::TxPoolInsertionError};
+use monad_consensus_types::{
+    signature_collection::SignatureCollection, txpool::TxPoolInsertionError,
+};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_block_policy::{
     compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy,
 };
-use monad_eth_tx::{EthTransaction, EthTxHash};
-use monad_eth_types::{Balance, EthAddress, Nonce};
+use monad_eth_types::{Balance, Nonce, BASE_FEE_PER_GAS};
 use tracing::trace;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {
-    tx: EthTransaction,
+    tx: Recovered<TxEnvelope>,
     max_value: u128,
     effective_tip_per_gas: u128,
 }
 
 impl ValidEthTransaction {
-    pub fn validate(
-        tx: EthTransaction,
-        block_policy: &EthBlockPolicy,
-    ) -> Result<Self, TxPoolInsertionError> {
+    pub fn validate<ST, SCT>(
+        tx: Recovered<TxEnvelope>,
+        block_policy: &EthBlockPolicy<ST, SCT>,
+    ) -> Result<Self, TxPoolInsertionError>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
         // TODO(andr-dev): Block base fee is hardcoded we need to update
         // this logic once its included in the consensus proposal
         if tx.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
@@ -64,15 +73,15 @@ impl ValidEthTransaction {
         Ok(new_account_balance)
     }
 
-    pub fn sender(&self) -> EthAddress {
-        EthAddress(self.tx.signer())
+    pub fn sender(&self) -> Address {
+        self.tx.signer()
     }
 
     pub fn nonce(&self) -> Nonce {
         self.tx.nonce()
     }
 
-    pub fn hash(&self) -> EthTxHash {
+    pub fn hash(&self) -> TxHash {
         *self.tx.tx_hash()
     }
 
@@ -84,7 +93,7 @@ impl ValidEthTransaction {
         self.tx.length() as u64
     }
 
-    pub fn raw(&self) -> &EthTransaction {
+    pub fn raw(&self) -> &Recovered<TxEnvelope> {
         &self.tx
     }
 }

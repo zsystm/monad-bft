@@ -10,12 +10,11 @@ bench = false
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
 
-alloy-consensus = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
@@ -39,14 +38,13 @@ rand_chacha = { workspace = true }
 tracing-test = { workspace = true }
 
 [[bench]]
-name = "insert"
-harness = false
-
-[[bench]]
 name = "create_proposal"
 harness = false
 
 [[bench]]
-name = "clear"
+name = "insert"
 harness = false
 
+[[bench]]
+name = "update"
+harness = false

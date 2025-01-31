@@ -24,6 +24,7 @@ actix-test = { workspace = true }
 actix-web = { workspace = true }
 actix-web-actors = { workspace = true }
 alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-types = { workspace = true }
@@ -41,7 +42,6 @@ tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 notify = "6.1.1"
 pin-project = "1.1.5"
-scc = { workspace = true }
 schemars = "0.8.21"
 opentelemetry = { workspace = true, features = ["metrics"] }
 opentelemetry-otlp = "0.17.0"

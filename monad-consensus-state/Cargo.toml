@@ -18,28 +18,16 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
 
-bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-eth-testutil = { path = "../monad-eth-testutil" }
-monad-eth-tx = { path = "../monad-eth-tx" }
-monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
-monad-testutil = { path = "../monad-testutil" }
+monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-multi-sig = { path = "../monad-multi-sig" }
+monad-testutil = { path = "../monad-testutil" }
 
 alloy-consensus = { workspace = true }
-alloy-primitives = { workspace = true }
-alloy-rlp = { workspace = true }
-criterion = { workspace = true, features = ["html_reports"] }
 itertools = { workspace = true }
-rand = { workspace = true }
-rayon = { workspace = true }
 test-case = { workspace = true }
 tracing-test = { workspace = true }
-
-[[bench]]
-name = "state_machine"
-harness = false

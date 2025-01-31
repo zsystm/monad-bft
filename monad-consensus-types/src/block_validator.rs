@@ -1,11 +1,18 @@
 use core::fmt::Debug;
 
 use auto_impl::auto_impl;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_state_backend::{InMemoryState, StateBackend};
+use monad_types::ExecutionProtocol;
 
 use crate::{
-    block::{Block, BlockPolicy, FullBlock, PassthruBlockPolicy},
-    payload::Payload,
+    block::{
+        BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, PassthruBlockPolicy,
+        PassthruWrappedBlock,
+    },
+    payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 
@@ -22,10 +29,12 @@ pub enum BlockValidationError {
 }
 
 #[auto_impl(Box)]
-pub trait BlockValidator<SCT, BPT, SBT>
+pub trait BlockValidator<ST, SCT, EPT, BPT, SBT>
 where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
     // TODO it would be less jank if the BLS pubkey was included in the block payload.
@@ -40,8 +49,8 @@ where
     // checks are done.
     fn validate(
         &self,
-        block: Block<SCT>,
-        payload: Payload,
+        header: ConsensusBlockHeader<ST, SCT, EPT>,
+        body: ConsensusBlockBody<EPT>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
     ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
 }
@@ -49,19 +58,23 @@ where
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
-impl<SCT> BlockValidator<SCT, PassthruBlockPolicy, InMemoryState> for MockValidator
+impl<ST, SCT, EPT> BlockValidator<ST, SCT, EPT, PassthruBlockPolicy, InMemoryState>
+    for MockValidator
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     fn validate(
         &self,
-        block: Block<SCT>,
-        payload: Payload,
+        header: ConsensusBlockHeader<ST, SCT, EPT>,
+        body: ConsensusBlockBody<EPT>,
         _author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
     ) -> Result<
-        <PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
+        <PassthruBlockPolicy as BlockPolicy<ST, SCT, EPT, InMemoryState>>::ValidatedBlock,
         BlockValidationError,
     > {
-        Ok(FullBlock { block, payload })
+        let full_block = ConsensusFullBlock::new(header, body)?;
+        Ok(PassthruWrappedBlock(full_block))
     }
 }

@@ -14,15 +14,13 @@ members = [
     "monad-crypto",
     "monad-cxx",
     "monad-dataplane",
-    "monad-debugger",
     "monad-debug-node",
+    "monad-debugger",
     "monad-eth-block-policy",
     "monad-eth-block-validator",
     "monad-eth-ledger",
     "monad-eth-testutil",
-    "monad-eth-tx",
     "monad-eth-txpool",
-    "monad-eth-types",
     "monad-eth-types",
     "monad-executor-glue",
     "monad-executor",
@@ -32,6 +30,7 @@ members = [
     "monad-mock-swarm",
     "monad-multi-sig",
     "monad-node",
+    "monad-node-config",
     "monad-perf-util",
     "monad-proto",
     "monad-randomized-tests",
@@ -47,7 +46,6 @@ members = [
     "monad-testground",
     "monad-testutil",
     "monad-transformer",
-    "monad-triedb",
     "monad-triedb-utils",
     "monad-triedb",
     "monad-twins",
@@ -66,7 +64,7 @@ debug = true
 panic = "abort"
 
 [workspace.metadata.cargo-shear]
-ignored = ["getrandom", "pbjson"]
+ignored = ["alloy-transport-http", "getrandom", "pbjson"]
 
 [workspace.dependencies]
 alloy-consensus = "0.8"
@@ -81,6 +79,7 @@ alloy-signer-local = "0.8"
 alloy-sol-macro = "0.8"
 alloy-sol-types = "0.8"
 alloy-transport = "0.8"
+alloy-transport-http = "0.8"
 
 actix = "0.13"
 actix-http = "3.6.0"
@@ -90,7 +89,7 @@ actix-web-actors = "4.3.0"
 aes = "0.8.3"
 as-any = "0.3.1"
 async-graphql = "7.0"
-auto_impl = "1.1.0"
+auto_impl = "1.2"
 autocxx = "0.26"
 autocxx-build = "0.26"
 aws-config = "1.5.9"
@@ -149,7 +148,6 @@ ratatui = "0.26.0"
 rayon = "1.7"
 reqwest = { version = "0.11", features = ["json"] }
 rtrb = "0.3"
-scc = "2.2.0"
 scrypt = { version = "0.11", default-features = false }
 secp256k1 = "0.26"
 serde = "1.0"

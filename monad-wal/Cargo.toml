@@ -17,15 +17,12 @@ bytes = { workspace = true }
 [dev-dependencies]
 monad-bls = { path = "../monad-bls" }
 monad-consensus = { path = "../monad-consensus" }
-monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-executor-glue = { path = "../monad-executor-glue" }
-monad-multi-sig = { path = "../monad-multi-sig" }
 monad-proto = { path = "../monad-proto" }
 monad-secp = { path = "../monad-secp" }
-monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
 
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -39,8 +36,4 @@ serde_json = { workspace = true }
 
 [[bench]]
 name = "raw_bench"
-harness = false
-
-[[bench]]
-name = "event_bench"
 harness = false

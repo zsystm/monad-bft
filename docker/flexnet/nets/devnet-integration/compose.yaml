@@ -13,11 +13,25 @@ services:
       dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
     image: monad-python:latest
 
+  build_genesis:
+    image: monad-execution-builder:latest
+    command: monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger --nblocks 0 --genesis /monad/config/genesis.json --log_level ERROR
+    depends_on:
+      build_triedb:
+        condition: service_completed_successfully
+    volumes:
+      - ./node:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+
   monad_execution:
     image: monad-execution-builder:latest
-    command: monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger --genesis /monad/config/genesis.json --log_level ERROR
+    command: monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger --statesync /monad/statesync.sock --log_level ERROR
     depends_on:
-      - build_triedb
+      build_triedb:
+        condition: service_completed_successfully
+      build_genesis:
+        condition: service_completed_successfully
     volumes:
       - ./node:/monad
     security_opt:
@@ -29,6 +43,7 @@ services:
       dockerfile: ${DEVNET_DIR}/Dockerfile
     image: monad-node:latest
     depends_on:
+      - build_triedb
       - monad_execution
     environment:
       - RUST_LOG=
@@ -43,6 +58,7 @@ services:
       dockerfile: ${RPC_DIR}/Dockerfile
     image: monad-rpc:latest
     depends_on:
+      - build_triedb
       - monad_node
     volumes:
       - ./node:/monad

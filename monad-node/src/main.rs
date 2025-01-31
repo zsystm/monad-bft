@@ -1,20 +1,19 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
+    marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
-use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, payload::PROPOSAL_GAS_LIMIT};
+use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
-use monad_crypto::{
-    certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
-    hasher::{Hasher, HasherType},
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
@@ -22,11 +21,11 @@ use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ipc::IpcReceiver;
-use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
+use monad_ledger::MonadBlockFileLedger;
+use monad_node::config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
+use monad_node_config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
-#[cfg(feature = "full-node")]
-use monad_router_filter::FullNodeRouterFilter;
-use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
+use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
@@ -34,120 +33,86 @@ use monad_types::{
     Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
 use monad_updaters::{
-    checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
-    timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
+    parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
     triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
 };
 use monad_validator::{
     validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
-use opentelemetry::{
-    metrics::MeterProvider,
-    trace::{Span, SpanBuilder, TraceContextExt},
-    Context,
-};
+use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::trace::TracerProvider;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{event, info, warn, Instrument, Level};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
-    reload::Handle,
-    EnvFilter, Registry,
 };
 
+use self::{cli::Cli, error::NodeSetupError, state::NodeState};
+
 mod cli;
-use cli::Cli;
-
-mod config;
-use config::{SignatureCollectionType, SignatureType};
-
 mod error;
-use error::NodeSetupError;
-
 mod state;
-use state::NodeState;
+
+type ReloadHandle =
+    tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>;
 
 fn main() {
     let mut cmd = Cli::command();
 
+    let node_state = NodeState::setup(&mut cmd).unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
+
     rayon::ThreadPoolBuilder::new()
         .num_threads(8)
         .build_global()
-        .unwrap();
+        .map_err(Into::into)
+        .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|e| e.into())
+        .map_err(Into::into)
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
-    if let Err(e) = runtime.block_on(wrapped_run(cmd)) {
+    let reload_handle =
+        setup_tracing().unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
+
+    drop(cmd);
+
+    if let Err(e) = runtime.block_on(run(node_state, reload_handle)) {
         tracing::error!("monad consensus node crashed: {:?}", e);
     }
 }
 
-async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
-    // NodeState::setup needs to be called within a tokio runtime
-    let node_state = NodeState::setup(&mut cmd).unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
-    drop(cmd);
-
-    // if provider is dropped, then traces stop getting sent silently...
-    let maybe_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
-        build_otel_tracer_provider(endpoint, node_state.node_name.clone())
-            .expect("failed to build otel monad-node")
-    });
-
-    let maybe_telemetry = match (node_state.record_otel_traces, &maybe_provider) {
-        (true, Some(provider)) => {
-            use opentelemetry::trace::TracerProvider;
-            let tracer = provider.tracer("opentelemetry");
-            Some(tracing_opentelemetry::layer().with_tracer(tracer))
-        }
-        _ => None,
-    };
-
+fn setup_tracing() -> Result<ReloadHandle, NodeSetupError> {
     let (filter, reload_handle) =
-        tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::from_default_env());
 
-    let subscriber = Registry::default()
-        .with(filter)
-        .with(
-            FmtLayer::default()
-                .json()
-                .with_span_events(FmtSpan::NONE)
-                .with_current_span(false)
-                .with_span_list(false)
-                .with_writer(std::io::stdout)
-                .with_ansi(false),
-        )
-        .with(maybe_telemetry);
+    let subscriber = tracing_subscriber::Registry::default().with(filter).with(
+        FmtLayer::default()
+            .json()
+            .with_span_events(FmtSpan::NONE)
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_writer(std::io::stdout)
+            .with_ansi(false),
+    );
 
-    tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
+    tracing::subscriber::set_global_default(subscriber)?;
 
-    // if provider is dropped, then traces stop getting sent silently...
-    let maybe_coordinator_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
-        build_otel_tracer_provider(endpoint, node_state.network_name.clone())
-            .expect("failed to build otel monad-coordinator")
-    });
-
-    run(maybe_coordinator_provider, node_state, reload_handle).await
+    Ok(reload_handle)
 }
 
-async fn run(
-    maybe_coordinator_provider: Option<TracerProvider>,
-    node_state: NodeState,
-    reload_handle: Handle<EnvFilter, Registry>,
-) -> Result<(), ()> {
+async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), ()> {
     let checkpoint_validators_first = node_state
         .forkpoint_config
         .validator_sets
         .first()
         .expect("no validator sets")
         .clone();
+
     let checkpoint_validators_last = node_state
         .forkpoint_config
         .validator_sets
@@ -157,8 +122,10 @@ async fn run(
 
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
-            MonadMessage<SignatureType, SignatureCollectionType>,
-            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+            SignatureType,
+            SignatureCollectionType,
+            MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         >(
             node_state.node_config.network.clone(),
             node_state.router_identity,
@@ -168,7 +135,7 @@ async fn run(
         .await;
 
         #[cfg(feature = "full-node")]
-        let raptor_router = FullNodeRouterFilter::new(raptor_router);
+        let raptor_router = monad_router_filter::FullNodeRouterFilter::new(raptor_router);
 
         <_ as Updater<_>>::boxed(raptor_router)
     };
@@ -192,17 +159,39 @@ async fn run(
             .expect("failed to read triedb path")
             .path();
     }
+
+    let mut bootstrap_validators = Vec::new();
+    let validator_set = checkpoint_validators_first
+        .clone()
+        .validators
+        .0
+        .into_iter()
+        .map(|data| data.node_id)
+        .collect::<BTreeSet<_>>();
+    for peer_config in &node_state.node_config.bootstrap.peers {
+        let peer_id = NodeId::new(peer_config.secp256k1_pubkey);
+        if validator_set.contains(&peer_id) {
+            bootstrap_validators.push(peer_id);
+        }
+    }
+
+    // default statesync peers to bootstrap validators if none is specified
+    let state_sync_peers = if node_state.node_config.statesync.peers.is_empty() {
+        bootstrap_validators
+    } else {
+        node_state
+            .node_config
+            .statesync
+            .peers
+            .into_iter()
+            .map(|p| NodeId::new(p.secp256k1_pubkey))
+            .collect()
+    };
+
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        ledger: MonadBlockFileLedger::new(
-            node_state.execution_ledger_path,
-            node_state.bft_block_header_path,
-            node_state.bft_block_payload_path,
-            EthHeaderParam {
-                gas_limit: PROPOSAL_GAS_LIMIT,
-            },
-        ),
+        ledger: MonadBlockFileLedger::new(node_state.ledger_path),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
             &node_state.triedb_path,
@@ -231,13 +220,7 @@ async fn run(
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.genesis_path.to_string_lossy().to_string(),
-            checkpoint_validators_first
-                .validators
-                .0
-                .iter()
-                .map(|validator| validator.node_id)
-                .filter(|node_id| node_id != &NodeId::new(node_state.secp256k1_identity.pubkey()))
-                .collect(),
+            state_sync_peers,
             node_state
                 .node_config
                 .statesync_max_concurrent_requests
@@ -250,9 +233,10 @@ async fn run(
                 .expect("invalid file name")
                 .to_owned(),
         ),
+        config_loader: ConfigLoader::new(node_state.node_config_path),
     };
 
-    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> = WALoggerConfig::new(
+    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
         node_state.wal_path.clone(), // output wal path
         false,                       // flush on every write
     );
@@ -265,9 +249,21 @@ async fn run(
         return Err(());
     };
 
-    let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
+    let block_sync_override_peers = node_state
+        .node_config
+        .blocksync_override
+        .peers
+        .into_iter()
+        .map(|p| NodeId::new(p.secp256k1_pubkey))
+        .collect();
+
+    let triedb_handle = TriedbReader::try_new(node_state.triedb_path.as_path())
+        .expect("triedb should exist in path");
+    let mut last_ledger_tip = triedb_handle
+        .get_latest_finalized_block()
+        .unwrap_or(SeqNum(0));
+
     let builder = MonadStateBuilder {
-        version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
         #[cfg(feature = "full-node")]
@@ -275,10 +271,10 @@ async fn run(
         // TODO(andr-dev): Add tx_expiry to node config
         #[cfg(not(feature = "full-node"))]
         transaction_pool: EthTxPool::new(true, Duration::from_secs(5)),
-        block_validator: EthValidator {
-            tx_limit: node_state.node_config.consensus.block_txn_limit,
-            chain_id: node_state.node_config.chain_id,
-        },
+        block_validator: EthValidator::new(
+            node_state.node_config.consensus.block_txn_limit,
+            node_state.node_config.chain_id,
+        ),
         // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only
         // mode
         block_policy: EthBlockPolicy::new(
@@ -287,20 +283,19 @@ async fn run(
             node_state.node_config.chain_id,
         ),
         state_backend: StateBackendCache::new(
-            TriedbReader::try_new(node_state.triedb_path.as_path())
-                .expect("triedb should exist in path"),
+            triedb_handle,
             SeqNum(node_state.node_config.consensus.execution_delay),
         ),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
         epoch_start_delay: Round(5000),
-        beneficiary: node_state.node_config.beneficiary,
+        beneficiary: node_state.node_config.beneficiary.into(),
         forkpoint: node_state.forkpoint_config.into(),
+        block_sync_override_peers,
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
-            proposal_gas_limit: PROPOSAL_GAS_LIMIT,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
             // StateSync -> Live transition happens here
             statesync_to_live_threshold: SeqNum(statesync_threshold as u64),
@@ -311,54 +306,41 @@ async fn run(
             vote_pace: Duration::from_millis(1000),
             timestamp_latency_estimate_ns: 20_000_000,
         },
+        _phantom: PhantomData,
     };
 
     let (mut state, init_commands) = builder.build();
     executor.exec(init_commands);
 
-    let network_name_hash = {
-        let mut hasher = HasherType::new();
-        hasher.update(&node_state.network_name);
-        let hash = hasher.hash();
-        u64::from_le_bytes(
-            hash.0[..std::mem::size_of::<u64>()]
-                .try_into()
-                .expect("u64 is 8 bytes"),
-        )
-    };
-    let mut otel_context = maybe_coordinator_provider
-        .as_ref()
-        .map(|provider| build_otel_context(provider, network_name_hash));
-
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_tip = last_ledger_tip.0);
 
-    if let Some((cx, _expiry)) = &otel_context {
-        ledger_span.set_parent(cx.clone());
-    }
+    let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = node_state
+        .otel_endpoint_interval
+        .map(|(otel_endpoint, record_metrics_interval)| {
+            let provider = build_otel_meter_provider(
+                &otel_endpoint,
+                format!(
+                    "{network_name}_{node_name}",
+                    network_name = node_state.node_config.network_name,
+                    node_name = node_state.node_config.node_name
+                ),
+                record_metrics_interval,
+            )
+            .expect("failed to build otel monad-node");
 
-    // if provider is dropped, then traces stop getting sent silently...
-    let maybe_otel_meter_provider = node_state.otel_endpoint.and_then(|otel_endpoint| {
-        let record_metrics_interval = node_state.record_metrics_interval?;
-        let provider = build_otel_meter_provider(
-            &otel_endpoint,
-            node_state.node_name.clone(),
-            record_metrics_interval,
-        )
-        .expect("failed to build otel monad-node");
-        Some(provider)
-    });
+            let mut timer = tokio::time::interval(record_metrics_interval);
+
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            (provider, timer)
+        })
+        .unzip();
+
     let maybe_otel_meter = maybe_otel_meter_provider
         .as_ref()
         .map(|provider| provider.meter("opentelemetry"));
+
     let mut gauge_cache = HashMap::new();
-    let mut maybe_metrics_ticker =
-        node_state
-            .record_metrics_interval
-            .map(|record_metrics_interval| {
-                let mut timer = tokio::time::interval(record_metrics_interval);
-                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                timer
-            });
 
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
     let mut sigint = signal(SignalKind::interrupt()).expect("in tokio rt");
@@ -448,20 +430,6 @@ async fn run(
                 if ledger_tip > last_ledger_tip {
                     last_ledger_tip = ledger_tip;
                     ledger_span = tracing::info_span!("ledger_span", last_ledger_tip = last_ledger_tip.0);
-
-                    if let Some((cx, expiry)) = &mut otel_context {
-                        if *expiry < SystemTime::now() {
-                            let (new_cx, new_expiry) = build_otel_context(
-                                maybe_coordinator_provider
-                                    .as_ref()
-                                    .expect("coordinator must exist"),
-                                    network_name_hash,
-                            );
-                            *cx = new_cx;
-                            *expiry = new_expiry;
-                        }
-                        ledger_span.set_parent(cx.clone());
-                    }
                 }
             }
         }
@@ -470,14 +438,16 @@ async fn run(
     Ok(())
 }
 
-async fn build_raptorcast_router<M, OM>(
+async fn build_raptorcast_router<ST, SCT, M, OM>(
     network_config: NodeNetworkConfig,
-    identity: <SignatureType as CertificateSignature>::KeyPairType,
-    peers: &[NodeBootstrapPeerConfig],
-    full_nodes: &[FullNodeIdentityConfig],
-) -> RaptorCast<SignatureType, M, OM, MonadEvent<SignatureType, SignatureCollectionType>>
+    identity: ST::KeyPairType,
+    peers: &[NodeBootstrapPeerConfig<CertificateSignaturePubKey<ST>>],
+    full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
+) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
 where
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
         + Deserializable<Bytes>
         + From<OM>
         + Send
@@ -490,7 +460,12 @@ where
         key: identity,
         known_addresses: peers
             .iter()
-            .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
+            .map(|peer| {
+                (
+                    NodeId::new(peer.secp256k1_pubkey),
+                    resolve_domain(&peer.address),
+                )
+            })
             .collect(),
         full_nodes: full_nodes
             .iter()
@@ -506,47 +481,12 @@ where
     })
 }
 
-fn build_node_id(peer: &NodeBootstrapPeerConfig) -> NodeId<monad_secp::PubKey> {
-    NodeId::new(peer.secp256k1_pubkey.to_owned())
-}
-
 fn resolve_domain(domain: &String) -> SocketAddr {
     domain
         .to_socket_addrs()
         .unwrap_or_else(|err| panic!("unable to resolve address={}, err={:?}", domain, err))
         .next()
         .unwrap_or_else(|| panic!("couldn't look up address={}", domain))
-}
-
-/// Returns (otel_context, expiry)
-fn build_otel_context(provider: &TracerProvider, network_name_hash: u64) -> (Context, SystemTime) {
-    const ROUND_SECONDS: u64 = 60; // 1 minute
-
-    let (start_time, start_seconds) = {
-        let unix_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("can't compute elapsed time");
-        let start_seconds = unix_ts.as_secs() / ROUND_SECONDS * ROUND_SECONDS;
-        let rounded_duration = Duration::from_secs(start_seconds);
-        (UNIX_EPOCH + rounded_duration, start_seconds)
-    };
-    let context = {
-        let span = SpanBuilder::from_name("exec")
-            .with_trace_id(((network_name_hash as u128) << 64 | u128::from(start_seconds)).into())
-            .with_span_id(15.into())
-            .with_start_time(start_time)
-            .with_end_time(start_time + Duration::from_secs(1));
-        use opentelemetry::trace::{Tracer, TracerProvider};
-        let span = provider
-            .tracer("opentelemetry")
-            .build_with_context(span, &Context::default());
-        span.span_context().clone()
-    };
-
-    (
-        Context::default().with_remote_span_context(context),
-        start_time + Duration::from_secs(ROUND_SECONDS),
-    )
 }
 
 fn send_metrics(
@@ -565,29 +505,6 @@ fn send_metrics(
             .or_insert_with(|| meter.u64_gauge(k).try_init().unwrap());
         gauge.record(v, &[]);
     }
-}
-
-fn build_otel_tracer_provider(
-    otel_endpoint: &str,
-    service_name: String,
-) -> Result<opentelemetry_sdk::trace::TracerProvider, NodeSetupError> {
-    let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(
-        opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(otel_endpoint),
-    )
-    .build_span_exporter()?;
-
-    let provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_config(opentelemetry_sdk::trace::Config::default().with_resource(
-            opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
-            )]),
-        ))
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio);
-
-    Ok(provider_builder.build())
 }
 
 fn build_otel_meter_provider(

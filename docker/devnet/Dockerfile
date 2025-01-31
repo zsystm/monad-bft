@@ -66,53 +66,46 @@ ARG TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
-    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin monad-keystore --bin debug-node --example wal2json --example wal-tool && \
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin monad-keystore --bin debug-node --example wal2json --example wal-tool --example triedb-debug && \
     mv target/release/monad-node node && \
     mv target/release/monad-keystore keystore && \
     mv target/release/debug-node debug-node && \
     mv target/release/examples/wal2json wal2json && \
     mv target/release/examples/wal-tool wal-tool && \
+    mv target/release/examples/triedb-debug triedb-debug && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libmonad_statesync.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libevmone.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` .
 
-RUN strip \
-    node \
-    keystore \
-    debug-node \
-    wal2json \
-    wal-tool \
-    *.so \
-    *.so.*
+# Debug runner
+FROM base AS runner-debug
 
-# Runner
-FROM base AS runner
 WORKDIR /usr/src/monad-bft
-
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=1
+
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node
 COPY --from=builder /usr/src/monad-bft/keystore /usr/local/bin/keystore
 COPY --from=builder /usr/src/monad-bft/debug-node /usr/local/bin/debug-node
 COPY --from=builder /usr/src/monad-bft/wal2json /usr/local/bin/wal2json
 COPY --from=builder /usr/src/monad-bft/wal-tool /usr/local/bin/wal-tool
+COPY --from=builder /usr/src/monad-bft/triedb-debug /usr/local/bin/triedb-debug
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 
-ENV RUST_LOG=info
-CMD monad-node \
-    --secp-identity /monad/config/id-secp \
-    --bls-identity /monad/config/id-bls \
-    --node-config /monad/config/node.toml \
-    --forkpoint-config /monad/config/forkpoint.genesis.toml \
-    --genesis-path /monad/config/genesis.json \
-    --statesync-ipc-path /monad/statesync.sock \
-    --wal-path /monad/wal \
-    --mempool-ipc-path /monad/mempool.sock \
-    --control-panel-ipc-path /monad/controlpanel.sock \
-    --execution-ledger-path /monad/ledger \
-    --bft-block-header-path /monad/bft-ledger \
-    --bft-block-payload-path /monad/block-payload \
-    --triedb-path /monad/triedb
+# Runner
+FROM runner-debug AS runner
+
+RUN strip \
+    /usr/local/bin/monad-node \
+    /usr/local/bin/keystore \
+    /usr/local/bin/debug-node \
+    /usr/local/bin/wal2json \
+    /usr/local/bin/wal-tool \
+    /usr/local/bin/triedb-debug \
+    /usr/local/lib/*.so \
+    /usr/local/lib/*.so.*

@@ -1,34 +1,12 @@
-#![allow(unused_imports)]
-
-use std::{
-    io::Write,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
 use alloy_primitives::hex::ToHexExt;
-use archive_reader::{ArchiveReader, LatestKind::*};
-use chrono::{
-    format::{DelayedFormat, StrftimeItems},
+use clap::Parser;
+use futures::{stream, StreamExt};
+use monad_archive::{
+    fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter},
     prelude::*,
 };
-use clap::Parser;
-use eyre::{Context, Result};
-use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
-use futures::{executor::block_on, future::join_all, stream, StreamExt};
-use metrics::Metrics;
-use monad_archive::*;
-use serde::{Deserialize, Serialize};
-use tokio::{
-    io::AsyncWriteExt,
-    join,
-    sync::{Mutex, Semaphore},
-    time::sleep,
-    try_join,
-};
-use tracing::{error, info, warn, Level};
+use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
+use tokio::join;
 
 mod cli;
 
@@ -41,6 +19,7 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-index-checker",
+        args.source.replica_name(),
         Duration::from_secs(15),
     )?;
 
@@ -56,13 +35,20 @@ async fn main() -> Result<()> {
         let start = Instant::now();
 
         // get latest indexed and indexed from s3
-        let latest_indexed = match reader.get_latest(Uploaded).await {
+        let latest_indexed = match reader.get_latest(LatestKind::Uploaded).await {
             Ok(number) => number,
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
                 continue;
             }
         };
+
+        if let Some(stop_block_override) = args.stop_block {
+            if latest_checked >= stop_block_override {
+                info!("Reached stop block override, stopping...");
+                return Ok(());
+            }
+        }
 
         if latest_checked >= latest_indexed {
             info!(latest_checked, latest_indexed, "Nothing to process");
@@ -183,7 +169,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         .body
         .transactions
         .iter()
-        .map(|tx| *tx.tx_hash())
+        .map(|tx| *tx.tx.tx_hash())
         .collect::<Vec<_>>();
 
     let gas_used_vec: Vec<_> = {
@@ -191,14 +177,15 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         receipts
             .iter()
             .map(|r| {
-                let gas_used = r.cumulative_gas_used() - last;
-                last = r.cumulative_gas_used();
+                let gas_used = r.receipt.cumulative_gas_used() - last;
+                last = r.receipt.cumulative_gas_used();
                 gas_used
             })
             .collect()
     };
 
     let block_hash = block.header.hash_slow();
+    let block_timestamp = block.header.timestamp;
     let base_fee_per_gas = block.header.base_fee_per_gas;
     let expected = block
         .body
@@ -211,6 +198,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
             header_subset: HeaderSubset {
                 block_hash,
                 block_number: block_num,
+                block_timestamp,
                 tx_index: idx as u64,
                 gas_used: gas_used_vec[idx],
                 base_fee_per_gas,
@@ -224,7 +212,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
     let mut faults = Vec::new();
 
     for expected in expected {
-        let key = expected.tx.tx_hash();
+        let key = expected.tx.tx.tx_hash();
         let fetched = fetched.get(key);
         let Some(fetched) = fetched else {
             faults.push(Fault::MissingTxhash {
@@ -269,7 +257,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
 async fn get_block_data(
     reader: &ArchiveReader,
     block_num: u64,
-) -> std::result::Result<(Block, Vec<Vec<u8>>, Vec<ReceiptEnvelope>), BlockCheckResult> {
+) -> std::result::Result<(Block, Vec<Vec<u8>>, Vec<ReceiptWithLogIndex>), BlockCheckResult> {
     let (block, traces, receipts) = join!(
         reader.get_block_by_number(block_num),
         reader.get_block_traces(block_num),

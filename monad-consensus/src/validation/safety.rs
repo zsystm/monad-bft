@@ -1,14 +1,17 @@
 use std::cmp;
 
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockType},
+    block::BlockPolicy,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::Vote,
 };
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_state_backend::StateBackend;
-use monad_types::*;
+use monad_types::{ExecutionProtocol, *};
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct Safety {
@@ -19,8 +22,8 @@ pub struct Safety {
 impl Default for Safety {
     fn default() -> Self {
         Self {
-            highest_vote_round: Round(0),
-            highest_qc_round: Round(0),
+            highest_vote_round: GENESIS_ROUND,
+            highest_qc_round: GENESIS_ROUND,
         }
     }
 }
@@ -103,14 +106,16 @@ impl Safety {
     }
 
     /// Make a Vote if it's safe to vote in the round.
-    pub fn make_vote<SCT, BPT, SBT>(
+    pub fn make_vote<ST, SCT, EPT, BPT, SBT>(
         &mut self,
         block: &BPT::ValidatedBlock,
         last_tc: &Option<TimeoutCertificate<SCT>>,
     ) -> Option<Vote>
     where
-        SCT: SignatureCollection,
-        BPT: BlockPolicy<SCT, SBT>,
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
         SBT: StateBackend,
     {
         let qc_round = block.get_parent_round();

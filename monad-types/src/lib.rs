@@ -1,26 +1,49 @@
-pub mod convert;
-
 use std::{
     error::Error,
+    fmt::Debug,
     io,
     ops::{Add, AddAssign, Div, Rem, Sub, SubAssign},
     str::FromStr,
     time::{Duration, Instant},
 };
 
-pub use monad_crypto::hasher::Hash;
-use monad_crypto::{
-    certificate_signature::PubKey,
-    hasher::{Hashable, Hasher},
+use alloy_rlp::{
+    Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
+use monad_crypto::certificate_signature::PubKey;
+pub use monad_crypto::hasher::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zerocopy::AsBytes;
 
+pub mod convert;
+
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
+pub const GENESIS_ROUND: Round = Round(0);
+
+const PROTOCOL_VERSION: u32 = 1;
+
+const CLIENT_MAJOR_VERSION: u16 = 0;
+const CLIENT_MINOR_VERSION: u16 = 1;
+
+const HASH_VERSION: u16 = 1;
+const SERIALIZE_VERSION: u16 = 1;
 
 /// Consensus round
 #[repr(transparent)]
-#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    AsBytes,
+    Serialize,
+    Deserialize,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct Round(pub u64);
 
 impl AsRef<[u8]> for Round {
@@ -59,7 +82,7 @@ impl AddAssign for Round {
     }
 }
 
-impl std::fmt::Debug for Round {
+impl Debug for Round {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -70,7 +93,20 @@ impl std::fmt::Debug for Round {
 /// During an epoch, the validator set remain stable: no validator is allowed to
 /// stake or unstake until the next epoch
 #[repr(transparent)]
-#[derive(Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize, AsBytes)]
+#[derive(
+    Copy,
+    Clone,
+    Hash,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    AsBytes,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct Epoch(pub u64);
 
 impl AsRef<[u8]> for Epoch {
@@ -91,7 +127,7 @@ impl Add for Epoch {
     }
 }
 
-impl std::fmt::Debug for Epoch {
+impl Debug for Epoch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -104,7 +140,19 @@ impl std::fmt::Debug for Epoch {
 /// the committed ledger has consecutive sequence numbers, with no holes in
 /// between.
 #[repr(transparent)]
-#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    AsBytes,
+    Deserialize,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct SeqNum(
     // FIXME get rid of this, we won't have u64::MAX
     /// Some serde libraries e.g. toml represent numbers as i64 so they don't
@@ -194,7 +242,7 @@ impl SeqNum {
     }
 }
 
-impl std::fmt::Debug for SeqNum {
+impl Debug for SeqNum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -229,45 +277,52 @@ impl SeqNum {
 
 /// NodeId is the validator's pubkey identity in the consensus protocol
 #[repr(transparent)]
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub struct NodeId<P: PubKey> {
+#[derive(
+    Copy,
+    Clone,
+    Hash,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
+pub struct NodeId<P: PubKey>(
     #[serde(serialize_with = "serialize_pubkey::<_, P>")]
     #[serde(deserialize_with = "deserialize_pubkey::<_, P>")]
     #[serde(bound = "P:PubKey")]
     #[serde(rename(serialize = "node_id", deserialize = "node_id"))]
     // Outer struct always flatten this struct, thus renaming to node_id
-    pubkey: P,
-}
+    // TODO now that this is a newtype, do we still need to rename?
+    P,
+);
 
 impl<P: PubKey> std::fmt::Display for NodeId<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.pubkey, f)
+        std::fmt::Display::fmt(&self.0, f)
     }
 }
 
 impl<P: PubKey> NodeId<P> {
     pub fn new(pubkey: P) -> Self {
-        Self { pubkey }
+        Self(pubkey)
     }
 
     pub fn pubkey(&self) -> P {
-        self.pubkey
+        self.0
     }
 }
 
-impl<P: PubKey> std::fmt::Debug for NodeId<P> {
+impl<P: PubKey> Debug for NodeId<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&self.pubkey, f)
+        Debug::fmt(&self.0, f)
     }
 }
 
-impl<P: PubKey> Hashable for NodeId<P> {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.pubkey.bytes())
-    }
-}
-
-fn serialize_pubkey<S, P>(pubkey: &P, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_pubkey<S, P>(pubkey: &P, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
     P: PubKey,
@@ -276,15 +331,16 @@ where
     serializer.serialize_str(&hex_str)
 }
 
-fn deserialize_pubkey<'de, D, P>(deserializer: D) -> Result<P, D::Error>
+pub fn deserialize_pubkey<'de, D, P>(deserializer: D) -> Result<P, D::Error>
 where
     D: Deserializer<'de>,
     P: PubKey,
 {
     let buf = <String as Deserialize>::deserialize(deserializer)?;
 
-    let Some(hex_str) = buf.strip_prefix("0x") else {
-        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
+    let hex_str = match buf.strip_prefix("0x") {
+        Some(hex_str) => hex_str,
+        None => &buf,
     };
 
     let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
@@ -294,24 +350,30 @@ where
 
 /// BlockId uniquely identifies a block
 #[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    RlpDecodableWrapper,
+    RlpEncodableWrapper,
+)]
 pub struct BlockId(pub Hash);
 
 pub const GENESIS_BLOCK_ID: BlockId = BlockId(Hash([0_u8; 32]));
 
-impl std::fmt::Debug for BlockId {
+impl Debug for BlockId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{:>02x}{:>02x}..{:>02x}{:>02x}",
             self.0[0], self.0[1], self.0[30], self.0[31]
         )
-    }
-}
-
-impl Hashable for BlockId {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.0);
     }
 }
 
@@ -402,18 +464,15 @@ pub enum RouterTarget<P: PubKey> {
     TcpPointToPoint(NodeId<P>),
 }
 
-#[repr(transparent)]
-pub struct EnumDiscriminant(pub i32);
-
-impl Hashable for EnumDiscriminant {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.0.to_le_bytes());
-    }
-}
-
 /// Trait for use in tests to populate structs where the value of the fields is not relevant
 pub trait DontCare {
     fn dont_care() -> Self;
+}
+
+impl<T: Default> DontCare for T {
+    fn dont_care() -> Self {
+        T::default()
+    }
 }
 
 pub struct DropTimer<F>
@@ -451,8 +510,74 @@ where
     }
 }
 
+pub trait ExecutionProtocol:
+    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable + 'static
+{
+    /// inputs to execution
+    type ProposedHeader: Debug
+        + Clone
+        + PartialEq
+        + Eq
+        + Send
+        + Sync
+        + Unpin
+        + Encodable
+        + Decodable
+        // TODO delete Default once null blocks are gone
+        + Default;
+    type Body: Debug
+        + PartialEq
+        + Eq
+        + Send
+        + Sync
+        + Unpin
+        + Encodable
+        + Decodable
+        // TODO delete Default once null blocks are gone
+        + Default;
+
+    /// output of execution
+    type FinalizedHeader: FinalizedHeader;
+}
+
+pub trait FinalizedHeader:
+    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable
+{
+    fn seq_num(&self) -> SeqNum;
+}
+
+pub trait MockableFinalizedHeader: Sized {
+    fn from_seq_num(seq_num: SeqNum) -> Self;
+}
+
+pub trait MockableProposedHeader: Sized {
+    fn create(seq_num: SeqNum, timestamp_ns: u128, mix_hash: [u8; 32]) -> Self;
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize, RlpEncodable, RlpDecodable)]
+pub struct MonadVersion {
+    pub protocol_version: u32,
+    pub client_version_maj: u16,
+    pub client_version_min: u16,
+    pub hash_version: u16,
+    pub serialize_version: u16,
+}
+
+impl MonadVersion {
+    pub fn version() -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            client_version_maj: CLIENT_MAJOR_VERSION,
+            client_version_min: CLIENT_MINOR_VERSION,
+            hash_version: HASH_VERSION,
+            serialize_version: SERIALIZE_VERSION,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use alloy_rlp::Encodable;
     use test_case::test_case;
 
     use super::*;
@@ -470,5 +595,19 @@ mod test {
         val_set_update_interval: SeqNum,
     ) {
         assert_eq!(seq_num.to_epoch(val_set_update_interval), expected_epoch);
+    }
+
+    #[test]
+    fn test_rlp_block_id() {
+        let bid = BlockId(Hash([0xac; 32]));
+        let raw = [0xac; 32];
+
+        let mut bid_buf = vec![];
+        bid.encode(&mut bid_buf);
+
+        let mut raw_buf = vec![];
+        raw.encode(&mut raw_buf);
+
+        assert_eq!(bid_buf, raw_buf);
     }
 }

@@ -5,9 +5,8 @@ use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 use eyre::{Context, ContextCompat, Result};
 use rocksdb::DB;
-use tracing::info;
 
-use crate::*;
+use crate::{cli::RocksDbCliArgs, prelude::*};
 
 #[derive(Clone)]
 pub struct RocksDbClient {
@@ -101,7 +100,7 @@ impl IndexStoreReader for RocksDbClient {
 impl IndexStore for RocksDbClient {
     async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
         for data in kvs {
-            let key = data.tx.tx_hash();
+            let key = data.tx.tx.tx_hash();
             let mut rlp_data = Vec::with_capacity(4096);
             data.encode(&mut rlp_data);
             self.db

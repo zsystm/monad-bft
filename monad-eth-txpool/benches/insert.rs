@@ -1,10 +1,10 @@
 use bytes::Bytes;
+use common::SignatureType;
 use criterion::{criterion_group, criterion_main, Criterion};
 use itertools::Itertools;
-use monad_consensus_types::txpool::TxPool;
+use monad_consensus_types::{metrics::TxPoolEvents, txpool::TxPool};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::EthTxPool;
-use monad_state_backend::InMemoryState;
 use monad_types::GENESIS_SEQ_NUM;
 
 use self::common::{run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY};
@@ -14,7 +14,8 @@ mod common;
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
-    let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
+    let block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType> =
+        EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
 
     run_txpool_benches(
         c,
@@ -42,15 +43,14 @@ fn criterion_benchmark(c: &mut Criterion) {
             )
         },
         |state| {
-            assert!(
-                !TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::insert_tx(
-                    &mut state.0,
-                    state.1.to_owned(),
-                    &block_policy,
-                    &state.2,
-                )
-                .is_empty()
-            );
+            assert!(!TxPool::insert_tx(
+                &mut state.0,
+                state.1.to_owned(),
+                &block_policy,
+                &state.2,
+                &mut TxPoolEvents::default()
+            )
+            .is_empty());
         },
     );
 }

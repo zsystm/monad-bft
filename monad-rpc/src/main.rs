@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use actix::prelude::*;
 use actix_http::body::BoxBody;
@@ -9,7 +9,7 @@ use actix_web::{
 use alloy_consensus::TxEnvelope;
 use clap::Parser;
 use eth_json_types::serialize_result;
-use futures::{SinkExt, StreamExt};
+use futures::SinkExt;
 use monad_archive::archive_reader::ArchiveReader;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
@@ -224,32 +224,22 @@ async fn rpc_select(
         "eth_call" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
-            let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
-                debug!("execution ledger path was not set");
-                return Err(JsonRpcError::method_not_supported());
-            };
-
             // acquire the concurrent requests permit
             let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
                 JsonRpcError::internal_error("eth_call concurrent requests limit".into())
             })?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_call(
-                triedb_env,
-                execution_ledger_path.as_path(),
-                app_state.chain_id,
-                params,
-            )
-            .await
-            .map(serialize_result)?
+            monad_eth_call(triedb_env, app_state.chain_id, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             monad_eth_sendRawTransaction(
                 triedb_env,
-                &app_state.tx_pool,
+                app_state.mempool_sender.clone(),
                 params,
                 app_state.chain_id,
                 app_state.allow_unprotected_txs,
@@ -407,25 +397,15 @@ async fn rpc_select(
                 return Err(JsonRpcError::method_not_supported());
             };
 
-            let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
-                debug!("execution ledger path was not set");
-                return Err(JsonRpcError::method_not_supported());
-            };
-
             // acquire the concurrent requests permit
             let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
                 JsonRpcError::internal_error("eth_estimateGas concurrent requests limit".into())
             })?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_estimateGas(
-                triedb_env,
-                execution_ledger_path.as_path(),
-                app_state.chain_id,
-                params,
-            )
-            .await
-            .map(serialize_result)?
+            monad_eth_estimateGas(triedb_env, app_state.chain_id, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_gasPrice" => {
             if let Some(triedb_env) = &app_state.triedb_reader {
@@ -504,34 +484,27 @@ async fn rpc_select(
         "txpool_content" => monad_txpool_content().await.map(serialize_result)?,
         "txpool_contentFrom" => {
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_contentFrom(&app_state.tx_pool, params)
+            monad_txpool_contentFrom(params)
                 .await
                 .map(serialize_result)?
         }
         "txpool_inspect" => monad_txpool_inspect().await.map(serialize_result)?,
-        "txpool_status" => monad_txpool_status(&app_state.tx_pool)
-            .await
-            .map(serialize_result)?,
+        "txpool_status" => monad_txpool_status().await.map(serialize_result)?,
         "web3_clientVersion" => serialize_result("monad"),
         _ => Err(JsonRpcError::method_not_found()),
     }
 }
-
-#[derive(Debug, Clone)]
-struct ExecutionLedgerPath(pub Option<PathBuf>);
 
 #[derive(Clone)]
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TxEnvelope>,
     triedb_reader: Option<TriedbEnv>,
     archive_reader: Option<ArchiveReaderType>,
-    execution_ledger_path: ExecutionLedgerPath,
     chain_id: u64,
     batch_request_limit: u16,
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
-    tx_pool: Arc<vpool::VirtualPool>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -547,25 +520,21 @@ impl MonadRpcResources {
         mempool_sender: flume::Sender<TxEnvelope>,
         triedb_reader: Option<TriedbEnv>,
         archive_reader: Option<ArchiveReaderType>,
-        execution_ledger_path: Option<PathBuf>,
         chain_id: u64,
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
-        tx_pool: Arc<vpool::VirtualPool>,
     ) -> Self {
         Self {
             mempool_sender,
             triedb_reader,
             archive_reader,
-            execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
             chain_id,
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,
             rate_limiter,
-            tx_pool,
         }
     }
 }
@@ -655,11 +624,6 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    let tx_pool = Arc::new(vpool::VirtualPool::new(
-        ipc_sender.clone(),
-        args.vpool_capacity,
-    ));
-
     let triedb_env = args
         .triedb_path
         .clone()
@@ -693,35 +657,27 @@ async fn main() -> std::io::Result<()> {
         _ => None,
     };
 
-    // We need to spawn a task to handle changes to the base fee, and block updates
-    let tx_pool2 = tx_pool.clone();
-    let triedb_env2 = triedb_env.clone();
-    tokio::task::spawn(async move {
-        let triedb_env = block_watcher::TrieDbBlockState::new(triedb_env2.unwrap());
-        let mut watcher = block_watcher::BlockWatcher::new(triedb_env, 0);
-        while let Some(block) = watcher.next().await {
-            tx_pool2.new_block(block, 1_000).await;
-        }
-    });
-
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
         triedb_env,
         archive_reader,
-        Some(args.execution_ledger_path),
         args.chain_id,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
-        tx_pool,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
         args.otel_endpoint.map(|endpoint| {
+            let svc_name = match args.metrics_service_name {
+                Some(name) => name,
+                None => "monad-rpc".to_string(),
+            };
+
             let provider = metrics::build_otel_meter_provider(
                 &endpoint,
-                "monad-rpc".to_string(),
+                svc_name,
                 std::time::Duration::from_secs(5),
             )
             .expect("failed to build otel meter");
@@ -806,13 +762,11 @@ mod tests {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
             archive_reader: None,
-            execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 1337,
             batch_request_limit: 5,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender.clone(), 20_000)),
         }))
         .await;
         (app, m)

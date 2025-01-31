@@ -9,9 +9,10 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-tx = { path = "../monad-eth-tx" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-eth-types = { path = "../monad-eth-types" }
 
+alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
@@ -29,7 +30,7 @@ tracing = { workspace = true }
 monad-bls = { path = "../monad-bls" }
 monad-secp = { path = "../monad-secp" }
 
-alloy-consensus = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }

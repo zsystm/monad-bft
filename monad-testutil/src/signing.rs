@@ -1,8 +1,8 @@
-use std::{collections::HashSet, marker::PhantomData};
+use std::marker::PhantomData;
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
-    block::{Block, BlockKind},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
@@ -10,14 +10,13 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
     },
-    hasher::{Hash, Hashable, Hasher, HasherType},
+    hasher::{Hashable, Hasher, HasherType},
 };
 use monad_types::NodeId;
-use zerocopy::AsBytes;
 
-#[derive(Clone, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct MockSignatures<ST: CertificateSignatureRecoverable> {
     pubkey: Vec<CertificateSignaturePubKey<ST>>,
 }
@@ -28,10 +27,6 @@ impl<ST: CertificateSignatureRecoverable> MockSignatures<ST> {
             pubkey: pubkeys.to_vec(),
         }
     }
-}
-
-impl<ST: CertificateSignatureRecoverable> Hashable for MockSignatures<ST> {
-    fn hash(&self, _state: &mut impl Hasher) {}
 }
 
 impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures<ST> {
@@ -47,10 +42,6 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
         _msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
         Ok(Self { pubkey: Vec::new() })
-    }
-
-    fn get_hash(&self) -> Hash {
-        Default::default()
     }
 
     fn verify(
@@ -71,17 +62,6 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
             .collect())
     }
 
-    fn get_participants(
-        &self,
-        _validator_mapping: &ValidatorMapping<
-            Self::NodeIdPubKey,
-            SignatureCollectionKeyPairType<Self>,
-        >,
-        _msg: &[u8],
-    ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
-        HashSet::from_iter(self.pubkey.iter().map(|pubkey| NodeId::new(*pubkey)))
-    }
-
     fn num_signatures(&self) -> usize {
         self.pubkey.len()
     }
@@ -95,40 +75,6 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
         unreachable!()
     }
-}
-
-pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
-    let block_id = {
-        let mut hasher = HasherType::new();
-        hasher.update(b.author.pubkey().bytes());
-        hasher.update(b.timestamp_ns.as_bytes());
-        hasher.update(b.epoch);
-        hasher.update(b.round);
-        hasher.update(b.execution.state_root);
-        hasher.update(b.execution.seq_num.as_bytes());
-        hasher.update(b.execution.beneficiary.0.as_bytes());
-        hasher.update(b.execution.randao_reveal.0.as_bytes());
-        hasher.update(b.payload_id.0.as_bytes());
-        match &b.block_kind {
-            BlockKind::Executable => {
-                // EnumDiscriminant(1)
-                hasher.update(1_i32.to_le_bytes());
-            }
-            BlockKind::Null => {
-                // EnumDiscriminant(2)
-                hasher.update(2_i32.to_le_bytes());
-            }
-        }
-        hasher.update(b.qc.get_block_id().0);
-        hasher.update(b.qc.signatures.get_hash());
-
-        hasher.hash()
-    };
-
-    // Hash of a block is actually a hash of its cached BlockId
-    let mut hasher = HasherType::new();
-    hasher.update(block_id);
-    hasher.hash()
 }
 
 pub fn node_id<ST: CertificateSignatureRecoverable>() -> NodeId<CertificateSignaturePubKey<ST>> {

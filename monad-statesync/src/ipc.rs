@@ -7,7 +7,8 @@ use std::{
 use futures::FutureExt;
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsert, StateSyncUpsertType,
+    SELF_STATESYNC_VERSION,
 };
 use monad_types::NodeId;
 use tokio::{
@@ -42,7 +43,6 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
 //            SyncDone                             SyncDone(id)
 //           <------------------                  <---------------
 pub enum ExecutionMessage {
-    SyncTarget(bindings::monad_sync_target),
     SyncRequest(bindings::monad_sync_request),
     SyncUpsert(StateSyncUpsertType, Vec<u8>),
     SyncDone(bindings::monad_sync_done),
@@ -180,9 +180,6 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         message: ExecutionMessage,
     ) -> Result<(), tokio::io::Error> {
         match message {
-            ExecutionMessage::SyncTarget(_target) => {
-                panic!("live-mode execution shouldn't send SyncTarget")
-            }
             ExecutionMessage::SyncRequest(_request) => {
                 panic!("live-mode execution shouldn't send SyncRequest")
             }
@@ -191,7 +188,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     .wip_response
                     .as_mut()
                     .expect("SyncUpsert with no pending_response");
-                wip_response.response.response.push((upsert_type, data));
+                wip_response
+                    .response
+                    .response
+                    .push(StateSyncUpsert::new(upsert_type, data));
                 if wip_response.response.response.len() == MAX_UPSERTS_PER_RESPONSE {
                     // send batch
                     let response = StateSyncResponse {
@@ -337,12 +337,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     ) -> Result<ExecutionMessage, tokio::io::Error> {
         let execution_msg = match msg_type {
             bindings::monad_sync_type_SYNC_TYPE_TARGET => {
-                let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_target>()];
-                self.stream.read_exact(&mut buf).await?;
-                ExecutionMessage::SyncTarget(unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(buf)
-                })
+                panic!("live-mode execution shouldn't send SyncTarget")
             }
             bindings::monad_sync_type_SYNC_TYPE_REQUEST => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_request>()];
@@ -381,6 +376,12 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 let mut data = vec![0_u8; data_len as usize];
                 self.stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::StorageDelete, data)
+            }
+            bindings::monad_sync_type_SYNC_TYPE_UPSERT_HEADER => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Header, data)
             }
             bindings::monad_sync_type_SYNC_TYPE_DONE => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_done>()];
