@@ -3,7 +3,7 @@ use crate::prelude::*;
 const BFT_BLOCK_PREFIX: &str = "bft_block/";
 
 pub async fn bft_block_archive_worker(
-    store: BlobStoreErased,
+    store: KVStoreErased,
     block_path: PathBuf,
     poll_frequency: Duration,
     metrics: Metrics,
@@ -47,7 +47,7 @@ pub async fn bft_block_archive_worker(
 
 async fn parallel_upload_iter(
     uploaded: &mut HashSet<OsString>,
-    store: BlobStoreErased,
+    store: KVStoreErased,
     fnames: Vec<PathBuf>,
 ) -> usize {
     futures::stream::iter(fnames)
@@ -66,13 +66,13 @@ async fn parallel_upload_iter(
 }
 
 async fn spawning_upload(
-    store: BlobStoreErased,
+    store: KVStoreErased,
     path: PathBuf,
 ) -> Option<futures::future::Ready<OsString>> {
     tokio::spawn(upload(store, path)).await.ok()?
 }
 
-async fn upload(store: BlobStoreErased, path: PathBuf) -> Option<futures::future::Ready<OsString>> {
+async fn upload(store: KVStoreErased, path: PathBuf) -> Option<futures::future::Ready<OsString>> {
     let fname_os = path.file_name()?.to_os_string();
     let fname = fname_os.to_str()?;
 
@@ -84,10 +84,7 @@ async fn upload(store: BlobStoreErased, path: PathBuf) -> Option<futures::future
         }
     };
 
-    match store
-        .upload(&format!("{BFT_BLOCK_PREFIX}{fname}"), data)
-        .await
-    {
+    match store.put(&format!("{BFT_BLOCK_PREFIX}{fname}"), data).await {
         Ok(_) => Some(futures::future::ready(fname_os)),
         Err(e) => {
             error!(?e, fname, "Failed to archive bft block");
@@ -116,7 +113,7 @@ async fn find_unuploaded_blocks(
     Ok(to_upload)
 }
 
-async fn initialize_uploaded_set(store: &impl BlobStore) -> Result<HashSet<OsString>> {
+async fn initialize_uploaded_set(store: &impl KVStore) -> Result<HashSet<OsString>> {
     Ok(store
         .scan_prefix(BFT_BLOCK_PREFIX)
         .await?
@@ -141,7 +138,7 @@ mod tests {
     #[tokio::test]
     async fn test_bft_block_archive_worker() {
         let block_dir = tempdir().unwrap();
-        let store: BlobStoreErased = MemoryStorage::new("test").into();
+        let store: KVStoreErased = MemoryStorage::new("test").into();
         let metrics = Metrics::none();
 
         // Create test files in both directories
@@ -196,7 +193,7 @@ mod tests {
         // Verify content of uploaded files from both directories
         for fname in &expected_files {
             let key = format!("{BFT_BLOCK_PREFIX}{fname}");
-            let content = store.read(&key).await.unwrap();
+            let content = store.get(&key).await.unwrap().unwrap();
             assert_eq!(content, test_content);
         }
     }
@@ -230,9 +227,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_uploaded_set() {
-        let store: BlobStoreErased = MemoryStorage::new("test").into();
+        let store: KVStoreErased = MemoryStorage::new("test").into();
         store
-            .upload(
+            .put(
                 &format!("{BFT_BLOCK_PREFIX}123456abc.header"),
                 hex::decode("656c6c6ff20776f726").unwrap(),
             )
@@ -240,7 +237,7 @@ mod tests {
             .unwrap();
 
         store
-            .upload(
+            .put(
                 &format!("{BFT_BLOCK_PREFIX}feab1282.header"),
                 hex::decode("656c6c6f7c6fc626").unwrap(),
             )

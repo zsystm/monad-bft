@@ -9,7 +9,7 @@ use futures::join;
 
 use crate::{
     prelude::*,
-    storage::{triedb_reader::TriedbReader, DynamoDBArchive, RocksDbClient},
+    storage::{dynamodb::DynamoDBArchive, triedb_reader::TriedbReader, RocksDbClient},
 };
 
 async fn get_aws_config(region: Option<String>) -> SdkConfig {
@@ -122,40 +122,52 @@ impl BlockDataReaderArgs {
 
 impl ArchiveArgs {
     pub async fn build_block_data_archive(&self, metrics: &Metrics) -> Result<BlockDataArchive> {
-        let store: BlobStoreErased = match self {
+        let store = match self {
             ArchiveArgs::Aws(args) => args.build_blob_store(metrics).await,
             ArchiveArgs::RocksDb(args) => RocksDbClient::try_from(args)?.into(),
         };
         Ok(BlockDataArchive::new(store))
     }
 
-    pub async fn build_index_archive(&self, metrics: &Metrics) -> Result<TxIndexArchiver> {
-        let (bstore, istore) = self.build_both(metrics).await?;
-        Ok(TxIndexArchiver::new(istore, BlockDataArchive::new(bstore)))
-    }
-
-    async fn build_both(&self, metrics: &Metrics) -> Result<(BlobStoreErased, IndexStoreErased)> {
-        Ok(match self {
+    pub async fn build_index_archive(
+        &self,
+        metrics: &Metrics,
+        max_inline_encoded_len: usize,
+    ) -> Result<TxIndexArchiver> {
+        let (blob, index) = match self {
             ArchiveArgs::Aws(args) => {
-                let (b, s) = join!(
+                join!(
                     args.build_blob_store(metrics),
                     args.build_index_store(metrics)
-                );
-                (b, s.into())
+                )
             }
             ArchiveArgs::RocksDb(args) => {
-                let store = args.build()?;
-                (store.clone().into(), store.into())
+                let store = KVStoreErased::from(args.build()?);
+                (store.clone(), store)
             }
-        })
+        };
+        Ok(TxIndexArchiver::new(
+            index,
+            BlockDataArchive::new(blob),
+            max_inline_encoded_len,
+        ))
     }
 
     pub async fn build_archive_reader(&self, metrics: &Metrics) -> Result<ArchiveReader> {
-        let (b_reader, i_reader) = self.build_both(metrics).await?;
-        Ok(ArchiveReader::new(
-            BlockDataArchive::new(b_reader).into(),
-            i_reader,
-        ))
+        let (blob, index) = match self {
+            ArchiveArgs::Aws(args) => {
+                join!(
+                    args.build_blob_store(metrics),
+                    args.build_index_store(metrics)
+                )
+            }
+            ArchiveArgs::RocksDb(args) => {
+                let store = KVStoreErased::from(args.build()?);
+                (store.clone(), store)
+            }
+        };
+        let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
+        Ok(ArchiveReader::new(bdr, index.into()))
     }
 
     pub fn replica_name(&self) -> String {
@@ -182,7 +194,7 @@ impl AwsCliArgs {
         })
     }
 
-    pub async fn build_blob_store(&self, metrics: &Metrics) -> BlobStoreErased {
+    pub async fn build_blob_store(&self, metrics: &Metrics) -> KVStoreErased {
         S3Bucket::new(
             self.bucket.clone(),
             &get_aws_config(self.region.clone()).await,
@@ -191,19 +203,17 @@ impl AwsCliArgs {
         .into()
     }
 
-    pub async fn build_index_store(&self, metrics: &Metrics) -> DynamoDBArchive {
+    pub async fn build_index_store(&self, metrics: &Metrics) -> KVStoreErased {
         let config = &get_aws_config(self.region.clone()).await;
 
         DynamoDBArchive::new(
-            BlockDataArchive::new(
-                S3Bucket::new(self.bucket.clone(), config, metrics.clone()).into(),
-            )
-            .into(),
+            S3Bucket::new(self.bucket.clone(), config, metrics.clone()),
             self.bucket.clone(),
             config,
             self.concurrency,
             metrics.clone(),
         )
+        .into()
     }
 }
 

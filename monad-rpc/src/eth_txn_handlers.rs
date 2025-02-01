@@ -7,7 +7,7 @@ use alloy_rpc_types::{
 };
 use futures::stream::{self, StreamExt};
 use itertools::Either;
-use monad_archive::prelude::{BlockDataReader, IndexStoreReader};
+use monad_archive::prelude::{ArchiveReader, BlockDataReader};
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
@@ -19,8 +19,8 @@ use tracing::{debug, trace, warn};
 use crate::{
     block_handlers::{block_receipts, get_block_num_from_tag},
     eth_json_types::{
-        ArchiveReaderType, BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
-        Quantity, UnformattedData,
+        BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt, Quantity,
+        UnformattedData,
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
@@ -157,7 +157,7 @@ pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 #[tracing::instrument(level = "debug", skip(archive_reader))]
 pub async fn monad_eth_getLogs<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     p: MonadEthGetLogsParams,
 ) -> JsonRpcResult<MonadEthGetLogsResult> {
     trace!("monad_eth_getLogs: {p:?}");
@@ -466,7 +466,7 @@ pub struct MonadEthGetTransactionReceiptParams {
 #[tracing::instrument(level = "debug", skip(archive_reader))]
 pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetTransactionReceiptParams,
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     trace!("monad_eth_getTransactionReceipt: {params:?}");
@@ -487,7 +487,10 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
 
     // try archive if transaction hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
-        if let Ok(Some(tx_data)) = archive_reader.get(&params.tx_hash.0.into()).await {
+        if let Ok(tx_data) = archive_reader
+            .get_tx_indexed_data(&params.tx_hash.0.into())
+            .await
+        {
             let receipt = parse_tx_receipt(
                 tx_data.header_subset.base_fee_per_gas,
                 Some(tx_data.header_subset.block_timestamp),
@@ -517,7 +520,7 @@ pub struct MonadEthGetTransactionByHashParams {
 #[tracing::instrument(level = "debug", skip(archive_reader))]
 pub async fn monad_eth_getTransactionByHash<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetTransactionByHashParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
@@ -538,13 +541,13 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
 
     // try archive if transaction hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
-        if let Ok(Some(tx_data)) = archive_reader.get(&params.tx_hash.0.into()).await {
+        if let Ok((tx, header_subset)) = archive_reader.get_tx(&params.tx_hash.0.into()).await {
             return parse_tx_content(
-                tx_data.header_subset.block_hash,
-                tx_data.header_subset.block_number,
-                tx_data.header_subset.base_fee_per_gas,
-                tx_data.tx,
-                tx_data.header_subset.tx_index,
+                header_subset.block_hash,
+                header_subset.block_number,
+                header_subset.base_fee_per_gas,
+                tx,
+                header_subset.tx_index,
             )
             .map(|txn| Some(MonadTransaction(txn)));
         }
@@ -565,7 +568,7 @@ pub struct MonadEthGetTransactionByBlockHashAndIndexParams {
 /// Returns information about a transaction by block hash and transaction index position.
 pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetTransactionByBlockHashAndIndexParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
@@ -616,7 +619,7 @@ pub struct MonadEthGetTransactionByBlockNumberAndIndexParams {
 /// Returns information about a transaction by block number and transaction index position.
 pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetTransactionByBlockNumberAndIndexParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");

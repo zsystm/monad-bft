@@ -1,6 +1,5 @@
 pub mod cloud_proxy;
 pub mod dynamodb;
-pub mod fs_storage;
 pub mod memory;
 pub mod rocksdb_storage;
 pub mod s3;
@@ -8,14 +7,14 @@ pub mod triedb_reader;
 
 use std::collections::HashMap;
 
-use alloy_primitives::{BlockHash, TxHash};
+use alloy_primitives::BlockHash;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::Bytes;
 pub use cloud_proxy::*;
 pub use dynamodb::*;
 use enum_dispatch::enum_dispatch;
 use eyre::Result;
-use fs_storage::FsStorage;
+use futures::future::try_join_all;
 use memory::MemoryStorage;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 pub use rocksdb_storage::*;
@@ -23,7 +22,11 @@ pub use s3::*;
 use serde::{Deserialize, Serialize};
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 
-use crate::{prelude::*, storage::triedb_reader::TriedbReader};
+use crate::{
+    block_data_archive::BlockDataArchive,
+    prelude::*,
+    storage::{triedb_reader::TriedbReader, DynamoDBArchive},
+};
 
 #[enum_dispatch(BlockDataReader)]
 #[derive(Clone)]
@@ -32,27 +35,60 @@ pub enum BlockDataReaderErased {
     TriedbReader,
 }
 
-#[enum_dispatch(BlobReader, BlobStore)]
+#[enum_dispatch(KVStore, KVReader)]
 #[derive(Clone)]
-pub enum BlobStoreErased {
+pub enum KVStoreErased {
+    RocksDbClient,
+    S3Bucket,
+    DynamoDBArchive,
+    MemoryStorage,
+}
+
+#[enum_dispatch(KVReader)]
+#[derive(Clone)]
+pub enum KVReaderErased {
     RocksDbClient,
     S3Bucket,
     MemoryStorage,
-    FsStorage,
+    DynamoDBArchive,
+    CloudProxyReader,
 }
 
-#[enum_dispatch(IndexStoreReader, IndexStore)]
-#[derive(Clone)]
-pub enum IndexStoreErased {
-    RocksDbClient,
-    DynamoDBArchive,
-    MemoryStorage,
-    FsStorage,
+impl From<KVStoreErased> for KVReaderErased {
+    fn from(value: KVStoreErased) -> Self {
+        match value {
+            KVStoreErased::RocksDbClient(x) => KVReaderErased::RocksDbClient(x),
+            KVStoreErased::S3Bucket(x) => KVReaderErased::S3Bucket(x),
+            KVStoreErased::MemoryStorage(x) => KVReaderErased::MemoryStorage(x),
+            KVStoreErased::DynamoDBArchive(x) => KVReaderErased::DynamoDBArchive(x),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
+pub struct RangeRlp {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
+pub struct TxByteOffsets {
+    pub tx: RangeRlp,
+    pub receipt: RangeRlp,
+    pub trace: RangeRlp,
+}
+
+pub struct BlockDataWithOffsets {
+    pub block: Block,
+    pub receipts: Vec<ReceiptWithLogIndex>,
+    pub traces: Vec<Vec<u8>>,
+    pub offsets: Option<Vec<TxByteOffsets>>,
 }
 
 #[enum_dispatch]
 pub trait BlockDataReader: Clone {
     fn get_bucket(&self) -> &str;
+    async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets>;
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64>;
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block>;
     async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block>;
@@ -61,28 +97,48 @@ pub trait BlockDataReader: Clone {
 }
 
 #[enum_dispatch]
-pub trait BlobStore: BlobReader {
-    async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()>;
+pub trait KVStore: KVReader {
+    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()>;
+    async fn bulk_put(&self, kvs: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<()> {
+        futures::stream::iter(kvs)
+            .map(|(k, v)| self.put(k, v))
+            .buffer_unordered(10)
+            .count()
+            .await;
+        Ok(())
+    }
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
     fn bucket_name(&self) -> &str;
 }
-#[enum_dispatch]
-pub trait BlobReader: Clone {
-    async fn read(&self, key: &str) -> Result<Bytes>;
-}
 
 #[enum_dispatch]
-pub trait IndexStore: IndexStoreReader {
-    async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()>;
-}
+pub trait KVReader: Clone {
+    async fn get(&self, key: &str) -> Result<Option<Bytes>>;
+    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
+        // Note: a stream based approach runs into lifetime generality errors for some reason here.
+        // After a lot of variations I could not get it to work, so fell back on this join_all approach even
+        // though it involves an extra allocation.
+        // Optimize at your own risk!
+        let mut futs = Vec::with_capacity(keys.len());
+        for key in keys {
+            let reader = self.clone();
+            futs.push(async move { reader.get(key).await });
+        }
+        let responses = try_join_all(futs).await?;
 
-#[enum_dispatch]
-pub trait IndexStoreReader: Clone {
-    async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>>;
-    async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>>;
+        let mut out = HashMap::with_capacity(responses.len());
+        for (resp, key) in responses.into_iter().zip(keys) {
+            // let resp = resp?;
+            if let Some(bytes) = resp {
+                out.insert(key.clone(), bytes);
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
 pub struct TxIndexedData {
     pub tx: TxEnvelopeWithSender,
     pub trace: Vec<u8>,

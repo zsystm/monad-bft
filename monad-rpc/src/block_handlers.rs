@@ -1,7 +1,7 @@
 use alloy_consensus::Header as RlpHeader;
 use alloy_primitives::{FixedBytes, U256};
 use alloy_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt};
-use monad_archive::prelude::BlockDataReader;
+use monad_archive::prelude::{ArchiveReader, BlockDataReader};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,7 @@ use tracing::trace;
 
 use crate::{
     eth_json_types::{
-        ArchiveReaderType, BlockReference, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt,
-        Quantity,
+        BlockReference, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
     },
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -117,7 +116,7 @@ pub struct MonadEthGetBlock {
 /// Returns information about a block by hash.
 pub async fn monad_eth_getBlockByHash<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetBlockByHashParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByHash: {params:?}");
@@ -177,7 +176,7 @@ pub struct MonadEthGetBlockByNumberParams {
 /// Returns information about a block by number.
 pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetBlockByNumberParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByNumber: {params:?}");
@@ -228,7 +227,7 @@ pub struct MonadEthGetBlockTransactionCountByHashParams {
 /// Returns the number of transactions in a block from a block matching the given block hash.
 pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetBlockTransactionCountByHashParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
@@ -270,7 +269,7 @@ pub struct MonadEthGetBlockTransactionCountByNumberParams {
 /// Returns the number of transactions in a block matching the given block number.
 pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetBlockTransactionCountByNumberParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
@@ -373,7 +372,7 @@ pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 /// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadEthGetBlockReceiptsParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");

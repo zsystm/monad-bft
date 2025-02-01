@@ -265,10 +265,10 @@ mod tests {
     }
 
     fn memory_sink_source() -> (BlockDataArchive, BlockDataArchive) {
-        let source: BlobStoreErased = MemoryStorage::new("source").into();
+        let source: KVStoreErased = MemoryStorage::new("source").into();
         let reader = BlockDataArchive::new(source);
 
-        let sink: BlobStoreErased = MemoryStorage::new("sink").into();
+        let sink: KVStoreErased = MemoryStorage::new("sink").into();
         let archiver = BlockDataArchive::new(sink);
 
         (reader, archiver)

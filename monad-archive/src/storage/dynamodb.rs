@@ -1,14 +1,13 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use alloy_primitives::{hex::FromHex, TxHash};
-use alloy_rlp::Encodable;
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
     Client,
 };
+use bytes::Bytes;
 use eyre::{bail, Context, Result};
-use futures::future::join_all;
+use futures::future::try_join_all;
 use tokio::sync::Semaphore;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -24,99 +23,83 @@ const AWS_DYNAMODB_WRITES: &str = "aws_dynamodb_writes";
 const AWS_DYNAMODB_READS: &str = "aws_dynamodb_reads";
 
 #[derive(Clone)]
-pub struct DynamoDBArchive<BDR = BlockDataReaderErased> {
+pub struct DynamoDBArchive {
+    pub s3: S3Bucket,
     pub client: Client,
     pub table: String,
     pub semaphore: Arc<Semaphore>,
     pub metrics: Metrics,
-    pub block_data_reader: BDR,
 }
 
-impl<BDR: BlockDataReader> IndexStoreReader for DynamoDBArchive<BDR> {
-    async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>> {
-        let str_keys = keys
-            .iter()
-            .map(|h| format!("{:x}", h))
-            .collect::<Vec<String>>();
-        let output = self.batch_get(&str_keys).await?;
-
-        Ok(futures::stream::iter(output)
-            .filter_map(|(k, map)| async {
-                let bytes = log_result(extract_data_from_map(map))?;
-
-                let decoded = log_result(
-                    IndexDataStorageRepr::decode(&bytes)
-                        .wrap_err("Failed to decode index data repr in DynamoDBArchive"),
-                )?;
-                let latest =
-                    log_result(decoded.convert(&self.block_data_reader).await.wrap_err(
-                        "Failed to convert to latest index data repr in DynamoDBArchive",
-                    ))?;
-
-                Some((
-                    TxHash::from_hex(k).ok()?, // fmt
-                    latest,
-                ))
-            })
-            .collect::<HashMap<TxHash, TxIndexedData>>()
-            .await)
+impl KVReader for DynamoDBArchive {
+    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
+        self.batch_get(keys).await
     }
 
-    async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>> {
-        self.bulk_get(&[*key])
-            .await // fmt
+    async fn get(&self, key: &str) -> Result<Option<Bytes>> {
+        self.bulk_get(&[key.to_owned()])
+            .await
             .map(|mut v| v.remove(key))
     }
 }
 
-impl<BDR: BlockDataReader + Send + Sync + 'static> IndexStore for DynamoDBArchive<BDR> {
-    async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
-        let mut requests = Vec::with_capacity(kvs.size_hint().0);
-        for data in kvs {
-            let hash = format!("{:x}", data.tx.tx.tx_hash());
-            let mut attribute_map = HashMap::new();
-            attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hash));
+impl KVStore for DynamoDBArchive {
+    async fn scan_prefix(&self, _prefix: &str) -> Result<Vec<String>> {
+        unimplemented!()
+    }
 
-            let mut rlp_data = Vec::with_capacity(1024);
-            data.encode(&mut rlp_data);
-            attribute_map.insert("data".to_owned(), AttributeValue::B(rlp_data.into()));
+    fn bucket_name(&self) -> &str {
+        &self.table
+    }
 
-            let put_request = PutRequest::builder()
-                .set_item(Some(attribute_map))
-                .build()?;
+    async fn bulk_put(&self, kvs: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<()> {
+        let requests = kvs
+            .into_iter()
+            .filter_map(|(key, data)| {
+                let attribute_map: HashMap<String, AttributeValue> = HashMap::from_iter([
+                    ("key".to_owned(), AttributeValue::S(key)),
+                    ("data".to_owned(), AttributeValue::B(data.into())),
+                ]);
+                match PutRequest::builder().set_item(Some(attribute_map)).build() {
+                    Ok(put_request) => {
+                        Some(WriteRequest::builder().put_request(put_request).build())
+                    }
+                    Err(e) => {
+                        error!("Failed to build put request. Err: {e:?}");
+                        None
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
 
-            let write_request = WriteRequest::builder().put_request(put_request).build();
+        let batch_writes = requests
+            .chunks(Self::WRITE_BATCH_SIZE)
+            .map(|chunk| chunk.to_vec())
+            .map(|batch_writes| {
+                let this = (*self).clone();
+                tokio::spawn(async move { this.upload_to_db(batch_writes).await })
+            });
 
-            requests.push(write_request);
-        }
+        try_join_all(batch_writes).await?.into_iter().collect()
+    }
 
-        let batch_writes = split_into_batches(requests, Self::WRITE_BATCH_SIZE);
-        // let batch_writes = split_into_batches(requests, 1);
-        let mut batch_write_handles = Vec::new();
-        for batch_write in batch_writes {
-            let batch_write = batch_write.clone();
+    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+        let put_request = PutRequest::builder()
+            .item(key.as_ref(), AttributeValue::B(data.into()))
+            .build()
+            .wrap_err_with(|| format!("Failed to build put request, key: {}", key.as_ref()))?;
+        let request = WriteRequest::builder().put_request(put_request).build();
 
-            let this = (*self).clone();
-            let handle = tokio::spawn(async move { this.upload_to_db(batch_write).await });
-
-            batch_write_handles.push(handle);
-        }
-
-        let results = join_all(batch_write_handles).await;
-
-        for (idx, batch_write_result) in results.into_iter().enumerate() {
-            batch_write_result.wrap_err_with(|| format!("Failed to upload index {idx}"))??;
-        }
-        Ok(())
+        self.upload_to_db(vec![request]).await
     }
 }
 
-impl<BDR: BlockDataReader> DynamoDBArchive<BDR> {
+impl DynamoDBArchive {
     const READ_BATCH_SIZE: usize = 100;
     const WRITE_BATCH_SIZE: usize = 25;
 
     pub fn new(
-        block_data_reader: BDR,
+        s3: S3Bucket,
         table: String,
         config: &SdkConfig,
         concurrency: usize,
@@ -124,7 +107,7 @@ impl<BDR: BlockDataReader> DynamoDBArchive<BDR> {
     ) -> Self {
         let client = Client::new(config);
         Self {
-            block_data_reader,
+            s3,
             client,
             table,
             semaphore: Arc::new(Semaphore::new(concurrency)),
@@ -132,11 +115,8 @@ impl<BDR: BlockDataReader> DynamoDBArchive<BDR> {
         }
     }
 
-    async fn batch_get(
-        &self,
-        keys: &[String],
-    ) -> Result<HashMap<String, HashMap<String, AttributeValue>>> {
-        let mut results = HashMap::new();
+    async fn batch_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
+        let mut results: HashMap<String, Bytes> = HashMap::new();
         let batches = keys.chunks(Self::READ_BATCH_SIZE);
 
         for batch in batches {
@@ -174,7 +154,7 @@ impl<BDR: BlockDataReader> DynamoDBArchive<BDR> {
             // Collect retrieved items
             if let Some(mut responses) = response.responses {
                 if let Some(items) = responses.remove(&self.table) {
-                    results.extend(items.into_iter().filter_map(extract_txhash_from_map));
+                    results.extend(items.into_iter().filter_map(extract_kv_from_map));
                 }
             }
 
@@ -199,7 +179,7 @@ impl<BDR: BlockDataReader> DynamoDBArchive<BDR> {
 
                 if let Some(mut responses_retry) = response_retry.responses {
                     if let Some(items) = responses_retry.remove(&self.table) {
-                        results.extend(items.into_iter().filter_map(extract_txhash_from_map));
+                        results.extend(items.into_iter().filter_map(extract_kv_from_map));
                     }
                 }
                 unprocessed_keys = response_retry.unprocessed_keys;
@@ -223,7 +203,6 @@ impl<BDR: BlockDataReader> DynamoDBArchive<BDR> {
         // TODO: Only deal with unprocessed items, but it's pretty complicated
         Retry::spawn(retry_strategy, || {
             let values = values.clone();
-            // let client = client;
             let client = &self.client;
             let table = self.table.clone();
             let semeaphore = Arc::clone(&self.semaphore);
@@ -266,48 +245,20 @@ impl<BDR: BlockDataReader> DynamoDBArchive<BDR> {
     }
 }
 
-fn log_result<T>(res: Result<T>) -> Option<T> {
-    match res {
-        Ok(x) => Some(x),
-        Err(e) => {
-            error!("{e:?}");
-            None
+fn extract_kv_from_map(mut item: HashMap<String, AttributeValue>) -> Option<(String, Bytes)> {
+    match (item.remove("key"), item.remove("data")) {
+        (Some(AttributeValue::S(key)), Some(AttributeValue::B(data))) => {
+            Some((key, Bytes::from(data.into_inner())))
         }
-    }
-}
-
-fn split_into_batches(values: Vec<WriteRequest>, batch_size: usize) -> Vec<Vec<WriteRequest>> {
-    values
-        .chunks(batch_size)
-        .map(|chunk| chunk.to_vec())
-        .collect()
-}
-
-fn extract_data_from_map(mut item: HashMap<String, AttributeValue>) -> Result<Vec<u8>> {
-    if let Some(attr) = item.remove("data") {
-        if let AttributeValue::B(blob) = attr {
-            Ok(blob.into_inner())
-        } else {
-            bail!("failed to get binary data from attr map");
+        (None, Some(AttributeValue::B(data))) => {
+            // fallback to reading 1st schema
+            let AttributeValue::S(key) = item.remove("tx_hash")? else {
+                return None;
+            };
+            Some((key, Bytes::from(data.into_inner())))
         }
-    } else {
-        bail!("data not found");
+        _ => None,
     }
-}
-
-fn extract_txhash_from_map(
-    mut item: HashMap<String, AttributeValue>,
-) -> Option<(String, HashMap<String, AttributeValue>)> {
-    if let Some(attr) = item.remove("tx_hash") {
-        if let AttributeValue::S(txhash) = attr {
-            return Some((txhash, item));
-        } else {
-            dbg!("failed to get txhash from attr");
-        }
-    } else {
-        dbg!("txhash attr not found");
-    }
-    None
 }
 
 fn inc_err(metrics: &Metrics) {

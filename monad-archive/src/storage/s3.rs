@@ -38,8 +38,8 @@ impl S3Bucket {
     }
 }
 
-impl BlobReader for S3Bucket {
-    async fn read(&self, key: &str) -> Result<Bytes> {
+impl KVReader for S3Bucket {
+    async fn get(&self, key: &str) -> Result<Option<Bytes>> {
         let resp = self
             .client
             .get_object()
@@ -58,13 +58,19 @@ impl BlobReader for S3Bucket {
         })?;
 
         self.metrics.counter(AWS_S3_READS, 1);
-        Ok(data.into_bytes())
+
+        let bytes = data.into_bytes();
+        if bytes.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(bytes))
+        }
     }
 }
 
-impl BlobStore for S3Bucket {
+impl KVStore for S3Bucket {
     // Upload rlp-encoded bytes with retry
-    async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()> {
+    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .max_delay(Duration::from_secs(1))
             .map(jitter);
@@ -72,7 +78,7 @@ impl BlobStore for S3Bucket {
         Retry::spawn(retry_strategy, || {
             let client = &self.client;
             let bucket = &self.bucket;
-            let key = key.to_string();
+            let key = key.as_ref().to_string();
             let body = ByteStream::from(data.clone());
             let metrics = &self.metrics;
 
@@ -92,7 +98,7 @@ impl BlobStore for S3Bucket {
         })
         .await
         .map(|_| ())
-        .wrap_err_with(|| format!("Failed to upload {}. Retrying...", key))?;
+        .wrap_err_with(|| format!("Failed to upload {}. Retrying...", key.as_ref()))?;
 
         self.metrics.counter(AWS_S3_WRITES, 1);
         Ok(())
