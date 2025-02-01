@@ -1,10 +1,9 @@
 use alloy_consensus::BlockBody;
 use alloy_primitives::BlockHash;
 use eyre::{eyre, OptionExt, Result};
-use monad_triedb_utils::triedb_env::{
-    BlockHeader, ReceiptWithLogIndex, Triedb, TriedbEnv, TxEnvelopeWithSender,
-};
+use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TriedbEnv};
 
+use super::BlockDataWithOffsets;
 use crate::{cli::TrieDbCliArgs, prelude::*};
 
 #[derive(Clone)]
@@ -33,13 +32,20 @@ impl BlockDataReader for TriedbReader {
             .map_err(|e| eyre!("{e}"))?
             .ok_or_eyre("Can't find block in triedb")?;
 
-        let txs = self
+        let transactions = self
             .db
             .get_transactions(block_num)
             .await
             .map_err(|e| eyre!("{e}"))?;
 
-        Ok(make_block(header, txs))
+        Ok(Block {
+            header: header.header,
+            body: BlockBody {
+                transactions,
+                ommers: Vec::new(),
+                withdrawals: None,
+            },
+        })
     }
 
     async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithLogIndex>> {
@@ -70,15 +76,21 @@ impl BlockDataReader for TriedbReader {
             .ok_or_eyre("Block number for hash not found in triedb")?;
         self.get_block_by_number(block_num).await
     }
-}
 
-pub fn make_block(block_header: BlockHeader, transactions: Vec<TxEnvelopeWithSender>) -> Block {
-    Block {
-        header: block_header.header,
-        body: BlockBody {
-            transactions,
-            ommers: Vec::new(),
-            withdrawals: None,
-        },
+    async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets> {
+        let (block, traces, receipts) = try_join!(
+            self.get_block_by_number(block_num),
+            self.get_block_traces(block_num),
+            self.get_block_receipts(block_num),
+        )?;
+
+        Ok(BlockDataWithOffsets {
+            block,
+            traces,
+            receipts,
+            // Offsets don't make sense when reading from triedb since we will never
+            // do sectional reads from that store
+            offsets: None,
+        })
     }
 }

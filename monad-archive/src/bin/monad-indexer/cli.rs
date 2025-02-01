@@ -34,4 +34,10 @@ pub struct Cli {
     /// Endpoint to push metrics to
     #[arg(long)]
     pub otel_endpoint: Option<String>,
+
+    /// Maximum size of an encoded inline tx index entry
+    /// If an entry is larger than this, it is stored as a reference pointing to
+    /// the block level data store
+    #[arg(long, default_value_t = 350 * 1024)]
+    pub max_inline_encoded_len: usize,
 }

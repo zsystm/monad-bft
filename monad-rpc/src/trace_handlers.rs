@@ -5,7 +5,7 @@ use alloy_primitives::{
     Address, Bytes,
 };
 use alloy_rlp::Decodable;
-use monad_archive::prelude::{BlockDataReader, IndexStoreReader};
+use monad_archive::prelude::{ArchiveReader, BlockDataReader};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::{Deserialize, Serialize};
@@ -14,8 +14,7 @@ use tracing::{error, trace};
 use crate::{
     block_handlers::get_block_num_from_tag,
     eth_json_types::{
-        ArchiveReaderType, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
-        UnformattedData,
+        BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity, UnformattedData,
     },
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -189,7 +188,7 @@ pub struct MonadDebugTraceBlockByHashParams {
 /// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
 pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadDebugTraceBlockByHashParams,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByHash: {params:?}");
@@ -291,7 +290,7 @@ pub struct MonadDebugTraceBlockResult {
 /// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
 pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadDebugTraceBlockByNumberParams,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByNumber: {params:?}");
@@ -370,7 +369,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 /// Returns all traces of a given transaction.
 pub async fn monad_debug_traceTransaction<T: Triedb>(
     triedb_env: &T,
-    archive_reader: &Option<ArchiveReaderType>,
+    archive_reader: &Option<ArchiveReader>,
     params: MonadDebugTraceTransactionParams,
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
@@ -394,12 +393,13 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 
     // try archive if transaction hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
-        if let Ok(Some(tx_data)) = archive_reader.get(&params.tx_hash.0.into()).await {
-            let rlp_call_frame = &mut tx_data.trace.as_slice();
+        if let Ok((trace, header_subset)) = archive_reader.get_trace(&params.tx_hash.0.into()).await
+        {
+            let rlp_call_frame = &mut trace.as_slice();
             return decode_call_frame(
                 triedb_env,
                 rlp_call_frame,
-                tx_data.header_subset.block_number,
+                header_subset.block_number,
                 &params.tracer,
             )
             .await;

@@ -7,7 +7,7 @@ use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 #[derive(Clone)]
-pub struct Metrics(Option<MetricsInner>);
+pub struct Metrics(Option<Arc<MetricsInner>>);
 
 #[derive(Clone)]
 pub struct MetricsInner {
@@ -32,12 +32,12 @@ impl Metrics {
         )?;
         let meter = provider.meter("opentelemetry");
 
-        Ok(Metrics(Some(MetricsInner {
+        Ok(Metrics(Some(Arc::new(MetricsInner {
             counters: Arc::new(DashMap::with_capacity(100)),
             gauges: Arc::new(DashMap::with_capacity(100)),
             provider,
             meter,
-        })))
+        }))))
     }
 
     pub fn none() -> Metrics {
