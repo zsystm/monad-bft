@@ -208,7 +208,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
             trace,
         });
 
-    let fetched = reader.bulk_get(&hashes).await?;
+    let fetched = reader.get_tx_indexed_data_bulk(&hashes).await?;
     let mut faults = Vec::new();
 
     for expected in expected {

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 pub async fn file_checkpoint_worker(
-    store: BlobStoreErased,
+    store: KVStoreErased,
     path: PathBuf,
     blob_prefix: String,
     poll_frequency: Duration,
@@ -17,14 +17,14 @@ pub async fn file_checkpoint_worker(
     }
 }
 
-async fn read_and_upload(store: &BlobStoreErased, path: &PathBuf, blob_prefix: &str) -> Result<()> {
+async fn read_and_upload(store: &KVStoreErased, path: &PathBuf, blob_prefix: &str) -> Result<()> {
     let buf = tokio::fs::read(&path)
         .await
         .wrap_err_with(|| format!("Failed to read checkpoint_file file, path: {:?}", path))?;
 
     let key = format!("{blob_prefix}/{}", get_timestamp());
     store
-        .upload(&key, buf)
+        .put(&key, buf)
         .await
         .wrap_err_with(|| format!("Failed to upload wal to blob store, key: {}", &key))
 }
@@ -50,7 +50,7 @@ mod tests {
         let test_content = b"test checkpoint data";
         temp_file.write_all(test_content)?;
 
-        let store: BlobStoreErased = MemoryStorage::new("test").into();
+        let store: KVStoreErased = MemoryStorage::new("test").into();
         let blob_prefix = "test_checkpoints";
 
         // Perform upload
@@ -60,7 +60,7 @@ mod tests {
         let uploaded_files = store.scan_prefix(blob_prefix).await?;
         assert_eq!(uploaded_files.len(), 1);
 
-        let content = store.read(&uploaded_files[0]).await?;
+        let content = store.get(&uploaded_files[0]).await?.unwrap();
         assert_eq!(content.to_vec().as_slice(), test_content);
 
         Ok(())
@@ -72,7 +72,7 @@ mod tests {
         let test_content = b"test checkpoint data";
         std::fs::write(&temp_file, test_content).unwrap();
 
-        let store: BlobStoreErased = MemoryStorage::new("test").into();
+        let store: KVStoreErased = MemoryStorage::new("test").into();
         let store_clone = store.clone();
         let path = temp_file.path().to_path_buf();
 
@@ -94,7 +94,7 @@ mod tests {
         let uploaded = store.scan_prefix("test_checkpoints").await.unwrap();
         assert!(!uploaded.is_empty());
 
-        let content = store.read(&uploaded[0]).await.unwrap();
+        let content = store.get(&uploaded[0]).await.unwrap().unwrap();
         assert_eq!(content.to_vec().as_slice(), test_content);
 
         worker_handle.abort();
@@ -102,7 +102,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_and_upload_nonexistent_file() {
-        let store: BlobStoreErased = MemoryStorage::new("test").into();
+        let store: KVStoreErased = MemoryStorage::new("test").into();
         let nonexistent_path = PathBuf::from("/nonexistent/file");
 
         let result = read_and_upload(&store, &nonexistent_path, "test_prefix").await;

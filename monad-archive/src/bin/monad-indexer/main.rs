@@ -19,7 +19,10 @@ async fn main() -> Result<()> {
     )?;
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;
-    let tx_index_archiver = args.archive_sink.build_index_archive(&metrics).await?;
+    let tx_index_archiver = args
+        .archive_sink
+        .build_index_archive(&metrics, args.max_inline_encoded_len)
+        .await?;
 
     // for testing
     if args.reset_index {

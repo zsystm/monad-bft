@@ -6,6 +6,7 @@ pub mod cli;
 pub mod fault;
 pub mod metrics;
 pub mod prelude;
+pub mod rlp_offset_scanner;
 pub mod storage;
 pub mod tx_indexer;
 pub mod workers;

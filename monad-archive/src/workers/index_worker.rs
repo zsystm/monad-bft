@@ -1,6 +1,6 @@
 use alloy_primitives::hex::ToHexExt;
 
-use crate::prelude::*;
+use crate::{prelude::*, storage::BlockDataWithOffsets};
 
 pub async fn index_worker(
     block_data_reader: (impl BlockDataReader + Sync),
@@ -133,11 +133,15 @@ async fn handle_block(
     tx_index_archiver: &TxIndexArchiver,
     block_num: u64,
 ) -> Result<usize> {
-    let (block, traces, receipts) = try_join!(
-        block_data_reader.get_block_by_number(block_num),
-        block_data_reader.get_block_traces(block_num),
-        block_data_reader.get_block_receipts(block_num)
-    )?;
+    let BlockDataWithOffsets {
+        block,
+        receipts,
+        traces,
+        offsets,
+    } = block_data_reader
+        .get_block_data_with_offsets(block_num)
+        .await?;
+
     let num_txs = block.body.transactions.len();
     info!(num_txs, block_num, "Indexing block...");
 
@@ -145,26 +149,36 @@ async fn handle_block(
     let first_rx = receipts.first().cloned();
     let first_trace = traces.first().cloned();
     tx_index_archiver
-        .index_block(block, traces, receipts)
+        .index_block(block, traces, receipts, offsets)
         .await?;
 
     // check 1 key
     if let Some(tx) = first {
-        let tx = tx.tx; // grab inner TxEnvelope
-        let key = tx.tx_hash().encode_hex();
-        match tx_index_archiver.store.get(tx.tx_hash()).await {
-            Ok(Some(resp)) => {
+        let tx = tx.tx;
+        let key = tx.tx_hash();
+        match tx_index_archiver.get_tx_indexed_data(key).await {
+            Ok(resp) => {
                 if resp.header_subset.block_number != block_num
                     || Some(&resp.receipt) != first_rx.as_ref()
                     || Some(&resp.trace) != first_trace.as_ref()
                 {
-                    warn!(key, block_num, ?resp, "Returned index not as expected");
+                    warn!(
+                        key = key.encode_hex(),
+                        block_num,
+                        ?resp,
+                        "Returned index not as expected"
+                    );
                 } else {
-                    info!(key, block_num, "Index spot-check successful");
+                    info!(
+                        key = key.encode_hex(),
+                        block_num, "Index spot-check successful"
+                    );
                 }
             }
-            Ok(None) => warn!(key, block_num, "No item found for key"),
-            Err(e) => warn!(key, block_num, "Error while checking: {e}"),
+            Err(e) => warn!(
+                key = key.encode_hex(),
+                block_num, "Error while checking: {e}"
+            ),
         };
     }
 
@@ -192,12 +206,16 @@ mod tests {
     use super::*;
     use crate::storage::memory::MemoryStorage;
 
-    fn mock_tx(salt: u64) -> TxEnvelopeWithSender {
+    fn mock_tx_with_input_len(salt: u64, input_len: usize) -> TxEnvelopeWithSender {
         let tx = TxEip1559 {
             nonce: salt,
             gas_limit: 456 + salt,
             max_fee_per_gas: 789,
             max_priority_fee_per_gas: 135,
+            input: std::iter::repeat(42)
+                .take(input_len)
+                .collect::<Vec<u8>>()
+                .into(),
             ..Default::default()
         };
         let signer = PrivateKeySigner::from_bytes(&B256::from(U256::from(123))).unwrap();
@@ -207,6 +225,10 @@ mod tests {
             tx: tx.into(),
             sender: signer.address(),
         }
+    }
+
+    fn mock_tx(salt: u64) -> TxEnvelopeWithSender {
+        mock_tx_with_input_len(salt, 10)
     }
 
     fn mock_rx() -> ReceiptWithLogIndex {
@@ -239,12 +261,9 @@ mod tests {
     }
 
     fn memory_sink_source() -> (BlockDataArchive, TxIndexArchiver) {
-        let source: BlobStoreErased = MemoryStorage::new("source").into();
-        let reader = BlockDataArchive::new(source);
-
-        let sink = MemoryStorage::new("sink");
-        let archiver = BlockDataArchive::new(sink.clone().into());
-        let index_archiver = TxIndexArchiver::new(IndexStoreErased::from(sink), archiver);
+        let source: KVStoreErased = MemoryStorage::new("source").into();
+        let reader = BlockDataArchive::new(source.clone());
+        let index_archiver = TxIndexArchiver::new(source, reader.clone(), 1000);
 
         (reader, index_archiver)
     }
@@ -308,8 +327,8 @@ mod tests {
         for block_num in 0..=5 {
             let block = reader.get_block_by_number(block_num).await.unwrap();
             let tx_hash = block.body.transactions[0].tx.tx_hash();
-            let indexed = index_archiver.store.get(tx_hash).await.unwrap();
-            assert!(indexed.is_some());
+            let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
+            assert!(indexed.is_ok());
             assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
         }
     }
@@ -352,7 +371,7 @@ mod tests {
 
         // Add new blocks while worker is running
         for block_num in 6..=10 {
-            let tx = mock_tx(block_num);
+            let tx = mock_tx_with_input_len(block_num, 1000000);
             let block = mock_block(block_num, vec![tx]);
             let receipts = vec![mock_rx()];
             let traces = vec![vec![]];
@@ -379,8 +398,8 @@ mod tests {
         for block_num in 0..=10 {
             let block = reader.get_block_by_number(block_num).await.unwrap();
             let tx_hash = block.body.transactions[0].tx.tx_hash();
-            let indexed = index_archiver.store.get(tx_hash).await.unwrap();
-            assert!(indexed.is_some());
+            let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
+            assert!(indexed.is_ok());
             assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
         }
     }
@@ -429,8 +448,8 @@ mod tests {
         for block_num in 0..=5 {
             let block = reader.get_block_by_number(block_num).await.unwrap();
             let tx_hash = block.body.transactions[0].tx.tx_hash();
-            let indexed = index_archiver.store.get(tx_hash).await.unwrap();
-            assert!(indexed.is_some());
+            let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
+            assert!(indexed.is_ok());
             assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
         }
     }
@@ -479,8 +498,8 @@ mod tests {
             // Verify each transaction
             for tx in block.body.transactions {
                 let tx = tx.tx;
-                let indexed = index_archiver.store.get(tx.tx_hash()).await.unwrap();
-                assert!(indexed.is_some());
+                let indexed = index_archiver.get_tx_indexed_data(tx.tx_hash()).await;
+                assert!(indexed.is_ok());
             }
         }
     }
@@ -511,8 +530,8 @@ mod tests {
         for block_num in 0..=1 {
             let block = reader.get_block_by_number(block_num).await.unwrap();
             let tx_hash = block.body.transactions[0].tx.tx_hash();
-            let indexed = index_archiver.store.get(tx_hash).await.unwrap();
-            assert!(indexed.is_some());
+            let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
+            assert!(indexed.is_ok());
         }
 
         // Verify latest indexed checkpoint is correct
@@ -550,10 +569,45 @@ mod tests {
 
         // Verify indexed data
         let tx_hash = block.body.transactions[0].tx.tx_hash();
-        let indexed = index_archiver.store.get(tx_hash).await.unwrap();
-        assert!(indexed.is_some());
+        let indexed = index_archiver.get_tx_indexed_data(tx_hash).await.unwrap();
 
-        let indexed = indexed.unwrap();
+        assert_eq!(indexed.header_subset.block_number, block_num);
+        assert_eq!(indexed.receipt, receipts[0]);
+        assert_eq!(indexed.trace, traces[0]);
+    }
+
+    #[tokio::test]
+    async fn test_handle_block_single_tx_use_references() {
+        let (reader, index_archiver) = memory_sink_source();
+        let block_num = 10;
+
+        // Prepare test data
+        let tx = mock_tx_with_input_len(12, 50_000);
+        let block = mock_block(block_num, vec![tx]);
+        let receipts = vec![mock_rx()];
+        let traces = vec![vec![]]; // Empty trace for now
+
+        // Store test data in reader
+        reader.archive_block(block.clone()).await.unwrap();
+        reader
+            .archive_receipts(receipts.clone(), block_num)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces.clone(), block_num)
+            .await
+            .unwrap();
+
+        // Test handle_block
+        let num_txs = handle_block(&reader, &index_archiver, block_num)
+            .await
+            .unwrap();
+        assert_eq!(num_txs, 1);
+
+        // Verify indexed data
+        let tx_hash = block.body.transactions[0].tx.tx_hash();
+        let indexed = index_archiver.get_tx_indexed_data(tx_hash).await.unwrap();
+
         assert_eq!(indexed.header_subset.block_number, block_num);
         assert_eq!(indexed.receipt, receipts[0]);
         assert_eq!(indexed.trace, traces[0]);
@@ -588,7 +642,7 @@ mod tests {
         let block_num = 10;
 
         // Prepare test data with multiple transactions
-        let txs = vec![mock_tx(1), mock_tx(2), mock_tx(3)];
+        let txs = vec![mock_tx(1), mock_tx_with_input_len(2, 20_000), mock_tx(3)];
         let block = mock_block(block_num, txs);
         let receipts = vec![mock_rx(), mock_rx(), mock_rx()];
         let traces = vec![vec![], vec![], vec![]];
@@ -614,8 +668,8 @@ mod tests {
         // Verify all transactions were indexed correctly
         for (i, tx) in block.body.transactions.iter().enumerate() {
             let tx_hash = tx.tx.tx_hash();
-            let indexed = index_archiver.store.get(tx_hash).await.unwrap();
-            assert!(indexed.is_some());
+            let indexed = index_archiver.get_tx_indexed_data(tx_hash).await;
+            assert!(indexed.is_ok());
             let indexed = indexed.unwrap();
             assert_eq!(indexed.header_subset.block_number, block_num);
             assert_eq!(indexed.receipt, receipts[i]);

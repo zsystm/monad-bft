@@ -1,23 +1,133 @@
+use std::ops::Deref;
+
 use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
-use alloy_primitives::BlockHash;
+use alloy_primitives::{hex::ToHexExt, BlockHash, TxHash};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use eyre::bail;
+use eyre::{bail, ensure};
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use serde::{Deserialize, Serialize};
 
-use crate::prelude::{BlockDataReader, *};
+use crate::{
+    prelude::{BlockDataReader, *},
+    storage::{KVReaderErased, TxByteOffsets},
+};
 
 #[derive(Clone)]
-pub struct TxIndexArchiver<Store = IndexStoreErased> {
-    pub store: Store,
+pub struct TxIndexArchiver {
+    pub index_store: KVStoreErased,
     pub block_data_archive: BlockDataArchive,
+    reader: IndexReader,
+    pub max_inline_encoded_len: usize,
 }
 
-impl<Store: IndexStore> TxIndexArchiver<Store> {
-    pub fn new(store: Store, block_data_archive: BlockDataArchive) -> TxIndexArchiver<Store> {
+// Allows archiver to also read without duplicated code
+impl Deref for TxIndexArchiver {
+    type Target = IndexReader;
+
+    fn deref(&self) -> &Self::Target {
+        &self.reader
+    }
+}
+
+#[derive(Clone)]
+pub struct IndexReader {
+    pub index_store: KVReaderErased,
+    pub block_data_reader: BlockDataReaderErased,
+}
+
+impl IndexReader {
+    pub fn new(index_store: KVReaderErased, block_data_reader: BlockDataReaderErased) -> Self {
         Self {
-            store,
+            index_store,
+            block_data_reader,
+        }
+    }
+
+    pub async fn get_latest_indexed(&self) -> Result<u64> {
+        self.block_data_reader.get_latest(LatestKind::Indexed).await
+    }
+
+    async fn get_repr(&self, tx_hash: &TxHash) -> Result<IndexDataStorageRepr> {
+        let key = tx_hash.encode_hex();
+        let bytes = self
+            .index_store
+            .get(&key)
+            .await?
+            .wrap_err_with(|| format!("No data found in index for txhash: {}", &key))?;
+        IndexDataStorageRepr::decode(&bytes)
+    }
+
+    /// Prefer get_tx, get_receipt, get_trace where possible to avoid unecessary network calls
+    pub async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData> {
+        self.get_repr(tx_hash)
+            .await?
+            .convert(&self.block_data_reader)
+            .await
+    }
+
+    pub async fn get_tx_indexed_data_bulk(
+        &self,
+        tx_hashes: &[TxHash],
+    ) -> Result<HashMap<TxHash, TxIndexedData>> {
+        let keys = tx_hashes
+            .iter()
+            .map(|h| h.encode_hex())
+            .collect::<Vec<String>>();
+        let reprs = self.index_store.bulk_get(&keys).await?;
+
+        let mut output = HashMap::new();
+        for (hash, key) in tx_hashes.iter().zip(keys) {
+            let Some(bytes) = reprs.get(&key) else {
+                continue;
+            };
+
+            let decoded = IndexDataStorageRepr::decode(bytes)?;
+            let converted = decoded.convert(&self.block_data_reader).await?;
+            output.insert(*hash, converted);
+        }
+
+        Ok(output)
+    }
+
+    pub async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)> {
+        self.get_repr(tx_hash)
+            .await?
+            .get_tx(&self.block_data_reader)
+            .await
+    }
+
+    pub async fn get_receipt(
+        &self,
+        tx_hash: &TxHash,
+    ) -> Result<(ReceiptWithLogIndex, HeaderSubset)> {
+        self.get_repr(tx_hash)
+            .await?
+            .get_receipt(&self.block_data_reader)
+            .await
+    }
+
+    pub async fn get_trace(&self, tx_hash: &TxHash) -> Result<(Vec<u8>, HeaderSubset)> {
+        self.get_repr(tx_hash)
+            .await?
+            .get_trace(&self.block_data_reader)
+            .await
+    }
+}
+
+impl TxIndexArchiver {
+    pub fn new(
+        index_store: KVStoreErased,
+        block_data_archive: BlockDataArchive,
+        max_inline_encoded_len: usize,
+    ) -> TxIndexArchiver {
+        Self {
+            reader: IndexReader::new(
+                index_store.clone().into(),
+                block_data_archive.clone().into(),
+            ),
+            index_store,
             block_data_archive,
+            max_inline_encoded_len,
         }
     }
 
@@ -27,24 +137,22 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
             .await
     }
 
-    pub async fn get_latest_indexed(&self) -> Result<u64> {
-        self.block_data_archive
-            .get_latest(LatestKind::Indexed)
-            .await
-    }
-
     pub async fn index_block(
         &self,
         block: Block,
         traces: Vec<Vec<u8>>,
         receipts: Vec<ReceiptWithLogIndex>,
+        offsets: Option<Vec<TxByteOffsets>>,
     ) -> Result<()> {
         let block_number = block.header.number;
         let block_timestamp = block.header.timestamp;
         let block_hash = block.header.hash_slow();
         let base_fee_per_gas = block.header.base_fee_per_gas;
 
-        if block.body.transactions.len() != traces.len() || traces.len() != receipts.len() {
+        if block.body.transactions.len() != traces.len()
+            || traces.len() != receipts.len()
+            || (offsets.is_some() && receipts.len() != offsets.as_ref().unwrap().len())
+        {
             bail!("Block must have same number of txs as traces and receipts. num_txs: {}, num_traces: {}, num_receipts: {}", 
             block.body.length(), traces.len(), receipts.len());
         }
@@ -55,30 +163,44 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
             .body
             .transactions
             .into_iter()
-            .zip(traces.into_iter())
-            .zip(receipts.into_iter())
+            .zip(traces)
+            .zip(receipts)
             .enumerate()
             .map(|(idx, ((tx, trace), receipt))| {
                 // calculate gas used by this tx
                 let gas_used = receipt.receipt.cumulative_gas_used() - prev_cumulative_gas_used;
                 prev_cumulative_gas_used = receipt.receipt.cumulative_gas_used();
 
-                TxIndexedData {
+                let key = tx.tx.tx_hash().encode_hex();
+                let header_subset = || HeaderSubset {
+                    block_hash,
+                    block_number,
+                    block_timestamp,
+                    tx_index: idx as u64,
+                    gas_used,
+                    base_fee_per_gas,
+                };
+                let mut encoded = IndexDataStorageRepr::InlineV1(TxIndexedData {
                     tx,
                     trace,
                     receipt,
-                    header_subset: HeaderSubset {
-                        block_hash,
+                    header_subset: header_subset(),
+                })
+                .encode();
+
+                if encoded.len() > self.max_inline_encoded_len {
+                    encoded = IndexDataStorageRepr::ReferenceV0(ReferenceV0 {
+                        header_subset: header_subset(),
                         block_number,
-                        block_timestamp,
-                        tx_index: idx as u64,
-                        gas_used,
-                        base_fee_per_gas,
-                    },
+                        offsets: offsets.as_ref().and_then(|v| v.get(idx).cloned()),
+                    })
+                    .encode();
                 }
+
+                (key, encoded)
             });
 
-        self.store.bulk_put(requests).await
+        self.index_store.bulk_put(requests).await
     }
 }
 
@@ -89,6 +211,14 @@ pub struct InlineV0 {
     pub trace: Vec<u8>,
     pub receipt: ReceiptEnvelope,
     pub header_subset: HeaderSubsetV0,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
+pub struct ReferenceV0 {
+    pub block_number: u64,
+    pub header_subset: HeaderSubset,
+    pub offsets: Option<TxByteOffsets>,
 }
 
 #[derive(
@@ -103,20 +233,37 @@ pub struct HeaderSubsetV0 {
     pub base_fee_per_gas: Option<u64>,
 }
 
+impl HeaderSubsetV0 {
+    fn convert(self, block_timestamp: u64) -> HeaderSubset {
+        HeaderSubset {
+            block_timestamp,
+            // copy existing fields
+            block_hash: self.block_hash,
+            block_number: self.block_number,
+            tx_index: self.tx_index,
+            gas_used: self.gas_used,
+            base_fee_per_gas: self.base_fee_per_gas,
+        }
+    }
+}
+
 pub enum IndexDataStorageRepr {
     InlineV0(InlineV0),
     InlineV1(TxIndexedData),
+    ReferenceV0(ReferenceV0),
 }
 
 impl IndexDataStorageRepr {
     const SENTINEL: u8 = 50;
     const INLINE_V0_MARKER: u8 = 0;
     const INLINE_V1_MARKER: u8 = 1;
+    const REFERENCE_V0_MARKER: u8 = 2;
 
     fn marker_byte(&self) -> u8 {
         match self {
             IndexDataStorageRepr::InlineV0(_) => Self::INLINE_V0_MARKER,
             IndexDataStorageRepr::InlineV1(_) => Self::INLINE_V1_MARKER,
+            IndexDataStorageRepr::ReferenceV0(_) => Self::REFERENCE_V0_MARKER,
         }
     }
 
@@ -135,6 +282,9 @@ impl IndexDataStorageRepr {
                 }
                 IndexDataStorageRepr::InlineV1(tx_indexed_data_v1) => {
                     tx_indexed_data_v1.encode(buf);
+                }
+                IndexDataStorageRepr::ReferenceV0(reference_v0) => {
+                    reference_v0.encode(buf);
                 }
             };
         }
@@ -156,6 +306,10 @@ impl IndexDataStorageRepr {
             [Self::SENTINEL, Self::INLINE_V1_MARKER] => {
                 TxIndexedData::decode(&mut &buf[2..]) //fmt
                     .map(IndexDataStorageRepr::InlineV1)
+            }
+            [Self::SENTINEL, Self::REFERENCE_V0_MARKER] => {
+                ReferenceV0::decode(&mut &buf[2..]) //fmt
+                    .map(IndexDataStorageRepr::ReferenceV0)
             }
             // no sentinel bytes implies raw v0 encoding
             _ => InlineV0::decode(&mut &buf[..]) // fmt
@@ -191,18 +345,125 @@ impl IndexDataStorageRepr {
                         .get(inline_v0.header_subset.tx_index as usize)
                         .context("Failed to find receipt in block data")?
                         .clone(),
-                    header_subset: HeaderSubset {
-                        block_timestamp: block.header.timestamp,
-                        // copy existing fields
-                        block_hash: inline_v0.header_subset.block_hash,
-                        block_number: inline_v0.header_subset.block_number,
-                        tx_index: inline_v0.header_subset.tx_index,
-                        gas_used: inline_v0.header_subset.gas_used,
-                        base_fee_per_gas: inline_v0.header_subset.base_fee_per_gas,
-                    },
+                    header_subset: inline_v0.header_subset.convert(block.header.timestamp),
                 }
             }
             IndexDataStorageRepr::InlineV1(tx_indexed_data) => tx_indexed_data,
+            IndexDataStorageRepr::ReferenceV0(reference_v0) => {
+                // TODO: use byte offsets instead of fetching whole blob
+                let (mut block, mut receipts, mut traces) = try_join!(
+                    block_reader.get_block_by_number(reference_v0.header_subset.block_number),
+                    block_reader.get_block_receipts(reference_v0.header_subset.block_number),
+                    block_reader.get_block_traces(reference_v0.header_subset.block_number)
+                )
+                .wrap_err("Failed to fetch block, traces or receipts when converting from old to latest representation")?;
+
+                let idx = reference_v0.header_subset.tx_index as usize;
+                // Should we just use `get()` and clone instead of asserting len then using swap_remove?
+                ensure!(
+                    block.body.transactions.len() > idx,
+                    "Block does not contain tx index"
+                );
+                ensure!(traces.len() > idx, "traces does not contain tx index");
+                ensure!(receipts.len() > idx, "receipts does not contain tx index");
+                TxIndexedData {
+                    tx: block.body.transactions.swap_remove(idx),
+                    trace: traces.swap_remove(idx),
+                    receipt: receipts.swap_remove(idx),
+                    header_subset: reference_v0.header_subset,
+                }
+            }
+        })
+    }
+
+    pub async fn get_trace(
+        self,
+        block_reader: &impl BlockDataReader,
+    ) -> Result<(Vec<u8>, HeaderSubset)> {
+        Ok(match self {
+            IndexDataStorageRepr::InlineV0(inline_v0) => {
+                let block = block_reader
+                    .get_block_by_number(inline_v0.header_subset.block_number)
+                    .await?;
+                (
+                    inline_v0.trace,
+                    inline_v0.header_subset.convert(block.header.timestamp),
+                )
+            }
+            IndexDataStorageRepr::InlineV1(tx_indexed_data) => {
+                (tx_indexed_data.trace, tx_indexed_data.header_subset)
+            }
+            IndexDataStorageRepr::ReferenceV0(reference_v0) => {
+                let mut traces = block_reader
+                    .get_block_traces(reference_v0.header_subset.block_number)
+                    .await?;
+                let idx = reference_v0.header_subset.tx_index as usize;
+                ensure!(traces.len() > idx, "traces does not contain tx index");
+                (traces.swap_remove(idx), reference_v0.header_subset)
+            }
+        })
+    }
+
+    pub async fn get_tx(
+        self,
+        block_reader: &impl BlockDataReader,
+    ) -> Result<(TxEnvelopeWithSender, HeaderSubset)> {
+        Ok(match self {
+            IndexDataStorageRepr::InlineV0(inline_v0) => {
+                let mut block = block_reader
+                    .get_block_by_number(inline_v0.header_subset.block_number)
+                    .await?;
+                (
+                    block
+                        .body
+                        .transactions
+                        .swap_remove(inline_v0.header_subset.tx_index as usize),
+                    inline_v0.header_subset.convert(block.header.timestamp),
+                )
+            }
+            IndexDataStorageRepr::InlineV1(tx_indexed_data) => {
+                (tx_indexed_data.tx, tx_indexed_data.header_subset)
+            }
+            IndexDataStorageRepr::ReferenceV0(reference_v0) => {
+                let mut block = block_reader
+                    .get_block_by_number(reference_v0.header_subset.block_number)
+                    .await?;
+                let idx = reference_v0.header_subset.tx_index as usize;
+                ensure!(
+                    block.body.transactions.len() > idx,
+                    "traces does not contain tx index"
+                );
+                (
+                    block.body.transactions.swap_remove(idx),
+                    reference_v0.header_subset,
+                )
+            }
+        })
+    }
+
+    pub async fn get_receipt(
+        self,
+        block_reader: &impl BlockDataReader,
+    ) -> Result<(ReceiptWithLogIndex, HeaderSubset)> {
+        Ok(match self {
+            IndexDataStorageRepr::InlineV0(inline_v0) => {
+                // No efficiency gained over regular convert
+                let latest = IndexDataStorageRepr::InlineV0(inline_v0)
+                    .convert(block_reader)
+                    .await?;
+                (latest.receipt, latest.header_subset)
+            }
+            IndexDataStorageRepr::InlineV1(tx_indexed_data) => {
+                (tx_indexed_data.receipt, tx_indexed_data.header_subset)
+            }
+            IndexDataStorageRepr::ReferenceV0(reference_v0) => {
+                let mut receipts = block_reader
+                    .get_block_receipts(reference_v0.header_subset.block_number)
+                    .await?;
+                let idx = reference_v0.header_subset.tx_index as usize;
+                ensure!(receipts.len() > idx, "traces does not contain tx index");
+                (receipts.swap_remove(idx), reference_v0.header_subset)
+            }
         })
     }
 }
@@ -220,7 +481,7 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
-    use crate::storage::memory::MemoryStorage;
+    use crate::{rlp_offset_scanner::get_all_tx_offsets, storage::memory::MemoryStorage};
 
     #[tokio::test]
     async fn test_it() {
@@ -321,8 +582,26 @@ mod tests {
     fn setup_indexer() -> (BlockDataArchive, TxIndexArchiver) {
         let sink = MemoryStorage::new("sink");
         let archiver = BlockDataArchive::new(sink.clone().into());
-        let index_archiver = TxIndexArchiver::new(IndexStoreErased::from(sink), archiver.clone());
+        let index_archiver =
+            TxIndexArchiver::new(KVStoreErased::from(sink), archiver.clone(), 1024);
         (archiver, index_archiver)
+    }
+
+    fn offsets_helper(
+        block: &Block,
+        traces: &Vec<Vec<u8>>,
+        receipts: &Vec<ReceiptWithLogIndex>,
+    ) -> Result<Option<Vec<TxByteOffsets>>> {
+        let mut block_rlp = Vec::new();
+        block.encode(&mut block_rlp);
+
+        let mut traces_rlp = Vec::new();
+        traces.encode(&mut traces_rlp);
+
+        let mut receipts_rlp = Vec::new();
+        receipts.encode(&mut receipts_rlp);
+
+        get_all_tx_offsets(&block_rlp, &receipts_rlp, &traces_rlp).map(Option::Some)
     }
 
     #[tokio::test]
@@ -335,11 +614,16 @@ mod tests {
         let receipts = vec![mock_rx(10, 21000)];
 
         indexer
-            .index_block(block.clone(), traces.clone(), receipts.clone())
+            .index_block(
+                block.clone(),
+                traces.clone(),
+                receipts.clone(),
+                offsets_helper(&block, &traces, &receipts).unwrap(),
+            )
             .await
             .unwrap();
 
-        let indexed = indexer.store.get(tx.tx.tx_hash()).await.unwrap().unwrap();
+        let indexed = indexer.get_tx_indexed_data(tx.tx.tx_hash()).await.unwrap();
         assert_eq!(indexed.tx.sender, tx.sender);
         assert_eq!(indexed.trace, traces[0]);
         assert_eq!(indexed.header_subset.block_number, 1);
@@ -360,10 +644,14 @@ mod tests {
             mock_rx(10, 42000), // Second tx uses 21000 more
         ];
 
-        indexer.index_block(block, traces, receipts).await.unwrap();
+        let offsets = offsets_helper(&block, &traces, &receipts).unwrap();
+        indexer
+            .index_block(block, traces, receipts, offsets)
+            .await
+            .unwrap();
 
-        let indexed1 = indexer.store.get(tx1.tx.tx_hash()).await.unwrap().unwrap();
-        let indexed2 = indexer.store.get(tx2.tx.tx_hash()).await.unwrap().unwrap();
+        let indexed1 = indexer.get_tx_indexed_data(tx1.tx.tx_hash()).await.unwrap();
+        let indexed2 = indexer.get_tx_indexed_data(tx2.tx.tx_hash()).await.unwrap();
 
         assert_eq!(indexed1.header_subset.gas_used, 21000);
         assert_eq!(indexed2.header_subset.gas_used, 21000); // 42000 - 21000
@@ -378,7 +666,10 @@ mod tests {
         let traces = vec![]; // Empty traces
         let receipts = vec![mock_rx(10, 21000)];
 
-        let result = indexer.index_block(block, traces, receipts).await;
+        let result = offsets_helper(&block, &traces, &receipts);
+        assert!(result.is_err());
+
+        let result = indexer.index_block(block, traces, receipts, None).await;
         assert!(result.is_err());
     }
 
@@ -436,7 +727,7 @@ mod tests {
 
             // Create a mock BlockDataReader that will return our test data
             let store = MemoryStorage::new("test");
-            let archive = BlockDataArchive::new(BlobStoreErased::from(store.clone()));
+            let archive = BlockDataArchive::new(KVStoreErased::from(store.clone()));
 
             // Store the block and receipts
             archive.archive_block(block.clone()).await.unwrap();

@@ -39,7 +39,6 @@ use crate::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
         monad_debug_getRawTransaction, monad_debug_traceCall,
     },
-    eth_json_types::ArchiveReaderType,
     eth_txn_handlers::{
         monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
         monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
@@ -509,7 +508,7 @@ async fn rpc_select(
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TxEnvelope>,
     triedb_reader: Option<TriedbEnv>,
-    archive_reader: Option<ArchiveReaderType>,
+    archive_reader: Option<ArchiveReader>,
     chain_id: u64,
     batch_request_limit: u16,
     max_response_size: u32,
@@ -529,7 +528,7 @@ impl MonadRpcResources {
     pub fn new(
         mempool_sender: flume::Sender<TxEnvelope>,
         triedb_reader: Option<TriedbEnv>,
-        archive_reader: Option<ArchiveReaderType>,
+        archive_reader: Option<ArchiveReader>,
         chain_id: u64,
         batch_request_limit: u16,
         max_response_size: u32,
@@ -684,7 +683,7 @@ async fn main() -> std::io::Result<()> {
         args.archive_api_key,
     ) {
         (Some(s3_bucket), Some(region), Some(archive_url), Some(archive_api_key)) => {
-            match ArchiveReader::<ArchiveReaderType>::initialize_reader(
+            match ArchiveReader::initialize_reader(
                 s3_bucket,
                 Some(region),
                 &archive_url,
