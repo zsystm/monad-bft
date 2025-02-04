@@ -38,6 +38,41 @@ jobs:
       - name: Format
         run: cargo +nightly-2024-12-10 fmt --all --check
       - uses: Swatinem/rust-cache@v2
+      - name: Install C++ dependencies
+        run: |
+          sudo apt update && sudo apt upgrade -y
+
+          sudo apt update && sudo apt install -y apt-utils
+        
+          sudo apt update && sudo apt install -y dialog
+        
+          sudo apt update && sudo apt install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            software-properties-common \
+            wget
+        
+          sudo mkdir -p /opt
+          sudo cp -r monad-cxx/monad-execution/scripts/ubuntu-build/* /opt/
+        
+          sudo apt update && sudo apt install -y \
+            clang-18 \
+            gcc-13 \
+            g++-13
+        
+          sudo /opt/install-boost.sh
+          sudo /opt/install-tools.sh
+          sudo /opt/install-deps.sh
+        
+          sudo apt update && sudo apt install -y \
+            libarchive-dev \
+            libbrotli-dev \
+            libcap-dev \
+            libcli11-dev \
+            libgmp-dev \
+            libtbb-dev \
+            libzstd-dev
       - name: Lint
         run: ASMFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" CFLAGS="-march=haswell" cargo clippy --all-targets --all-features --
           -D clippy::suspicious
