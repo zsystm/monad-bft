@@ -81,6 +81,8 @@ jobs:
           sudo bash -c "echo 4 > /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages"
           cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
           cat /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages
+
+          ulimit -l 16770785280
       - name: Lint
         run: ASMFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" CFLAGS="-march=haswell" cargo clippy --all-targets --all-features --
           -D clippy::suspicious
