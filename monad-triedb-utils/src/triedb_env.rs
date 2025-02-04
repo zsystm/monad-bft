@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
@@ -12,7 +13,7 @@ use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{keccak256, Address, FixedBytes};
 use alloy_rlp::{Decodable, RlpDecodable, RlpEncodable};
 use futures::channel::oneshot;
-use monad_triedb::TriedbHandle;
+use monad_triedb::{TraverseEntry, TriedbHandle};
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
 
@@ -33,11 +34,11 @@ pub type EthBlockHash = [u8; 32];
 enum TriedbRequest {
     SyncRequest(SyncRequest),
     AsyncRequest(AsyncRequest),
+    AsyncTraverseRequest(AsyncTraverseRequest),
 }
 
 enum SyncRequest {
     BlockNumberRequest(BlockNumberRequest),
-    TraverseRequest(TraverseRequest),
 }
 
 struct BlockNumberRequest {
@@ -45,9 +46,9 @@ struct BlockNumberRequest {
     request_sender: oneshot::Sender<u64>,
 }
 
-struct TraverseRequest {
+struct AsyncTraverseRequest {
     // a sender for the polling thread to send the result back to the request handler
-    request_sender: oneshot::Sender<Option<Vec<Vec<u8>>>>,
+    request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
     key_len_nibbles: u8,
@@ -124,21 +125,28 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                                 triedb_handle.latest_finalized_block().unwrap_or_default();
                             let _ = block_num_request.request_sender.send(block_num);
                         }
-                        SyncRequest::TraverseRequest(traverse_request) => {
-                            let rlp_encoded_data = triedb_handle.traverse_triedb(
-                                &traverse_request.triedb_key,
-                                traverse_request.key_len_nibbles,
-                                traverse_request.block_num,
-                            );
-                            let _ = traverse_request.request_sender.send(rlp_encoded_data);
-                        }
                     }
                     // this is a sync request, so break out and poll for completions again
                     break;
                 }
+                TriedbRequest::AsyncTraverseRequest(traverse_request) => {
+                    triedb_handle.traverse_triedb_async(
+                        &traverse_request.triedb_key,
+                        traverse_request.key_len_nibbles,
+                        traverse_request.block_num,
+                        traverse_request.request_sender,
+                    );
+                }
                 TriedbRequest::AsyncRequest(async_request) => {
                     // Process the request directly in this thread
-                    process_request(&triedb_handle, async_request);
+                    // read_async will send back a future to request_receiver of oneshot channel
+                    triedb_handle.read_async(
+                        &async_request.triedb_key,
+                        async_request.key_len_nibbles,
+                        async_request.block_num,
+                        async_request.completed_counter,
+                        async_request.request_sender,
+                    );
                 }
             }
             num_queued += 1;
@@ -151,18 +159,7 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
     }
 }
 
-fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
-    // read_async will send back a future to request_receiver of oneshot channel
-    triedb_handle.read_async(
-        &async_request.triedb_key,
-        async_request.key_len_nibbles,
-        async_request.block_num,
-        async_request.completed_counter,
-        async_request.request_sender,
-    );
-}
-
-pub trait Triedb: std::fmt::Debug {
+pub trait Triedb: Debug {
     fn get_latest_block(&self) -> impl std::future::Future<Output = Result<u64, String>> + Send;
     fn get_account(
         &self,
@@ -516,16 +513,14 @@ impl Triedb for TriedbEnv {
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(Version::Finalized, KeyInput::ReceiptIndex(None));
 
-        if let Err(e) =
-            self.mpsc_sender
-                .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
-                    TraverseRequest {
-                        request_sender,
-                        triedb_key,
-                        key_len_nibbles,
-                        block_num,
-                    },
-                )))
+        if let Err(e) = self
+            .mpsc_sender
+            .try_send(TriedbRequest::AsyncTraverseRequest(AsyncTraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_num,
+            }))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
@@ -533,23 +528,39 @@ impl Triedb for TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(result) => match result {
-                Some(rlp_receipts) => {
-                    let receipts = rlp_receipts
-                        .iter()
-                        .filter_map(|rlp_receipt| {
-                            ReceiptWithLogIndex::decode(&mut rlp_receipt.as_slice())
-                                .map_err(|e| {
-                                    error!("Failed to decode RLP receipt: {e}");
-                                    String::from("error decoding receipt")
-                                })
-                                .ok()
-                        })
-                        .collect();
-                    Ok(receipts)
+            Ok(Some(rlp_receipts)) => {
+                let mut receipts = rlp_receipts
+                    .into_iter()
+                    .map(|TraverseEntry { key, value }| {
+                        let idx: usize = alloy_rlp::decode_exact(key)?;
+                        let receipt: ReceiptWithLogIndex = alloy_rlp::decode_exact(value)?;
+
+                        Ok((idx, receipt))
+                    })
+                    .collect::<Result<Vec<_>, alloy_rlp::Error>>()
+                    .map_err(|err| {
+                        error!(?err, "error decoding result from db");
+                        String::from("error decoding from db")
+                    })?;
+                receipts.sort_by_key(|(idx, _)| *idx);
+                // check that indices are consecutive and start with 0
+                if !receipts
+                    .iter()
+                    .map(|(idx, _)| idx)
+                    .zip(0..)
+                    .all(|(&i, j)| i == j)
+                {
+                    return Err(format!(
+                        "receipts missing from db, indices={:?}",
+                        receipts.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
+                    ));
                 }
-                None => Ok(vec![]),
-            },
+                Ok(receipts.into_iter().map(|(_, receipt)| receipt).collect())
+            }
+            Ok(None) => {
+                error!("Error traversing db");
+                Err(String::from("error traversing db"))
+            }
             Err(e) => {
                 error!("Error awaiting result: {e}");
                 Err(String::from("error reading from db"))
@@ -623,16 +634,14 @@ impl Triedb for TriedbEnv {
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(Version::Finalized, KeyInput::TxIndex(None));
 
-        if let Err(e) =
-            self.mpsc_sender
-                .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
-                    TraverseRequest {
-                        request_sender,
-                        triedb_key,
-                        key_len_nibbles,
-                        block_num,
-                    },
-                )))
+        if let Err(e) = self
+            .mpsc_sender
+            .try_send(TriedbRequest::AsyncTraverseRequest(AsyncTraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_num,
+            }))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
@@ -640,23 +649,42 @@ impl Triedb for TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(result) => match result {
-                Some(rlp_transactions) => {
-                    let signed_transactions = rlp_transactions
-                        .iter()
-                        .filter_map(|rlp_transaction| {
-                            TxEnvelopeWithSender::decode(&mut rlp_transaction.as_slice())
-                                .map_err(|e| {
-                                    error!("Failed to decode RLP transaction: {e}");
-                                    String::from("error decoding transaction")
-                                })
-                                .ok()
-                        })
-                        .collect();
-                    Ok(signed_transactions)
+            Ok(Some(rlp_transactions)) => {
+                let mut transactions = rlp_transactions
+                    .into_iter()
+                    .map(|TraverseEntry { key, value }| {
+                        let idx: usize = alloy_rlp::decode_exact(key)?;
+                        let transaction: TxEnvelopeWithSender = alloy_rlp::decode_exact(value)?;
+
+                        Ok((idx, transaction))
+                    })
+                    .collect::<Result<Vec<_>, alloy_rlp::Error>>()
+                    .map_err(|err| {
+                        error!(?err, "error decoding result from db");
+                        String::from("error decoding from db")
+                    })?;
+                transactions.sort_by_key(|(idx, _)| *idx);
+                // check that indices are consecutive and start with 0
+                if !transactions
+                    .iter()
+                    .map(|(idx, _)| idx)
+                    .zip(0..)
+                    .all(|(&i, j)| i == j)
+                {
+                    return Err(format!(
+                        "transactions missing from db, indices={:?}",
+                        transactions.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
+                    ));
                 }
-                None => Ok(vec![]),
-            },
+                Ok(transactions
+                    .into_iter()
+                    .map(|(_, transaction)| transaction)
+                    .collect())
+            }
+            Ok(None) => {
+                error!("Error traversing db");
+                Err(String::from("error traversing db"))
+            }
             Err(e) => {
                 error!("Error awaiting result: {e}");
                 Err(String::from("error reading from db"))
@@ -885,24 +913,53 @@ impl Triedb for TriedbEnv {
         if let Err(e) = self
             .mpsc_sender
             .clone()
-            .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
-                TraverseRequest {
-                    request_sender,
-                    triedb_key,
-                    key_len_nibbles,
-                    block_num,
-                },
-            )))
+            .try_send(TriedbRequest::AsyncTraverseRequest(AsyncTraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_num,
+            }))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
         }
 
         match request_receiver.await {
-            Ok(result) => match result {
-                Some(rlp_call_frames) => Ok(rlp_call_frames),
-                None => Ok(vec![]),
-            },
+            Ok(Some(rlp_call_frames)) => {
+                let mut call_frames = rlp_call_frames
+                    .into_iter()
+                    .map(|TraverseEntry { key, value }| {
+                        let idx: usize = alloy_rlp::decode_exact(key)?;
+
+                        Ok((idx, value))
+                    })
+                    .collect::<Result<Vec<_>, alloy_rlp::Error>>()
+                    .map_err(|err| {
+                        error!(?err, "error decoding result from db");
+                        String::from("error decoding from db")
+                    })?;
+                call_frames.sort_by_key(|(idx, _)| *idx);
+                // check that indices are consecutive and start with 0
+                if !call_frames
+                    .iter()
+                    .map(|(idx, _)| idx)
+                    .zip(0..)
+                    .all(|(&i, j)| i == j)
+                {
+                    return Err(format!(
+                        "call frames missing from db, indices={:?}",
+                        call_frames.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
+                    ));
+                }
+                Ok(call_frames
+                    .into_iter()
+                    .map(|(_, call_frame)| call_frame)
+                    .collect())
+            }
+            Ok(None) => {
+                error!("Error traversing db");
+                Err(String::from("error traversing db"))
+            }
             Err(e) => {
                 error!("Error awaiting result: {e}");
                 Err(String::from("error reading from db"))

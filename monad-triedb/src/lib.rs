@@ -1,6 +1,5 @@
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
     ffi::CString,
     path::Path,
     ptr::{null, null_mut},
@@ -10,9 +9,8 @@ use std::{
     },
 };
 
-use alloy_rlp::Decodable;
 use futures::channel::oneshot::Sender;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 mod bindings {
@@ -30,9 +28,16 @@ pub struct SenderContext {
 }
 
 #[derive(Debug)]
-pub struct TraverseData {
-    // a sorted list of (txn_index, rlp_encoded_data)
-    data: std::sync::Mutex<BTreeMap<u64, Vec<u8>>>,
+pub struct TraverseContext {
+    // values in traversal order
+    data: std::sync::Mutex<Vec<TraverseEntry>>,
+    sender: Sender<Option<Vec<TraverseEntry>>>,
+}
+
+#[derive(Debug)]
+pub struct TraverseEntry {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
 }
 
 /// # Safety
@@ -67,22 +72,41 @@ pub unsafe extern "C" fn read_async_callback(
 /// # Safety
 /// This is used as a callback when traversing the transaction or receipt trie
 pub unsafe extern "C" fn traverse_callback(
+    op_kind: bindings::triedb_async_traverse_callback,
     context: *mut std::ffi::c_void,
     key_ptr: *const u8,
     key_len: usize,
     value_ptr: *const u8,
     value_len: usize,
 ) {
-    let traverse_data = unsafe { Box::from_raw(context as *mut TraverseData) };
+    let traverse_context = unsafe { Box::from_raw(context as *mut TraverseContext) };
+
+    if op_kind
+        == bindings::triedb_async_traverse_callback_triedb_async_traverse_callback_finished_early
+    {
+        let _ = traverse_context.sender.send(None);
+        // traverse_context is freed here, because we don't call Box::into_raw
+        return;
+    }
+    if op_kind
+        == bindings::triedb_async_traverse_callback_triedb_async_traverse_callback_finished_normally
+    {
+        // completed
+        let mut lock = traverse_context.data.lock().expect("mutex poisoned");
+        let _ = traverse_context
+            .sender
+            .send(Some(std::mem::take(&mut *lock)));
+        // traverse_context is freed here, because we don't call Box::into_raw
+        return;
+    }
+    assert_eq!(
+        op_kind,
+        bindings::triedb_async_traverse_callback_triedb_async_traverse_callback_value
+    );
 
     let key = unsafe {
         let key = std::slice::from_raw_parts(key_ptr, key_len).to_vec();
         key
-    };
-
-    let Ok(tx_index) = <u64>::decode(&mut key.as_slice()) else {
-        debug!("Txn index decode failed");
-        return;
     };
 
     let value = unsafe {
@@ -90,14 +114,13 @@ pub unsafe extern "C" fn traverse_callback(
         value
     };
 
-    if let Ok(mut data) = traverse_data.data.lock() {
-        data.insert(tx_index, value);
-    } else {
-        warn!("Failed to acquire lock");
-    };
+    {
+        let mut lock = traverse_context.data.lock().expect("mutex poisoned");
+        lock.push(TraverseEntry { key, value });
+    }
 
-    // prevent Box<TraverseData> from dropping
-    let _ = Box::into_raw(traverse_data);
+    // prevent Box<TraverseContext> from dropping
+    let _ = Box::into_raw(traverse_context);
 }
 
 impl TriedbHandle {
@@ -221,29 +244,31 @@ impl TriedbHandle {
         unsafe { bindings::triedb_poll(self.db_ptr, blocking, max_completions) }
     }
 
-    pub fn traverse_triedb(
+    pub fn traverse_triedb_async(
         &self,
         key: &[u8],
         key_len_nibbles: u8,
         block_id: u64,
-    ) -> Option<Vec<Vec<u8>>> {
+        sender: Sender<Option<Vec<TraverseEntry>>>,
+    ) {
         // make sure doesn't overflow
         if key_len_nibbles >= u8::MAX - 1 {
             error!("Key length nibbles exceeds maximum allowed value");
-            return None;
+            return;
         }
         if (key_len_nibbles as usize + 1) / 2 > key.len() {
             error!("Key length is insufficient for the given nibbles");
-            return None;
+            return;
         }
 
-        let traverse_data = Box::new(TraverseData {
-            data: std::sync::Mutex::new(BTreeMap::new()),
+        let traverse_context = Box::new(TraverseContext {
+            data: std::sync::Mutex::new(Default::default()),
+            sender,
         });
 
-        let result = unsafe {
-            let context = Box::into_raw(traverse_data) as *mut std::ffi::c_void;
-            bindings::triedb_traverse(
+        unsafe {
+            let context = Box::into_raw(traverse_context) as *mut std::ffi::c_void;
+            bindings::triedb_async_traverse(
                 self.db_ptr,
                 key.as_ptr(),
                 key_len_nibbles,
@@ -251,22 +276,7 @@ impl TriedbHandle {
                 context,
                 Some(traverse_callback),
             );
-
-            Box::from_raw(context as *mut TraverseData)
         };
-
-        // array containing the data in sorted order
-        let mut rlp_data_vec = Vec::new();
-        match result.data.lock().ok() {
-            Some(data) => {
-                for (_, rlp_data) in data.iter() {
-                    rlp_data_vec.push(rlp_data.to_vec());
-                }
-            }
-            None => return None,
-        }
-
-        Some(rlp_data_vec)
     }
 
     pub fn latest_finalized_block(&self) -> Option<u64> {
