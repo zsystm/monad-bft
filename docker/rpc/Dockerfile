@@ -68,7 +68,10 @@ ENV TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
+RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
+    --mount=type=cache,target=${CARGO_ROOT}/git         \
+    --mount=type=cache,target=/usr/src/monad-bft/target \
+    ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
     CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
