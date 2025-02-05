@@ -1,5 +1,13 @@
 use crate::prelude::*;
 
+/// Worker that periodically saves files to durable storage.
+/// Reads files from disk and uploads them with timestamps.
+///
+/// # Arguments
+/// * `store` - Storage backend to write checkpoints to
+/// * `path` - Path to file to checkpoint
+/// * `blob_prefix` - Prefix for checkpoint files in storage
+/// * `poll_frequency` - How often to save checkpoints
 pub async fn file_checkpoint_worker(
     store: KVStoreErased,
     path: PathBuf,
@@ -41,7 +49,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
-    use crate::storage::memory::MemoryStorage;
+    use crate::kvstore::memory::MemoryStorage;
 
     #[tokio::test]
     async fn test_read_and_upload() -> Result<()> {

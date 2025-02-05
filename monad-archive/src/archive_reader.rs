@@ -4,11 +4,7 @@ use alloy_primitives::BlockHash;
 use eyre::Result;
 use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 
-use crate::{
-    cli::AwsCliArgs,
-    prelude::*,
-    storage::{BlockDataWithOffsets, CloudProxyReader, KVReaderErased},
-};
+use crate::{cli::AwsCliArgs, kvstore::cloud_proxy::CloudProxyReader, prelude::*};
 
 pub enum LatestKind {
     Uploaded,

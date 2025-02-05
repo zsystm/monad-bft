@@ -8,7 +8,7 @@ use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{prelude::*, rlp_offset_scanner::get_all_tx_offsets, storage::BlockDataWithOffsets};
+use crate::{prelude::*, rlp_offset_scanner::get_all_tx_offsets};
 
 pub type Block = AlloyBlock<TxEnvelopeWithSender, Header>;
 
@@ -481,7 +481,7 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
-    use crate::storage::memory::MemoryStorage;
+    use crate::kvstore::memory::MemoryStorage;
 
     // Helper functions for creating test data
     fn create_test_tx() -> TxEnvelopeWithSender {
