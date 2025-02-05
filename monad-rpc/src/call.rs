@@ -554,7 +554,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fill_gas_params() {
-        let mock_triedb = MockTriedb {};
+        let mock_triedb = MockTriedb::default();
 
         // when gas price is not populated, then
         // (1) header base fee is set to zero and (2) tx gas limit is set to block gas limit

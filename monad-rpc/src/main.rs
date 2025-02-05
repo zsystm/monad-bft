@@ -793,11 +793,7 @@ mod tests {
         dev::{Service, ServiceResponse},
         test, Error,
     };
-    use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
-    use alloy_primitives::{Address, TxKind, B256, U256};
-    use alloy_rlp::Encodable;
-    use alloy_signer::SignerSync;
-    use alloy_signer_local::PrivateKeySigner;
+    use alloy_consensus::TxEnvelope;
     use serde_json::{json, Number};
     use test_case::test_case;
 
@@ -833,54 +829,6 @@ mod tests {
         )
         .await;
         (app, m)
-    }
-
-    fn make_tx_legacy(nonce: u64) -> (B256, String) {
-        let input = vec![0; 64];
-        let transaction = TxLegacy {
-            chain_id: Some(1337),
-            nonce,
-            gas_price: 1000,
-            gas_limit: 30000,
-            to: TxKind::Call(Address::repeat_byte(3)),
-            value: U256::from(0),
-            input: input.into(),
-        };
-        let sk = B256::repeat_byte(0xcc).to_string();
-        let signer = sk.parse::<PrivateKeySigner>().unwrap();
-        let signature = signer
-            .sign_hash_sync(&transaction.signature_hash())
-            .unwrap();
-        let signed_tx: TxEnvelope = transaction.into_signed(signature).into();
-
-        let mut rlp_tx = Vec::new();
-        signed_tx.encode(&mut rlp_tx);
-        (*signed_tx.tx_hash(), hex::encode(&rlp_tx))
-    }
-
-    fn make_tx_eip1559(nonce: u64) -> (B256, String) {
-        let input = vec![0; 64];
-        let transaction = TxEip1559 {
-            chain_id: 1337,
-            nonce,
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 123,
-            gas_limit: 30000,
-            to: TxKind::Call(Address::repeat_byte(5)),
-            value: U256::from(0),
-            input: input.into(),
-            ..Default::default()
-        };
-        let sk = B256::repeat_byte(0xcc).to_string();
-        let signer = sk.parse::<PrivateKeySigner>().unwrap();
-        let signature = signer
-            .sign_hash_sync(&transaction.signature_hash())
-            .unwrap();
-        let signed_tx: TxEnvelope = transaction.into_signed(signature).into();
-
-        let mut rlp_tx = Vec::new();
-        signed_tx.encode(&mut rlp_tx);
-        (*signed_tx.tx_hash(), hex::encode(&rlp_tx))
     }
 
     async fn recover_response_body(resp: ServiceResponse<impl MessageBody>) -> serde_json::Value {

@@ -745,3 +745,95 @@ async fn get_transaction_from_triedb<T: Triedb>(
         None => Ok(None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy_eips::eip2718::Encodable2718;
+    use alloy_primitives::{Address, FixedBytes, TxKind};
+    use alloy_rlp::Encodable;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::Account};
+
+    use super::{monad_eth_sendRawTransaction, MonadEthSendRawTransactionParams};
+    use crate::eth_json_types::UnformattedData;
+
+    fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
+        let mut rlp_encoded_tx = Vec::new();
+        tx.encode_2718(&mut rlp_encoded_tx);
+        UnformattedData(rlp_encoded_tx)
+    }
+
+    fn make_tx(
+        sender: FixedBytes<32>,
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+        gas_limit: u64,
+        nonce: u64,
+        chain_id: u64,
+    ) -> TxEnvelope {
+        let transaction = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            to: TxKind::Call(Address::repeat_byte(0u8)),
+            value: Default::default(),
+            access_list: Default::default(),
+            input: vec![].into(),
+        };
+
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+        transaction.into_signed(signature).into()
+    }
+
+    #[tokio::test]
+    async fn eth_send_raw_transaction() {
+        let mut triedb = MockTriedb::default();
+        let sender = FixedBytes::<32>::from([1u8; 32]);
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+
+        triedb.set_account(
+            signer.address().0.into(),
+            Account {
+                nonce: 10,
+                ..Default::default()
+            },
+        );
+
+        let expected_failures = vec![
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 11, 1337)), // invaid chain id
+            },
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 1_000, 11, 1)), // intrinsic gas too low
+            },
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 400_000_000_000, 11, 1)), // gas too high
+            },
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 1000, 21_000, 1, 1)), // nonce too low
+            },
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(make_tx(sender, 1000, 12000, 21_000, 11, 1)), // max priority fee too high
+            },
+        ];
+
+        let (tx, _rx) = flume::bounded(1);
+
+        for (idx, case) in expected_failures.into_iter().enumerate() {
+            assert!(
+                monad_eth_sendRawTransaction(&triedb, tx.clone(), case, 1, true)
+                    .await
+                    .is_err(),
+                "Expected error for case: {:?}",
+                idx + 1
+            );
+        }
+    }
+}

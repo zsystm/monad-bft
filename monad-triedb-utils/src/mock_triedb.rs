@@ -1,13 +1,26 @@
-use std::future::ready;
+use std::{collections::HashMap, future::ready};
 
 use crate::triedb_env::*;
 
-#[derive(Debug)]
-pub struct MockTriedb;
+#[derive(Debug, Default)]
+pub struct MockTriedb {
+    latest_block: u64,
+    accounts: HashMap<EthAddress, Account>,
+}
+
+impl MockTriedb {
+    pub fn set_latest_block(&mut self, block_num: u64) {
+        self.latest_block = block_num;
+    }
+
+    pub fn set_account(&mut self, address: EthAddress, account: Account) {
+        self.accounts.insert(address, account);
+    }
+}
 
 impl Triedb for MockTriedb {
     fn get_latest_block(&self) -> impl std::future::Future<Output = Result<u64, String>> + Send {
-        ready(Ok(0))
+        ready(Ok(self.latest_block))
     }
 
     fn get_account(
@@ -15,7 +28,10 @@ impl Triedb for MockTriedb {
         _addr: EthAddress,
         _block_num: u64,
     ) -> impl std::future::Future<Output = Result<Account, String>> + Send {
-        ready(Ok(Account::default()))
+        self.accounts.get(&_addr).map_or_else(
+            || ready(Ok(Account::default())),
+            |account| ready(Ok(account.clone())),
+        )
     }
 
     fn get_storage_at(
