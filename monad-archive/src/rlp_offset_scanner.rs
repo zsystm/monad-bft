@@ -1,7 +1,4 @@
-use crate::{
-    prelude::*,
-    storage::{RangeRlp, TxByteOffsets},
-};
+use crate::{model::RangeRlp, prelude::*};
 
 struct RlpScanner<'a> {
     data: &'a [u8],

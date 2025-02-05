@@ -10,6 +10,17 @@ use tracing::{error, info, warn};
 
 use crate::prelude::*;
 
+/// Main worker that archives block data from the execution database to durable storage.
+/// Continuously polls for new blocks and archives their data.
+///
+/// # Arguments
+/// * `block_data_source` - Source to read block data from (typically triedb)
+/// * `archive_writer` - Archive to write block data to (typically S3)
+/// * `max_blocks_per_iteration` - Maximum number of blocks to process in one iteration
+/// * `max_concurrent_blocks` - Maximum number of blocks to process concurrently
+/// * `start_block_override` - Optional block number to start archiving from
+/// * `stop_block_override` - Optional block number to stop archiving at
+/// * `metrics` - Metrics collection interface
 pub async fn archive_worker(
     block_data_source: (impl BlockDataReader + Sync),
     archive_writer: BlockDataArchive,
@@ -187,7 +198,7 @@ mod tests {
     use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
-    use crate::storage::memory::MemoryStorage;
+    use crate::kvstore::memory::MemoryStorage;
 
     fn mock_tx() -> TxEnvelopeWithSender {
         let tx = TxEip1559 {

@@ -7,10 +7,7 @@ use clap::Parser;
 use eyre::{bail, OptionExt};
 use futures::join;
 
-use crate::{
-    prelude::*,
-    storage::{dynamodb::DynamoDBArchive, triedb_reader::TriedbReader, RocksDbClient},
-};
+use crate::{kvstore::rocksdb_storage::RocksDbClient, prelude::*};
 
 async fn get_aws_config(region: Option<String>) -> SdkConfig {
     let region_provider = RegionProviderChain::default_provider().or_else(

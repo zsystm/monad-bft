@@ -2,6 +2,14 @@ use crate::prelude::*;
 
 const BFT_BLOCK_PREFIX: &str = "bft_block/";
 
+/// Worker that archives BFT consensus block files to durable storage.
+/// Monitors a directory for new block files and uploads them.
+///
+/// # Arguments
+/// * `store` - Storage backend to write blocks to
+/// * `block_path` - Path to directory containing BFT block files
+/// * `poll_frequency` - How often to check for new files
+/// * `metrics` - Metrics collection interface
 pub async fn bft_block_archive_worker(
     store: KVStoreErased,
     block_path: PathBuf,
@@ -133,7 +141,7 @@ mod tests {
     use tokio::fs;
 
     use super::*;
-    use crate::storage::memory::MemoryStorage;
+    use crate::kvstore::memory::MemoryStorage;
 
     #[tokio::test]
     async fn test_bft_block_archive_worker() {

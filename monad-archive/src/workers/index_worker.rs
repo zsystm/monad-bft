@@ -1,7 +1,19 @@
 use alloy_primitives::hex::ToHexExt;
 
-use crate::{prelude::*, storage::BlockDataWithOffsets};
+use crate::prelude::*;
 
+/// Main worker that indexes transaction data from blocks into a searchable format.
+/// Continuously polls for new blocks and indexes their transactions.
+///
+/// # Arguments
+/// * `block_data_reader` - Source to read block data from
+/// * `indexer` - Transaction indexer to write indexed data to
+/// * `max_blocks_per_iteration` - Maximum number of blocks to process in one iteration
+/// * `max_concurrent_blocks` - Maximum number of blocks to process concurrently
+/// * `metrics` - Metrics collection interface
+/// * `start_block_override` - Optional block number to start indexing from
+/// * `stop_block_override` - Optional block number to stop indexing at
+/// * `poll_frequency` - How often to check for new blocks
 pub async fn index_worker(
     block_data_reader: (impl BlockDataReader + Sync),
     indexer: TxIndexArchiver,
@@ -204,7 +216,7 @@ mod tests {
     use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
-    use crate::storage::memory::MemoryStorage;
+    use crate::kvstore::memory::MemoryStorage;
 
     fn mock_tx_with_input_len(salt: u64, input_len: usize) -> TxEnvelopeWithSender {
         let tx = TxEip1559 {
