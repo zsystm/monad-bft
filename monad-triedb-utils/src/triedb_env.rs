@@ -11,7 +11,7 @@ use std::{
 
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{keccak256, Address, FixedBytes};
-use alloy_rlp::{Decodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
 use futures::channel::oneshot;
 use monad_triedb::{TraverseEntry, TriedbHandle};
 use serde::{Deserialize, Serialize};
@@ -87,17 +87,85 @@ pub struct TransactionLocation {
     pub block_num: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceiptWithLogIndex {
     pub receipt: ReceiptEnvelope,
     pub starting_log_index: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+impl Encodable for ReceiptWithLogIndex {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let mut encoded_receipt: BytesMut = BytesMut::new();
+        self.receipt.encode(&mut encoded_receipt);
+        let enc: [&dyn Encodable; 2] = [&encoded_receipt, &self.starting_log_index];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+}
 
+impl Decodable for ReceiptWithLogIndex {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let alloy_rlp::Header {
+            list,
+            payload_length: _,
+        } = alloy_rlp::Header::decode(buf)?;
+        if !list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+
+        let alloy_rlp::Header {
+            list,
+            payload_length: _,
+        } = alloy_rlp::Header::decode(buf)?;
+        if list {
+            return Err(alloy_rlp::Error::UnexpectedList);
+        }
+        let receipt = ReceiptEnvelope::decode(buf)?;
+        let starting_log_index = u64::decode(buf)?;
+
+        Ok(ReceiptWithLogIndex {
+            receipt,
+            starting_log_index,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxEnvelopeWithSender {
     pub tx: TxEnvelope,
     pub sender: Address,
+}
+
+impl Encodable for TxEnvelopeWithSender {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let mut encoded_tx: BytesMut = BytesMut::new();
+        self.tx.encode(&mut encoded_tx);
+        let enc: [&dyn Encodable; 2] = [&encoded_tx, &self.sender];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+}
+
+impl Decodable for TxEnvelopeWithSender {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let alloy_rlp::Header {
+            list,
+            payload_length: _,
+        } = alloy_rlp::Header::decode(buf)?;
+        if !list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+
+        let alloy_rlp::Header {
+            list,
+            payload_length: _,
+        } = alloy_rlp::Header::decode(buf)?;
+        if list {
+            return Err(alloy_rlp::Error::UnexpectedList);
+        }
+        let tx = TxEnvelope::decode(buf)?;
+        let sender = Address::decode(buf)?;
+
+        Ok(TxEnvelopeWithSender { tx, sender })
+    }
 }
 
 const MAX_QUEUE_BEFORE_POLL: usize = 100;
