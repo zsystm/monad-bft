@@ -76,7 +76,6 @@ pub fn eth_call(
     transaction: TxEnvelope,
     block_header: Header,
     sender: Address,
-    block_number: u64,
     triedb_path: &Path,
     state_override_set: &StateOverrideSet,
 ) -> CallResult {
@@ -222,7 +221,6 @@ pub fn eth_call(
             &cxx_rlp_encoded_tx,
             &cxx_rlp_encoded_block_header,
             &cxx_rlp_encoded_sender,
-            block_number,
             &triedb_path,
             &cxx_state_override_set);
     }
@@ -333,13 +331,12 @@ mod tests {
                 )),
             ),
             Header {
-                number: 1,
+                number: 0,
                 beneficiary: hex!("0102030405010203040501020304050102030405").into(),
                 gas_limit: 10000000000,
                 ..Default::default()
             },
             hex!("0000000000000000000000000000000000000000").into(),
-            0,
             path.as_path(),
             &StateOverrideSet::new(),
         );
@@ -352,7 +349,7 @@ mod tests {
                 panic!("Call failed: {}", msg.message);
             }
             CallResult::Success(res) => {
-                assert_eq!(hex::encode(res.output_data), "00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000004eaf00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
+                assert_eq!(hex::encode(res.output_data), "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004eaf00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
             }
         }
     }
@@ -388,7 +385,6 @@ mod tests {
         };
 
         let sender: Address = hex!("0000000000000000000001000000000000000000").into();
-        let block_number = 0;
         let triedb_path: &Path = path.as_path();
 
         // without override, passing
@@ -399,7 +395,6 @@ mod tests {
                 txn.clone(),
                 header.clone(),
                 sender,
-                block_number,
                 triedb_path,
                 &state_overrides,
             );
@@ -435,7 +430,6 @@ mod tests {
                 txn,
                 header,
                 sender,
-                block_number,
                 triedb_path,
                 &state_overrides_object.state_override_set,
             );
@@ -486,7 +480,6 @@ mod tests {
         };
 
         let sender: Address = hex!("0000000000000000000000000000000000000000").into();
-        let block_number = 0;
         let triedb_path: &Path = path.as_path();
 
         {
@@ -495,7 +488,6 @@ mod tests {
                 txn,
                 header.clone(),
                 sender,
-                block_number,
                 triedb_path,
                 &StateOverrideSet::new(),
             );
@@ -546,7 +538,6 @@ mod tests {
                 txn,
                 header,
                 sender,
-                block_number,
                 triedb_path,
                 &state_overrides_object.state_override_set,
             );
