@@ -566,7 +566,7 @@ impl RootSpanBuilder for MonadJsonRootSpanBuilder {
     }
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::main(flavor = "multi_thread", worker_threads = 6)]
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
@@ -742,7 +742,7 @@ async fn main() -> std::io::Result<()> {
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
-        .workers(2)
+        .workers(6)
         .run(),
         None => HttpServer::new(move || {
             App::new()
@@ -754,7 +754,7 @@ async fn main() -> std::io::Result<()> {
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
-        .workers(2)
+        .workers(6)
         .run(),
     }
     .await?;
