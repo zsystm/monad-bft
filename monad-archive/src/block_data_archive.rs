@@ -2,7 +2,7 @@ use core::str;
 
 use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::BlockHash;
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::{Decodable, Encodable, EMPTY_LIST_CODE};
 use eyre::bail;
 use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
@@ -389,6 +389,11 @@ impl ReceiptStorageRepr {
     }
 
     fn decode_and_convert(buf: &[u8]) -> Result<Vec<ReceiptWithLogIndex>> {
+        // empty receipt list
+        if buf == [EMPTY_LIST_CODE] {
+            return Ok(vec![]);
+        }
+
         if buf.len() < 2 {
             bail!(
                 "Cannot decode receipt, len must be > 2: actual: {}",
@@ -719,6 +724,16 @@ mod tests {
 
             assert_eq!(converted[0].starting_log_index, 0);
             assert_eq!(converted[1].starting_log_index, 2);
+        }
+
+        #[test]
+        fn test_receipt_storage_empty_receipt() {
+            let receipts: Vec<ReceiptEnvelope> = vec![];
+            let mut encoded = Vec::new();
+            receipts.encode(&mut encoded);
+
+            let decoded = ReceiptStorageRepr::decode_and_convert(&encoded).unwrap();
+            assert_eq!(decoded, vec![]);
         }
 
         #[tokio::test]
