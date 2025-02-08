@@ -221,9 +221,11 @@ impl DynamoDBArchive {
                     .set_request_items(Some(batch_write.clone()))
                     .send()
                     .await
-                    .wrap_err_with(|| {
+                    .wrap_err_with(|| format!("Failed to upload to table {}. Retrying...", table))
+                    .map_err(|e| {
                         inc_err(metrics);
-                        format!("Failed to upload to table {}. Retrying...", table)
+                        error!("{e:?}");
+                        e
                     })?;
 
                 // Check for unprocessed items
