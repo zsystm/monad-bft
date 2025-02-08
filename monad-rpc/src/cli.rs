@@ -67,6 +67,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 20)]
     pub triedb_max_async_traverse_concurrency: u32,
 
+    #[arg(long, default_value_t = 1)]
+    pub compute_threadpool_size: usize,
+
+    /* Archive Options */
     /// Set the s3 bucket name to read archive data from
     #[arg(long)]
     pub s3_bucket: Option<String>,
@@ -83,6 +87,9 @@ pub struct Cli {
     #[arg(long)]
     pub archive_api_key: Option<String>,
 
-    #[arg(long, default_value_t = 1)]
-    pub compute_threadpool_size: usize,
+    #[arg(long)]
+    pub mongo_url: Option<String>,
+
+    #[arg(long)]
+    pub mongo_db_name: Option<String>,
 }
