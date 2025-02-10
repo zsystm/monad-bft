@@ -57,7 +57,7 @@ impl KVStore for DynamoDBArchive {
             .into_iter()
             .filter_map(|(key, data)| {
                 let attribute_map: HashMap<String, AttributeValue> = HashMap::from_iter([
-                    ("key".to_owned(), AttributeValue::S(key)),
+                    ("tx_hash".to_owned(), AttributeValue::S(key)),
                     ("data".to_owned(), AttributeValue::B(data.into())),
                 ]);
                 match PutRequest::builder().set_item(Some(attribute_map)).build() {
