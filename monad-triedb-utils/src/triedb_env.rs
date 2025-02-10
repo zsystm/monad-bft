@@ -34,11 +34,12 @@ pub type EthBlockHash = [u8; 32];
 enum TriedbRequest {
     SyncRequest(SyncRequest),
     AsyncRequest(AsyncRequest),
-    AsyncTraverseRequest(AsyncTraverseRequest),
+    AsyncTraverseRequest(TraverseRequest),
 }
 
 enum SyncRequest {
     BlockNumberRequest(BlockNumberRequest),
+    TraverseRequest(TraverseRequest),
 }
 
 struct BlockNumberRequest {
@@ -46,7 +47,7 @@ struct BlockNumberRequest {
     request_sender: oneshot::Sender<u64>,
 }
 
-struct AsyncTraverseRequest {
+struct TraverseRequest {
     // a sender for the polling thread to send the result back to the request handler
     request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
     // triedb_key and key_len_nibbles are used to read items from triedb
@@ -192,6 +193,14 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                             let block_num =
                                 triedb_handle.latest_finalized_block().unwrap_or_default();
                             let _ = block_num_request.request_sender.send(block_num);
+                        }
+                        SyncRequest::TraverseRequest(traverse_request) => {
+                            triedb_handle.traverse_triedb_sync(
+                                &traverse_request.triedb_key,
+                                traverse_request.key_len_nibbles,
+                                traverse_request.block_num,
+                                traverse_request.request_sender,
+                            );
                         }
                     }
                     // this is a sync request, so break out and poll for completions again
@@ -583,7 +592,7 @@ impl Triedb for TriedbEnv {
 
         if let Err(e) = self
             .mpsc_sender
-            .try_send(TriedbRequest::AsyncTraverseRequest(AsyncTraverseRequest {
+            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
@@ -704,7 +713,7 @@ impl Triedb for TriedbEnv {
 
         if let Err(e) = self
             .mpsc_sender
-            .try_send(TriedbRequest::AsyncTraverseRequest(AsyncTraverseRequest {
+            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
@@ -981,7 +990,7 @@ impl Triedb for TriedbEnv {
         if let Err(e) = self
             .mpsc_sender
             .clone()
-            .try_send(TriedbRequest::AsyncTraverseRequest(AsyncTraverseRequest {
+            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,

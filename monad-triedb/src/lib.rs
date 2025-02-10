@@ -279,6 +279,42 @@ impl TriedbHandle {
         };
     }
 
+    pub fn traverse_triedb_sync(
+        &self,
+        key: &[u8],
+        key_len_nibbles: u8,
+        block_id: u64,
+        sender: Sender<Option<Vec<TraverseEntry>>>,
+    ) {
+        // make sure doesn't overflow
+        if key_len_nibbles >= u8::MAX - 1 {
+            error!("Key length nibbles exceeds maximum allowed value");
+            return;
+        }
+        if (key_len_nibbles as usize + 1) / 2 > key.len() {
+            error!("Key length is insufficient for the given nibbles");
+            return;
+        }
+
+        let traverse_context = Box::new(TraverseContext {
+            data: std::sync::Mutex::new(Default::default()),
+            sender,
+        });
+
+        unsafe {
+            let context = Box::into_raw(traverse_context) as *mut std::ffi::c_void;
+            // sync result is already handled by traverse_callback
+            let _result = bindings::triedb_traverse(
+                self.db_ptr,
+                key.as_ptr(),
+                key_len_nibbles,
+                block_id,
+                context,
+                Some(traverse_callback),
+            );
+        };
+    }
+
     pub fn latest_finalized_block(&self) -> Option<u64> {
         let maybe_latest_finalized_block =
             unsafe { bindings::triedb_latest_finalized_block(self.db_ptr) };
