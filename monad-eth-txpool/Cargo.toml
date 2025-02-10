@@ -8,7 +8,7 @@ bench = false
 
 [features]
 default = ["executor"]
-executor = ["dep:tokio"]
+executor = ["dep:tokio", "dep:tokio-util"]
 
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
@@ -30,6 +30,7 @@ itertools = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

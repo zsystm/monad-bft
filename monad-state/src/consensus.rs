@@ -250,9 +250,9 @@ where
                 MempoolEvent::Proposal { .. } => {
                     unreachable!("txpool should never emit proposal while not live!")
                 }
-                MempoolEvent::UserTxns(_)
-                | MempoolEvent::ForwardedTxns { .. }
-                | MempoolEvent::ForwardTxs(_) => return Vec::default(),
+                MempoolEvent::ForwardedTxs { .. } | MempoolEvent::ForwardTxs(_) => {
+                    return Vec::default()
+                }
             }
         };
         let consensus = ConsensusStateWrapper {
@@ -323,14 +323,10 @@ where
                     message: VerifiedMonadMessage::Consensus(msg),
                 })]
             }
-            MempoolEvent::UserTxns(txs) => vec![Command::TxPoolCommand(TxPoolCommand::InsertTxs {
-                txs,
-                owned: true,
-            })],
-            MempoolEvent::ForwardedTxns { sender: _, txns } => {
-                vec![Command::TxPoolCommand(TxPoolCommand::InsertTxs {
-                    txs: txns,
-                    owned: false,
+            MempoolEvent::ForwardedTxs { sender, txs } => {
+                vec![Command::TxPoolCommand(TxPoolCommand::InsertForwardedTxs {
+                    sender,
+                    txs,
                 })]
             }
             MempoolEvent::ForwardTxs(txs) => {

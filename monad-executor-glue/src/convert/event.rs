@@ -309,14 +309,11 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> From<&MempoolEvent<SCT, E
                 proposed_execution_inputs: Some(proposed_execution_inputs.into()),
                 last_round_tc: last_round_tc.as_ref().map(Into::into),
             }),
-            MempoolEvent::UserTxns(tx) => {
-                proto_mempool_event::Event::Usertx(ProtoUserTx { tx: tx.clone() })
-            }
-            MempoolEvent::ForwardedTxns { sender, txns } => {
+            MempoolEvent::ForwardedTxs { sender, txs } => {
                 proto_mempool_event::Event::ForwardedTxs(ProtoForwardedTxs {
                     sender: Some(sender.into()),
                     forwarded_tx: Some(monad_proto::proto::message::ProtoForwardedTx {
-                        tx: txns.clone(),
+                        tx: txs.clone(),
                     }),
                 })
             }
@@ -392,16 +389,15 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> TryFrom<ProtoMempoolEvent
                     .try_into()?,
                 last_round_tc: last_round_tc.map(TryInto::try_into).transpose()?,
             },
-            Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTxns(tx.tx),
             Some(proto_mempool_event::Event::ForwardedTxs(forwarded)) => {
-                MempoolEvent::ForwardedTxns {
+                MempoolEvent::ForwardedTxs {
                     sender: forwarded
                         .sender
                         .ok_or(ProtoError::MissingRequiredField(
                             "MempoolEvent::ForwardedTxns.sender".to_owned(),
                         ))?
                         .try_into()?,
-                    txns: forwarded
+                    txs: forwarded
                         .forwarded_tx
                         .ok_or(ProtoError::MissingRequiredField(
                             "MempoolEvent::ForwardedTxns.forwarded_tx".to_owned(),

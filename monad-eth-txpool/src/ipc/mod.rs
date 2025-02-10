@@ -1,82 +1,82 @@
-use std::{marker::PhantomData, path::PathBuf, pin::Pin, task::Poll};
+use std::{io, pin::Pin, task::Poll};
 
 use alloy_consensus::TxEnvelope;
 use alloy_rlp::Decodable;
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
-use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
-};
-use monad_eth_types::EthExecutionProtocol;
-use monad_executor_glue::{MempoolEvent, MonadEvent};
+use futures::{FutureExt, Stream, StreamExt};
 use tokio::{
-    net::{UnixListener, UnixStream},
+    net::{unix::SocketAddr, UnixListener, UnixStream},
     sync::mpsc,
     time::{Duration, Instant},
 };
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 use tracing::{debug, error, trace, warn};
 
-pub struct IpcReceiver<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    read_tx_batch_recv: mpsc::Receiver<Vec<Bytes>>,
-    _phantom: PhantomData<(ST, SCT)>,
+pub use self::config::EthTxPoolIpcConfig;
+
+mod config;
+
+pub struct EthTxPoolIpc {
+    handle: tokio::task::JoinHandle<io::Result<()>>,
+
+    tx_batch_receiver: mpsc::Receiver<Vec<Bytes>>,
 }
 
-impl<ST, SCT> IpcReceiver<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    /// tx_batch_size: number of txs per batch
-    /// max_queued_batches: max number of batches to queue
-    /// queued_batches_watermark: warn if number of queued batches exceeds this
+impl EthTxPoolIpc {
     pub fn new(
-        bind_path: PathBuf,
-        tx_batch_size: usize,
-        max_queued_batches: usize,
-        queued_batches_watermark: usize,
-    ) -> Result<Self, std::io::Error> {
+        EthTxPoolIpcConfig {
+            bind_path,
+            tx_batch_size,
+            max_queued_batches,
+            queued_batches_watermark,
+        }: EthTxPoolIpcConfig,
+    ) -> Result<Self, io::Error> {
         assert!(queued_batches_watermark <= max_queued_batches);
-        let (read_tx_batch_send, read_tx_batch_recv) = mpsc::channel(max_queued_batches);
 
-        let r = Self {
-            read_tx_batch_recv,
-            _phantom: Default::default(),
-        };
+        let (tx_batch_sender, tx_batch_receiver) = mpsc::channel(max_queued_batches);
 
         let listener = UnixListener::bind(bind_path)?;
-        tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, sockaddr)) => {
-                        debug!("new ipc connection sockaddr={:?}", sockaddr);
-                        Self::new_connection(
-                            stream,
-                            read_tx_batch_send.clone(),
-                            tx_batch_size,
-                            queued_batches_watermark,
-                        );
-                    }
-                    Err(err) => {
-                        warn!("listener poll accept error={:?}", err);
-                        // TODO-2: handle error
-                        todo!("ipc listener error");
-                    }
-                }
-            }
-        });
 
-        Ok(r)
+        Ok(Self {
+            handle: tokio::spawn(Self::run(
+                listener,
+                tx_batch_sender,
+                tx_batch_size,
+                queued_batches_watermark,
+            )),
+
+            tx_batch_receiver,
+        })
     }
 
-    fn new_connection(
+    async fn run(
+        listener: UnixListener,
+        tx_batch_sender: mpsc::Sender<Vec<Bytes>>,
+        tx_batch_size: usize,
+        queued_batches_watermark: usize,
+    ) -> io::Result<()> {
+        loop {
+            match listener.accept().await {
+                Ok((stream, sockaddr)) => {
+                    Self::handle_connection(
+                        stream,
+                        sockaddr,
+                        tx_batch_sender.clone(),
+                        tx_batch_size,
+                        queued_batches_watermark,
+                    );
+                }
+                Err(error) => {
+                    warn!("listener poll accept error={:?}", error);
+                }
+            }
+        }
+    }
+
+    fn handle_connection(
         stream: UnixStream,
-        tx_batch_channel: mpsc::Sender<Vec<Bytes>>,
+        sockaddr: SocketAddr,
+        tx_batch_sender: mpsc::Sender<Vec<Bytes>>,
         tx_batch_size: usize,
         queued_batches_watermark: usize,
     ) {
@@ -86,16 +86,16 @@ where
             if tx.is_empty() {
                 return;
             }
-            match tx_batch_channel.try_send(tx.to_vec()) {
+            match tx_batch_sender.try_send(tx.to_vec()) {
                 Ok(()) => {
                     trace!("bytes received from IPC and sent to channel");
-                    let capacity = tx_batch_channel.capacity();
-                    let num_queued = tx_batch_channel.max_capacity() - capacity;
+                    let capacity = tx_batch_sender.capacity();
+                    let num_queued = tx_batch_sender.max_capacity() - capacity;
                     if num_queued > queued_batches_watermark {
                         warn!(
                             queued_batches_watermark,
                             num_queued,
-                            max_capacity = tx_batch_channel.max_capacity(),
+                            max_capacity = tx_batch_sender.max_capacity(),
                             "transaction IPC recv channel exceeded watermark, are transactions being ingested fast enough?"
                         );
                     }
@@ -103,7 +103,7 @@ where
                 Err(mpsc::error::TrySendError::Full(dropped_batch)) => {
                     error!(
                         dropped_batch_len = dropped_batch.len(),
-                        max_capacity = tx_batch_channel.max_capacity(),
+                        max_capacity = tx_batch_sender.max_capacity(),
                         "transaction IPC recv channel full, dropping batch"
                     );
                 }
@@ -156,6 +156,7 @@ where
         });
     }
 }
+
 fn validate_ethtx(bytes: &mut &[u8]) -> bool {
     match TxEnvelope::decode(bytes) {
         Ok(_) => true,
@@ -166,22 +167,21 @@ fn validate_ethtx(bytes: &mut &[u8]) -> bool {
     }
 }
 
-impl<ST, SCT> Stream for IpcReceiver<ST, SCT>
+impl Stream for EthTxPoolIpc
 where
     Self: Unpin,
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
+    type Item = Vec<Bytes>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        self.read_tx_batch_recv.poll_recv(cx).map(|maybe_batch| {
-            let batch = maybe_batch.expect("read_tx_batch_send should never be dropped");
-            Some(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(batch)))
-        })
+        if let Poll::Ready(result) = self.handle.poll_unpin(cx) {
+            panic!("EthTxPoolIpc crashed!\nerror: {result:#?}");
+        }
+
+        self.tx_batch_receiver.poll_recv(cx)
     }
 }
 

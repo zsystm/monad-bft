@@ -174,13 +174,13 @@ where
     pub fn send_transaction(
         &mut self,
         node_id: ID<CertificateSignaturePubKey<S::SignatureType>>,
-        txn: Bytes,
+        tx: Bytes,
     ) {
         self.states
             .get_mut(&node_id)
             .expect("node should exist")
             .executor
-            .send_transaction(txn);
+            .send_transaction(tx);
     }
 
     pub fn update_outbound_pipeline_for_all(&mut self, new_pipeline: S::Pipeline)

@@ -290,13 +290,12 @@ where
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
     },
 
-    // TODO(andr-dev): This variant should be removed once IPC is refactored into the txpool
-    InsertTxs {
+    InsertForwardedTxs {
+        sender: NodeId<SCT::NodeIdPubKey>,
         txs: Vec<Bytes>,
-        owned: bool,
     },
 
-    // Emitted after blocksync is completed
+    // Emitted after statesync is completed
     Reset {
         last_delay_committed_blocks: Vec<BPT::ValidatedBlock>,
     },
@@ -543,15 +542,10 @@ pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
         last_round_tc: Option<TimeoutCertificate<SCT>>,
     },
 
-    // TODO(andr-dev): Remove these two variants after IPC is refactored into txpool
-    //  - This currently has the unintended side effect that these two mempool events
-    //    are actually emitted from IPC and never from txpool which is confusing
-    /// Txns that are incoming via RPC (users)
-    UserTxns(Vec<Bytes>),
-    /// Txns that are incoming via other nodes
-    ForwardedTxns {
+    /// Txs that are incoming via other nodes
+    ForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
-        txns: Vec<Bytes>,
+        txs: Vec<Bytes>,
     },
 
     /// Txs that should be forwarded to upcoming leaders
@@ -583,20 +577,10 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)
                 .finish(),
-            Self::UserTxns(txns) => f
-                .debug_struct("UserTxns")
-                .field(
-                    "txns_len_bytes",
-                    &txns.iter().map(Bytes::len).sum::<usize>(),
-                )
-                .finish(),
-            Self::ForwardedTxns { sender, txns } => f
-                .debug_struct("ForwardedTxns")
+            Self::ForwardedTxs { sender, txs } => f
+                .debug_struct("ForwardedTxs")
                 .field("sender", sender)
-                .field(
-                    "txns_len_bytes",
-                    &txns.iter().map(Bytes::len).sum::<usize>(),
-                )
+                .field("txns_len_bytes", &txs.iter().map(Bytes::len).sum::<usize>())
                 .finish(),
             Self::ForwardTxs(txs) => f
                 .debug_struct("ForwardTxs")
@@ -920,10 +904,7 @@ where
             MonadEvent::MempoolEvent(MempoolEvent::Proposal { round, seq_num, .. }) => {
                 format!("MempoolEvent::Proposal -- round {round:?}, seq_num {seq_num:?}")
             }
-            MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns)) => {
-                format!("MempoolEvent::UserTxns -- number of txns: {}", txns.len())
-            }
-            MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxns { sender, txns }) => {
+            MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxs { sender, txs: txns }) => {
                 format!(
                     "MempoolEvent::ForwardedTxns -- from {sender} number of txns: {}",
                     txns.len()

@@ -21,8 +21,8 @@ use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::NodeId;
 use monad_updaters::{
-    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ipc::MockIpcReceiver,
-    ledger::MockableLedger, loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
+    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ledger::MockableLedger,
+    loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
     statesync::MockableStateSync, timestamp::TimestampAdjuster, txpool::MockableTxPool,
 };
 use priority_queue::PriorityQueue;
@@ -36,7 +36,6 @@ pub struct MockExecutor<S: SwarmRelation> {
     loopback: LoopbackExecutor<
         MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     >,
-    ipc: MockIpcReceiver<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     txpool: S::TxPoolExecutor,
     statesync: S::StateSyncExecutor,
     config_loader:
@@ -158,7 +157,6 @@ enum ExecutorEventType {
     Ledger,
     Timer,
     StateRootHash,
-    Ipc,
     TxPool,
     Loopback,
     Timestamp,
@@ -179,7 +177,6 @@ impl<S: SwarmRelation> MockExecutor<S> {
             checkpoint: Default::default(),
             ledger,
             state_root_hash,
-            ipc: Default::default(),
             txpool,
             loopback: Default::default(),
             statesync,
@@ -215,8 +212,8 @@ impl<S: SwarmRelation> MockExecutor<S> {
         self.router.process_inbound(tick, from, message);
     }
 
-    pub fn send_transaction(&mut self, txn: Bytes) {
-        self.ipc.add_transaction(txn);
+    pub fn send_transaction(&mut self, tx: Bytes) {
+        self.txpool.send_transaction(tx);
     }
 
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
@@ -255,11 +252,6 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 self.loopback
                     .ready()
                     .then_some((self.tick, ExecutorEventType::Loopback)),
-            )
-            .chain(
-                self.ipc
-                    .ready()
-                    .then_some((self.tick, ExecutorEventType::Ipc)),
             )
             .chain(
                 self.statesync
@@ -417,10 +409,6 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 }
                 ExecutorEventType::Loopback => {
                     return futures::executor::block_on(self.loopback.next())
-                        .map(MockExecutorEvent::Event)
-                }
-                ExecutorEventType::Ipc => {
-                    return futures::executor::block_on(self.ipc.next())
                         .map(MockExecutorEvent::Event)
                 }
                 ExecutorEventType::TxPool => {

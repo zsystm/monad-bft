@@ -17,10 +17,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
-use monad_eth_txpool::EthTxPoolExecutor;
+use monad_eth_txpool::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
-use monad_ipc::IpcReceiver;
 use monad_ledger::MonadBlockFileLedger;
 use monad_node::config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
 use monad_node_config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
@@ -215,13 +214,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             val_set_update_interval,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        ipc: IpcReceiver::new(
-            node_state.mempool_ipc_path,
-            node_state.node_config.ipc_tx_batch_size as usize, // tx_batch_size
-            node_state.node_config.ipc_max_queued_batches as usize, // max_queued_batches
-            node_state.node_config.ipc_queued_batches_watermark as usize, // queued_batches_watermark
-        )
-        .expect("uds bind failed"),
 
         txpool: EthTxPoolExecutor::new(
             create_block_policy(),
@@ -229,10 +221,18 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 triedb_handle.clone(),
                 SeqNum(node_state.node_config.consensus.execution_delay),
             ),
+            EthTxPoolIpcConfig {
+                bind_path: node_state.mempool_ipc_path,
+                tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
+                max_queued_batches: node_state.node_config.ipc_max_queued_batches as usize,
+                queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
+                    as usize,
+            },
             !cfg!(feature = "full-node"),
             // TODO(andr-dev): Add tx_expiry to node config
             Duration::from_secs(5),
-        ),
+        )
+        .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
             node_state.control_panel_ipc_path,
             reload_handle,

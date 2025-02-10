@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{io, task::Poll, time::Duration};
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -12,7 +12,7 @@ use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use tokio::sync::mpsc;
 
-use crate::{EthTxPool, TxPoolMetrics};
+use crate::{ipc::EthTxPoolIpc, EthTxPool, EthTxPoolIpcConfig, TxPoolMetrics};
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT>
 where
@@ -23,6 +23,7 @@ where
     pool: EthTxPool<ST, SCT, SBT>,
     block_policy: EthBlockPolicy<ST, SCT>,
     state_backend: SBT,
+    ipc: EthTxPoolIpc,
 
     events_tx: mpsc::UnboundedSender<MempoolEvent<SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<MempoolEvent<SCT, EthExecutionProtocol>>,
@@ -40,22 +41,24 @@ where
     pub fn new(
         block_policy: EthBlockPolicy<ST, SCT>,
         state_backend: SBT,
+        ipc_config: EthTxPoolIpcConfig,
         do_local_insert: bool,
         tx_expiry: Duration,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::unbounded_channel();
 
-        Self {
+        Ok(Self {
             pool: EthTxPool::new(do_local_insert, tx_expiry),
             block_policy,
             state_backend,
+            ipc: EthTxPoolIpc::new(ipc_config)?,
 
             events_tx,
             events,
 
             metrics: TxPoolMetrics::default(),
             executor_metrics: ExecutorMetrics::default(),
-        }
+        })
     }
 }
 
@@ -123,7 +126,7 @@ where
                         })
                         .expect("events never dropped");
                 }
-                TxPoolCommand::InsertTxs { txs, owned } => {
+                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
                     let num_txs = txs.len();
 
                     let valid_encoded_txs = self.pool.insert_txs(
@@ -135,21 +138,10 @@ where
 
                     let num_valid_txs = valid_encoded_txs.len();
 
-                    if owned {
-                        self.metrics.insert_mempool_txs += num_valid_txs as u64;
+                    self.metrics.insert_forwarded_txs += num_valid_txs as u64;
 
-                        self.events_tx
-                            .send(MempoolEvent::ForwardTxs(valid_encoded_txs))
-                            .expect("events never dropped");
-                    } else {
-                        self.metrics.insert_forwarded_txs += num_valid_txs as u64;
-
-                        if num_valid_txs != num_txs {
-                            tracing::warn!(
-                                // ?sender,
-                                "sender forwarded bad txns"
-                            );
-                        }
+                    if num_valid_txs != num_txs {
+                        tracing::warn!(?sender, "sender forwarded bad txns");
                     }
                 }
                 TxPoolCommand::Reset {
@@ -183,12 +175,42 @@ where
     type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.events.poll_recv(cx).map(|event| {
-            let event = event.expect("events_tx never dropped");
-            Some(MonadEvent::MempoolEvent(event))
-        })
+    ) -> Poll<Option<Self::Item>> {
+        let Self {
+            pool,
+            block_policy,
+            state_backend,
+            ipc,
+
+            events_tx: _,
+            events,
+
+            metrics,
+            executor_metrics: _,
+        } = self.get_mut();
+
+        if let Poll::Ready(result) = events.poll_recv(cx) {
+            let event = result.expect("events_tx never dropped");
+
+            return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
+        };
+
+        if let Poll::Ready(result) = ipc.poll_next_unpin(cx) {
+            let txs = result.expect("txpool ipc is alive");
+
+            let valid_encoded_txs = pool.insert_txs(txs, block_policy, state_backend, metrics);
+
+            let num_valid_txs = valid_encoded_txs.len();
+
+            metrics.insert_mempool_txs += num_valid_txs as u64;
+
+            return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
+                valid_encoded_txs,
+            ))));
+        }
+
+        Poll::Pending
     }
 }

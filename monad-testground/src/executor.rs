@@ -17,11 +17,10 @@ use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, Verifi
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ipc::MockIpcReceiver,
-    ledger::MockLedger, local_router::LocalPeerRouter, loopback::LoopbackExecutor,
-    parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
-    statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    txpool::MockTxPoolExecutor, BoxUpdater, Updater,
+    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ledger::MockLedger,
+    local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
+    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor, timer::TokioTimer,
+    tokio_timestamp::TokioTimestamp, txpool::MockTxPoolExecutor, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
@@ -83,7 +82,6 @@ pub fn make_monad_executor<ST, SCT>(
     MockCheckpoint<SCT>,
     BoxUpdater<'static, StateRootHashCommand<SCT>, MonadEvent<ST, SCT, MockExecutionProtocol>>,
     TokioTimestamp<ST, SCT, MockExecutionProtocol>,
-    MockIpcReceiver<ST, SCT, MockExecutionProtocol>,
     MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>,
     ControlPanelIpcReceiver<ST, SCT, MockExecutionProtocol>,
     LoopbackExecutor<MonadEvent<ST, SCT, MockExecutionProtocol>>,
@@ -122,7 +120,6 @@ where
             )),
         },
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        ipc: MockIpcReceiver::default(),
         txpool: MockTxPoolExecutor::default(),
         control_panel: ControlPanelIpcReceiver::new(
             format!("./monad_controlpanel_{}.sock", index).into(),

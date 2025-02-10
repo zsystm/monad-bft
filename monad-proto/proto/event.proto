@@ -111,10 +111,6 @@ message ProtoProposal {
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 9;
 }
 
-message ProtoUserTx {
-  repeated bytes tx = 1;
-}
-
 message ProtoForwardedTxs {
   monad_proto.basic.ProtoNodeId sender = 1;
   monad_proto.message.ProtoForwardedTx forwarded_tx = 2;
@@ -127,9 +123,8 @@ message ProtoForwardTxs {
 message ProtoMempoolEvent {
   oneof event {
     ProtoProposal proposal = 1;
-    ProtoUserTx usertx = 2;
-    ProtoForwardedTxs forwarded_txs = 3;
-    ProtoForwardTxs forward_txs = 4;
+    ProtoForwardedTxs forwarded_txs = 2;
+    ProtoForwardTxs forward_txs = 3;
   }
 }
 

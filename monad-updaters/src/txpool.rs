@@ -3,6 +3,7 @@ use std::{
     task::{Poll, Waker},
 };
 
+use bytes::Bytes;
 use futures::Stream;
 use monad_consensus_types::{
     block::{
@@ -50,6 +51,8 @@ pub trait MockableTxPool:
     type Event;
 
     fn ready(&self) -> bool;
+
+    fn send_transaction(&mut self, tx: Bytes);
 }
 
 impl<T: MockableTxPool + ?Sized> MockableTxPool for Box<T> {
@@ -63,6 +66,10 @@ impl<T: MockableTxPool + ?Sized> MockableTxPool for Box<T> {
 
     fn ready(&self) -> bool {
         (**self).ready()
+    }
+
+    fn send_transaction(&mut self, tx: Bytes) {
+        (**self).send_transaction(tx);
     }
 }
 
@@ -165,7 +172,7 @@ where
                     }
                 }
                 TxPoolCommand::BlockCommit(_) | TxPoolCommand::Reset { .. } => {}
-                TxPoolCommand::InsertTxs { .. } => {
+                TxPoolCommand::InsertForwardedTxs { .. } => {
                     unimplemented!(
                         "MockTxPoolExecutor should never recieve txs with MockExecutionProtocol"
                     );
@@ -255,7 +262,7 @@ where
                     );
                     pool.reset(last_delay_committed_blocks, &mut self.metrics);
                 }
-                TxPoolCommand::InsertTxs { txs, owned: _ } => {
+                TxPoolCommand::InsertForwardedTxs { sender: _, txs } => {
                     pool.insert_txs(txs, block_policy, state_backend, &mut self.metrics);
                 }
             }
@@ -294,25 +301,67 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> MockableTxPool for MockTxPoolExecutor<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, BPT, SBT> MockableTxPool
+    for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    BPT: BlockPolicy<ST, SCT, MockExecutionProtocol, SBT>,
     SBT: StateBackend,
 
-    Self: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT>> + Unpin,
+    Self: Executor<Command = TxPoolCommand<ST, SCT, MockExecutionProtocol, BPT, SBT>> + Unpin,
 {
     type Signature = ST;
     type SignatureCollection = SCT;
-    type ExecutionProtocol = EPT;
+    type ExecutionProtocol = MockExecutionProtocol;
     type BlockPolicy = BPT;
     type StateBackend = SBT;
 
-    type Event = MonadEvent<ST, SCT, EPT>;
+    type Event = MonadEvent<ST, SCT, MockExecutionProtocol>;
 
     fn ready(&self) -> bool {
         !self.events.is_empty()
+    }
+
+    fn send_transaction(&mut self, _: Bytes) {
+        unreachable!(
+            "MockTxPoolExecutor does not support send_transaction with MockExecutionProtocol"
+        );
+    }
+}
+
+impl<ST, SCT, SBT> MockableTxPool
+    for MockTxPoolExecutor<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+
+    Self: Executor<
+            Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>,
+        > + Unpin,
+{
+    type Signature = ST;
+    type SignatureCollection = SCT;
+    type ExecutionProtocol = EthExecutionProtocol;
+    type BlockPolicy = EthBlockPolicy<ST, SCT>;
+    type StateBackend = SBT;
+
+    type Event = MonadEvent<ST, SCT, EthExecutionProtocol>;
+
+    fn ready(&self) -> bool {
+        !self.events.is_empty()
+    }
+
+    fn send_transaction(&mut self, tx: Bytes) {
+        let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
+
+        let valid_txs = pool.insert_txs(vec![tx], block_policy, state_backend, &mut self.metrics);
+
+        self.events.push_back(MempoolEvent::ForwardTxs(valid_txs));
+
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
     }
 }

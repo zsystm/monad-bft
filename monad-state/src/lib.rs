@@ -621,9 +621,9 @@ where
                 })
             }
             MonadMessage::ForwardedTx(msg) => {
-                MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxns {
+                MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxs {
                     sender: from,
-                    txns: msg,
+                    txs: msg,
                 })
             }
             MonadMessage::StateSyncMessage(msg) => {

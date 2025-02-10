@@ -4567,6 +4567,7 @@ dependencies = [
  "rayon",
  "serde",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-test",
 ]
@@ -4607,35 +4608,6 @@ dependencies = [
  "monad-types",
  "prost 0.12.6",
  "serde",
-]
-
-[[package]]
-name = "monad-ipc"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "alloy-rlp",
- "alloy-signer",
- "alloy-signer-local",
- "bytes",
- "clap 4.4.10",
- "futures",
- "hex",
- "itertools 0.10.5",
- "monad-bls",
- "monad-consensus-types",
- "monad-crypto",
- "monad-eth-types",
- "monad-executor-glue",
- "monad-secp",
- "rand",
- "reqwest 0.11.27",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -4766,7 +4738,6 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
- "monad-ipc",
  "monad-keystore",
  "monad-ledger",
  "monad-node-config",
