@@ -35,7 +35,7 @@ const MAX_ADDRESSES: usize = 20 * 1024;
 // Tx batches from rpc can contain up to roughly 500 transactions. Since we don't evict based on how
 // many txs are in the pool, we need to ensure that after eviction there is always space for all 500
 // txs.
-const EVICT_ADDRESSES_WATERMARK: usize = MAX_ADDRESSES - 512;
+const SOFT_EVICT_ADDRESSES_WATERMARK: usize = MAX_ADDRESSES - 512;
 
 // TODO(andr-dev): This currently limits the number of unique addresses in a
 // proposal. This will be removed once we move the txpool into its own thread.
@@ -47,7 +47,8 @@ const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 10;
 #[derive(Clone, Debug)]
 pub struct TrackedTxMap<ST, SCT, SBT> {
     last_commit_seq_num: Option<SeqNum>,
-    tx_expiry: Duration,
+    soft_tx_expiry: Duration,
+    hard_tx_expiry: Duration,
 
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
@@ -62,10 +63,11 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    pub fn new(tx_expiry: Duration) -> Self {
+    pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
         Self {
             last_commit_seq_num: None,
-            tx_expiry,
+            soft_tx_expiry,
+            hard_tx_expiry,
 
             txs: IndexMap::with_capacity(MAX_ADDRESSES),
 
@@ -95,7 +97,7 @@ where
         match self.txs.entry(tx.sender()) {
             IndexMapEntry::Vacant(_) => Either::Left(tx),
             IndexMapEntry::Occupied(mut o) => {
-                Either::Right(o.get_mut().try_add_tx(tx, self.tx_expiry))
+                Either::Right(o.get_mut().try_add_tx(tx, self.hard_tx_expiry))
             }
         }
     }
@@ -369,18 +371,19 @@ where
     pub fn evict_expired_txs(&mut self, metrics: &mut TxPoolMetrics) {
         let num_txs = self.num_txs();
 
-        if num_txs < EVICT_ADDRESSES_WATERMARK {
-            return;
-        }
-
-        info!(?num_txs, "txpool hit evict expired txs watermark");
+        let tx_expiry = if num_txs < SOFT_EVICT_ADDRESSES_WATERMARK {
+            self.hard_tx_expiry
+        } else {
+            info!(?num_txs, "txpool hit soft evict addresses watermark");
+            self.soft_tx_expiry
+        };
 
         let mut idx = 0;
 
         while let Some(entry) = self.txs.get_index_entry(idx) {
             let entry_num_txs = entry.get().num_txs();
 
-            let Some(entry) = TrackedTxList::evict_expired_txs(entry, self.tx_expiry) else {
+            let Some(entry) = TrackedTxList::evict_expired_txs(entry, tx_expiry) else {
                 metrics.tracked_evict_expired_addresses += 1;
                 metrics.tracked_evict_expired_txs += entry_num_txs as u64;
                 continue;

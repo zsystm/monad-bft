@@ -59,16 +59,16 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    pub fn new(do_local_insert: bool, tx_expiry: Duration) -> Self {
+    pub fn new(do_local_insert: bool, soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
         Self {
             do_local_insert,
             pending: PendingTxMap::default(),
-            tracked: TrackedTxMap::new(tx_expiry),
+            tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
         }
     }
 
     pub fn default_testing() -> Self {
-        Self::new(true, Duration::from_secs(60))
+        Self::new(true, Duration::from_secs(60), Duration::from_secs(60))
     }
 
     pub fn is_empty(&self) -> bool {

@@ -43,12 +43,13 @@ where
         state_backend: SBT,
         ipc_config: EthTxPoolIpcConfig,
         do_local_insert: bool,
-        tx_expiry: Duration,
+        soft_tx_expiry: Duration,
+        hard_tx_expiry: Duration,
     ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::unbounded_channel();
 
         Ok(Self {
-            pool: EthTxPool::new(do_local_insert, tx_expiry),
+            pool: EthTxPool::new(do_local_insert, soft_tx_expiry, hard_tx_expiry),
             block_policy,
             state_backend,
             ipc: EthTxPoolIpc::new(ipc_config)?,

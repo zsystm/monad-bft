@@ -230,7 +230,8 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             },
             !cfg!(feature = "full-node"),
             // TODO(andr-dev): Add tx_expiry to node config
-            Duration::from_secs(5),
+            Duration::from_secs(15),
+            Duration::from_secs(5 * 60),
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
