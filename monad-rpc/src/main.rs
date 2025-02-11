@@ -67,7 +67,6 @@ use crate::{
 
 mod account_handlers;
 mod block_handlers;
-mod block_watcher;
 mod call;
 mod cli;
 mod debug;
