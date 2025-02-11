@@ -307,7 +307,6 @@ pub trait TriedbPath {
 pub struct TriedbEnv {
     triedb_path: PathBuf,
     mpsc_sender: mpsc::SyncSender<TriedbRequest>, // sender for tasks
-    mpsc_traverse_sender: mpsc::SyncSender<TriedbRequest>, // dedicated sender for traverse tasks
 }
 
 impl std::fmt::Debug for TriedbEnv {
@@ -323,25 +322,15 @@ impl TriedbEnv {
         // create a mpsc channel where sender are incoming requests, and the receiver is the triedb poller
         let (sender, receiver) = mpsc::sync_channel::<TriedbRequest>(max_concurrent_triedb_reads);
 
-        let (traverse_sender, traverse_receiver) =
-            mpsc::sync_channel::<TriedbRequest>(max_concurrent_triedb_reads);
-
-        // spawn the polling thread
+        // spawn the polling thread in a dedicated thread
         let triedb_path_cloned = triedb_path.to_path_buf();
         thread::spawn(move || {
             polling_thread(triedb_path_cloned, receiver);
         });
 
-        // HACK: spawn dedicated sync traverse polling thread
-        let triedb_path_cloned = triedb_path.to_path_buf();
-        thread::spawn(move || {
-            polling_thread(triedb_path_cloned, traverse_receiver);
-        });
-
         Self {
             triedb_path: triedb_path.to_path_buf(),
             mpsc_sender: sender,
-            mpsc_traverse_sender: traverse_sender,
         }
     }
 }
@@ -602,15 +591,13 @@ impl Triedb for TriedbEnv {
             create_triedb_key(Version::Finalized, KeyInput::ReceiptIndex(None));
 
         if let Err(e) = self
-            .mpsc_traverse_sender
-            .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
-                TraverseRequest {
-                    request_sender,
-                    triedb_key,
-                    key_len_nibbles,
-                    block_num,
-                },
-            )))
+            .mpsc_sender
+            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_num,
+            }))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
@@ -725,15 +712,13 @@ impl Triedb for TriedbEnv {
             create_triedb_key(Version::Finalized, KeyInput::TxIndex(None));
 
         if let Err(e) = self
-            .mpsc_traverse_sender
-            .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
-                TraverseRequest {
-                    request_sender,
-                    triedb_key,
-                    key_len_nibbles,
-                    block_num,
-                },
-            )))
+            .mpsc_sender
+            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_num,
+            }))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
@@ -1003,15 +988,14 @@ impl Triedb for TriedbEnv {
             create_triedb_key(Version::Finalized, KeyInput::CallFrame(None));
 
         if let Err(e) = self
-            .mpsc_traverse_sender
-            .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
-                TraverseRequest {
-                    request_sender,
-                    triedb_key,
-                    key_len_nibbles,
-                    block_num,
-                },
-            )))
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_num,
+            }))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
