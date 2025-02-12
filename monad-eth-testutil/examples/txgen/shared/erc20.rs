@@ -77,7 +77,7 @@ impl ERC20 {
     ) -> TransactionSigned {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = Transaction::Eip1559(TxEip1559 {
-            chain_id: 10143,
+            chain_id: 20143,
             nonce,
             gas_limit: 800_000, // usually around 600k gas
             max_fee_per_gas,
@@ -160,7 +160,7 @@ fn make_tx(
     max_fee_per_gas: u128,
 ) -> TransactionSigned {
     let tx = Transaction::Eip1559(TxEip1559 {
-        chain_id: 10143,
+        chain_id: 20143,
         nonce,
         gas_limit: 100_000, // probably closer to 80k
         max_fee_per_gas,

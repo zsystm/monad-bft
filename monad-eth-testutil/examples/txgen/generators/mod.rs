@@ -102,7 +102,7 @@ pub fn native_transfer_priority_fee(
 ) -> TransactionSigned {
     let max_fee_per_gas = ctx.base_fee * 2;
     let tx = reth_primitives::Transaction::Eip1559(reth_primitives::TxEip1559 {
-        chain_id: 10143,
+        chain_id: 20143,
         nonce: from.nonce,
         gas_limit: 21_000,
         max_fee_per_gas,
