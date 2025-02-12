@@ -25,6 +25,13 @@ pub struct TriedbHandle {
 pub struct SenderContext {
     sender: Sender<Option<Vec<u8>>>,
     completed_counter: Arc<AtomicUsize>,
+
+    // The strong count of this dummy Arc<> reflects the total number of currently executing
+    // (concurrent) requests, and this number is used by upstream code to maintain request
+    // backpressure.  When this request completes, this Arc<> is implicitly dropped, which
+    // causes the concurrent request count to be decremented.
+    #[allow(dead_code)]
+    concurrency_tracker: Arc<()>,
 }
 
 #[derive(Debug)]
@@ -32,6 +39,13 @@ pub struct TraverseContext {
     // values in traversal order
     data: std::sync::Mutex<Vec<TraverseEntry>>,
     sender: Sender<Option<Vec<TraverseEntry>>>,
+
+    // The strong count of this dummy Arc<> reflects the total number of currently executing
+    // (concurrent) requests, and this number is used by upstream code to maintain request
+    // backpressure.  When this request completes, this Arc<> is implicitly dropped, which
+    // causes the concurrent request count to be decremented.
+    #[allow(dead_code)]
+    concurrency_tracker: Arc<()>,
 }
 
 #[derive(Debug)]
@@ -201,6 +215,7 @@ impl TriedbHandle {
         block_id: u64,
         completed_counter: Arc<AtomicUsize>,
         sender: Sender<Option<Vec<u8>>>,
+        concurrency_tracker: Arc<()>,
     ) {
         // make sure doesn't overflow
         if key_len_nibbles >= u8::MAX - 1 {
@@ -216,6 +231,7 @@ impl TriedbHandle {
         let sender_context = Box::new(SenderContext {
             sender,
             completed_counter,
+            concurrency_tracker,
         });
 
         unsafe {
@@ -250,6 +266,7 @@ impl TriedbHandle {
         key_len_nibbles: u8,
         block_id: u64,
         sender: Sender<Option<Vec<TraverseEntry>>>,
+        concurrency_tracker: Arc<()>,
     ) {
         // make sure doesn't overflow
         if key_len_nibbles >= u8::MAX - 1 {
@@ -264,6 +281,7 @@ impl TriedbHandle {
         let traverse_context = Box::new(TraverseContext {
             data: std::sync::Mutex::new(Default::default()),
             sender,
+            concurrency_tracker,
         });
 
         unsafe {
@@ -299,6 +317,7 @@ impl TriedbHandle {
         let traverse_context = Box::new(TraverseContext {
             data: std::sync::Mutex::new(Default::default()),
             sender,
+            concurrency_tracker: Arc::new(()),
         });
 
         unsafe {

@@ -172,16 +172,43 @@ impl Decodable for TxEnvelopeWithSender {
 const MAX_QUEUE_BEFORE_POLL: usize = 100;
 const MAX_POLL_COMPLETIONS: usize = usize::MAX;
 
-fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>) {
+fn polling_thread(
+    triedb_path: PathBuf,
+    receiver_read: mpsc::Receiver<TriedbRequest>,
+    max_async_read_concurrency: usize,
+    receiver_traverse: mpsc::Receiver<TriedbRequest>,
+    max_async_traverse_concurrency: usize,
+) {
     // create a new triedb handle for the polling thread
     let triedb_handle: TriedbHandle =
         TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path");
+
+    let triedb_async_read_concurrency_tracker: Arc<()> = Arc::new(());
+    let triedb_async_traverse_concurrency_tracker: Arc<()> = Arc::new(());
 
     loop {
         triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
 
         // get next request, or sleep for 1ms
-        let mut maybe_request = receiver.recv_timeout(Duration::from_millis(1)).ok();
+        // prioritise async reads over async traversals
+        // if we have neither reads nor traversals waiting, wait up to 1ms for an async read
+        let mut maybe_request = None;
+        if maybe_request.is_none()
+            && Arc::strong_count(&triedb_async_read_concurrency_tracker)
+                < max_async_read_concurrency
+        {
+            maybe_request = receiver_read.try_recv().ok();
+        }
+        if maybe_request.is_none()
+            && Arc::strong_count(&triedb_async_traverse_concurrency_tracker)
+                < max_async_traverse_concurrency
+        {
+            maybe_request = receiver_traverse.try_recv().ok();
+        }
+        if maybe_request.is_none() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
         let mut num_queued = 0_usize;
         while let Some(triedb_request) = maybe_request {
             match triedb_request {
@@ -212,6 +239,7 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                         traverse_request.key_len_nibbles,
                         traverse_request.block_num,
                         traverse_request.request_sender,
+                        triedb_async_traverse_concurrency_tracker.clone(),
                     );
                 }
                 TriedbRequest::AsyncRequest(async_request) => {
@@ -223,6 +251,7 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                         async_request.block_num,
                         async_request.completed_counter,
                         async_request.request_sender,
+                        triedb_async_read_concurrency_tracker.clone(),
                     );
                 }
             }
@@ -230,8 +259,8 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
             if num_queued > MAX_QUEUE_BEFORE_POLL {
                 break;
             }
-            // check for any other outstanding async requests to queue up before polling
-            maybe_request = receiver.try_recv().ok();
+            // check for any other outstanding async read requests to queue up before polling
+            maybe_request = receiver_read.try_recv().ok();
         }
     }
 }
@@ -307,6 +336,7 @@ pub trait TriedbPath {
 pub struct TriedbEnv {
     triedb_path: PathBuf,
     mpsc_sender: mpsc::SyncSender<TriedbRequest>, // sender for tasks
+    mpsc_sender_traverse: mpsc::SyncSender<TriedbRequest>,
 }
 
 impl std::fmt::Debug for TriedbEnv {
@@ -318,19 +348,35 @@ impl std::fmt::Debug for TriedbEnv {
 }
 
 impl TriedbEnv {
-    pub fn new(triedb_path: &Path, max_concurrent_triedb_reads: usize) -> Self {
-        // create a mpsc channel where sender are incoming requests, and the receiver is the triedb poller
-        let (sender, receiver) = mpsc::sync_channel::<TriedbRequest>(max_concurrent_triedb_reads);
+    pub fn new(
+        triedb_path: &Path,
+        max_buffered_read_requests: usize,
+        max_async_read_concurrency: usize,
+        max_buffered_traverse_requests: usize,
+        max_async_traverse_concurrency: usize,
+    ) -> Self {
+        // create mpsc channels where sender are incoming requests, and the receiver is the triedb poller
+        let (sender_read, receiver_read) =
+            mpsc::sync_channel::<TriedbRequest>(max_buffered_read_requests);
+        let (sender_traverse, receiver_traverse) =
+            mpsc::sync_channel::<TriedbRequest>(max_buffered_traverse_requests);
 
         // spawn the polling thread in a dedicated thread
         let triedb_path_cloned = triedb_path.to_path_buf();
         thread::spawn(move || {
-            polling_thread(triedb_path_cloned, receiver);
+            polling_thread(
+                triedb_path_cloned,
+                receiver_read,
+                max_async_read_concurrency,
+                receiver_traverse,
+                max_async_traverse_concurrency,
+            );
         });
 
         Self {
             triedb_path: triedb_path.to_path_buf(),
-            mpsc_sender: sender,
+            mpsc_sender: sender_read,
+            mpsc_sender_traverse: sender_traverse,
         }
     }
 }
@@ -591,7 +637,7 @@ impl Triedb for TriedbEnv {
             create_triedb_key(Version::Finalized, KeyInput::ReceiptIndex(None));
 
         if let Err(e) = self
-            .mpsc_sender
+            .mpsc_sender_traverse
             .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
                 request_sender,
                 triedb_key,
@@ -712,7 +758,7 @@ impl Triedb for TriedbEnv {
             create_triedb_key(Version::Finalized, KeyInput::TxIndex(None));
 
         if let Err(e) = self
-            .mpsc_sender
+            .mpsc_sender_traverse
             .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
                 request_sender,
                 triedb_key,
@@ -988,8 +1034,7 @@ impl Triedb for TriedbEnv {
             create_triedb_key(Version::Finalized, KeyInput::CallFrame(None));
 
         if let Err(e) = self
-            .mpsc_sender
-            .clone()
+            .mpsc_sender_traverse
             .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
                 request_sender,
                 triedb_key,

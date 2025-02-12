@@ -206,6 +206,7 @@ impl TriedbReader {
                 seq_num.0,
                 completed_counter.clone(),
                 sender,
+                Arc::new(()),
             );
             receiver.map(|receiver_result| {
                 // Receiver should not fail

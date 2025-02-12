@@ -663,11 +663,15 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    let triedb_env = args
-        .triedb_path
-        .clone()
-        .as_deref()
-        .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
+    let triedb_env = args.triedb_path.clone().as_deref().map(|path| {
+        TriedbEnv::new(
+            path,
+            args.triedb_max_buffered_read_requests as usize,
+            args.triedb_max_async_read_concurrency as usize,
+            args.triedb_max_buffered_traverse_requests as usize,
+            args.triedb_max_async_traverse_concurrency as usize,
+        )
+    });
 
     // Used for compute heavy tasks
     rayon::ThreadPoolBuilder::new()

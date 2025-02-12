@@ -51,7 +51,21 @@ pub struct Cli {
 
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]
-    pub triedb_max_concurrent_requests: u32,
+    pub triedb_max_buffered_read_requests: u32,
+
+    /// Set the max number of concurrently executing async triedb read requests before we
+    /// start exerting backpressure
+    #[arg(long, default_value_t = 10_000)]
+    pub triedb_max_async_read_concurrency: u32,
+
+    /// Set the max concurrent requests for triedb traversals
+    #[arg(long, default_value_t = 40)]
+    pub triedb_max_buffered_traverse_requests: u32,
+
+    /// Set the max number of concurrently executing async triedb traverse requests before we
+    /// start exerting backpressure
+    #[arg(long, default_value_t = 20)]
+    pub triedb_max_async_traverse_concurrency: u32,
 
     /// Set the s3 bucket name to read archive data from
     #[arg(long)]

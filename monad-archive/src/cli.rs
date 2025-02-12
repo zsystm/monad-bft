@@ -234,16 +234,22 @@ impl RocksDbCliArgs {
 #[derive(Clone, Debug)]
 pub struct TrieDbCliArgs {
     pub triedb_path: String,
-    pub max_concurrent_requests: usize,
+    pub max_buffered_read_requests: usize,
+    pub max_triedb_async_read_concurrency: usize,
+    pub max_buffered_traverse_requests: usize,
+    pub max_triedb_async_traverse_concurrency: usize,
 }
 
 impl TrieDbCliArgs {
     pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<TrieDbCliArgs> {
         Ok(TrieDbCliArgs {
             triedb_path: next("storage args missing db path")?,
-            max_concurrent_requests: usize::from_str(&next(
-                "args missing max_concurrent_requests",
+            max_buffered_read_requests: usize::from_str(&next(
+                "args missing max_buffered_read_requests",
             )?)?,
+            max_triedb_async_read_concurrency: 10000,
+            max_buffered_traverse_requests: 40,
+            max_triedb_async_traverse_concurrency: 20,
         })
     }
 }

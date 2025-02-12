@@ -28,8 +28,14 @@ struct Args {
     #[arg(long, default_value_t = 1_000)]
     pub max_num_blocks: u64,
 
-    #[arg(long, default_value_t = 1_000)]
-    pub triedb_request_channel_size: usize,
+    #[arg(long, default_value_t = 20_000)]
+    pub max_buffered_read_requests: usize,
+    #[arg(long, default_value_t = 10_000)]
+    pub max_async_read_concurrency: usize,
+    #[arg(long, default_value_t = 40)]
+    pub max_buffered_traverse_requests: usize,
+    #[arg(long, default_value_t = 20)]
+    pub max_async_traverse_concurrency: usize,
 
     #[arg(long, default_value_t = 0.0)]
     pub tx_traverse_rps: f64,
@@ -77,7 +83,13 @@ fn main() {
         earliest_block..=latest_block
     };
 
-    let triedb_handle = TriedbEnv::new(&args.triedb_path, args.triedb_request_channel_size);
+    let triedb_handle = TriedbEnv::new(
+        &args.triedb_path,
+        args.max_buffered_read_requests,
+        args.max_async_read_concurrency,
+        args.max_buffered_traverse_requests,
+        args.max_async_traverse_concurrency,
+    );
 
     let test_duration = Duration::from_secs_f64(args.duration_s);
 
