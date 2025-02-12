@@ -380,7 +380,15 @@ where
 
         let mut idx = 0;
 
-        while let Some(entry) = self.txs.get_index_entry(idx) {
+        loop {
+            if idx >= self.txs.len() {
+                break;
+            }
+
+            let Some(entry) = self.txs.get_index_entry(idx) else {
+                break;
+            };
+
             let entry_num_txs = entry.get().num_txs();
 
             let Some(entry) = TrackedTxList::evict_expired_txs(entry, tx_expiry) else {
