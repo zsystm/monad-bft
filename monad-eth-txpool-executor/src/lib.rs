@@ -18,7 +18,7 @@ use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::sync::mpsc;
-use tracing::error;
+use tracing::{error, warn};
 
 pub use self::ipc::EthTxPoolIpcConfig;
 use self::ipc::EthTxPoolIpcServer;
@@ -26,8 +26,18 @@ use self::ipc::EthTxPoolIpcServer;
 mod ipc;
 mod metrics;
 
-const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
+const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 5;
 const FORWARD_MAX_RETRIES: usize = 2;
+const FORWARD_MAX_TXS_PER_BLOCK: usize = 2 * 1024;
+const FORWARD_EVENT_MAX_TXS_PER_CHUNK: usize = 256;
+
+enum EthTxPoolExecutorEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    MempoolEvent(MempoolEvent<SCT, EthExecutionProtocol>),
+    ForwardTxs(Vec<TxEnvelope>),
+}
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
@@ -44,8 +54,8 @@ where
 
     ipc: Pin<Box<EthTxPoolIpcServer>>,
 
-    events_tx: mpsc::UnboundedSender<MempoolEvent<SCT, EthExecutionProtocol>>,
-    events: mpsc::UnboundedReceiver<MempoolEvent<SCT, EthExecutionProtocol>>,
+    events_tx: mpsc::UnboundedSender<EthTxPoolExecutorEvent<SCT>>,
+    events: mpsc::UnboundedReceiver<EthTxPoolExecutorEvent<SCT>>,
 
     metrics: EthTxPoolExecutorMetrics,
     executor_metrics: ExecutorMetrics,
@@ -135,19 +145,17 @@ where
                             continue;
                         };
 
-                        let forwardable_txs = forwardable_txs
-                            .cloned()
-                            .map(alloy_rlp::encode)
-                            .map(Into::into)
-                            .collect_vec();
-
-                        if forwardable_txs.is_empty() {
-                            continue;
+                        for forwardable_tx_chunk in forwardable_txs
+                            .take(FORWARD_MAX_TXS_PER_BLOCK)
+                            .chunks(FORWARD_EVENT_MAX_TXS_PER_CHUNK)
+                            .into_iter()
+                        {
+                            self.events_tx
+                                .send(EthTxPoolExecutorEvent::ForwardTxs(
+                                    forwardable_tx_chunk.cloned().collect_vec(),
+                                ))
+                                .expect("events never dropped");
                         }
-
-                        self.events_tx
-                            .send(MempoolEvent::ForwardTxs(forwardable_txs))
-                            .expect("events never dropped");
                     }
                 }
                 TxPoolCommand::CreateProposal {
@@ -180,26 +188,37 @@ where
                     ) {
                         Ok(proposed_execution_inputs) => self
                             .events_tx
-                            .send(MempoolEvent::Proposal {
-                                epoch,
-                                round,
-                                seq_num,
-                                high_qc,
-                                timestamp_ns,
-                                round_signature,
-                                delayed_execution_results,
-                                proposed_execution_inputs,
-                                last_round_tc,
-                            })
+                            .send(EthTxPoolExecutorEvent::MempoolEvent(
+                                MempoolEvent::Proposal {
+                                    epoch,
+                                    round,
+                                    seq_num,
+                                    high_qc,
+                                    timestamp_ns,
+                                    round_signature,
+                                    delayed_execution_results,
+                                    proposed_execution_inputs,
+                                    last_round_tc,
+                                },
+                            ))
                             .expect("events never dropped"),
                         Err(err) => {
                             error!(?err, "txpool executor failed to create proposal");
                         }
                     }
                 }
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                TxPoolCommand::InsertForwardedTxs { sender, mut txs } => {
                     let num_invalid_bytes = AtomicU64::default();
                     let num_invalid_signer = AtomicU64::default();
+
+                    if txs.len() > FORWARD_EVENT_MAX_TXS_PER_CHUNK {
+                        warn!(
+                            ?sender,
+                            forwarded_txs_len = txs.len(),
+                            "invalid forwarded len, truncating event"
+                        );
+                        txs.truncate(FORWARD_EVENT_MAX_TXS_PER_CHUNK);
+                    }
 
                     let txs = txs
                         .into_par_iter()
@@ -312,7 +331,17 @@ where
         if let Poll::Ready(result) = events.poll_recv(cx) {
             let event = result.expect("events_tx never dropped");
 
-            return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
+            return Poll::Ready(Some(match event {
+                EthTxPoolExecutorEvent::MempoolEvent(event) => MonadEvent::MempoolEvent(event),
+                EthTxPoolExecutorEvent::ForwardTxs(txs) => {
+                    MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
+                        txs.into_iter()
+                            .map(alloy_rlp::encode)
+                            .map(Into::into)
+                            .collect(),
+                    ))
+                }
+            }));
         };
 
         if let Poll::Ready(result) = ipc.as_mut().poll_next(cx) {
