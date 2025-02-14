@@ -14,3 +14,7 @@ bench = false
 bitvec = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+rand_chacha = { workspace = true }

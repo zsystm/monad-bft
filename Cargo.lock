@@ -5270,6 +5270,7 @@ version = "0.1.0"
 dependencies = [
  "bitvec",
  "rand",
+ "rand_chacha",
  "rayon",
 ]
 
