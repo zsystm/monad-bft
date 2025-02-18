@@ -10,7 +10,7 @@ use tokio::{
     net::UnixListener,
     time::{self, Sleep},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub use self::config::EthTxPoolIpcConfig;
 
@@ -59,17 +59,23 @@ impl EthTxPoolIpcServer {
     }
 
     pub fn broadcast_tx_events(self: Pin<&mut Self>, events: &Vec<EthTxPoolEvent>) {
-        self.project().connections.retain(|stream| {
-            match stream.send_tx_events(events.to_owned()) {
-                Ok(()) => true,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    warn!("dropping ipc stream, reason: channel full!");
-                    false
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    info!("dropping ipc stream, reason: channel closed!");
-                    false
-                }
+        let EthTxPoolIpcServerProjected { connections, .. } = self.project();
+
+        debug!(
+            num_events = events.len(),
+            num_connections = connections.len(),
+            "broadcasting txpool events"
+        );
+
+        connections.retain(|stream| match stream.send_tx_events(events.to_owned()) {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                warn!("dropping ipc stream, reason: channel full!");
+                false
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                info!("dropping ipc stream, reason: channel closed!");
+                false
             }
         });
     }

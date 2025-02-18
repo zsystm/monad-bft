@@ -14,7 +14,7 @@ use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use notify::{Event, RecursiveMode, Watcher};
 use pin_project::pin_project;
 use tokio::{pin, sync::mpsc};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 pub use self::state::{EthTxPoolBridgeState, TxStatus};
 
@@ -50,6 +50,8 @@ impl EthTxPoolBridge {
 
         let (client, snapshot) = EthTxPoolIpcClient::new(bind_path).await?;
         state.apply_snapshot(snapshot);
+
+        info!("txpool connected");
 
         Ok(Self {
             socket_path,
@@ -163,6 +165,7 @@ impl<'a> Sink<&'a Recovered<TxEnvelope>> for EthTxPoolBridge {
                     Poll::Ready(Err(ref e)) if e.kind() == ErrorKind::BrokenPipe => {
                         let sw = SocketWatcher::try_new(this.socket_path.clone())?;
                         ipc_state.set(EthTxPoolBridgeIpcState::BrokenPipe(sw));
+                        info!("txpool disconnected");
                         cx.waker().wake_by_ref();
                     }
                     Poll::Ready(Err(e)) => {
@@ -186,6 +189,7 @@ impl<'a> Sink<&'a Recovered<TxEnvelope>> for EthTxPoolBridge {
 
                         *this.client = client;
                         ipc_state.set(EthTxPoolBridgeIpcState::Ready);
+                        info!("txpool reconnected");
                         cx.waker().wake_by_ref();
                     }
                     Poll::Pending => return Poll::Pending,

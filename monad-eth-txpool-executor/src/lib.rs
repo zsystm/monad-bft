@@ -18,7 +18,7 @@ use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::sync::mpsc;
-use tracing::error;
+use tracing::{debug, error};
 
 pub use self::ipc::EthTxPoolIpcConfig;
 use self::ipc::EthTxPoolIpcServer;
@@ -121,6 +121,11 @@ where
             match command {
                 TxPoolCommand::BlockCommit(committed_blocks) => {
                     for committed_block in committed_blocks {
+                        debug!(
+                            seqnum =? committed_block.get_seq_num(),
+                            "updating committed block"
+                        );
+
                         BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT>::update_committed_block(
                             &mut self.block_policy,
                             &committed_block,
@@ -165,6 +170,8 @@ where
                     extending_blocks,
                     delayed_execution_results,
                 } => {
+                    debug!(?epoch, ?round, ?seq_num, "creating proposal");
+
                     match self.pool.create_proposal(
                         &mut event_tracker,
                         seq_num,
@@ -198,6 +205,8 @@ where
                     }
                 }
                 TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                    debug!(?sender, num_txs = txs.len(), "inserting forwarded txs");
+
                     let num_invalid_bytes = AtomicU64::default();
                     let num_invalid_signer = AtomicU64::default();
 
@@ -245,7 +254,9 @@ where
                         |_| {},
                     );
                 }
-                TxPoolCommand::EnterRound { epoch: _, round } => {
+                TxPoolCommand::EnterRound { epoch, round } => {
+                    debug!(?epoch, ?round, "entering round");
+
                     let proposal_gas_limit = self
                         .chain_config
                         .get_chain_revision(round)
@@ -256,6 +267,8 @@ where
                 TxPoolCommand::Reset {
                     last_delay_committed_blocks,
                 } => {
+                    debug!("resetting");
+
                     BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT>::reset(
                         &mut self.block_policy,
                         last_delay_committed_blocks.iter().collect(),
