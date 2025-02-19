@@ -20,9 +20,11 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 monad-block-persist = { path = "../monad-block-persist" }
+monad-bls = { path = "../monad-bls" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-node-config = { path = "../monad-node-config" }
+monad-secp = { path = "../monad-secp" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }

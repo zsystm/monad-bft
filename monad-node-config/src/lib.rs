@@ -19,7 +19,7 @@ mod sync_peers;
 #[allow(unused_imports)]
 pub use sync_peers::{BlockSyncPeersConfig, StateSyncPeersConfig, SyncPeerIdentityConfig};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig<P: PubKey> {
     ////////////////////////////////

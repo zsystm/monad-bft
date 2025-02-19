@@ -87,20 +87,6 @@ where
         ));
         file_path
     }
-
-    pub fn read_bft_payload_from_filepath(&self, filepath: &OsStr) -> std::io::Result<Payload> {
-        assert!(is_valid_bft_payload_path(filepath));
-        let mut file = File::open(filepath)?;
-
-        let size = file.metadata()?.len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf)?;
-
-        let proto_payload = ProtoPayload::decode(buf.as_slice()).map_err(std::io::Error::other)?;
-        let payload: Payload = proto_payload.try_into().map_err(std::io::Error::other)?;
-
-        Ok(payload)
-    }
 }
 
 impl<ST, SCT, EPT> BlockPersist<ST, SCT, EPT> for FileBlockPersist<ST, SCT, EPT>

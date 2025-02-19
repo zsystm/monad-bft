@@ -1,16 +1,16 @@
 use std::{
-    ffi::OsString,
     io::{ErrorKind, Result},
     path::Path,
 };
 
 use futures::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};
-use monad_block_persist::{is_valid_bft_block_header_path, is_valid_bft_payload_path};
-use monad_node_config::{ForkpointConfig, NodeConfig};
+use monad_block_persist::BLOCKDB_HEADER_EXTENSION;
+use monad_node_config::NodeConfig;
+use monad_types::{BlockId, Hash};
 use tracing::{error, warn};
 
-pub fn new_block_headers(bft_block_header_path: &Path) -> impl Stream<Item = OsString> {
+pub fn new_block_headers(bft_block_header_path: &Path) -> impl Stream<Item = BlockId> {
     let inotify = Inotify::init().expect("error initializing inotify");
     inotify
         .watches()
@@ -22,9 +22,7 @@ pub fn new_block_headers(bft_block_header_path: &Path) -> impl Stream<Item = OsS
         .into_event_stream(inotify_buffer)
         .expect("failed to create inotify event stream");
 
-    let bft_block_header_path = bft_block_header_path.to_path_buf();
     inotify_events.filter_map(move |maybe_event| {
-        let bft_block_header_path = bft_block_header_path.clone();
         // hack because filter_map takes in an impl Future<Option<_>>
         let result = (|| {
             let event = match maybe_event {
@@ -42,63 +40,28 @@ pub fn new_block_headers(bft_block_header_path: &Path) -> impl Stream<Item = OsS
                 }
             };
             let filename = event.name?;
-            if is_valid_bft_block_header_path(&filename) {
-                let mut path_buf = bft_block_header_path;
-                path_buf.push(filename);
-                Some(path_buf.into())
+            if filename
+                .to_str()
+                .is_some_and(|f| f.ends_with(BLOCKDB_HEADER_EXTENSION))
+            {
+                let filename = filename.to_str().unwrap();
+                let block_id =
+                    hex::decode(filename.strip_suffix(BLOCKDB_HEADER_EXTENSION).unwrap())
+                        .expect("unable to decode block header id");
+                Some(BlockId(Hash(
+                    block_id.try_into().expect("block_header_id not 32 bytes"),
+                )))
             } else {
                 None
             }
         })();
-        async { result }
+        async move { result }
     })
 }
 
-pub fn new_block_payloads(bft_block_payload_path: &Path) -> impl Stream<Item = OsString> {
-    let inotify = Inotify::init().expect("error initializing inotify");
-    inotify
-        .watches()
-        .add(bft_block_payload_path, WatchMask::CLOSE_WRITE)
-        .expect("failed to watch bft_block_payload_path");
-
-    let inotify_buffer = [0; 1024];
-    let inotify_events = inotify
-        .into_event_stream(inotify_buffer)
-        .expect("failed to create inotify event stream");
-
-    let bft_block_payload_path = bft_block_payload_path.to_path_buf();
-    inotify_events.filter_map(move |maybe_event| {
-        let bft_block_payload_path = bft_block_payload_path.clone();
-        // hack because filter_map takes in an impl Future<Option<_>>
-        let result = (|| {
-            let event = match maybe_event {
-                Ok(event) => event,
-                Err(err) if err.kind() == ErrorKind::InvalidInput => {
-                    warn!(
-                        ?err,
-                        "ErrorKind::InvalidInput, are blocks being produced faster than indexer?"
-                    );
-                    return None;
-                }
-                Err(err) => {
-                    error!(?err, "inotify error while reading events");
-                    panic!("inotify error while reading events")
-                }
-            };
-            let filename = event.name?;
-            if is_valid_bft_payload_path(&filename) {
-                let mut path_buf = bft_block_payload_path;
-                path_buf.push(filename);
-                Some(path_buf.into())
-            } else {
-                None
-            }
-        })();
-        async { result }
-    })
-}
-
-pub fn node_config_changes(node_config_path: &Path) -> impl Stream<Item = NodeConfig> {
+pub fn node_config_changes(
+    node_config_path: &Path,
+) -> impl Stream<Item = NodeConfig<monad_secp::PubKey>> {
     let init_config = read_node_config(node_config_path).expect("failed to read node_config_path");
 
     let inotify = Inotify::init().expect("error initializing inotify");
@@ -155,80 +118,8 @@ pub fn node_config_changes(node_config_path: &Path) -> impl Stream<Item = NodeCo
     ))
 }
 
-fn read_node_config(node_config_path: &Path) -> Result<NodeConfig> {
+fn read_node_config(node_config_path: &Path) -> Result<NodeConfig<monad_secp::PubKey>> {
     let node_config_raw = std::fs::read_to_string(node_config_path)?;
     let node_config = toml::from_str(&node_config_raw).map_err(std::io::Error::other)?;
     Ok(node_config)
-}
-
-/// Pass in path of forkpoint *directory*
-pub fn forkpoint_changes(forkpoint_path: &Path) -> impl Stream<Item = ForkpointConfig> {
-    assert!(std::fs::metadata(forkpoint_path).is_ok_and(|path| path.is_dir()));
-
-    let inotify = Inotify::init().expect("error initializing inotify");
-    inotify
-        .watches()
-        .add(forkpoint_path, WatchMask::CLOSE_WRITE)
-        .expect("failed to watch node_config_path");
-
-    let inotify_buffer = [0; 1024];
-    let inotify_events = inotify
-        .into_event_stream(inotify_buffer)
-        .expect("failed to create inotify event stream");
-
-    let forkpoint_path = forkpoint_path.to_path_buf();
-    let mut last_forkpoint = None;
-    inotify_events.filter_map(move |maybe_event| {
-        let forkpoint_path = forkpoint_path.clone();
-        let last_forkpoint = &mut last_forkpoint;
-        // hack because filter_map takes in an impl Future<Option<_>>
-        let result = (|| {
-            let event = match maybe_event {
-                Ok(event) => event,
-                Err(err) if err.kind() == ErrorKind::InvalidInput => {
-                    warn!(
-                        ?err,
-                        "ErrorKind::InvalidInput, are forkpoints being generated faster than indexer?"
-                    );
-                    return None;
-                }
-                Err(err) => {
-                    error!(?err, "inotify error while reading events");
-                    panic!("inotify error while reading events")
-                }
-            };
-
-            let filename = event.name?;
-            if filename.to_str().is_some_and(|name| name.ends_with(".wip")) {
-                return None;
-            }
-            let mut path_buf = forkpoint_path;
-            path_buf.push(filename);
-
-            let forkpoint = match read_forkpoint(&path_buf) {
-                Ok(forkpoint) => forkpoint,
-                Err(err) => {
-                    error!(
-                        ?err,
-                        ?path_buf,
-                        "read_forkpoint failure"
-                    );
-                    return None;
-                }
-            };
-            if Some(&forkpoint) == last_forkpoint.as_ref() {
-                // deduplicate events
-                return None;
-            }
-            *last_forkpoint = Some(forkpoint.clone());
-            Some(forkpoint)
-        })();
-        async { result }
-    })
-}
-
-fn read_forkpoint(forkpoint_path: &Path) -> Result<ForkpointConfig> {
-    let forkpoint_raw = std::fs::read_to_string(forkpoint_path)?;
-    let forkpoint = toml::from_str(&forkpoint_raw).map_err(std::io::Error::other)?;
-    Ok(forkpoint)
 }
