@@ -12,7 +12,7 @@ use crate::{
     prelude::*,
 };
 
-async fn get_aws_config(region: Option<String>) -> SdkConfig {
+pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
     let region_provider = RegionProviderChain::default_provider().or_else(
         region
             .map(Region::new)
