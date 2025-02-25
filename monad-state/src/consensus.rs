@@ -44,7 +44,8 @@ use crate::{
 };
 
 // TODO configurable
-const NUM_LEADERS_FORWARD: usize = 3;
+const NUM_LEADERS_FORWARD_TXS: usize = 3;
+const NUM_LEADERS_UPCOMING: usize = 3;
 
 pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, MP>
 where
@@ -162,6 +163,7 @@ where
                                 );
                                 cmds.push(WrappedConsensusCommand {
                                     state_root_delay: self.consensus_config.execution_delay,
+                                    upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
                                     command: ConsensusCommand::RequestStateSync {
                                         root: new_root,
                                         high_qc: new_high_qc,
@@ -233,7 +235,8 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: consensus.config.execution_delay,
+                state_root_delay: self.consensus_config.execution_delay,
+                upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
                 command: cmd,
             })
             .collect::<Vec<_>>()
@@ -338,31 +341,9 @@ where
                 })]
             }
             MempoolEvent::ForwardTxs(txs) => {
-                // Current round leader will only include txn in proposal if it
-                // hasn't observed a TC we locally formed. In all other case,
-                // current round leader has proposed and forwarded txn will not
-                // get included
-                //
-                // Thus forwarding txn to leaders of (current round+1..)
-                let round = consensus.consensus.get_current_round() + Round(1);
-
-                (round.0..)
-                    .take(NUM_LEADERS_FORWARD)
-                    .map(|round| {
-                        let epoch = consensus
-                            .epoch_manager
-                            .get_epoch(Round(round))
-                            .expect("epoch for current and future rounds always exist");
-                        let Some(next_validator_set) = self.val_epoch_map.get_val_set(&epoch)
-                        else {
-                            todo!("handle non-existent validatorset for next k round epoch");
-                        };
-                        let members = next_validator_set.get_members();
-                        consensus.election.get_leader(Round(round), members)
-                    })
-                    .filter(|leader| leader != self.nodeid)
-                    .unique()
-                    .map(|target| {
+                self.compute_upcoming_leader_round_pairs::<false, true, NUM_LEADERS_FORWARD_TXS>()
+                    .into_iter()
+                    .map(|(target, _)| {
                         // TODO ideally we could batch these all as one RouterCommand(PointToPoint) so
                         // that we can:
                         // 1. avoid cloning txns
@@ -413,7 +394,8 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: consensus.config.execution_delay,
+                state_root_delay: self.consensus_config.execution_delay,
+                upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
                 command: cmd,
             })
             .collect::<Vec<_>>()
@@ -455,7 +437,8 @@ where
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: consensus.config.execution_delay,
+                state_root_delay: self.consensus_config.execution_delay,
+                upcoming_leader_rounds: self.get_upcoming_leader_rounds(),
                 command: cmd,
             })
             .collect::<Vec<_>>()
@@ -497,6 +480,48 @@ where
 
         Ok((author, validated_mesage.into_inner()))
     }
+
+    fn compute_upcoming_leader_round_pairs<
+        const INCLUDE_CURRENT_ROUND: bool,
+        const SKIP_SELF: bool,
+        const NUM: usize,
+    >(
+        &mut self,
+    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Round)> {
+        let ConsensusMode::Live(mode) = self.consensus else {
+            return Vec::default();
+        };
+
+        (mode.get_current_round().0 + (if INCLUDE_CURRENT_ROUND { 0 } else { 1 })..)
+            .take(NUM_LEADERS_FORWARD_TXS)
+            .map(Round)
+            .filter_map(|round| {
+                let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");
+
+                let Some(next_validator_set) = self.val_epoch_map.get_val_set(&epoch) else {
+                    todo!("handle non-existent validatorset for next k round epoch");
+                };
+
+                let leader = self
+                    .leader_election
+                    .get_leader(round, next_validator_set.get_members());
+
+                if SKIP_SELF {
+                    (&leader != self.nodeid).then_some((leader, round))
+                } else {
+                    Some((leader, round))
+                }
+            })
+            .unique_by(|(nodeid, _)| *nodeid)
+            .collect()
+    }
+
+    fn get_upcoming_leader_rounds(&mut self) -> Vec<Round> {
+        self.compute_upcoming_leader_round_pairs::<true, false, NUM_LEADERS_UPCOMING>()
+            .into_iter()
+            .map(|(_, round)| round)
+            .collect()
+    }
 }
 
 pub(super) struct WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>
@@ -508,6 +533,7 @@ where
     SBT: StateBackend,
 {
     state_root_delay: SeqNum,
+    upcoming_leader_rounds: Vec<Round>,
     command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
 }
 
@@ -531,9 +557,15 @@ where
     SBT: StateBackend,
 {
     fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>) -> Self {
+        let WrappedConsensusCommand {
+            state_root_delay,
+            upcoming_leader_rounds,
+            command,
+        } = wrapped;
+
         let mut parent_cmds: Vec<Command<_, _, _, _, _, _, _>> = Vec::new();
 
-        match wrapped.command {
+        match command {
             ConsensusCommand::EnterRound(epoch, round) => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::UpdateCurrentRound(
                     epoch, round,
@@ -541,6 +573,7 @@ where
                 parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::EnterRound {
                     epoch,
                     round,
+                    upcoming_leader_rounds,
                 }))
             }
             ConsensusCommand::Publish { target, message } => {
@@ -623,8 +656,8 @@ where
                             // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
                             // exactly `delay` number of roots
                             StateRootHashCommand::CancelBelow(
-                                (finalized_seq_num + SeqNum(1)).max(wrapped.state_root_delay)
-                                    - wrapped.state_root_delay,
+                                (finalized_seq_num + SeqNum(1)).max(state_root_delay)
+                                    - state_root_delay,
                             ),
                         ));
                     }
