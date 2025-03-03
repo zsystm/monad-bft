@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
+    execution_revision::ExecutionChainParams,
     revision::{ChainParams, ChainRevision},
     ChainConfig,
 };
@@ -470,6 +471,18 @@ where
             .get_chain_revision(block_round)
             .chain_params();
 
+        let ExecutionChainParams { max_code_size } = {
+            // u64::MAX seconds is ~500 Billion years
+            let timestamp_s: u64 = (p.block_header.timestamp_ns / 1_000_000_000)
+                .try_into()
+                // we don't assert because timestamp_ns is untrusted
+                .unwrap_or(u64::MAX);
+            self.config
+                .chain_config
+                .get_execution_chain_revision(timestamp_s)
+                .execution_chain_params()
+        };
+
         let author_pubkey = self
             .val_epoch_map
             .get_cert_pubkeys(&epoch)
@@ -484,6 +497,7 @@ where
             *tx_limit,
             *proposal_gas_limit,
             *proposal_byte_limit,
+            *max_code_size,
         ) {
             Ok(block) => block,
             Err(BlockValidationError::TxnError) => {
@@ -775,6 +789,17 @@ where
                     .get_chain_revision(header.round)
                     .chain_params();
 
+                let ExecutionChainParams { max_code_size } = {
+                    // u64::MAX seconds is ~500 Billion years
+                    let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
+                        .try_into()
+                        .expect("blocksync'd block timestamp > ~500B years");
+                    self.config
+                        .chain_config
+                        .get_execution_chain_revision(timestamp_s)
+                        .execution_chain_params()
+                };
+
                 let block = self
                     .block_validator
                     .validate(
@@ -784,6 +809,7 @@ where
                         *tx_limit,
                         *proposal_gas_limit,
                         *proposal_byte_limit,
+                        *max_code_size,
                     )
                     .expect("majority extended invalid block");
                 let res_cmds = self.try_add_and_commit_blocktree(block, None);
