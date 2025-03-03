@@ -15,6 +15,7 @@ use serde_json::{json, to_string, Value};
 autocxx::include_cpp! {
     #include "eth_call.hpp"
     #include "test_db.hpp"
+    #include "cxx.hpp"
     safety!(unsafe)
     generate!("monad_evmc_result")
     generate!("monad_state_override_set")
@@ -25,6 +26,7 @@ autocxx::include_cpp! {
     generate!("testdb_load_transfer")
     generate!("testdb_path")
     generate!("destroy_testdb")
+    generate!("cxx_rlp_buffer")
 }
 
 pub const EVMC_SUCCESS: i32 = 0;
@@ -89,29 +91,14 @@ pub fn eth_call(
         });
     }
 
-    // TODO: move the buffer copying into C++ for the reserve/push idiom
-    let mut rlp_encoded_tx = Vec::new();
-    transaction.encode_2718(&mut rlp_encoded_tx);
+    let mut cxx_rlp_encoded_tx = ffi::cxx_rlp_buffer(transaction.encode_2718_len());
+    transaction.encode_2718(&mut cxx_rlp_encoded_tx.pin_mut().as_mut_slice());
 
-    let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-    for byte in &rlp_encoded_tx {
-        cxx_rlp_encoded_tx.pin_mut().push(*byte);
-    }
+    let mut cxx_rlp_encoded_block_header = ffi::cxx_rlp_buffer(block_header.length());
+    block_header.encode(&mut cxx_rlp_encoded_block_header.pin_mut().as_mut_slice());
 
-    let mut rlp_encoded_block_header = vec![];
-    block_header.encode(&mut rlp_encoded_block_header);
-    let mut cxx_rlp_encoded_block_header: cxx::UniquePtr<cxx::CxxVector<u8>> =
-        cxx::CxxVector::new();
-    for byte in &rlp_encoded_block_header {
-        cxx_rlp_encoded_block_header.pin_mut().push(*byte);
-    }
-
-    let mut rlp_encoded_sender = vec![];
-    sender.encode(&mut rlp_encoded_sender);
-    let mut cxx_rlp_encoded_sender: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-    for byte in &rlp_encoded_sender {
-        cxx_rlp_encoded_sender.pin_mut().push(*byte);
-    }
+    let mut cxx_rlp_encoded_sender = ffi::cxx_rlp_buffer(sender.length());
+    sender.encode(&mut cxx_rlp_encoded_sender.pin_mut().as_mut_slice());
 
     cxx::let_cxx_string!(triedb_path = triedb_path.to_str().unwrap().to_string());
 
