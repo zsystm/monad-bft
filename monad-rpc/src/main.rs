@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use actix::prelude::*;
 use actix_web::{
@@ -16,7 +16,7 @@ use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use serde_json::Value;
 use tokio::sync::Semaphore;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -50,7 +50,8 @@ use crate::{
         monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
         monad_eth_maxPriorityFeePerGas,
     },
-    jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
+    jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response},
+    middleware::{build_middleware_chain, Middleware, RpcHandler},
     trace::{
         monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
         monad_trace_transaction,
@@ -77,6 +78,7 @@ mod gas_oracle;
 mod hex;
 mod jsonrpc;
 mod metrics;
+mod middleware;
 mod trace;
 mod trace_handlers;
 mod txpool;
@@ -88,7 +90,67 @@ const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIB
 pub struct MonadRpcServer {
     resources: MonadRpcResources,
     meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider>,
+    middlewares: Vec<Box<dyn Middleware<MonadRpcResources>>>,
+    rpc_handler: Box<dyn RpcHandler<MonadRpcResources>>,
     args: Cli,
+}
+
+pub struct JsonRpcMethodHandler;
+
+impl RpcHandler<MonadRpcResources> for JsonRpcMethodHandler {
+    fn handle<'a>(
+        &'a self,
+        request: &'a Value,
+        app_state: &'a MonadRpcResources,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, JsonRpcError>> + 'a>> {
+        Box::pin(async move {
+            let request: RequestWrapper<Value> = serde_json::from_value(request.clone())?;
+
+            match request {
+                RequestWrapper::Single(json_request) => {
+                    let request = serde_json::from_value::<Request>(json_request.clone())
+                        .map_err(|_| JsonRpcError::parse_error())?;
+
+                    serde_json::to_value(Response::from_result(
+                        request.id.clone(),
+                        MonadRpcServer::rpc_select(app_state, &request.method, request.params)
+                            .await,
+                    ))
+                    .map_err(|_| JsonRpcError::internal_error("Serialization error".into()))
+                }
+                RequestWrapper::Batch(batch) => {
+                    if batch.is_empty() || batch.len() > app_state.batch_request_limit as usize {
+                        return Err(JsonRpcError::invalid_request());
+                    }
+
+                    let responses =
+                        futures::future::join_all(batch.iter().map(|json_request| async move {
+                            let request =
+                                match serde_json::from_value::<Request>(json_request.clone()) {
+                                    Ok(req) => req,
+                                    Err(_) => {
+                                        return Response::from_error(JsonRpcError::invalid_request())
+                                    }
+                                };
+
+                            Response::from_result(
+                                request.id,
+                                MonadRpcServer::rpc_select(
+                                    app_state,
+                                    &request.method,
+                                    request.params,
+                                )
+                                .await,
+                            )
+                        }))
+                        .await;
+
+                    serde_json::to_value(responses)
+                        .map_err(|_| JsonRpcError::internal_error("Serialization error".into()))
+                }
+            }
+        })
+    }
 }
 
 impl MonadRpcServer {
@@ -135,9 +197,14 @@ impl MonadRpcServer {
 
         let meter_provider = Self::setup_metrics(&args)?;
 
+        let middlewares = vec![];
+        let rpc_handler = Box::new(JsonRpcMethodHandler);
+
         Ok(Self {
             resources,
             meter_provider,
+            middlewares,
+            rpc_handler,
             args,
         })
     }
@@ -150,6 +217,8 @@ impl MonadRpcServer {
 
         let resources = self.resources;
         let max_request_size = self.args.max_request_size;
+        let middlewares = web::Data::new(self.middlewares);
+        let handler = web::Data::new(self.rpc_handler);
 
         match metrics {
             Some(metrics) => {
@@ -159,6 +228,8 @@ impl MonadRpcServer {
                         .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                         .app_data(web::PayloadConfig::default().limit(max_request_size))
                         .app_data(web::Data::new(resources.clone()))
+                        .app_data(middlewares.clone())
+                        .app_data(handler.clone())
                         .service(web::resource("/").route(web::post().to(Self::rpc_handler)))
                         .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
                 })
@@ -174,6 +245,8 @@ impl MonadRpcServer {
                         .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                         .app_data(web::PayloadConfig::default().limit(max_request_size))
                         .app_data(web::Data::new(resources.clone()))
+                        .app_data(middlewares.clone())
+                        .app_data(handler.clone())
                         .service(web::resource("/").route(web::post().to(Self::rpc_handler)))
                         .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
                 })
@@ -190,8 +263,10 @@ impl MonadRpcServer {
         root_span: RootSpan,
         body: bytes::Bytes,
         app_state: web::Data<MonadRpcResources>,
+        middlewares: web::Data<Vec<Box<dyn Middleware<MonadRpcResources>>>>,
+        handler: web::Data<Box<dyn RpcHandler<MonadRpcResources>>>,
     ) -> HttpResponse {
-        let request: RequestWrapper<Value> = match serde_json::from_slice(&body) {
+        let request_value = match serde_json::from_slice::<Value>(&body) {
             Ok(req) => req,
             Err(e) => {
                 debug!("parse error: {e} {body:?}");
@@ -199,77 +274,26 @@ impl MonadRpcServer {
             }
         };
 
-        let response = match request {
-            RequestWrapper::Single(json_request) => {
-                let Ok(request) = serde_json::from_value::<Request>(json_request) else {
-                    return HttpResponse::Ok()
-                        .json(Response::from_error(JsonRpcError::parse_error()));
-                };
-                root_span.record("json_method", &request.method);
-                ResponseWrapper::Single(Response::from_result(
-                    request.id,
-                    Self::rpc_select(&app_state, &request.method, request.params).await,
-                ))
-            }
-            RequestWrapper::Batch(json_batch_request) => {
-                root_span.record("json_method", "batch");
-                if json_batch_request.is_empty()
-                    || json_batch_request.len() > app_state.batch_request_limit as usize
-                {
-                    return HttpResponse::Ok()
-                        .json(Response::from_error(JsonRpcError::invalid_request()));
-                }
-                let batch_response =
-                    futures::future::join_all(json_batch_request.into_iter().map(|json_request| {
-                        let app_state = app_state.clone(); // cheap copy
-
-                        async move {
-                            let Ok(request) = serde_json::from_value::<Request>(json_request)
-                            else {
-                                return (Value::Null, Err(JsonRpcError::invalid_request()));
-                            };
-                            let (state, id, method, params) =
-                                (app_state, request.id, request.method, request.params);
-                            (id, Self::rpc_select(&state, &method, params).await)
-                        }
-                    }))
-                    .await
-                    .into_iter()
-                    .map(|(request_id, response)| Response::from_result(request_id, response))
-                    .collect::<Vec<_>>();
-                ResponseWrapper::Batch(batch_response)
-            }
-        };
-
-        // check if the response size exceeds the limit
-        // return invalid request error if it does
-        match serde_json::to_vec(&response) {
-            Ok(bytes) => {
-                if bytes.len() > app_state.max_response_size as usize {
-                    info!("response exceed size limit: {body:?}");
-                    return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
-                        "response exceed size limit".to_string(),
-                    )));
-                }
-            }
-            Err(e) => {
-                debug!("response serialization error: {e}");
-                return HttpResponse::Ok().json(Response::from_error(
-                    JsonRpcError::internal_error(format!("serialization error: {}", e)),
-                ));
-            }
-        };
-
-        // log the request and response based on the response content
-        match &response {
-            ResponseWrapper::Single(resp) => match resp.error {
-                Some(_) => info!(?body, ?response, "rpc_request/response error"),
-                None => debug!(?body, ?response, "rpc_request/response successful"),
-            },
-            _ => debug!(?body, ?response, "rpc_batch_request/response"),
+        // Record method for tracing
+        if let Ok(request) = serde_json::from_value::<Request>(request_value.clone()) {
+            root_span.record("json_method", &request.method);
+        } else if let Ok(RequestWrapper::<Value>::Batch(_)) =
+            serde_json::from_value(request_value.clone())
+        {
+            root_span.record("json_method", "batch");
         }
 
-        HttpResponse::Ok().json(&response)
+        match build_middleware_chain(
+            &request_value,
+            app_state.as_ref(),
+            middlewares.as_ref(),
+            handler.as_ref().as_ref(),
+        )
+        .await
+        {
+            Ok(response) => HttpResponse::Ok().json(response),
+            Err(e) => HttpResponse::Ok().json(Response::from_error(e)),
+        }
     }
 
     async fn rpc_select(
@@ -924,6 +948,7 @@ mod tests {
         test, Error,
     };
     use alloy_consensus::TxEnvelope;
+    use jsonrpc::ResponseWrapper;
     use serde_json::{json, Number};
     use test_case::test_case;
 
@@ -957,6 +982,8 @@ mod tests {
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .app_data(web::PayloadConfig::default().limit(2_000_000))
                 .app_data(web::Data::new(resources.clone()))
+                .app_data(web::Data::new(Vec::<Box<dyn Middleware<MonadRpcResources>>>::new()))
+                .app_data(web::Data::new(Box::new(JsonRpcMethodHandler) as Box<dyn RpcHandler<MonadRpcResources>>))
                 .service(web::resource("/").route(web::post().to(MonadRpcServer::rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler))),
         )
