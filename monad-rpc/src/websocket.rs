@@ -106,7 +106,7 @@ mod tests {
 
     use crate::{
         tests::MonadRpcResourcesState, EthTxPoolBridgeState, FixedFee, MonadJsonRootSpanBuilder,
-        MonadRpcResources,
+        MonadRpcResources, MonadRpcServer,
     };
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
@@ -131,7 +131,7 @@ mod tests {
                     .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                     .app_data(web::PayloadConfig::default().limit(8192))
                     .app_data(web::Data::new(resources.clone()))
-                    .service(web::resource("/").route(web::post().to(crate::rpc_handler)))
+                    .service(web::resource("/").route(web::post().to(MonadRpcServer::rpc_handler)))
                     .service(web::resource("/ws/").route(web::get().to(crate::websocket::handler)))
             }),
         )
