@@ -197,7 +197,7 @@ impl MonadRpcServer {
 
         let meter_provider = Self::setup_metrics(&args)?;
 
-        let middlewares = vec![];
+        let middlewares: Vec<Box<dyn Middleware<MonadRpcResources>>> = vec![];
         let rpc_handler = Box::new(JsonRpcMethodHandler);
 
         Ok(Self {
