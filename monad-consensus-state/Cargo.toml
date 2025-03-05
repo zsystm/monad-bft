@@ -19,7 +19,8 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
 
-tracing = { workspace = true }
+tracing = { workspace = true, features = ["log"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [dev-dependencies]
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }

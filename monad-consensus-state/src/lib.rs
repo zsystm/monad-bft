@@ -1591,7 +1591,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{ops::Deref, time::Duration};
+    use std::{ops::Deref, time::Duration, collections::BTreeMap};
 
     use alloy_consensus::TxEnvelope;
     use itertools::Itertools;
@@ -1649,8 +1649,13 @@ mod test {
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
+    use tracing_subscriber::{
+        fmt::{format::FmtSpan, Layer as FmtLayer},
+        prelude::__tracing_subscriber_SubscriberExt,
+    };
     use test_case::test_case;
     use tracing_test::traced_test;
+    use tracing::debug;
 
     use crate::{
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
@@ -2318,6 +2323,20 @@ mod test {
 
         let result = extract_vote_msgs(cmds);
         assert!(result.is_empty());
+    }
+
+    fn setup_tracing() {
+        let subscriber = tracing_subscriber::Registry::default().with(
+            FmtLayer::default()
+                .json()
+                .with_span_events(FmtSpan::NONE)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(std::io::stdout)
+                .with_ansi(false),
+        );
+
+        tracing::subscriber::set_global_default(subscriber);
     }
 
     #[test]
@@ -4390,20 +4409,36 @@ mod test {
         let (n1, other_states) = ctx.split_first_mut().unwrap();
         let (n2, _) = other_states.split_first_mut().unwrap();
 
+        setup_tracing();
+
+        let mut proposed_block_headers = BTreeMap::new();
+        for i in 0..execution_delay.0 - 1 {
+            let p = env.next_proposal(Vec::new());
+            let (author, _, p) = p.destructure();
+            proposed_block_headers.insert(p.block_header.seq_num, p.block_header.clone());
+            let _cmds = n1.handle_proposal_message(author, p);
+            debug!(
+                "TEST_ITER root seq num: {:?}, round: {:?}, counter: {:?}",
+                n1.consensus_state.pending_block_tree.get_root_seq_num(),
+                n1.wrapped_state().consensus.scheduled_vote,
+                i
+            );
+        }
+
         // state receives block 1
         let cp = env.next_proposal(Vec::new());
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block_header.get_id();
 
-        println!(
-            "root seq num: {:?}",
-            n1.consensus_state.pending_block_tree.get_root_seq_num()
-        );
-
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        debug!(
+            "TEST_1 root seq num: {:?}, round: {:?}",
+            n1.consensus_state.pending_block_tree.get_root_seq_num(),
+            n1.wrapped_state().consensus.scheduled_vote
+        );
         // vote for block 1
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(3))
         );
         // no blocksync requests
         assert!(find_blocksync_request(&cmds).is_none());
@@ -4434,7 +4469,12 @@ mod test {
         let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
         // should not vote for block 3
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(3))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(5))
+        );
+        debug!(
+            "TEST_2 root seq num: {:?}, round: {:?}",
+            n1.consensus_state.pending_block_tree.get_root_seq_num(),
+            n1.wrapped_state().consensus.scheduled_vote
         );
         let requested_ranges = extract_blocksync_requests(cmds);
         assert_eq!(requested_ranges.len(), 1);
@@ -4463,6 +4503,11 @@ mod test {
             );
             assert!(find_blocksync_request(&cmds).is_none());
         }
+        debug!(
+            "TEST_3 root seq num: {:?}, round: {:?}",
+            n1.consensus_state.pending_block_tree.get_root_seq_num(),
+            n1.wrapped_state().consensus.scheduled_vote
+        );
         // block 2 should be in the blocktree as coherent
         let block_2_blocktree_entry = n1
             .consensus_state

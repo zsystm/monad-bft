@@ -8,6 +8,7 @@ bench = false
 
 [dependencies]
 alloy-primitives = { workspace = true }
+tracing = { workspace = true }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-types = { path = "../monad-types" }
 serde = { workspace = true, features = ["derive"] }

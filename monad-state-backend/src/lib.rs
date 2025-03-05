@@ -7,6 +7,7 @@ use alloy_primitives::Address;
 use monad_eth_types::{Balance, EthAccount, Nonce};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 #[derive(Debug, PartialEq)]
 pub enum StateBackendError {
@@ -215,6 +216,7 @@ impl StateBackend for InMemoryStateInner {
             state
         } else {
             let Some(proposal) = self.proposals.get(round) else {
+                debug!(?round, ?seq_num, ?block_id, ?is_finalized, "NotAvailableYet");
                 return Err(StateBackendError::NotAvailableYet);
             };
             if &proposal.block_id != block_id {
