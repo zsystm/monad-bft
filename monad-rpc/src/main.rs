@@ -15,7 +15,6 @@ use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use serde_json::Value;
-use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
@@ -51,7 +50,9 @@ use crate::{
         monad_eth_maxPriorityFeePerGas,
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response},
-    middleware::{build_middleware_chain, Middleware, RpcHandler},
+    middleware::{
+        build_middleware_chain, Middleware, RateLimitMiddleware, RpcHandler,
+    },
     trace::{
         monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
         monad_trace_transaction,
@@ -86,6 +87,17 @@ mod vpool;
 mod websocket;
 
 const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
+
+#[derive(Clone)]
+pub enum RpcLimiterId {
+    EthCall = 0,
+}
+
+impl From<RpcLimiterId> for usize {
+    fn from(id: RpcLimiterId) -> Self {
+        id as usize
+    }
+}
 
 pub struct MonadRpcServer {
     resources: MonadRpcResources,
@@ -157,9 +169,10 @@ impl MonadRpcServer {
     pub async fn new(args: Cli) -> Result<Self, Box<dyn std::error::Error>> {
         Self::setup_tracing(&args)?;
 
-        let concurrent_requests_limiter = Arc::new(Semaphore::new(
-            args.eth_call_max_concurrent_requests as usize,
-        ));
+        let mut rate_limiter = RateLimitMiddleware::new();
+        rate_limiter.add_limiter(RpcLimiterId::EthCall, args.eth_call_max_concurrent_requests);
+        rate_limiter.map_method_to_limiter("eth_call", RpcLimiterId::EthCall)?;
+        rate_limiter.map_method_to_limiter("eth_estimateGas", RpcLimiterId::EthCall)?;
 
         let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(10_000);
         let txpool_state = EthTxPoolBridgeState::new();
@@ -191,13 +204,14 @@ impl MonadRpcServer {
             args.batch_request_limit,
             args.max_response_size,
             args.allow_unprotected_txs,
-            concurrent_requests_limiter,
             args.eth_get_logs_max_block_range,
         );
 
         let meter_provider = Self::setup_metrics(&args)?;
 
-        let middlewares: Vec<Box<dyn Middleware<MonadRpcResources>>> = vec![];
+        let middlewares: Vec<Box<dyn Middleware<MonadRpcResources>>> = vec![
+            Box::new(rate_limiter),
+        ];
         let rpc_handler = Box::new(JsonRpcMethodHandler);
 
         Ok(Self {
@@ -360,12 +374,6 @@ impl MonadRpcServer {
             }
             "eth_call" => {
                 let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-
-                // acquire the concurrent requests permit
-                let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
-                    JsonRpcError::internal_error("eth_call concurrent requests limit".into())
-                })?;
-
                 let params = serde_json::from_value(params).invalid_params()?;
                 monad_eth_call(triedb_env, app_state.chain_id, params)
                     .await
@@ -540,11 +548,6 @@ impl MonadRpcServer {
                 let Some(triedb_env) = &app_state.triedb_reader else {
                     return Err(JsonRpcError::method_not_supported());
                 };
-
-                // acquire the concurrent requests permit
-                let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
-                    JsonRpcError::internal_error("eth_estimateGas concurrent requests limit".into())
-                })?;
 
                 let params = serde_json::from_value(params).invalid_params()?;
                 monad_eth_estimateGas(triedb_env, app_state.chain_id, params)
@@ -845,7 +848,6 @@ struct MonadRpcResources {
     batch_request_limit: u16,
     max_response_size: u32,
     allow_unprotected_txs: bool,
-    rate_limiter: Arc<Semaphore>,
     logs_max_block_range: u64,
 }
 
@@ -868,7 +870,6 @@ impl MonadRpcResources {
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
-        rate_limiter: Arc<Semaphore>,
         logs_max_block_range: u64,
     ) -> Self {
         Self {
@@ -881,7 +882,6 @@ impl MonadRpcResources {
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,
-            rate_limiter,
             logs_max_block_range,
         }
     }
@@ -974,7 +974,6 @@ mod tests {
             batch_request_limit: 5,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
-            rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
         };
         let app = test::init_service(
