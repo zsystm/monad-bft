@@ -4743,10 +4743,16 @@ dependencies = [
 name = "monad-compress"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-client",
+ "alloy-rpc-types",
  "brotli 3.4.0",
  "bytes",
  "criterion",
  "flate2",
+ "hex",
  "lz4",
  "monad-bls",
  "monad-consensus",
@@ -4758,6 +4764,9 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "peak_alloc",
+ "rand",
+ "tokio",
+ "url",
 ]
 
 [[package]]
