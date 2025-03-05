@@ -51,7 +51,8 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response},
     middleware::{
-        build_middleware_chain, Middleware, RateLimitMiddleware, RpcHandler,
+        build_middleware_chain, LoggingMiddleware, Middleware,
+        RateLimitMiddleware, RpcHandler,
     },
     trace::{
         monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
@@ -210,6 +211,7 @@ impl MonadRpcServer {
         let meter_provider = Self::setup_metrics(&args)?;
 
         let middlewares: Vec<Box<dyn Middleware<MonadRpcResources>>> = vec![
+            Box::new(LoggingMiddleware::new()),
             Box::new(rate_limiter),
         ];
         let rpc_handler = Box::new(JsonRpcMethodHandler);

@@ -1,10 +1,9 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
-
+use std::{future::Future, pin::Pin, collections::HashMap, sync::Arc};
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use super::{Middleware, Next};
 use crate::jsonrpc::{JsonRpcError, Request};
+use super::{Middleware, Next};
 
 pub struct ConcurrencyLimiter {
     semaphore: Arc<Semaphore>,
@@ -39,18 +38,14 @@ where
         if idx >= self.limiters.len() {
             self.limiters.resize_with(idx + 1, || {
                 Arc::new(ConcurrencyLimiter {
-                    semaphore: Arc::new(Semaphore::new(0)), // Placeholder limiter
+                    semaphore: Arc::new(Semaphore::new(0)) // Placeholder limiter
                 })
             });
         }
         self.limiters[idx] = Arc::new(limiter);
     }
 
-    pub fn map_method_to_limiter(
-        &mut self,
-        method: impl Into<String>,
-        limiter_id: T,
-    ) -> Result<(), String> {
+    pub fn map_method_to_limiter(&mut self, method: impl Into<String>, limiter_id: T) -> Result<(), String> {
         let idx: usize = limiter_id.clone().into();
         if idx >= self.limiters.len() {
             return Err("Limiter ID out of bounds".to_string());
@@ -59,10 +54,7 @@ where
         Ok(())
     }
 
-    async fn try_acquire_permit(
-        &self,
-        method: &str,
-    ) -> Result<Option<tokio::sync::SemaphorePermit>, JsonRpcError> {
+    async fn try_acquire_permit(&self, method: &str) -> Result<Option<tokio::sync::SemaphorePermit>, JsonRpcError> {
         if let Some(limiter_id) = self.method_mappings.get(method) {
             let idx: usize = limiter_id.clone().into();
             if let Some(limiter) = self.limiters.get(idx) {

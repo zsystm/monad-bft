@@ -4,8 +4,10 @@ use serde_json::Value;
 
 use crate::jsonrpc::JsonRpcError;
 
+mod logging;
 mod rate_limit;
 
+pub use logging::LoggingMiddleware;
 pub use rate_limit::RateLimitMiddleware;
 
 pub trait RpcHandler<State>: Send + Sync {
