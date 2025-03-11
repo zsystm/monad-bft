@@ -9,6 +9,9 @@ metrics_bft! {
 
             create_proposal,
             create_proposal_elapsed_ns,
+
+            preload_backend_lookups,
+            preload_backend_requests,
         ],
         components: [
             Pool {
