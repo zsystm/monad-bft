@@ -37,6 +37,7 @@ struct GasEstimator {
     sender: Address,
     block_key: BlockKey,
     state_override: StateOverrideSet,
+    trace: bool,
 }
 
 impl GasEstimator {
@@ -46,6 +47,7 @@ impl GasEstimator {
         sender: Address,
         block_key: BlockKey,
         state_override: StateOverrideSet,
+        trace: bool,
     ) -> Self {
         Self {
             chain_id,
@@ -53,6 +55,7 @@ impl GasEstimator {
             sender,
             block_key,
             state_override,
+            trace,
         }
     }
 }
@@ -72,6 +75,7 @@ impl EthCallProvider for GasEstimator {
         let header = self.block_header.clone();
         let sender = self.sender;
         let state_override = self.state_override.clone();
+        let trace = self.trace;
 
         monad_ethcall::eth_call(
             chain_id,
@@ -82,6 +86,7 @@ impl EthCallProvider for GasEstimator {
             block_round,
             eth_call_executor.unwrap(),
             &state_override,
+            trace,
         )
         .await
     }
@@ -170,6 +175,8 @@ pub struct MonadEthEstimateGasParams {
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
     state_override_set: StateOverrideSet,
+    #[serde(default)]
+    trace: bool,
 }
 
 #[rpc(
@@ -247,6 +254,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         sender,
         block_key,
         params.state_override_set,
+        params.trace,
     );
     estimate_gas(&eth_call_provider, Some(eth_call_executor), &mut params.tx).await
 }

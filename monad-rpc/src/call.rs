@@ -363,6 +363,8 @@ pub struct MonadEthCallParams {
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
     state_overrides: StateOverrideSet, // empty = no state overrides
+    #[serde(default)]
+    trace: bool, // will be true for debug_traceCall rpc
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
@@ -440,6 +442,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     };
 
     let state_overrides = params.state_overrides.clone();
+    let trace = params.trace;
     match eth_call(
         tx_chain_id,
         txn,
@@ -449,6 +452,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         block_round,
         eth_call_executor,
         &state_overrides,
+        trace,
     )
     .await
     {
