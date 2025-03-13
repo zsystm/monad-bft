@@ -161,7 +161,7 @@ where
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
     /// Track local timestamp and validate proposal timestamps
-    pub block_timestamp: &'a BlockTimestamp,
+    pub block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey>,
 
     /// Destination address for proposal payments
     pub beneficiary: &'a [u8; 20],
@@ -567,12 +567,15 @@ where
         // block_policy doesn't have visibility on whether current round is
         // bumped. Deferring the move
         /*
-        if let Some(ts_delta) = self
-            .block_timestamp
-            .valid_block_timestamp(block.get_qc().get_timestamp(), block.get_timestamp())
-        {
+        if let Ok(Some(ts_delta)) = self.block_timestamp.valid_block_timestamp(
+            block.get_qc().get_timestamp(),
+            block.get_timestamp(),
+            block.get_round(),
+            &author,
+        ) {
             // only update timestamp if the block advanced us our round
             if block_round > original_round {
+                info!(?ts_delta, "update timestamp");
                 cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
             }
         }
@@ -864,6 +867,9 @@ where
             message: ProtocolMessage::Vote(vote_msg),
         }
         .sign(self.keypair);
+        if next_leader != *self.nodeid {
+            self.block_timestamp.vote_sent(round);
+        }
         let send_cmd = ConsensusCommand::Publish {
             target: RouterTarget::PointToPoint(next_leader),
             message: msg,
@@ -1236,8 +1242,10 @@ where
                     .chain_params()
                     .vote_pace
                     .as_nanos(),
+                validated_block.get_round(),
+                validated_block.get_author(),
             )
-            .is_none()
+            .is_err()
         {
             self.metrics.consensus_events.failed_ts_validation += 1;
             warn!(
@@ -1664,7 +1672,7 @@ mod test {
     };
     use monad_types::{
         BlockId, Epoch, ExecutionProtocol, MockableFinalizedHeader, MockableProposedHeader, NodeId,
-        Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
+        PingSequence, Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
     };
     use monad_validator::{
         epoch_manager::EpochManager,
@@ -1723,7 +1731,7 @@ mod test {
         block_validator: BVT,
         block_policy: BPT,
         state_backend: SBT,
-        block_timestamp: BlockTimestamp,
+        block_timestamp: BlockTimestamp<SCT::NodeIdPubKey>,
         beneficiary: [u8; 20],
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
         consensus_config: ConsensusConfig<MockChainConfig, MockChainRevision>,
@@ -2459,6 +2467,10 @@ mod test {
             || EthValidator::new(0),
             execution_delay,
         );
+        for ctx in &mut ctx {
+            ctx.wrapped_state().block_timestamp.update_time(1000);
+        }
+
         let mut wrapped_state = ctx[0].wrapped_state();
 
         // our initial starting logic has consensus in round 1 so the first proposal does not
@@ -2469,6 +2481,42 @@ mod test {
 
         let p2 = env.next_proposal_empty();
         let (author, _, verified_message) = p2.destructure();
+
+        let val_set = wrapped_state
+            .val_epoch_map
+            .get_val_set(
+                &wrapped_state
+                    .epoch_manager
+                    .get_epoch(verified_message.block_header.round)
+                    .unwrap(),
+            )
+            .unwrap();
+        let val_data = val_set
+            .get_members()
+            .iter()
+            .map(
+                |(node_id, stake)| crate::ValidatorData::<SignatureCollectionType> {
+                    node_id: *node_id,
+                    stake: *stake,
+                    cert_pubkey: node_id.pubkey(),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        wrapped_state
+            .block_timestamp
+            .update_validators(&val_data, wrapped_state.nodeid);
+
+        for _ in 0..30 {
+            wrapped_state.block_timestamp.tick();
+        }
+        std::thread::sleep(Duration::from_millis(1));
+        for val in val_set.get_members().keys() {
+            wrapped_state
+                .block_timestamp
+                .pong_received(*val, PingSequence(1));
+        }
+        wrapped_state.block_timestamp.vote_sent(Round(1));
         let cmds = wrapped_state.handle_proposal_message(author, verified_message.clone());
         assert!(find_timestamp_update_cmd(&cmds).is_some());
 
@@ -2483,7 +2531,10 @@ mod test {
         let p7 = env.next_proposal_empty();
         let (author, _, verified_message) = p7.destructure();
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(find_timestamp_update_cmd(&cmds).is_some());
+        assert!(
+            find_timestamp_update_cmd(&cmds).is_none(),
+            "no timestamp adjustment because did not vote previous round"
+        );
     }
 
     #[test]
@@ -3096,6 +3147,117 @@ mod test {
         ));
     }
 
+    /// Test consensus behaviour of a leader who is supposed to propose
+    /// the next round but does not have a recent enough state root hash
+    /*
+        #[traced_test]
+        #[test]
+        fn test_unavailable_state_root_during_proposal() {
+            let num_state = 4;
+            // MissingNextStateRoot forces the proposer's state root hash
+            // to be unavailable
+            let (mut env, mut ctx) = setup::<
+                SignatureType,
+                SignatureCollectionType,
+                BlockPolicyType,
+                StateBackendType,
+                BlockValidatorType,
+                _,
+                MissingNextStateRoot,
+                _,
+                _,
+            >(
+                num_state,
+                ValidatorSetFactory::default(),
+                SimpleRoundRobin::default(),
+                || PassthruBlockPolicy,
+                || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+                || MockValidator,
+                MockTxPool::default(),
+                MissingNextStateRoot::default,
+            );
+            let (n1, xs) = ctx.split_first_mut().unwrap();
+            let (n2, xs) = xs.split_first_mut().unwrap();
+            let (n3, xs) = xs.split_first_mut().unwrap();
+            let n4 = &mut xs[0];
+
+            let p1 = env.next_proposal_empty();
+            let (author, _, verified_message) = p1.destructure();
+            let _ = n1.handle_proposal_message(author, verified_message.clone());
+            let p1_vote = match n1.consensus_state.scheduled_vote.clone().unwrap() {
+                OutgoingVoteStatus::VoteReady(v) => v,
+                _ => panic!(),
+            };
+            let cmds1 = n1
+                .wrapped_state()
+                .send_vote_and_reset_timer(p1_vote.vote_info.round, p1_vote);
+            let p1_votes = extract_vote_msgs(cmds1)[0];
+
+            let _ = n2.handle_proposal_message(author, verified_message.clone());
+            let p2_vote = match n2.consensus_state.scheduled_vote.clone().unwrap() {
+                OutgoingVoteStatus::VoteReady(v) => v,
+                _ => panic!(),
+            };
+            let cmds2 = n2
+                .wrapped_state()
+                .send_vote_and_reset_timer(p2_vote.vote_info.round, p2_vote);
+            let p2_votes = extract_vote_msgs(cmds2)[0];
+
+            let _ = n3.handle_proposal_message(author, verified_message.clone());
+            let p3_vote = match n3.consensus_state.scheduled_vote.clone().unwrap() {
+                OutgoingVoteStatus::VoteReady(v) => v,
+                _ => panic!(),
+            };
+            let cmds3 = n3
+                .wrapped_state()
+                .send_vote_and_reset_timer(p3_vote.vote_info.round, p3_vote);
+            let p3_votes = extract_vote_msgs(cmds3)[0];
+
+            let _ = n4.handle_proposal_message(author, verified_message);
+            let p4_vote = match n4.consensus_state.scheduled_vote.clone().unwrap() {
+                OutgoingVoteStatus::VoteReady(v) => v,
+                _ => panic!(),
+            };
+            let cmds4 = n4
+                .wrapped_state()
+                .send_vote_and_reset_timer(p4_vote.vote_info.round, p4_vote);
+            let p4_votes = extract_vote_msgs(cmds4)[0];
+
+            let next_leader = {
+                let node_id = *env.next_proposal_empty().author();
+                if node_id == n1.nodeid {
+                    n1
+                } else if node_id == n2.nodeid {
+                    n2
+                } else if node_id == n3.nodeid {
+                    n3
+                } else if node_id == n4.nodeid {
+                    n4
+                } else {
+                    unreachable!("next leader should be one of the 4 nodes")
+                }
+            };
+
+            let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
+            for (i, vote) in votes.iter().enumerate().take(4) {
+                let v = Verified::<SignatureType, VoteMessage<_>>::new(*vote, &env.keys[i]);
+                let cmds = next_leader.handle_vote_message(*v.author(), *v);
+
+                // after 2f + 1 votes, we expect that an empty proposal is created
+                if i == 2 {
+                    let p = extract_proposal_broadcast(cmds);
+                    assert_eq!(p.payload.txns, TransactionPayload::Null);
+                    assert_eq!(
+                        next_leader
+                            .metrics
+                            .consensus_events
+                            .creating_empty_block_proposal,
+                        1
+                    );
+                }
+            }
+        }
+    */
     #[test]
     fn test_state_root_updates() {
         let num_state = 4;

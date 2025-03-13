@@ -31,7 +31,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{
+    BlockId, Epoch, ExecutionProtocol, NodeId, PingSequence, Round, RouterTarget, SeqNum, Stake,
+};
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -70,6 +72,7 @@ pub enum TimeoutVariant {
     Pacemaker,
     BlockSync(BlockSyncRequestMessage),
     SendVote,
+    Ping,
 }
 
 #[derive(Debug)]
@@ -919,6 +922,12 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PingEvent<SCT: SignatureCollection> {
+    pub sender: NodeId<SCT::NodeIdPubKey>,
+    pub sequence: PingSequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlPanelEvent<SCT>
 where
     SCT: SignatureCollection,
@@ -986,6 +995,10 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<SCT>),
+    /// Ping events
+    PingRequestEvent(PingEvent<SCT>),
+    PingResponseEvent(PingEvent<SCT>),
+    PingTickEvent,
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -1041,6 +1054,9 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
+            MonadEvent::PingRequestEvent(event) => MonadEvent::PingRequestEvent(event.clone()),
+            MonadEvent::PingResponseEvent(event) => MonadEvent::PingResponseEvent(event.clone()),
+            MonadEvent::PingTickEvent => MonadEvent::PingTickEvent,
         }
     }
 }
@@ -1107,6 +1123,13 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
+            MonadEvent::PingRequestEvent(e) => {
+                format!("PingRequestEvent: {} {}", e.sender, e.sequence.0)
+            }
+            MonadEvent::PingResponseEvent(e) => {
+                format!("PingResponseEvent: {} {}", e.sender, e.sequence.0)
+            }
+            MonadEvent::PingTickEvent => "PingTickEvent".to_string(),
         };
 
         write!(f, "{}", s)
