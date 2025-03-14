@@ -29,12 +29,16 @@ unsafe impl Send for EthCallExecutor {}
 unsafe impl Sync for EthCallExecutor {}
 
 impl EthCallExecutor {
-    pub fn new(num_fibers: u32, triedb_path: &Path) -> Self {
+    pub fn new(num_threads: u32, num_fibers: u32, triedb_path: &Path) -> Self {
         let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
 
         let eth_call_executor = unsafe {
-            bindings::monad_eth_call_executor_create(num_fibers, dbpath.as_c_str().as_ptr())
+            bindings::monad_eth_call_executor_create(
+                num_threads,
+                num_fibers,
+                dbpath.as_c_str().as_ptr(),
+            )
         };
 
         Self { eth_call_executor }
@@ -252,6 +256,9 @@ pub async fn eth_call(
         )
     };
 
+    // lock is dropped after the task has been submitted
+    drop(executor_lock);
+
     let result = match recv.await {
         Ok(r) => r,
         Err(e) => {
@@ -326,7 +333,6 @@ pub async fn eth_call(
         bindings::monad_eth_call_result_release(result);
         bindings::monad_state_override_destroy(override_ctx);
 
-        drop(executor_lock);
         call_result
     }
 }

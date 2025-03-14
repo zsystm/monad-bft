@@ -57,6 +57,12 @@ pub struct Cli {
     #[arg(long, default_value_t = 20)]
     pub eth_call_max_concurrent_requests: u32,
 
+    #[arg(long, default_value_t = 1)]
+    pub eth_call_executor_threads: u32,
+
+    #[arg(long, default_value_t = 8)]
+    pub eth_call_executor_fibers: u32,
+
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]
     pub triedb_max_buffered_read_requests: u32,
