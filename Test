@@ -27,7 +27,10 @@ setup_docker() {
         die 1 "Cannot run '$docker' command. Check path?"
     elif ! $docker info >/dev/null 2>&1; then
         docker='sudo docker'
-        sudo -v -p 'sudo pw for %u@%h to run docker: ' \
+        #   We do not use `sudo -v` here: in common configurations that
+        #   may require a password even when `sudo any-command` doesn't.
+        sudo -p 'sudo pw for %u@%h to run docker: ' \
+            docker --version >/dev/null \
             || die 3 "Cannot sudo to run '$docker'; start proxy?"
     fi
 }
