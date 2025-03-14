@@ -48,6 +48,7 @@ build_package() {
     #   necessary unless care is taken with layer creation in the
     #   Dockerfile.
     $docker buildx build ${clean_big:+--no-cache=true} $quiet \
+        ${clean_big:+--no-cache=true} $quiet ${loud:+--progress=plain} \
         --tag "$tag" -f "$PROJDIR"/package/Dockerfile "$PROJDIR"
 }
 
@@ -64,9 +65,11 @@ export PROJDIR=$(command cd -P "$(dirname "$0")" && pwd)
 
 clean_big=
 quiet=-q
+loud=
 while [[ ${#@} -gt 0 ]]; do case "$1" in
     -C)     shift; clean_big=true; rm -rf ".build/";;
     -v)     shift; quiet='';;
+    -V)     shift; quiet=''; loud=true;;    # very verbose output
     --)     shift; break;;                  # allow options for subset tests
     *)      break;;
 esac; done
