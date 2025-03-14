@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use itertools::Itertools;
 use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -134,6 +136,7 @@ where
                 if let ConsensusEvent::Message {
                     sender,
                     unverified_message,
+                    timestamp,
                 } = event.clone()
                 {
                     if let Ok((author, ProtocolMessage::Proposal(proposal))) =
@@ -199,6 +202,7 @@ where
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
+                timestamp: Duration
             } => {
                 match Self::verify_and_validate_consensus_message(
                     consensus.epoch_manager,

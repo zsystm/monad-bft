@@ -1,4 +1,7 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{
+    fmt::Debug, marker::PhantomData, ops::Deref,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::{Bytes, BytesMut};
@@ -673,10 +676,12 @@ where
         // MUST assert that output is valid and came from the `from` NodeId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
+
         match self {
             MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
                 sender: from,
                 unverified_message: msg,
+                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros(), 
             }),
 
             MonadMessage::BlockSyncRequest(request) => {

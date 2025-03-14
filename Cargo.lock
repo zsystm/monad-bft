@@ -4574,6 +4574,7 @@ dependencies = [
  "monad-validator",
  "test-case",
  "tracing",
+ "tracing-subscriber",
  "tracing-test",
 ]
 

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
+use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
@@ -566,20 +566,35 @@ where
         // where timestamp validation is done, in block_policy right now.
         // block_policy doesn't have visibility on whether current round is
         // bumped. Deferring the move
-        /*
-        if let Ok(Some(ts_delta)) = self.block_timestamp.valid_block_timestamp(
-            block.get_qc().get_timestamp(),
-            block.get_timestamp(),
-            block.get_round(),
-            &author,
-        ) {
-            // only update timestamp if the block advanced us our round
-            if block_round > original_round {
-                info!(?ts_delta, "update timestamp");
-                cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+
+        self.block_timestamp
+             .proposal_received(block.get_round(), &author, timestamp);
+
+        if let Some(parent_timestamp) = self
+            .consensus
+            .blocktree()
+            .get_timestamp_of_qc(block.get_qc()) {
+
+            if let Ok(Some(ts_delta)) = self.block_timestamp.valid_block_timestamp(
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default(), // TODO: use the value from the caller
+                parent_timestamp,
+                block.get_timestamp(),
+                self.config
+                    .chain_config
+                    .get_chain_revision(round)
+                    .chain_params()
+                    .vote_pace
+                    .as_nanos(),
+                block_round,
+                &author,
+            ) {
+                // only update timestamp if the block advanced us our round
+                if block_round > original_round {
+                    info!(?ts_delta, "update timestamp");
+                    cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+                }
             }
         }
-        */
 
         // at this point, block is valid and can be added to the blocktree
         let res_cmds = self.try_add_and_commit_blocktree(block, Some(state_root_action));
@@ -868,7 +883,7 @@ where
         }
         .sign(self.keypair);
         if next_leader != *self.nodeid {
-            self.block_timestamp.vote_sent(round);
+            self.block_timestamp.vote_sent(round, &next_leader);
         }
         let send_cmd = ConsensusCommand::Publish {
             target: RouterTarget::PointToPoint(next_leader),
@@ -889,6 +904,7 @@ where
         };
 
         self.consensus.scheduled_vote = None;
+        // update the timestamp of the last vote
         vec![send_cmd, vote_timer_cmd]
     }
 
@@ -1234,6 +1250,7 @@ where
         if self
             .block_timestamp
             .valid_block_timestamp(
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default(), // TODO use real values
                 parent_timestamp,
                 validated_block.get_timestamp(),
                 self.config
@@ -1623,7 +1640,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{ops::Deref, time::Duration};
+    use std::{env::set_current_dir, ops::Deref, time::Duration};
 
     use alloy_consensus::TxEnvelope;
     use itertools::Itertools;
@@ -1682,6 +1699,10 @@ mod test {
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
+    use tracing_subscriber::{
+        fmt::{format::FmtSpan, Layer as FmtLayer},
+        prelude::__tracing_subscriber_SubscriberExt,
+    };
     use tracing_test::traced_test;
 
     use crate::{
@@ -1705,6 +1726,20 @@ mod test {
     type StateBackendType = InMemoryState;
     type BlockValidatorType =
         EthValidator<SignatureType, SignatureCollectionType, StateBackendType>;
+
+    fn setup_tracing() {
+        let subscriber = tracing_subscriber::Registry::default().with(
+            FmtLayer::default()
+                .json()
+                .with_span_events(FmtSpan::NONE)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(std::io::stdout)
+                .with_ansi(false),
+        );
+
+        tracing::subscriber::set_global_default(subscriber);
+    }
 
     struct NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>
     where
@@ -2436,6 +2471,8 @@ mod test {
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
+        setup_tracing();
+
         let p1 = env.next_proposal_empty();
         let (author, _, verified_message) = p1.destructure();
         let _ = wrapped_state.handle_proposal_message(author, verified_message);
@@ -2516,7 +2553,8 @@ mod test {
                 .block_timestamp
                 .pong_received(*val, PingSequence(1));
         }
-        wrapped_state.block_timestamp.vote_sent(Round(1));
+        let leader = wrapped_state.election.get_leader(Round(1), val_set.get_members());
+        wrapped_state.block_timestamp.vote_sent(Round(1), &leader);
         let cmds = wrapped_state.handle_proposal_message(author, verified_message.clone());
         assert!(find_timestamp_update_cmd(&cmds).is_some());
 

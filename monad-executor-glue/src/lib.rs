@@ -4,7 +4,7 @@ use std::{fmt::Debug, net::SocketAddr};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use futures::channel::oneshot;
 use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
@@ -393,6 +393,7 @@ where
     Message {
         sender: NodeId<SCT::NodeIdPubKey>,
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
+        timestamp: u128,
     },
     Timeout,
     /// a block that was previously requested
@@ -415,10 +416,12 @@ where
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
+                timestamp,
             } => f
                 .debug_struct("Message")
                 .field("sender", sender)
                 .field("msg", unverified_message)
+                .field("timestamp", timestamp)
                 .finish(),
             ConsensusEvent::Timeout => f.debug_struct("Timeout").finish(),
             ConsensusEvent::BlockSync {
@@ -1097,6 +1100,7 @@ where
             MonadEvent::ConsensusEvent(ConsensusEvent::Message {
                 sender,
                 unverified_message: _,
+                timestamp: _
             }) => {
                 format!("ConsensusEvent::Message from {sender}")
             }
