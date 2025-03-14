@@ -8,6 +8,8 @@ builddir="$PROJDIR"/.build/package
 mkdir -p "$builddir"
 command cd "$builddir"
 
+####################################################################
+
 #   For testing purposes, we are able to build a package for any commit (it
 #   need not even be on `main`). To avoid people mistakenly installing
 #   random code versions, we use a different package name for packages that
@@ -28,6 +30,14 @@ command cd "$builddir"
 #     configuration of this is working. These tests need to be on our own
 #     code here to catch problems raised by what may seem like harmless
 #     changes to those not intimately familiar with= Debian packaging.
+
+#   XXX We also need to deal with whether the binaries are stripped.
+#   For production releases we want to strip all debug symbols, but
+#   for test releases we usually (but not always) do not. (Developers
+#   always want symbols; sometimes we want to ship a test build with
+#   symbols to a customer and sometimes we don't.)
+
+####################################################################
 
 #   This `git describe` generates only the commit ID and a "-dirty" suffix
 #   if necessary; it does not include the version number from the most
@@ -59,6 +69,7 @@ mkdir -p $pkg_file/usr/{bin,lib}
         "$builddir/$pkg_file/usr/bin/"
     cp *.so *.so.* \
         "$builddir/$pkg_file/usr/lib/"
+    #   XXX strip binaries? (see above)
 )
 chmod -R u=rwX,go=rX $pkg_file/usr/
 chmod    u=rwx,go=rx $pkg_file/usr/bin/*
