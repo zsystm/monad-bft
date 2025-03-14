@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+trap 'ec=$?; echo 1>&2 "INTERNAL ERROR: ec=$ec line=$LINENO cmd=$BASH_COMMAND";
+    exit $ec;' ERR
+
+####################################################################
+#   Test framework support functions
+
+die() {
+    local exitcode=$1; shift
+    echo 1>&2 "$(basename "$0"):" "$@"
+    exit $exitcode
+}
+
+#   Commands running tests that are expected to fail if something's wrong
+#   in code under test should be tested with `… || fail "message"`.
+#   Otherwise the failure will be indicated as an internal error in the
+#   test framework.
+fail() {
+    echo 1>&2 "FAILURE:" "$@"
+    exit 1
+}
+
+####################################################################
+#   Setup and Argument Parsing
+
+export PROJDIR=$(command cd -P "$(dirname "$0")" && pwd)
+
+#   The full set of tests, as we add them here, will take quite some time
+#   to run, so as we go we need to add arguments to run subsets of the
+#   tests. This will include things such as:
+#   • Just unit tests, including options to select subsets of the unit tests.
+#   • Build and smoke test of the package.
+
+[[ $# -eq 0 ]] || die 2 "Currently no command-line arguments are accepted."
+
+####################################################################
+#   Main
+
+echo OK.
