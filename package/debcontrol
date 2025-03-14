@@ -1,0 +1,5 @@
+Package: __NAME__
+Version: __VERSION__
+Maintainer: Category Labs <nobody@category.xyz>
+Architecture: __ARCH__
+Description: Monad Blockchain Node

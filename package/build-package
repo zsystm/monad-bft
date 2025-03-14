@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+trap 'ec=$?; echo 1>&2 "INTERNAL ERROR: ec=$ec line=$LINENO cmd=$BASH_COMMAND";
+    exit $ec;' ERR
+
+export PROJDIR=$(command cd "$(dirname "$0")/.." && pwd -P)
+builddir="$PROJDIR"/.build/package
+mkdir -p "$builddir"
+command cd "$builddir"
+
+#   For testing purposes, we are able to build a package for any commit (it
+#   need not even be on `main`). To avoid people mistakenly installing
+#   random code versions, we use a different package name for packages that
+#   are not official releases: we add a suffix indicating the commit whence
+#   it was built and always set the version to 0.0.0-0.
+#
+#   XXX However, we _must_ prevent people from installing more than one of
+#   any monad package or chaos will result when we end up with random
+#   versions of various files on the system.
+#   • The most obvious way to do this is with a Conflicts: field, but this
+#     takes only specific package names without wildcards, so there's no
+#     way to specify that, e.g. `monad-01ab23cd` should conflict with
+#     `monad-45ef67ab`.
+#   • This probably can be solved through the Provides: field, but that's
+#     still an area under research.
+#   • This is clearly complex enough and has dramatic enough failure
+#     consequences that we'll need automated tests to ensure that our
+#     configuration of this is working. These tests need to be on our own
+#     code here to catch problems raised by what may seem like harmless
+#     changes to those not intimately familiar with= Debian packaging.
+
+#   This `git describe` generates only the commit ID and a "-dirty" suffix
+#   if necessary; it does not include the version number from the most
+#   recent tag. That would be done separately to add a version number to
+#   the appropriate package fields.
+commit=$(git -C "$PROJDIR" describe --exclude='*' --always --dirty)
+
+#   Currently we build _only_ test packages, not release packages.
+pkg_name=monad-$commit
+pkg_ver=0.0.0-0
+pkg_arch=$(dpkg --print-architecture)
+pkg_file="${pkg_name}-${pkg_ver}.${pkg_arch}"
+
+#   Metadata
+mkdir -p $pkg_file/DEBIAN/
+sed > $pkg_file/DEBIAN/control -e "
+    s/__NAME__/$pkg_name/
+    s/__VERSION__/$pkg_ver/
+    s/__ARCH__/$pkg_arch/
+" $PROJDIR/package/debcontrol
+chmod 0644 $pkg_file/DEBIAN/control
+
+#   Package Files
+mkdir -p $pkg_file/usr/{bin,lib}
+(   cd "$PROJDIR"
+    #   XXX We should have a single source of truth for this list.
+    cp node keystore debug-node \
+        ledger-tail wal2json wal-tool triedb-debug triedb-bench \
+        "$builddir/$pkg_file/usr/bin/"
+    cp *.so *.so.* \
+        "$builddir/$pkg_file/usr/lib/"
+)
+chmod -R u=rwX,go=rX $pkg_file/usr/
+chmod    u=rwx,go=rx $pkg_file/usr/bin/*
+#   .so files should not have execute permission, but builds sometime
+#   produce .so files with that anyway, and `X` will not remove it,
+#   so we need to do that manually.
+chmod    u=rw,go=r   $pkg_file/usr/lib/*.so $pkg_file/usr/lib/*.so.*
+
+#   Build
+#   • We time this for debug purposes since it's a relatively expensive
+#     operation: generally about 30 seconds.
+time dpkg-deb --build --root-owner-group $pkg_file

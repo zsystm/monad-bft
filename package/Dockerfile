@@ -10,6 +10,7 @@ RUN apt update && apt install -y \
   make \
   ca-certificates \
   pkg-config \
+  git \
   gnupg \
   software-properties-common \
   wget \
@@ -159,7 +160,16 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` .
 
+#   We need .git/ for commit and version data for packaging. This is
+#   excluded from the Docker context by default, but we explicitly include
+#   it for other things, so we re-use that for this as well.
+COPY .git/ .git/
+COPY package/ package/
+RUN package/build-package
+
+####################################################################
 # Debug runner
+
 FROM base AS runner-debug
 
 WORKDIR /usr/src/monad-bft
