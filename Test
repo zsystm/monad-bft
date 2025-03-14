@@ -21,6 +21,36 @@ fail() {
     exit 1
 }
 
+setup_docker() {
+    declare -g docker=docker
+    if ! $docker --version >/dev/null; then
+        die 1 "Cannot run '$docker' command. Check path?"
+    elif ! $docker info >/dev/null 2>&1; then
+        docker='sudo docker'
+        sudo -v -p 'sudo pw for %u@%h to run docker: ' \
+            || die 3 "Cannot sudo to run '$docker'; start proxy?"
+    fi
+}
+
+####################################################################
+#   Build and test functions
+
+build_package() {
+    declare -g PROJDIR
+    local tag=monad
+
+    echo "----- Building image $tag"
+    #   This is not really optimal; we have over 150,000 files under
+    #   $PROJDIR and we include almost all 10 GB of them (even .git/
+    #   subdirs) in the the build context, except for some excluded
+    #   by a somewhat complex .dockerignore. (This takes about 30s per
+    #   run.) This also can tend towards much more rebuilding than
+    #   necessary unless care is taken with layer creation in the
+    #   Dockerfile.
+    $docker buildx build ${clean_big:+--no-cache=true} $quiet \
+        --tag "$tag" -f "$PROJDIR"/package/Dockerfile "$PROJDIR"
+}
+
 ####################################################################
 #   Setup and Argument Parsing
 
@@ -32,9 +62,21 @@ export PROJDIR=$(command cd -P "$(dirname "$0")" && pwd)
 #   • Just unit tests, including options to select subsets of the unit tests.
 #   • Build and smoke test of the package.
 
-[[ $# -eq 0 ]] || die 2 "Currently no command-line arguments are accepted."
+clean_big=
+quiet=-q
+while [[ ${#@} -gt 0 ]]; do case "$1" in
+    -C)     shift; clean_big=true; rm -rf ".build/";;
+    -v)     shift; quiet='';;
+    --)     shift; break;;                  # allow options for subset tests
+    *)      break;;
+esac; done
+[[ $# -eq 0 ]] || die 2 "Invalid arg: $1"
+
+setup_docker
 
 ####################################################################
 #   Main
+
+build_package || fail build_package     # XXX resulting package not yet tested
 
 echo OK.
