@@ -12,8 +12,8 @@ use alloy_rlp::Encodable;
 use bindings::monad_eth_call_result;
 use futures::channel::oneshot::{channel, Sender};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tokio::sync::{Mutex, Semaphore};
+use tracing::{error, info, warn};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 pub mod bindings {
@@ -22,7 +22,8 @@ pub mod bindings {
 
 #[derive(Debug)]
 pub struct EthCallExecutor {
-    eth_call_executor: *mut bindings::monad_eth_call_executor,
+    eth_call_executors: Vec<*mut bindings::monad_eth_call_executor>,
+    semaphore: Arc<Semaphore>,
 }
 
 unsafe impl Send for EthCallExecutor {}
@@ -30,22 +31,31 @@ unsafe impl Sync for EthCallExecutor {}
 
 impl EthCallExecutor {
     pub fn new(num_fibers: u32, triedb_path: &Path) -> Self {
-        let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
-            .expect("failed to create CString");
+        assert!(num_fibers > 0);
 
-        let eth_call_executor = unsafe {
-            bindings::monad_eth_call_executor_create(num_fibers, dbpath.as_c_str().as_ptr())
-        };
+        let eth_call_executors = (0..num_fibers)
+            .map(|_| {
+                let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
+                    .expect("failed to create CString");
 
-        Self { eth_call_executor }
+                unsafe { bindings::monad_eth_call_executor_create(1, dbpath.as_c_str().as_ptr()) }
+            })
+            .collect();
+
+        Self {
+            eth_call_executors,
+            semaphore: Arc::new(Semaphore::new(num_fibers as usize)),
+        }
     }
 }
 
 impl Drop for EthCallExecutor {
     fn drop(&mut self) {
         info!("dropping eth_call_executor");
-        unsafe {
-            bindings::monad_eth_call_executor_destroy(self.eth_call_executor);
+        for eth_call_executor in &mut self.eth_call_executors {
+            unsafe {
+                bindings::monad_eth_call_executor_destroy(*eth_call_executor);
+            }
         }
         info!("eth_call_executor successfully destroyed");
     }
@@ -120,7 +130,7 @@ pub async fn eth_call(
     sender: Address,
     block_number: u64,
     block_round: Option<u64>,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executors: Arc<Mutex<EthCallExecutor>>,
     state_override_set: &StateOverrideSet,
 ) -> CallResult {
     // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
@@ -228,9 +238,17 @@ pub async fn eth_call(
     let (send, recv) = channel();
     let sender_ctx = Box::new(SenderContext { sender: send });
 
+    let semaphore = eth_call_executors.lock().await.semaphore.clone();
+    let _guard = semaphore.acquire().await.expect("semaphore poisoned");
     // hold lock on executor while submitting the task
-    let executor_lock = eth_call_executor.lock().await;
-    let eth_call_executor = executor_lock.eth_call_executor;
+    let Some(eth_call_executor) = eth_call_executors.lock().await.eth_call_executors.pop() else {
+        unsafe { bindings::monad_state_override_destroy(override_ctx) };
+        error!("no available eth_call_executor, but semaphore held!");
+        return CallResult::Failure(FailureCallResult {
+            message: "internal eth_call error".to_string(),
+            data: None,
+        });
+    };
 
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
@@ -257,8 +275,12 @@ pub async fn eth_call(
         Err(e) => {
             unsafe { bindings::monad_state_override_destroy(override_ctx) };
 
+            eth_call_executors
+                .lock()
+                .await
+                .eth_call_executors
+                .push(eth_call_executor);
             warn!("callback from eth_call_executor failed: {:?}", e);
-
             return CallResult::Failure(FailureCallResult {
                 message: "internal eth_call error".to_string(),
                 data: None,
@@ -326,7 +348,11 @@ pub async fn eth_call(
         bindings::monad_eth_call_result_release(result);
         bindings::monad_state_override_destroy(override_ctx);
 
-        drop(executor_lock);
+        eth_call_executors
+            .lock()
+            .await
+            .eth_call_executors
+            .push(eth_call_executor);
         call_result
     }
 }
