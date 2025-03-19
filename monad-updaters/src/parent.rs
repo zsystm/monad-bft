@@ -21,13 +21,12 @@ use monad_types::ExecutionProtocol;
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
+pub struct ParentExecutor<R, T, L, C, S, TP, CP, LO, SS, CL> {
     pub router: R,
     pub timer: T,
     pub ledger: L,
     pub checkpoint: C,
     pub state_root_hash: S,
-    pub timestamp: TS,
     pub txpool: TP,
     pub control_panel: CP,
     pub loopback: LO,
@@ -36,15 +35,14 @@ pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE, E, OM, ST, SCT, EPT, BPT, SBT> Executor
-    for ParentExecutor<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE>
+impl<RE, TE, LE, CE, SE, TPE, CPE, LOE, SSE, CLE, E, OM, ST, SCT, EPT, BPT, SBT> Executor
+    for ParentExecutor<RE, TE, LE, CE, SE, TPE, CPE, LOE, SSE, CLE>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
     LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
     CE: Executor<Command = CheckpointCommand<SCT>>,
     SE: Executor<Command = StateRootHashCommand<SCT>>,
-    TSE: Executor<Command = TimestampCommand>,
 
     TPE: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
@@ -83,7 +81,6 @@ where
         self.txpool.exec(txpool_cmds);
         self.loopback.exec(loopback_cmds);
         self.control_panel.exec(control_panel_cmds);
-        self.loopback.exec(loopback_cmds);
         self.state_sync.exec(state_sync_cmds);
         self.config_loader.exec(config_reload_cmds);
     }
@@ -95,7 +92,6 @@ where
             .chain(self.ledger.metrics())
             .chain(self.checkpoint.metrics())
             .chain(self.state_root_hash.metrics())
-            .chain(self.timestamp.metrics())
             .chain(self.txpool.metrics())
             .chain(self.control_panel.metrics())
             .chain(self.loopback.metrics())
@@ -104,14 +100,13 @@ where
     }
 }
 
-impl<E, R, T, L, C, S, TS, TP, CP, LO, SS, CL> Stream
-    for ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL>
+impl<E, R, T, L, C, S, TP, CP, LO, SS, CL> Stream
+    for ParentExecutor<R, T, L, C, S, TP, CP, LO, SS, CL>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
     L: Stream<Item = E> + Unpin,
     S: Stream<Item = E> + Unpin,
-    TS: Stream<Item = E> + Unpin,
 
     TP: Stream<Item = E> + Unpin,
     CP: Stream<Item = E> + Unpin,
@@ -132,7 +127,6 @@ where
             this.ledger.next().boxed_local(),
             this.txpool.next().boxed_local(), // TODO: ingesting txs should be deprioritized
             this.state_root_hash.next().boxed_local(),
-            this.timestamp.next().boxed_local(),
             this.loopback.next().boxed_local(),
             this.router.next().boxed_local(), // TODO: consensus msgs should be prioritized
             this.state_sync.next().boxed_local(),
@@ -143,7 +137,7 @@ where
     }
 }
 
-impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
+impl<R, T, L, C, S, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TP, CP, LO, SS, CL> {
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

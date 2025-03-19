@@ -16,7 +16,6 @@ import "validator_data.proto";
 message ProtoMessageWithSender {
   monad_proto.basic.ProtoNodeId sender = 1;
   monad_proto.message.ProtoUnverifiedConsensusMessage unverified_message = 2;
-  uint64 timestamp = 3;
 }
 
 message ProtoPaceMakerTimeout {

@@ -6,8 +6,7 @@ use monad_chain_config::{
 use monad_consensus_types::{
     block::{BlockPolicy, MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
-    clock::TestClock,
-    payload::{StateRoot, StateRootValidator},
+    clock::{Clock, TestClock},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
@@ -47,7 +46,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::BlockValidator,
     <S as SwarmRelation>::ChainConfigType,
     <S as SwarmRelation>::ChainRevisionType,
-    TestClock,
+    <S as SwarmRelation>::ClockType,
 >;
 pub trait SwarmRelation
 where
@@ -156,6 +155,7 @@ where
         > + Send
         + Sync
         + Unpin;
+    type ClockType: Clock + Send + Sync + Unpin;
 }
 pub struct DebugSwarmRelation;
 impl SwarmRelation for DebugSwarmRelation {
@@ -166,6 +166,7 @@ impl SwarmRelation for DebugSwarmRelation {
     type StateBackendType = InMemoryState;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type ClockType = TestClock;
 
     type TransportMessage = Bytes;
 
@@ -298,6 +299,7 @@ impl SwarmRelation for NoSerSwarm {
     type StateBackendType = InMemoryState;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type ClockType = TestClock;
 
     type TransportMessage = VerifiedMonadMessage<
         Self::SignatureType,
@@ -359,6 +361,7 @@ impl SwarmRelation for BytesSwarm {
     type StateBackendType = InMemoryState;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type ClockType = TestClock;
 
     type TransportMessage = Bytes;
     type BlockValidator = MockValidator;
@@ -415,6 +418,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type StateBackendType = InMemoryState;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type ClockType = TestClock;
 
     type TransportMessage = VerifiedMonadMessage<
         Self::SignatureType,

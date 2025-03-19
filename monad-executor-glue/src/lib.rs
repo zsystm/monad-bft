@@ -4,7 +4,7 @@ use std::{fmt::Debug, net::SocketAddr};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
 use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
@@ -22,7 +22,7 @@ use monad_consensus_types::{
     checkpoint::Checkpoint,
     metrics::Metrics,
     payload::{ConsensusBlockBodyId, RoundSignature},
-    quorum_certificate::{QuorumCertificate, TimestampAdjustment},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
@@ -302,7 +302,6 @@ where
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<SCT>),
     StateRootHashCommand(StateRootHashCommand<SCT>),
-    TimestampCommand(TimestampCommand),
 
     TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
@@ -327,7 +326,6 @@ where
         Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<SCT>>,
         Vec<StateRootHashCommand<SCT>>,
-        Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
         Vec<ControlPanelCommand<SCT>>,
         Vec<LoopbackCommand<E>>,
@@ -339,7 +337,6 @@ where
         let mut ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
-        let mut timestamp_cmds = Vec::new();
         let mut txpool_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
         let mut loopback_cmds = Vec::new();
@@ -353,7 +350,6 @@ where
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
-                Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::TxPoolCommand(cmd) => txpool_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
@@ -368,7 +364,6 @@ where
             ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
-            timestamp_cmds,
             txpool_cmds,
             control_panel_cmds,
             loopback_cmds,
@@ -388,7 +383,6 @@ where
     Message {
         sender: NodeId<SCT::NodeIdPubKey>,
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
-        timestamp: u128,
     },
     Timeout,
     /// a block that was previously requested
@@ -411,12 +405,10 @@ where
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
-                timestamp,
             } => f
                 .debug_struct("Message")
                 .field("sender", sender)
                 .field("msg", unverified_message)
-                .field("timestamp", timestamp)
                 .finish(),
             ConsensusEvent::Timeout => f.debug_struct("Timeout").finish(),
             ConsensusEvent::BlockSync {
@@ -1095,7 +1087,6 @@ where
             MonadEvent::ConsensusEvent(ConsensusEvent::Message {
                 sender,
                 unverified_message: _,
-                timestamp: _
             }) => {
                 format!("ConsensusEvent::Message from {sender}")
             }

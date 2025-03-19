@@ -22,8 +22,7 @@ use monad_state::VerifiedMonadMessage;
 use monad_types::NodeId;
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockableLedger, loopback::LoopbackExecutor,
-    state_root_hash::MockableStateRootHash, statesync::MockableStateSync,
-    timestamp::TimestampAdjuster, txpool::MockableTxPool,
+    state_root_hash::MockableStateRootHash, statesync::MockableStateSync, txpool::MockableTxPool,
 };
 use priority_queue::PriorityQueue;
 

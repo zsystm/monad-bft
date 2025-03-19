@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use itertools::Itertools;
 use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -81,6 +79,8 @@ where
 
     keypair: &'a ST::KeyPairType,
     cert_keypair: &'a SignatureCollectionKeyPairType<SCT>,
+
+    clock: &'a CL,
 }
 
 impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
@@ -121,6 +121,7 @@ where
 
             keypair: &monad_state.keypair,
             cert_keypair: &monad_state.cert_keypair,
+            clock: &monad_state.clock,
         }
     }
 
@@ -139,21 +140,21 @@ where
                 if let ConsensusEvent::Message {
                     sender,
                     unverified_message,
-                    timestamp,
                 } = event.clone()
                 {
-                    if let Ok((author, ProtocolMessage::Proposal(proposal))) =
+                    if let Ok((author, recv_ns, ProtocolMessage::Proposal(proposal))) =
                         Self::verify_and_validate_consensus_message(
                             self.epoch_manager,
                             self.val_epoch_map,
                             self.version,
                             self.metrics,
+                            self.clock,
                             sender,
                             unverified_message,
                         )
                     {
                         if let Some((new_root, new_high_qc)) =
-                            block_buffer.handle_proposal(author, proposal)
+                            block_buffer.handle_proposal(author, recv_ns, proposal)
                         {
                             if !*updating_target {
                                 // used for deduplication, because RequestStateSync isn't synchronous
@@ -199,29 +200,30 @@ where
 
             keypair: self.keypair,
             cert_keypair: self.cert_keypair,
+            clock: self.clock,
         };
 
         let consensus_cmds = match event {
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
-                timestamp: Duration
             } => {
                 match Self::verify_and_validate_consensus_message(
                     consensus.epoch_manager,
                     consensus.val_epoch_map,
                     self.version,
                     consensus.metrics,
+                    self.clock,
                     sender,
                     unverified_message,
                 ) {
-                    Ok((author, ProtocolMessage::Proposal(msg))) => {
+                    Ok((author, _recv_ns, ProtocolMessage::Proposal(msg))) => {
                         consensus.handle_proposal_message(author, msg)
                     }
-                    Ok((author, ProtocolMessage::Vote(msg))) => {
+                    Ok((author, _recv_ns, ProtocolMessage::Vote(msg))) => {
                         consensus.handle_vote_message(author, msg)
                     }
-                    Ok((author, ProtocolMessage::Timeout(msg))) => {
+                    Ok((author, _recv_ns, ProtocolMessage::Timeout(msg))) => {
                         consensus.handle_timeout_message(author, msg)
                     }
                     Err(evidence) => evidence,
@@ -287,6 +289,7 @@ where
 
             keypair: self.keypair,
             cert_keypair: self.cert_keypair,
+            clock: self.clock,
         };
 
         match event {
@@ -410,6 +413,7 @@ where
 
             keypair: self.keypair,
             cert_keypair: self.cert_keypair,
+            clock: self.clock,
         };
 
         let consensus_cmds = consensus.add_execution_result(execution_result);
@@ -452,6 +456,7 @@ where
 
             keypair: self.keypair,
             cert_keypair: self.cert_keypair,
+            clock: self.clock,
         };
 
         let consensus_cmds = consensus.handle_proposal_message(author, validated_proposal);
@@ -470,12 +475,14 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         version: &MonadVersion,
         metrics: &mut Metrics,
+        clock: &CL,
 
         sender: NodeId<CertificateSignaturePubKey<ST>>,
         message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     ) -> Result<
         (
             NodeId<CertificateSignaturePubKey<ST>>,
+            u128,
             ProtocolMessage<ST, SCT, EPT>,
         ),
         Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
@@ -499,7 +506,7 @@ where
                 Vec::new()
             })?;
 
-        Ok((author, validated_mesage.into_inner()))
+        Ok((author, clock.get(), validated_mesage.into_inner()))
     }
 }
 

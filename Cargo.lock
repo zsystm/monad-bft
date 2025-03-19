@@ -4558,6 +4558,7 @@ name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "bytes",
  "itertools 0.10.5",
  "monad-blocktree",
  "monad-chain-config",
@@ -4572,9 +4573,6 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
- "rand",
- "rayon",
- "reth-primitives",
  "sorted-vec",
  "test-case",
  "tracing",
@@ -5534,6 +5532,7 @@ dependencies = [
  "ntest",
  "rayon",
  "serde_json",
+ "sorted-vec",
  "tokio",
  "toml 0.7.8",
  "tracing",

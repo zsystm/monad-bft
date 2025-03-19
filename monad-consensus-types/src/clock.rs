@@ -4,20 +4,20 @@ use std::time::SystemTime;
 pub enum AdjusterConfig {
     Disabled,
     Enabled {
-        max_delta: u64,
+        max_delta_ns: u128,
         adjustment_period: usize,
     },
 }
 
-pub trait Clock {
+pub trait Clock: Copy + Clone {
     fn new() -> Self;
 
-    fn get(&self) -> u64;
+    fn get(&self) -> u128;
 
-    fn update(&mut self, time: u64);
+    fn update(&mut self, time: u128);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct SystemClock {}
 
 impl Clock for SystemClock {
@@ -25,32 +25,30 @@ impl Clock for SystemClock {
         Self {}
     }
 
-    fn get(&self) -> u64 {
+    fn get(&self) -> u128 {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_millis()
-            .try_into()
-            .unwrap()
+            .as_nanos()
     }
 
-    fn update(&mut self, _time: u64) {}
+    fn update(&mut self, _time: u128) {}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct TestClock {
-    time: u64,
+    time: u128,
 }
 
 impl Clock for TestClock {
     fn new() -> Self {
         Self { time: 0 }
     }
-    fn get(&self) -> u64 {
+    fn get(&self) -> u128 {
         self.time
     }
 
-    fn update(&mut self, time: u64) {
+    fn update(&mut self, time: u128) {
         self.time = time;
     }
 }

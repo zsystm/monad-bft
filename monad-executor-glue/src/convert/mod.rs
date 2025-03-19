@@ -1,4 +1,3 @@
-use chrono::TimeDelta;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -22,11 +21,9 @@ where
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
-                timestamp,
             } => proto_consensus_event::Event::Message(ProtoMessageWithSender {
                 sender: Some(sender.into()),
                 unverified_message: Some(unverified_message.into()),
-                timestamp: 0, 
             }),
             ConsensusEvent::Timeout => {
                 proto_consensus_event::Event::Timeout(ProtoPaceMakerTimeout {})
@@ -71,7 +68,6 @@ where
                         "ConsensusEvent::message.unverified_message".to_owned(),
                     ))?
                     .try_into()?,
-                timestamp: u128::default(), 
             },
             Some(proto_consensus_event::Event::Timeout(_tmo)) => ConsensusEvent::Timeout,
             Some(proto_consensus_event::Event::BlockSync(blocks)) => {
