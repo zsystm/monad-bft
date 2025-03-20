@@ -29,7 +29,7 @@ unsafe impl Send for EthCallExecutor {}
 unsafe impl Sync for EthCallExecutor {}
 
 impl EthCallExecutor {
-    pub fn new(num_threads: u32, num_fibers: u32, triedb_path: &Path) -> Self {
+    pub fn new(num_threads: u32, num_fibers: u32, node_lru_size: u32, triedb_path: &Path) -> Self {
         let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
 
@@ -37,6 +37,7 @@ impl EthCallExecutor {
             bindings::monad_eth_call_executor_create(
                 num_threads,
                 num_fibers,
+                node_lru_size,
                 dbpath.as_c_str().as_ptr(),
             )
         };

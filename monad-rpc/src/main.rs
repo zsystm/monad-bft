@@ -832,6 +832,7 @@ async fn main() -> std::io::Result<()> {
         Arc::new(tokio::sync::Mutex::new(EthCallExecutor::new(
             args.eth_call_executor_threads,
             args.eth_call_executor_fibers,
+            args.eth_call_executor_node_lru_size,
             path,
         )))
     });
