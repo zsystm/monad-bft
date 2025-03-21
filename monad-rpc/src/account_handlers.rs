@@ -146,8 +146,6 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
 pub async fn monad_eth_syncing() -> Result<Value, JsonRpcError> {
     trace!("monad_eth_syncing");
 
-    // TODO. TBD where this data actually comes from
-
     serialize_result(serde_json::Value::Bool(false))
 }
 

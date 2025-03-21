@@ -39,6 +39,9 @@ where
 {
     pool: EthTxPool<ST, SCT, SBT>,
     ipc: Pin<Box<EthTxPoolIpcServer>>,
+    // Flag used to skip polling the ipc socket until EthTxPool has been reset after state syncing.
+    // TODO(phil): Remove this once RPC uses execution events to decide if state syncing is done.
+    has_been_reset: bool,
     block_policy: EthBlockPolicy<ST, SCT>,
     state_backend: SBT,
     chain_config: CCT,
@@ -85,6 +88,7 @@ where
             pool,
             ipc: Box::pin(EthTxPoolIpcServer::new(ipc_config)?),
             block_policy,
+            has_been_reset: false,
             state_backend,
             chain_config,
 
@@ -289,6 +293,8 @@ where
 
                     self.pool
                         .reset(&mut event_tracker, last_delay_committed_blocks);
+
+                    self.has_been_reset = true;
                 }
             }
         }
@@ -323,6 +329,7 @@ where
             pool,
             ipc,
 
+            has_been_reset,
             block_policy,
             state_backend,
             chain_config: _,
@@ -341,6 +348,10 @@ where
 
             return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
         };
+
+        if !*has_been_reset {
+            return Poll::Pending;
+        }
 
         if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())
         {

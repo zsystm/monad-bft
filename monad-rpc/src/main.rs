@@ -700,17 +700,35 @@ async fn main() -> std::io::Result<()> {
     );
     let txpool_state = EthTxPoolBridgeState::new();
 
+    // Wait for bft to be in a ready state before starting the RPC server.
+    // Bft will bind to the ipc socket after state syncing.
+    let ipc_path = args.ipc_path;
+
+    let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
+    let mut retry_timer = tokio::time::interval(Duration::from_secs(30));
+    let mut txpool_bridge = loop {
+        tokio::select! {
+            _ = print_message_timer.tick() => {
+                info!("Waiting for statesync to complete");
+            }
+            _= retry_timer.tick() => {
+                match EthTxPoolBridge::new(&ipc_path, txpool_state.clone()).await  {
+                    Ok(bridge) => {
+                        info!("Statesync complete, starting RPC server");
+                        break bridge
+                    },
+                    Err(e) => {
+                        debug!("caught error: {e}, retrying");
+                    },
+                }
+            },
+        }
+    };
+
     tokio::spawn({
         let txpool_state = txpool_state.clone();
 
         async move {
-            let ipc_path = args.ipc_path;
-
-            let mut bridge =
-                retry(|| async { EthTxPoolBridge::new(&ipc_path, txpool_state.clone()).await })
-                    .await
-                    .expect("failed to create ipc sender");
-
             let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
             loop {
@@ -719,12 +737,12 @@ async fn main() -> std::io::Result<()> {
                         let tx = result.unwrap();
 
                         txpool_state.add_tx(&tx);
-                        if let Err(e) = bridge.send(&tx).await {
+                        if let Err(e) = txpool_bridge.send(&tx).await {
                             warn!("IPC send failed, monad-bft likely crashed: {}", e);
                         }
                     }
 
-                    result = bridge.next() => {
+                    result = txpool_bridge.next() => {
                         let Some(events) = result else {
                             continue;
                         };
@@ -896,29 +914,6 @@ async fn main() -> std::io::Result<()> {
     .await?;
 
     Ok(())
-}
-
-async fn retry<T, E, F>(attempt: impl Fn() -> F) -> Result<T, E>
-where
-    F: futures::Future<Output = Result<T, E>>,
-    E: std::fmt::Display,
-{
-    let duration = std::time::Duration::from_secs(2);
-    let mut retries = 1;
-
-    loop {
-        match attempt().await {
-            Ok(t) => return Ok(t),
-            Err(e) if retries <= 3 => {
-                let timeout = duration * retries;
-                debug!("caught error: {e}, retrying in {timeout:#?}");
-                tokio::time::sleep(timeout).await;
-                retries += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-    }
 }
 
 #[cfg(test)]
