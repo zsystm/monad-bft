@@ -15,7 +15,7 @@ use monad_consensus_types::{
         OptimisticPolicyCommit,
     },
     block_validator::BlockValidator,
-    metrics::Metrics,
+    metrics::{StateMetrics, ValidationErrorsStateMetrics},
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
@@ -60,7 +60,7 @@ where
 {
     consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
-    metrics: &'a mut Metrics,
+    metrics: &'a mut StateMetrics,
     epoch_manager: &'a mut EpochManager,
     block_policy: &'a mut BPT,
     state_backend: &'a SBT,
@@ -141,7 +141,7 @@ where
                             self.epoch_manager,
                             self.val_epoch_map,
                             self.version,
-                            self.metrics,
+                            &mut self.metrics.validation_errors,
                             sender,
                             unverified_message,
                         )
@@ -176,7 +176,7 @@ where
         let mut consensus = ConsensusStateWrapper {
             consensus: live,
 
-            metrics: self.metrics,
+            metrics: &mut self.metrics.consensus_events,
             epoch_manager: self.epoch_manager,
             block_policy: self.block_policy,
             state_backend: self.state_backend,
@@ -204,7 +204,7 @@ where
                     consensus.epoch_manager,
                     consensus.val_epoch_map,
                     self.version,
-                    consensus.metrics,
+                    &mut self.metrics.validation_errors,
                     sender,
                     unverified_message,
                 ) {
@@ -263,7 +263,7 @@ where
         let consensus = ConsensusStateWrapper {
             consensus,
 
-            metrics: self.metrics,
+            metrics: &mut self.metrics.consensus_events,
             epoch_manager: self.epoch_manager,
             block_policy: self.block_policy,
             state_backend: self.state_backend,
@@ -294,7 +294,7 @@ where
                 proposed_execution_inputs,
                 last_round_tc,
             } => {
-                consensus.metrics.consensus_events.creating_proposal += 1;
+                consensus.metrics.creating_proposal.inc();
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
                     execution_body: proposed_execution_inputs.body,
                 });
@@ -386,7 +386,7 @@ where
         let mut consensus = ConsensusStateWrapper {
             consensus: mode,
 
-            metrics: self.metrics,
+            metrics: &mut self.metrics.consensus_events,
             epoch_manager: self.epoch_manager,
             block_policy: self.block_policy,
             state_backend: self.state_backend,
@@ -428,7 +428,7 @@ where
         let mut consensus = ConsensusStateWrapper {
             consensus: mode,
 
-            metrics: self.metrics,
+            metrics: &mut self.metrics.consensus_events,
             epoch_manager: self.epoch_manager,
             block_policy: self.block_policy,
             state_backend: self.state_backend,
@@ -462,7 +462,7 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         version: &MonadVersion,
-        metrics: &mut Metrics,
+        metrics: &mut ValidationErrorsStateMetrics,
 
         sender: NodeId<CertificateSignaturePubKey<ST>>,
         message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
