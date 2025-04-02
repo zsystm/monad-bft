@@ -564,43 +564,55 @@ where
             }
         };
         let block_round = block.get_round();
+        // register arriving of the proposal
+        if block_round > original_round && block_round == block.get_qc().get_round() + Round(1) {
+            self.block_timestamp.proposal_received(&author, block_round);
 
-        // TODO: ts adjustments are disabled anyways. this needs to be moved to
-        // where timestamp validation is done, in block_policy right now.
-        // block_policy doesn't have visibility on whether current round is
-        // bumped. Deferring the move
+            // TODO: ts adjustments are disabled anyways. this needs to be moved to
+            // where timestamp validation is done, in block_policy right now.
+            // block_policy doesn't have visibility on whether current round is
+            // bumped. Deferring the move
 
-        /*
-             self.block_timestamp
-                  .proposal_received(block.get_round(), &author, timestamp);
+            /*
+                 self.block_timestamp
+                      .proposal_received(block.get_round(), &author, timestamp);
 
-             if let Some(parent_timestamp) = self
-                 .consensus
-                 .blocktree()
-                 .get_timestamp_of_qc(block.get_qc()) {
+                 if let Some(parent_timestamp) = self
+                     .consensus
+                     .blocktree()
+                     .get_timestamp_of_qc(block.get_qc()) {
 
-                 if let Ok(Some(ts_delta)) = self.block_timestamp.valid_block_timestamp(
-                     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default(), // TODO: use the value from the caller
-                     parent_timestamp,
-                     block.get_timestamp(),
-                     self.config
-                         .chain_config
-                         .get_chain_revision(round)
-                         .chain_params()
-                         .vote_pace
-                         .as_nanos(),
-                     block_round,
-                     &author,
-                 ) {
-                     // only update timestamp if the block advanced us our round
-                     if block_round > original_round {
-                         info!(?ts_delta, "update timestamp");
-                         self.block_timestamp.handle_adjustment(ts_delta);
-                         cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+                     if let Ok(Some(ts_delta)) = self.block_timestamp.valid_block_timestamp(
+                         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default(), // TODO: use the value from the caller
+                         parent_timestamp,
+                         block.get_timestamp(),
+                         self.config
+                             .chain_config
+                             .get_chain_revision(round)
+                             .chain_params()
+                             .vote_pace
+                             .as_nanos(),
+                         block_round,
+                         &author,
+                     ) {
+                         // only update timestamp if the block advanced us our round
+                         if block_round > original_round {
+                             info!(?ts_delta, "update timestamp");
+                             self.block_timestamp.handle_adjustment(ts_delta);
+                             cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+                         }
                      }
                  }
-             }
-        */
+            */
+
+            if let Some(delta) = self.block_timestamp.compute_clock_adjustment(
+                block.get_timestamp(),
+                block_round,
+                &author,
+            ) {
+                self.block_timestamp.handle_adjustment(delta);
+            }
+        }
 
         // at this point, block is valid and can be added to the blocktree
         let res_cmds = self.try_add_and_commit_blocktree(block, Some(state_root_action));
@@ -889,7 +901,7 @@ where
         }
         .sign(self.keypair);
         if next_leader != *self.nodeid {
-            self.block_timestamp.vote_sent(round);
+            self.block_timestamp.vote_sent(&next_leader, round);
         }
         let send_cmd = ConsensusCommand::Publish {
             target: RouterTarget::PointToPoint(next_leader),
@@ -1235,7 +1247,7 @@ where
         // verify timestamp here
         if self
             .block_timestamp
-            .valid_block_timestamp(
+            .is_valid_block_timestamp(
                 parent_timestamp,
                 validated_block.get_timestamp(),
                 self.config
@@ -1244,7 +1256,6 @@ where
                     .chain_params()
                     .vote_pace
                     .as_nanos(),
-                validated_block.get_author(),
             )
             .is_err()
         {
@@ -1653,7 +1664,6 @@ mod test {
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
-        validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
         voting::{ValidatorMapping, Vote},
     };
     use monad_crypto::{
@@ -1677,7 +1687,7 @@ mod test {
     };
     use monad_types::{
         BlockId, Epoch, ExecutionProtocol, MockableFinalizedHeader, MockableProposedHeader, NodeId,
-        PingSequence, Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
+        Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
     };
     use monad_validator::{
         epoch_manager::EpochManager,

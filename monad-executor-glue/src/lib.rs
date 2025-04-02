@@ -1039,7 +1039,7 @@ where
     /// Events for the debug control panel
     ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
-    TimestampUpdateEvent(u128),
+    TimestampUpdateEvent(u64),
     /// Events to statesync
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
