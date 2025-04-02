@@ -4430,6 +4430,7 @@ dependencies = [
  "monad-blocktree",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-metrics",
  "monad-multi-sig",
  "monad-proto",
  "monad-state-backend",
@@ -4516,6 +4517,7 @@ dependencies = [
  "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-metrics",
  "monad-multi-sig",
  "monad-proto",
  "monad-state-backend",
@@ -4540,6 +4542,7 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-types",
+ "monad-metrics",
  "monad-multi-sig",
  "monad-state-backend",
  "monad-testutil",
@@ -4559,6 +4562,7 @@ dependencies = [
  "bytes",
  "hex",
  "monad-crypto",
+ "monad-metrics",
  "monad-proto",
  "monad-state-backend",
  "monad-types",
@@ -4577,6 +4581,7 @@ dependencies = [
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-types",
  "serde_json",
  "tokio",
@@ -4650,6 +4655,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-mock-swarm",
  "monad-router-scheduler",
  "monad-state-backend",
@@ -4724,6 +4730,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-state-backend",
  "monad-types",
  "monad-updaters",
@@ -4791,9 +4798,10 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-testutil",
+ "monad-eth-txpool-metrics",
  "monad-eth-txpool-types",
  "monad-eth-types",
- "monad-executor",
+ "monad-metrics",
  "monad-perf-util",
  "monad-state-backend",
  "monad-testutil",
@@ -4801,7 +4809,6 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rayon",
- "serde",
  "tracing",
  "tracing-test",
 ]
@@ -4823,15 +4830,16 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-txpool",
  "monad-eth-txpool-ipc",
+ "monad-eth-txpool-metrics",
  "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-state-backend",
  "monad-types",
  "pin-project",
  "rayon",
- "serde",
  "tokio",
  "tracing",
 ]
@@ -4849,6 +4857,13 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "monad-eth-txpool-metrics"
+version = "0.1.0"
+dependencies = [
+ "monad-metrics",
 ]
 
 [[package]]
@@ -4893,6 +4908,7 @@ name = "monad-executor"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-metrics",
  "monad-types",
 ]
 
@@ -4951,6 +4967,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-types",
  "tokio",
  "tracing",
@@ -4962,6 +4979,22 @@ version = "0.1.0"
 dependencies = [
  "monad-crypto",
  "serde",
+]
+
+[[package]]
+name = "monad-metrics"
+version = "0.1.0"
+dependencies = [
+ "monad-metrics-macro",
+]
+
+[[package]]
+name = "monad-metrics-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4985,9 +5018,11 @@ dependencies = [
  "monad-eth-block-validator",
  "monad-eth-ledger",
  "monad-eth-testutil",
+ "monad-eth-txpool-metrics",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-multi-sig",
  "monad-router-scheduler",
  "monad-secp",
@@ -5046,10 +5081,11 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool-executor",
- "monad-executor",
+ "monad-eth-txpool-metrics",
  "monad-executor-glue",
  "monad-keystore",
  "monad-ledger",
+ "monad-metrics",
  "monad-node-config",
  "monad-raptorcast",
  "monad-router-filter",
@@ -5098,6 +5134,7 @@ dependencies = [
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-peer-discovery",
  "monad-router-scheduler",
  "monad-testutil",
@@ -5188,6 +5225,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-merkle",
+ "monad-metrics",
  "monad-raptor",
  "monad-secp",
  "monad-types",
@@ -5207,6 +5245,7 @@ dependencies = [
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-state",
  "monad-types",
 ]
@@ -5329,6 +5368,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-proto",
  "monad-secp",
  "monad-state-backend",
@@ -5366,6 +5406,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-types",
  "rand",
  "tempfile",
@@ -5387,8 +5428,8 @@ dependencies = [
  "monad-crypto",
  "monad-dataplane",
  "monad-eth-types",
- "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-raptorcast",
  "monad-secp",
  "monad-state",
@@ -5503,6 +5544,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-metrics",
  "monad-mock-swarm",
  "monad-router-scheduler",
  "monad-state",
@@ -5545,14 +5587,17 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-txpool",
+ "monad-eth-txpool-metrics",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-metrics",
  "monad-node-config",
  "monad-state-backend",
  "monad-triedb-utils",
  "monad-types",
  "ntest",
+ "pin-project",
  "rayon",
  "serde_json",
  "sorted-vec",

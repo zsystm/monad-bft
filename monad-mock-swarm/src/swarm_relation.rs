@@ -12,9 +12,11 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
+use monad_eth_txpool_metrics::TxPoolMetrics;
 use monad_executor_glue::{
     LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand, TxPoolCommand,
 };
+use monad_metrics::{MetricsPolicy, MockMetricsPolicy};
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
@@ -45,6 +47,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::BlockValidator,
     <S as SwarmRelation>::ChainConfigType,
     <S as SwarmRelation>::ChainRevisionType,
+    <S as SwarmRelation>::MetricsPolicy,
 >;
 pub trait SwarmRelation
 where
@@ -89,6 +92,7 @@ where
         + Sync
         + Unpin;
     type Ledger: MockableLedger<
+            Self::MetricsPolicy,
             Signature = Self::SignatureType,
             SignatureCollection = Self::SignatureCollectionType,
             ExecutionProtocol = Self::ExecutionProtocolType,
@@ -97,6 +101,7 @@ where
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
             >,
+            Metrics = (),
         > + Send
         + Unpin;
 
@@ -123,16 +128,19 @@ where
         + Unpin;
 
     type StateRootHashExecutor: MockableStateRootHash<
+            Self::MetricsPolicy,
             Event = MonadEvent<
                 Self::SignatureType,
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
             >,
             SignatureCollection = Self::SignatureCollectionType,
+            Metrics = (),
         > + Send
         + Sync
         + Unpin;
     type TxPoolExecutor: MockableTxPool<
+            Self::MetricsPolicy,
             Signature = Self::SignatureType,
             SignatureCollection = Self::SignatureCollectionType,
             ExecutionProtocol = Self::ExecutionProtocolType,
@@ -143,16 +151,20 @@ where
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
             >,
+            Metrics = TxPoolMetrics<Self::MetricsPolicy>,
         > + Send
         + Sync
         + Unpin;
     type StateSyncExecutor: MockableStateSync<
+            Self::MetricsPolicy,
             Signature = Self::SignatureType,
             SignatureCollection = Self::SignatureCollectionType,
             ExecutionProtocol = Self::ExecutionProtocolType,
+            Metrics = (),
         > + Send
         + Sync
         + Unpin;
+    type MetricsPolicy: MetricsPolicy + Send + Sync + Unpin;
 }
 pub struct DebugSwarmRelation;
 impl SwarmRelation for DebugSwarmRelation {
@@ -185,6 +197,7 @@ impl SwarmRelation for DebugSwarmRelation {
     >;
     type Ledger = Box<
         dyn MockableLedger<
+                Self::MetricsPolicy,
                 Signature = Self::SignatureType,
                 SignatureCollection = Self::SignatureCollectionType,
                 ExecutionProtocol = Self::ExecutionProtocolType,
@@ -203,6 +216,7 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
+                Metrics = (),
             > + Send
             + Sync,
     >;
@@ -233,6 +247,7 @@ impl SwarmRelation for DebugSwarmRelation {
 
     type StateRootHashExecutor = Box<
         dyn MockableStateRootHash<
+                Self::MetricsPolicy,
                 Event = MonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
@@ -245,11 +260,13 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
+                Metrics = (),
             > + Send
             + Sync,
     >;
     type TxPoolExecutor = Box<
         dyn MockableTxPool<
+                Self::MetricsPolicy,
                 Signature = Self::SignatureType,
                 SignatureCollection = Self::SignatureCollectionType,
                 ExecutionProtocol = Self::ExecutionProtocolType,
@@ -272,18 +289,22 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
+                Metrics = TxPoolMetrics<Self::MetricsPolicy>,
             > + Send
             + Sync,
     >;
     type StateSyncExecutor = Box<
         dyn MockableStateSync<
+                Self::MetricsPolicy,
                 Signature = Self::SignatureType,
                 SignatureCollection = Self::SignatureCollectionType,
                 ExecutionProtocol = Self::ExecutionProtocolType,
                 Command = StateSyncCommand<Self::SignatureType, Self::ExecutionProtocolType>,
+                Metrics = (),
             > + Send
             + Sync,
     >;
+    type MetricsPolicy = MockMetricsPolicy;
 }
 // default swarm relation impl
 pub struct NoSerSwarm;
@@ -332,6 +353,7 @@ impl SwarmRelation for NoSerSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
+        Self::MetricsPolicy,
     >;
     type TxPoolExecutor = MockTxPoolExecutor<
         Self::SignatureType,
@@ -339,12 +361,14 @@ impl SwarmRelation for NoSerSwarm {
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
         Self::StateBackendType,
+        Self::MetricsPolicy,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type MetricsPolicy = MockMetricsPolicy;
 }
 
 pub struct BytesSwarm;
@@ -388,6 +412,7 @@ impl SwarmRelation for BytesSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
+        Self::MetricsPolicy,
     >;
     type TxPoolExecutor = MockTxPoolExecutor<
         Self::SignatureType,
@@ -395,12 +420,14 @@ impl SwarmRelation for BytesSwarm {
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
         Self::StateBackendType,
+        Self::MetricsPolicy,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type MetricsPolicy = MockMetricsPolicy;
 }
 
 pub struct MonadMessageNoSerSwarm;
@@ -447,6 +474,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
+        Self::MetricsPolicy,
     >;
     type TxPoolExecutor = MockTxPoolExecutor<
         Self::SignatureType,
@@ -454,10 +482,12 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
         Self::StateBackendType,
+        Self::MetricsPolicy,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type MetricsPolicy = MockMetricsPolicy;
 }

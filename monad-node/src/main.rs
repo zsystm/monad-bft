@@ -12,7 +12,8 @@ use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    metrics::Metrics, signature_collection::SignatureCollection, validator_data::ValidatorsConfig,
+    metrics::StateMetrics, signature_collection::SignatureCollection,
+    validator_data::ValidatorsConfig,
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
@@ -21,25 +22,31 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_eth_txpool_metrics::TxPoolMetrics;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
-use monad_ledger::MonadBlockFileLedger;
+use monad_ledger::{LedgerMetrics, MonadBlockFileLedger};
+use monad_metrics::{Counter, Gauge, MetricsPolicy, StaticMetricsPolicy};
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeNetworkConfig, SignatureCollectionType,
     SignatureType,
 };
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_raptorcast::{metrics::RaptorCastMetrics, RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
-use monad_statesync::StateSync;
+use monad_statesync::{StateSync, StateSyncMetrics};
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{
     Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
 use monad_updaters::{
-    checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
-    parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
+    checkpoint::FileCheckpoint,
+    config_loader::ConfigLoader,
+    loopback::LoopbackExecutor,
+    parent::{ParentExecutor, ParentExecutorMetrics},
+    timer::TokioTimer,
+    tokio_timestamp::TokioTimestamp,
+    triedb_state_root_hash::StateRootHashTriedbPoll,
+    BoxUpdater, Updater,
 };
 use monad_validator::{
     validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
@@ -152,7 +159,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         })
         .collect();
 
-    let router: BoxUpdater<_, _> = {
+    let router: BoxUpdater<_, _, _, _> = {
         let raptor_router = build_raptorcast_router::<
             SignatureType,
             SignatureCollectionType,
@@ -173,7 +180,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         #[cfg(feature = "full-node")]
         let raptor_router = monad_router_filter::FullNodeRouterFilter::new(raptor_router);
 
-        <_ as Updater<_>>::boxed(raptor_router)
+        <_ as Updater<_, _>>::boxed(raptor_router)
     };
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
@@ -237,7 +244,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        ledger: MonadBlockFileLedger::new(node_state.ledger_path),
+        ledger: MonadBlockFileLedger::new(node_state.ledger_path, LedgerMetrics::build_static()),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
             &node_state.triedb_path,
@@ -268,6 +275,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .get_chain_revision(node_state.forkpoint_config.high_qc.get_round())
                 .chain_params()
                 .proposal_gas_limit,
+            TxPoolMetrics::build_static(),
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
@@ -277,7 +285,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         )
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
-        state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
+        state_sync: StateSync::<SignatureType, SignatureCollectionType, _>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.genesis_path.to_string_lossy().to_string(),
             node_state.statesync_sq_thread_cpu,
@@ -293,12 +301,14 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .to_str()
                 .expect("invalid file name")
                 .to_owned(),
+            StateSyncMetrics::build_static(),
         ),
         config_loader: ConfigLoader::new(
             node_state.node_config_path,
             node_state.node_config.bootstrap.peers,
             known_addresses,
         ),
+        _phantom: PhantomData,
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
@@ -343,6 +353,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
         block_sync_override_peers,
+        metrics: StateMetrics::<StaticMetricsPolicy>::build_static(),
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
@@ -369,11 +380,8 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .map(|(otel_endpoint, record_metrics_interval)| {
             let provider = build_otel_meter_provider(
                 &otel_endpoint,
-                format!(
-                    "{network_name}_{node_name}",
-                    network_name = node_state.node_config.network_name,
-                    node_name = node_state.node_config.node_name
-                ),
+                node_state.node_config.network_name,
+                node_state.node_config.node_name,
                 record_metrics_interval,
             )
             .expect("failed to build otel monad-node");
@@ -390,6 +398,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .as_ref()
         .map(|provider| provider.meter("opentelemetry"));
 
+    let mut counter_cache = HashMap::new();
     let mut gauge_cache = HashMap::new();
 
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
@@ -412,9 +421,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 None => futures_util::future::pending().boxed(),
             } => {
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let state_metrics = state.metrics();
-                let executor_metrics = executor.metrics();
-                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics);
+                send_metrics(otel_meter, &mut counter_cache, &mut gauge_cache, state.metrics(), executor.metrics());
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -493,7 +500,7 @@ async fn build_raptorcast_router<ST, SCT, M, OM>(
     identity: ST::KeyPairType,
     known_addresses: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
-) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
+) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, StaticMetricsPolicy>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -506,21 +513,24 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Clone + Send + Sync + 'static,
 {
-    RaptorCast::new(RaptorCastConfig {
-        key: identity,
-        known_addresses: known_addresses.into_iter().collect(),
-        full_nodes: full_nodes
-            .iter()
-            .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
-            .collect(),
-        redundancy: 3,
-        local_addr: SocketAddr::V4(SocketAddrV4::new(
-            network_config.bind_address_host,
-            network_config.bind_address_port,
-        )),
-        up_bandwidth_mbps: network_config.max_mbps.into(),
-        mtu: network_config.mtu,
-    })
+    RaptorCast::new(
+        RaptorCastConfig {
+            key: identity,
+            known_addresses: known_addresses.into_iter().collect(),
+            full_nodes: full_nodes
+                .iter()
+                .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
+                .collect(),
+            redundancy: 3,
+            local_addr: SocketAddr::V4(SocketAddrV4::new(
+                network_config.bind_address_host,
+                network_config.bind_address_port,
+            )),
+            up_bandwidth_mbps: network_config.max_mbps.into(),
+            mtu: network_config.mtu,
+        },
+        RaptorCastMetrics::build_static(),
+    )
 }
 
 fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {
@@ -543,27 +553,70 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
     None
 }
 
-fn send_metrics(
+fn send_metrics<MP>(
     meter: &opentelemetry::metrics::Meter,
+    counter_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
     gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
-    state_metrics: &Metrics,
-    executor_metrics: ExecutorMetricsChain,
-) {
-    for (k, v) in state_metrics
-        .metrics()
-        .into_iter()
-        .chain(executor_metrics.into_inner())
-    {
-        let gauge = gauge_cache
-            .entry(k)
-            .or_insert_with(|| meter.u64_gauge(k).try_init().unwrap());
-        gauge.record(v, &[]);
-    }
+    state_metrics: &StateMetrics<MP>,
+    executor_metrics: ParentExecutorMetrics<
+        '_,
+        RaptorCastMetrics<MP>,
+        (),
+        LedgerMetrics<MP>,
+        (),
+        (),
+        (),
+        TxPoolMetrics<MP>,
+        (),
+        (),
+        StateSyncMetrics<MP>,
+        (),
+    >,
+) where
+    MP: MetricsPolicy,
+{
+    let mut on_counter = |name, counter: &MP::Counter| {
+        let otel_counter = counter_cache
+            .entry(name)
+            .or_insert_with(|| meter.u64_gauge(name).try_init().unwrap());
+
+        otel_counter.record(counter.read(), &[]);
+    };
+
+    let mut on_gauge = |name, gauge: &MP::Gauge| {
+        let otel_gauge = gauge_cache
+            .entry(name)
+            .or_insert_with(|| meter.u64_gauge(name).try_init().unwrap());
+
+        otel_gauge.record(gauge.read(), &[]);
+    };
+
+    state_metrics.traverse(&mut on_counter, &mut on_gauge);
+
+    let ParentExecutorMetrics {
+        router,
+        timer: &(),
+        ledger,
+        checkpoint: &(),
+        state_root_hash: &(),
+        timestamp: &(),
+        txpool,
+        control_panel: &(),
+        loopback: &(),
+        state_sync,
+        config_loader: &(),
+    } = executor_metrics;
+
+    router.traverse(&mut on_counter, &mut on_gauge);
+    ledger.traverse(&mut on_counter, &mut on_gauge);
+    txpool.traverse(&mut on_counter, &mut on_gauge);
+    state_sync.traverse(&mut on_counter, &mut on_gauge);
 }
 
 fn build_otel_meter_provider(
     otel_endpoint: &str,
-    service_name: String,
+    network_name: String,
+    node_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
     let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
@@ -588,8 +641,16 @@ fn build_otel_meter_provider(
         .with_reader(reader)
         .with_resource(opentelemetry_sdk::Resource::new(vec![
             opentelemetry::KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
+                network_name,
+            ),
+            opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
+                "monad_bft",
+            ),
+            opentelemetry::KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID,
+                node_name,
             ),
             opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_VERSION,

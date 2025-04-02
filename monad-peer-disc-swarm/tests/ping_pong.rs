@@ -5,6 +5,7 @@ use monad_crypto::{
     NopPubKey, NopSignature,
     certificate_signature::{CertificateKeyPair, CertificateSignature},
 };
+use monad_metrics::NoopMetricsPolicy;
 use monad_peer_disc_swarm::{
     NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, SwarmSignatureType,
     builder::PeerDiscSwarmBuilder,
@@ -17,6 +18,7 @@ use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSche
 use monad_testutil::signing::create_keys;
 use monad_types::NodeId;
 use tracing_test::traced_test;
+
 struct PeerDiscSwarm {}
 
 impl PeerDiscSwarmRelation for PeerDiscSwarm {
@@ -31,6 +33,7 @@ impl PeerDiscSwarmRelation for PeerDiscSwarm {
         PeerDiscoveryMessage<SwarmSignatureType<Self>>,
         PeerDiscoveryMessage<SwarmSignatureType<Self>>,
     >;
+    type MetricsPolicy = NoopMetricsPolicy;
 }
 
 type PubKeyType = NopPubKey;

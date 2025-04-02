@@ -10,6 +10,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_metrics::MetricsPolicy;
 use monad_peer_discovery::{
     PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryEvent, PeerDiscoveryMessage,
 };
@@ -44,6 +45,7 @@ pub trait PeerDiscSwarmRelation {
             InboundMessage = PeerDiscoveryMessage<SwarmSignatureType<Self>>,
             TransportMessage = Self::TransportMessage,
         >;
+    type MetricsPolicy: MetricsPolicy;
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -101,11 +103,12 @@ enum MockPeerDiscExecutorEvent<E, PT: PubKey, TransportMessage> {
     Send(NodeId<PT>, TransportMessage),
 }
 
-impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
+impl<S: PeerDiscSwarmRelation> Executor<S::MetricsPolicy> for MockPeerDiscExecutor<S> {
     type Command = RouterCommand<
         SwarmPubKeyType<S>,
         <S::RouterSchedulerType as RouterScheduler>::OutboundMessage,
     >;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for cmd in commands {
@@ -123,8 +126,8 @@ impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
         }
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 

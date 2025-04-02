@@ -1,25 +1,35 @@
 use std::{marker::PhantomData, path::PathBuf};
 
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::CheckpointCommand;
+use monad_metrics::MetricsPolicy;
 
-pub struct MockCheckpoint<SCT: SignatureCollection> {
+pub struct MockCheckpoint<SCT: SignatureCollection, MP: MetricsPolicy> {
     pub checkpoint: Option<CheckpointCommand<SCT>>,
-    metrics: ExecutorMetrics,
+    _phantom: PhantomData<MP>,
 }
 
-impl<SCT: SignatureCollection> Default for MockCheckpoint<SCT> {
+impl<SCT, MP> Default for MockCheckpoint<SCT, MP>
+where
+    SCT: SignatureCollection,
+    MP: MetricsPolicy,
+{
     fn default() -> Self {
         Self {
             checkpoint: None,
-            metrics: Default::default(),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<SCT: SignatureCollection> Executor for MockCheckpoint<SCT> {
+impl<SCT, MP> Executor<MP> for MockCheckpoint<SCT, MP>
+where
+    SCT: SignatureCollection,
+    MP: MetricsPolicy,
+{
     type Command = CheckpointCommand<SCT>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -27,14 +37,13 @@ impl<SCT: SignatureCollection> Executor for MockCheckpoint<SCT> {
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
 pub struct FileCheckpoint<SCT> {
     out_path: PathBuf,
-    metrics: ExecutorMetrics,
     phantom: PhantomData<SCT>,
 }
 
@@ -45,17 +54,18 @@ where
     pub fn new(out_path: PathBuf) -> Self {
         Self {
             out_path,
-            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
 }
 
-impl<SCT> Executor for FileCheckpoint<SCT>
+impl<SCT, MP> Executor<MP> for FileCheckpoint<SCT>
 where
     SCT: SignatureCollection + Clone,
+    MP: MetricsPolicy,
 {
     type Command = CheckpointCommand<SCT>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -93,7 +103,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }

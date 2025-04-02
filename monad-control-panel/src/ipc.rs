@@ -9,11 +9,12 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
-    MonadEvent, ReadCommand, ReloadConfig, WriteCommand,
+    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, MonadEvent,
+    ReadCommand, ReloadConfig, WriteCommand,
 };
+use monad_metrics::MetricsPolicy;
 use monad_types::ExecutionProtocol;
 use tokio::{
     net::{unix::OwnedReadHalf, UnixListener},
@@ -33,8 +34,6 @@ where
 {
     receiver: mpsc::Receiver<MonadEvent<ST, SCT, EPT>>,
     client_sender: broadcast::Sender<ControlPanelCommand<SCT>>,
-
-    metrics: ExecutorMetrics,
 
     reload_handle: ReloadHandle,
 }
@@ -72,8 +71,6 @@ where
             receiver,
             client_sender,
             reload_handle,
-
-            metrics: Default::default(),
         };
 
         let listener = UnixListener::bind(bind_path)?;
@@ -185,19 +182,6 @@ where
                     },
                 },
                 ControlPanelCommand::Write(w) => match w {
-                    WriteCommand::ClearMetrics(clear_metrics) => match clear_metrics {
-                        ClearMetrics::Request => {
-                            let event = ControlPanelEvent::ClearMetricsEvent;
-                            let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
-                                .await
-                            else {
-                                error!("failed to forward request {:?} to executor, closing connection", &event);
-                                break;
-                            };
-                        }
-                        m => error!("unhandled message {:?}", m),
-                    },
                     WriteCommand::UpdateLogFilter(filter) => {
                         let event = ControlPanelEvent::UpdateLogFilter(filter);
                         let Ok(_) = event_channel
@@ -230,13 +214,15 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Executor for ControlPanelIpcReceiver<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Executor<MP> for ControlPanelIpcReceiver<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    MP: MetricsPolicy,
 {
     type Command = ControlPanelCommand<SCT>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -260,7 +246,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }

@@ -10,10 +10,12 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_metrics::TxPoolMetrics;
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvent};
 use monad_eth_types::EthExecutionProtocol;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_metrics::{Counter, MetricsPolicy};
 use monad_state_backend::StateBackend;
 use monad_types::DropTimer;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -21,23 +23,21 @@ use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, error, info};
 
 pub use self::ipc::EthTxPoolIpcConfig;
-use self::{
-    forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer, metrics::EthTxPoolExecutorMetrics,
-};
+use self::{forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer};
 
 mod forward;
 mod ipc;
-mod metrics;
 
-pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    MP: MetricsPolicy,
 {
-    pool: EthTxPool<ST, SCT, SBT>,
+    pool: EthTxPool<ST, SCT, SBT, MP>,
     ipc: Pin<Box<EthTxPoolIpcServer>>,
     // Flag used to skip polling the ipc socket until EthTxPool has been reset after state syncing.
     // TODO(phil): Remove this once RPC uses execution events to decide if state syncing is done.
@@ -51,19 +51,19 @@ where
 
     forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
 
-    metrics: EthTxPoolExecutorMetrics,
-    executor_metrics: ExecutorMetrics,
+    metrics: TxPoolMetrics<MP>,
 
     _phantom: PhantomData<CRT>,
 }
 
-impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, SBT, CCT, CRT, MP> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    MP: MetricsPolicy,
 {
     pub fn new(
         block_policy: EthBlockPolicy<ST, SCT>,
@@ -74,6 +74,7 @@ where
         hard_tx_expiry: Duration,
         chain_config: CCT,
         proposal_gas_limit: u64,
+        metrics: TxPoolMetrics<MP>,
     ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::unbounded_channel();
 
@@ -99,23 +100,24 @@ where
 
             forwarding_manager: Box::pin(EthTxPoolForwardingManager::new()),
 
-            metrics: EthTxPoolExecutorMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics,
 
             _phantom: PhantomData,
         })
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, SBT, CCT, CRT, MP> Executor<MP> for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    MP: MetricsPolicy,
 {
     type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
+    type Metrics = TxPoolMetrics<MP>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut ipc_events = Vec::default();
@@ -180,8 +182,10 @@ where
                         Ok(proposed_execution_inputs) => {
                             let elapsed = create_proposal_start.elapsed();
 
-                            self.metrics.create_proposal += 1;
-                            self.metrics.create_proposal_elapsed_ns += elapsed.as_nanos() as u64;
+                            self.metrics.create_proposal.inc();
+                            self.metrics
+                                .create_proposal_elapsed_ns
+                                .add(elapsed.as_nanos() as u64);
 
                             self.events_tx
                                 .send(MempoolEvent::Proposal {
@@ -235,8 +239,12 @@ where
                     let num_invalid_signer =
                         num_invalid_signer.load(std::sync::atomic::Ordering::SeqCst);
 
-                    self.metrics.reject_forwarded_invalid_bytes += num_invalid_bytes;
-                    self.metrics.reject_forwarded_invalid_signer += num_invalid_signer;
+                    self.metrics
+                        .reject_forwarded_invalid_bytes
+                        .add(num_invalid_bytes);
+                    self.metrics
+                        .reject_forwarded_invalid_signer
+                        .add(num_invalid_signer);
 
                     if num_invalid_bytes != 0 || num_invalid_signer != 0 {
                         tracing::warn!(
@@ -285,23 +293,22 @@ where
             }
         }
 
-        self.metrics.update(&mut self.executor_metrics);
-
         self.ipc.as_mut().broadcast_tx_events(&ipc_events);
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        ExecutorMetricsChain::default().push(&self.executor_metrics)
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, SBT, CCT, CRT, MP> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    MP: MetricsPolicy,
 
     Self: Unpin,
 {
@@ -330,7 +337,6 @@ where
             forwarding_manager,
 
             metrics,
-            executor_metrics,
 
             _phantom,
         } = self.get_mut();
@@ -362,8 +368,6 @@ where
                 false,
                 |_| {},
             );
-
-            metrics.update(executor_metrics);
 
             ipc.as_mut().broadcast_tx_events(&ipc_events);
 
@@ -402,8 +406,6 @@ where
                     inserted_txs.push(alloy_rlp::encode(tx).into());
                 },
             );
-
-            metrics.update(executor_metrics);
 
             ipc.as_mut().broadcast_tx_events(&ipc_events);
 

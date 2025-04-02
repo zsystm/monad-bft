@@ -15,13 +15,16 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_metrics::MetricsPolicy;
 use monad_types::{Epoch, ExecutionProtocol, MockableFinalizedHeader, SeqNum, Stake};
 use tracing::error;
 
-pub trait MockableStateRootHash:
-    Executor<Command = StateRootHashCommand> + Stream<Item = Self::Event> + Unpin
+pub trait MockableStateRootHash<MP>:
+    Executor<MP, Command = StateRootHashCommand> + Stream<Item = Self::Event> + Unpin
+where
+    MP: MetricsPolicy,
 {
     type Event;
     type SignatureCollection: SignatureCollection;
@@ -30,7 +33,11 @@ pub trait MockableStateRootHash:
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection>;
 }
 
-impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
+impl<T, MP> MockableStateRootHash<MP> for Box<T>
+where
+    T: MockableStateRootHash<MP> + ?Sized,
+    MP: MetricsPolicy,
+{
     type Event = T::Event;
     type SignatureCollection = T::SignatureCollection;
 
@@ -49,7 +56,7 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
 /// Goal is to mimic the behaviour of execution receiving a commit
 /// and generating the state root hash and updating the staking contract,
 /// and sending it back to consensus.
-pub struct MockStateRootHashNop<ST, SCT, EPT>
+pub struct MockStateRootHashNop<ST, SCT, EPT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -66,16 +73,16 @@ where
     enable_updates: bool,
 
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
-    phantom: PhantomData<ST>,
+    phantom: PhantomData<(ST, MP)>,
 }
 
-impl<ST, SCT, EPT> MockStateRootHashNop<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> MockStateRootHashNop<ST, SCT, EPT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
 {
     pub fn new(
         genesis_validator_data: ValidatorSetData<SCT>,
@@ -90,7 +97,6 @@ where
             enable_updates: true,
 
             waker: None,
-            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -118,12 +124,15 @@ where
     }
 }
 
-impl<ST, SCT, EPT> MockableStateRootHash for MockStateRootHashNop<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> MockableStateRootHash<MP> for MockStateRootHashNop<ST, SCT, EPT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
+
+    Self: Unpin,
 {
     type Event = MonadEvent<ST, SCT, EPT>;
     type SignatureCollection = SCT;
@@ -140,14 +149,16 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Executor for MockStateRootHashNop<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Executor<MP> for MockStateRootHashNop<ST, SCT, EPT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
 {
     type Command = StateRootHashCommand;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -191,18 +202,20 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
-impl<ST, SCT, EPT> Stream for MockStateRootHashNop<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Stream for MockStateRootHashNop<ST, SCT, EPT, MP>
 where
-    Self: Unpin,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
+
+    Self: Unpin,
 {
     type Item = MonadEvent<ST, SCT, EPT>;
 
@@ -238,7 +251,7 @@ where
 /// An updater that works the same as MockStateRootHashNop but switches
 /// between two sets of validators every epoch.
 /// Goal is to mimic new validators joining and old validators leaving.
-pub struct MockStateRootHashSwap<ST, SCT, EPT>
+pub struct MockStateRootHashSwap<ST, SCT, EPT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -256,16 +269,16 @@ where
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
-    phantom: PhantomData<ST>,
+    phantom: PhantomData<(ST, MP)>,
 }
 
-impl<ST, SCT, EPT> MockStateRootHashSwap<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> MockStateRootHashSwap<ST, SCT, EPT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
 {
     pub fn new(
         genesis_validator_data: ValidatorSetData<SCT>,
@@ -296,7 +309,6 @@ where
             val_set_update_interval,
 
             waker: None,
-            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -326,12 +338,15 @@ where
     }
 }
 
-impl<ST, SCT, EPT> MockableStateRootHash for MockStateRootHashSwap<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> MockableStateRootHash<MP> for MockStateRootHashSwap<ST, SCT, EPT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
+
+    Self: Unpin,
 {
     type Event = MonadEvent<ST, SCT, EPT>;
     type SignatureCollection = SCT;
@@ -362,14 +377,16 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Executor for MockStateRootHashSwap<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Executor<MP> for MockStateRootHashSwap<ST, SCT, EPT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
 {
     type Command = StateRootHashCommand;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -413,18 +430,20 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
-impl<ST, SCT, EPT> Stream for MockStateRootHashSwap<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Stream for MockStateRootHashSwap<ST, SCT, EPT, MP>
 where
-    Self: Unpin,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
+
+    Self: Unpin,
 {
     type Item = MonadEvent<ST, SCT, EPT>;
 

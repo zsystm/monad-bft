@@ -1,12 +1,14 @@
 use std::{
     collections::VecDeque,
+    marker::PhantomData,
     ops::DerefMut,
     task::{Poll, Waker},
 };
 
 use futures::Stream;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::LoopbackCommand;
+use monad_metrics::MetricsPolicy;
 
 /// The loopback executor routes outputs from one child state to another. The
 /// update happens asynchronously and the event/operation must be idempotent on
@@ -14,25 +16,35 @@ use monad_executor_glue::LoopbackCommand;
 ///
 /// e.g. StateRootUpdate for ConsensusState is idempotent because inserting the
 /// same value to a map multiple times doesn't change the final state
-pub struct LoopbackExecutor<E> {
+pub struct LoopbackExecutor<E, MP>
+where
+    MP: MetricsPolicy,
+{
     /// Buffered events to send back
     buffer: VecDeque<E>,
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
+    _phantom: PhantomData<MP>,
 }
 
-impl<E> Default for LoopbackExecutor<E> {
+impl<E, MP> Default for LoopbackExecutor<E, MP>
+where
+    MP: MetricsPolicy,
+{
     fn default() -> Self {
         Self {
             buffer: Default::default(),
             waker: Default::default(),
-            metrics: Default::default(),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<E> Executor for LoopbackExecutor<E> {
+impl<E, MP> Executor<MP> for LoopbackExecutor<E, MP>
+where
+    MP: MetricsPolicy,
+{
     type Command = LoopbackCommand<E>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for cmd in commands {
@@ -48,13 +60,14 @@ impl<E> Executor for LoopbackExecutor<E> {
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
-impl<E> Stream for LoopbackExecutor<E>
+impl<E, MP> Stream for LoopbackExecutor<E, MP>
 where
+    MP: MetricsPolicy,
     Self: Unpin,
 {
     type Item = E;
@@ -74,7 +87,10 @@ where
     }
 }
 
-impl<E> LoopbackExecutor<E> {
+impl<E, MP> LoopbackExecutor<E, MP>
+where
+    MP: MetricsPolicy,
+{
     pub fn ready(&self) -> bool {
         !self.buffer.is_empty()
     }
