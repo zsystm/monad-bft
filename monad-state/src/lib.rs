@@ -56,7 +56,6 @@ use self::{
 
 mod blocksync;
 mod consensus;
-pub mod convert;
 mod epoch;
 mod statesync;
 
@@ -1034,7 +1033,11 @@ where
                 }
                 ConfigEvent::KnownPeersUpdate(known_peers_update) => {
                     vec![Command::RouterCommand(RouterCommand::UpdatePeers(
-                        known_peers_update.known_peers,
+                        known_peers_update
+                            .known_peers
+                            .into_iter()
+                            .map(|p| (p.node_id, p.addr))
+                            .collect(),
                     ))]
                 }
             },

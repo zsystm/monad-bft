@@ -1,6 +1,6 @@
 use std::{fmt::Debug, ops::Deref};
 
-use alloy_rlp::{RlpDecodable, RlpEncodable};
+use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_crypto::{
@@ -270,7 +270,7 @@ where
     fn reset(&mut self, _: Vec<&Self::ValidatedBlock>) {}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, RlpEncodable, RlpDecodable)]
 pub struct ConsensusFullBlock<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -362,7 +362,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct ProposedExecutionResult<EPT>
 where
     EPT: ExecutionProtocol,
@@ -394,7 +394,41 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl<EPT: ExecutionProtocol> Encodable for ExecutionResult<EPT> {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            Self::Proposed(p) => {
+                let enc: [&dyn Encodable; 2] = [&1u8, &p];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Finalized(s, fh) => {
+                let enc: [&dyn Encodable; 3] = [&2u8, &s, &fh];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<EPT: ExecutionProtocol> Decodable for ExecutionResult<EPT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Proposed(ProposedExecutionResult::<EPT>::decode(
+                &mut payload,
+            )?)),
+            2 => {
+                let seqnum = SeqNum::decode(&mut payload)?;
+                let hdr = EPT::FinalizedHeader::decode(&mut payload)?;
+                Ok(Self::Finalized(seqnum, hdr))
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown ExecutionResult",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct ProposedExecutionInputs<EPT>
 where
     EPT: ExecutionProtocol,
