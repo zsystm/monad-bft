@@ -15,7 +15,10 @@ use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_metrics::NoopMetricsPolicy;
-use monad_raptorcast::{metrics::RaptorCastMetrics, RaptorCast, RaptorCastConfig, RaptorCastEvent};
+use monad_raptorcast::{
+    metrics::{RaptorCastDataplaneMetrics, RaptorCastMetrics},
+    RaptorCast, RaptorCastConfig, RaptorCastEvent,
+};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -121,14 +124,15 @@ fn service(
                     mtu: DEFAULT_MTU,
                 };
 
-                let mut service =
-                    RaptorCast::<
-                        SignatureType,
-                        MockMessage,
-                        MockMessage,
-                        <MockMessage as Message>::Event,
-                        NoopMetricsPolicy,
-                    >::new(service_config, RaptorCastMetrics::default());
+                let mut service = RaptorCast::<
+                    SignatureType,
+                    MockMessage,
+                    MockMessage,
+                    <MockMessage as Message>::Event,
+                    NoopMetricsPolicy,
+                >::new(
+                    service_config, RaptorCastDataplaneMetrics::default()
+                );
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
                     validator_set: all_peers.iter().map(|peer| (*peer, Stake(0))).collect(),

@@ -18,7 +18,7 @@ use monad_executor_glue::{Message, RouterCommand};
 use monad_metrics::NoopMetricsPolicy;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
-    metrics::RaptorCastMetrics,
+    metrics::{RaptorCastDataplaneMetrics, RaptorCastMetrics},
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, FullNodes, Validator},
     RaptorCast, RaptorCastConfig, RaptorCastEvent,
@@ -397,13 +397,14 @@ pub fn set_up_test(
                 mtu: DEFAULT_MTU,
             };
 
-            let mut service = RaptorCast::<
-                SignatureType,
-                MockMessage,
-                MockMessage,
-                <MockMessage as Message>::Event,
-                NoopMetricsPolicy,
-            >::new(service_config, RaptorCastMetrics::default());
+            let mut service =
+                RaptorCast::<
+                    SignatureType,
+                    MockMessage,
+                    MockMessage,
+                    <MockMessage as Message>::Event,
+                    NoopMetricsPolicy,
+                >::new(service_config, RaptorCastDataplaneMetrics::default());
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),

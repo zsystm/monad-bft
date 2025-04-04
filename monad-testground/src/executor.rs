@@ -14,7 +14,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
 use monad_metrics::{MockMetricsPolicy, NoopMetricsPolicy};
-use monad_raptorcast::{metrics::RaptorCastMetrics, RaptorCast, RaptorCastConfig};
+use monad_raptorcast::{metrics::RaptorCastDataplaneMetrics, RaptorCast, RaptorCastConfig};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
@@ -127,7 +127,7 @@ where
                     NoopMetricsPolicy,
                 >::new(
                     config,
-                    RaptorCastMetrics::default(),
+                    RaptorCastDataplaneMetrics::default(),
                 )))
             }
         },
