@@ -1,7 +1,6 @@
 pub mod block_data_archive;
 pub mod index_repr;
 pub mod tx_index_archive;
-pub mod state_snapshot;
 
 use alloy_primitives::BlockHash;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
