@@ -45,6 +45,7 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+crc32fast = "1.4"
 dashmap = { workspace = true }
 enum_dispatch = { workspace = true }
 eyre = { workspace = true }
@@ -62,12 +63,18 @@ rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = [
+    "fs",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+] }
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url = { workspace = true }
 
 [dev-dependencies]
-serial_test = { workspace = true } 
+serial_test = { workspace = true }
 monad-eth-testutil = { workspace = true }
