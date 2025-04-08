@@ -114,11 +114,8 @@ impl MongoDbStorage {
                 collection_name, max_size_gb, max_size_bytes
             );
 
-            // Create capped collection if it doesn't exist
-            db.create_collection(collection_name)
-                .capped(true)
-                .size(max_size_bytes)
-                .await?;
+            // Create collection if it doesn't exist
+            db.create_collection(collection_name).await?;
 
             debug!(
                 "Capped collection '{}' created successfully",
@@ -241,7 +238,6 @@ pub mod mongo_tests {
     use std::{process::Command, sync::atomic::AtomicU16};
 
     use mongodb::bson::uuid::Uuid;
-    use serial_test::serial;
 
     use super::*;
 
@@ -350,7 +346,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_basic_operations() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -370,7 +365,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_bulk_operations() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -404,7 +398,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_prefix_scan() {
         let (_container, storage) = setup().await.unwrap();
 
