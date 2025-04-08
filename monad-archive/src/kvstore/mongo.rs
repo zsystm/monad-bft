@@ -14,14 +14,26 @@ const MAX_CONNECTION_POOL_SIZE: u32 = 50;
 
 #[derive(Clone)]
 pub struct MongoDbStorage {
-    collection: Collection<KeyValueDocument>,
+    pub client: Client,
+    pub(crate) collection: Collection<KeyValueDocument>,
+    pub db_name: String,
     name: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct KeyValueDocument {
-    _id: String,
-    value: Binary,
+pub(crate) struct KeyValueDocument {
+    pub(crate) _id: String,
+    pub(crate) value: Binary,
+}
+
+pub async fn new_client(connection_string: &str) -> Result<Client> {
+    let mut client_options = ClientOptions::parse(connection_string).await?;
+    client_options.max_pool_size = Some(MAX_CONNECTION_POOL_SIZE);
+    client_options.connect_timeout = Some(Duration::from_secs(1));
+
+    let client = Client::with_options(client_options)?;
+    trace!("MongoDB client created successfully");
+    Ok(client)
 }
 
 impl MongoDbStorage {
@@ -74,15 +86,7 @@ impl MongoDbStorage {
             connection_string, database
         );
 
-        let mut client_options = ClientOptions::parse(connection_string).await?;
-        client_options.max_pool_size = Some(MAX_CONNECTION_POOL_SIZE);
-        debug!(
-            "Setting MongoDB max pool size to {}",
-            MAX_CONNECTION_POOL_SIZE
-        );
-
-        let client = Client::with_options(client_options)?;
-        trace!("MongoDB client created successfully");
+        let client = new_client(connection_string).await?;
 
         let db = client.database(database);
         debug!("Using database: {}", database);
@@ -134,7 +138,9 @@ impl MongoDbStorage {
         );
 
         let storage = Self {
+            client,
             collection,
+            db_name: database.to_string(),
             name: format!("mongodb://{database}/{collection_name}"),
         };
 
@@ -154,6 +160,26 @@ impl KVReader for MongoDbStorage {
             Some(doc) => Ok(Some(Bytes::from(doc.value.bytes))),
             None => Ok(None),
         }
+    }
+
+    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
+        let x = self
+            .collection
+            .find(doc! { "_id": {"$in": keys} })
+            .await
+            .wrap_err("MongoDB get operation failed")?
+            .collect::<Vec<_>>()
+            .await;
+
+        Ok(x.into_iter()
+            .filter_map(|x| match x {
+                Ok(x) => Some((x._id, Bytes::from(x.value.bytes))),
+                Err(e) => {
+                    warn!("MongoDB get operation failed: {e:?}");
+                    None
+                }
+            })
+            .collect())
     }
 }
 
@@ -210,9 +236,9 @@ impl KVStore for MongoDbStorage {
     }
 }
 
-#[cfg(all(test, feature = "mongodb-integration-tests"))]
-mod tests {
-    use std::process::Command;
+#[cfg(test)]
+pub mod mongo_tests {
+    use std::{process::Command, sync::atomic::AtomicU16};
 
     use mongodb::bson::uuid::Uuid;
     use serial_test::serial;
@@ -220,13 +246,16 @@ mod tests {
     use super::*;
 
     pub struct TestMongoContainer {
-        container_id: String,
+        pub container_id: String,
+        pub port: u16,
     }
+
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(27017);
 
     impl TestMongoContainer {
         pub async fn new() -> Result<Self> {
             let container_name = format!("mongo_test_{}", Uuid::new());
-            let port = 27017;
+            let port = NEXT_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
             // Start container
             let output = Command::new("docker")
@@ -247,6 +276,18 @@ mod tests {
                 .trim()
                 .to_string();
 
+            println!(
+                "Starting MongoDB container: {}, {}",
+                container_name, container_id
+            );
+
+            let output = Command::new("docker")
+                .args(["ps"])
+                .output()
+                .expect("Failed to list containers");
+
+            println!("Containers: {}", String::from_utf8(output.stdout).unwrap());
+
             // Poll until MongoDB is ready
             let client_options = ClientOptions::parse(format!("mongodb://localhost:{port}"))
                 .await
@@ -259,7 +300,7 @@ mod tests {
                     Ok(client) => {
                         // Try to actually connect and run a command
                         match client.list_database_names().await {
-                            Ok(_) => return Ok(Self { container_id }),
+                            Ok(_) => return Ok(Self { container_id, port }),
                             Err(_) => {
                                 tokio::time::sleep(Duration::from_millis(200)).await;
                                 attempt += 1;
@@ -281,6 +322,7 @@ mod tests {
 
     impl Drop for TestMongoContainer {
         fn drop(&mut self) {
+            println!("Stopping MongoDB container: {}", self.container_id);
             Command::new("docker")
                 .args(["stop", &self.container_id])
                 .output()
@@ -296,7 +338,7 @@ mod tests {
         let container = TestMongoContainer::new().await?;
 
         let storage = MongoDbStorage::new(
-            "mongodb://localhost:27017",
+            &format!("mongodb://localhost:{}", container.port),
             "test_db",
             "test_collection",
             Some(5), // 5gb cap
@@ -306,6 +348,7 @@ mod tests {
         Ok((container, storage))
     }
 
+    #[ignore]
     #[tokio::test]
     #[serial]
     async fn test_basic_operations() {
@@ -325,6 +368,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[ignore]
     #[tokio::test]
     #[serial]
     async fn test_bulk_operations() {
@@ -342,8 +386,23 @@ mod tests {
             let result = storage.get(&key).await.unwrap().unwrap();
             assert_eq!(result.as_ref(), value.as_slice());
         }
+
+        // Test bulk_get
+        let keys = vec![
+            "key1".to_string(),
+            "key2".to_string(),
+            "nonexistent".to_string(),
+        ];
+
+        let results = storage.bulk_get(&keys).await.unwrap();
+
+        assert_eq!(results.len(), 2); // Should only have the two existing keys
+        assert_eq!(results.get("key1").unwrap().as_ref(), b"value1");
+        assert_eq!(results.get("key2").unwrap().as_ref(), b"value2");
+        assert!(!results.contains_key("nonexistent"));
     }
 
+    #[ignore]
     #[tokio::test]
     #[serial]
     async fn test_prefix_scan() {

@@ -108,15 +108,27 @@ pub struct Cli {
     #[arg(long)]
     pub archive_api_key: Option<String>,
 
+    /// Set the mongo url to read archive data from
     #[arg(long)]
     pub mongo_url: Option<String>,
 
+    /// Set the mongo db name to read archive data from
     #[arg(long)]
     pub mongo_db_name: Option<String>,
 
+    /// Use mongo index to serve eth_getLogs
+    #[arg(long)]
+    pub use_eth_get_logs_index: bool,
+
+    /// Dry run using mongo index for eth_getLogs
+    #[arg(long)]
+    pub dry_run_get_logs_index: bool,
+
+    /// Set the max number of finalized block cache entries
     #[arg(long, default_value_t = 200)]
     pub max_finalized_block_cache_len: u64,
 
+    /// Set the max number of voted block cache entries
     #[arg(long, default_value_t = 3)]
     pub max_voted_block_cache_len: u64,
 }

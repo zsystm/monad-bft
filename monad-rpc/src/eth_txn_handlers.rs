@@ -1,4 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, Bloom, FixedBytes, TxKind, B256};
@@ -7,9 +11,9 @@ use alloy_rpc_types::{
     BlockNumberOrTag, Filter, FilterBlockOption, FilterSet, FilteredParams, Log, Receipt,
     Transaction, TransactionReceipt,
 };
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use itertools::Either;
-use monad_archive::prelude::{ArchiveReader, BlockDataReader, IndexReader};
+use monad_archive::prelude::{ArchiveReader, BlockDataReader, Context, ContextCompat, IndexReader};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockHeader, BlockKey, FinalizedBlockKey, ReceiptWithLogIndex, TransactionLocation, Triedb,
@@ -63,7 +67,7 @@ pub fn parse_tx_receipt(
     receipt: ReceiptWithLogIndex,
     block_num: u64,
     tx_index: u64,
-) -> Result<TransactionReceipt, JsonRpcError> {
+) -> TransactionReceipt {
     // unpack data
     let sender = tx.sender;
     let tx = tx.tx;
@@ -128,7 +132,7 @@ pub fn parse_tx_receipt(
         blob_gas_price: None,
         authorization_list: None,
     };
-    Ok(tx_receipt)
+    tx_receipt
 }
 
 pub enum FilterError {
@@ -165,6 +169,8 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     archive_reader: &Option<ArchiveReader>,
     max_block_range: u64,
     p: MonadEthGetLogsParams,
+    use_eth_get_logs_index: bool,
+    dry_run_get_logs_index: bool,
 ) -> JsonRpcResult<MonadEthGetLogsResult> {
     trace!("monad_eth_getLogs: {p:?}");
 
@@ -200,7 +206,8 @@ pub async fn monad_eth_getLogs<T: Triedb>(
             let block = triedb_env
                 .get_block_number_by_hash(latest_block_key, block_hash.into())
                 .await
-                .map_err(|_| {
+                .map_err(|e| {
+                    warn!("Error getting block number by hash: {e:?}");
                     JsonRpcError::internal_error("could not get block hash".to_string())
                 })?;
             let block_num = match block {
@@ -208,7 +215,13 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                 None => {
                     // retry from archive reader if block hash not available in triedb
                     if let Some(archive_reader) = archive_reader {
-                        if let Ok(block) = archive_reader.get_block_by_hash(&block_hash).await {
+                        if let Ok(block) = archive_reader
+                            .get_block_by_hash(&block_hash)
+                            .await
+                            .inspect_err(|e| {
+                                warn!("Error getting block by hash from archive: {e:?}");
+                            })
+                        {
                             block.header.number
                         } else {
                             return Ok(MonadEthGetLogsResult(vec![]));
@@ -227,6 +240,30 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     }
     if to_block - from_block > max_block_range {
         return Err(FilterError::RangeTooLarge.into());
+    }
+
+    let latest_block = get_block_key_from_tag(triedb_env, BlockTags::Latest)
+        .seq_num()
+        .0;
+    // TODO: pipe in actual cache size
+    const DEFAULT_CACHE_SIZE: u64 = 200;
+    let to_block_outside_cache = to_block + DEFAULT_CACHE_SIZE < latest_block;
+
+    if use_eth_get_logs_index && archive_reader.is_some() && to_block_outside_cache {
+        let archive_reader = archive_reader.as_ref().unwrap();
+        trace!("Using eth_getLogs index");
+        match get_logs_with_index(archive_reader, from_block, to_block, &filter).await {
+            Ok(logs) => {
+                return Ok(MonadEthGetLogsResult(
+                    logs.into_iter().map(MonadLog).collect(),
+                ));
+            }
+            Err(e) => {
+                debug!(
+                    "Error getting logs with index. Falling back to unindexed method. Error: {e:?}"
+                );
+            }
+        }
     }
 
     let filtered_params = FilteredParams::new(Some(filter.clone()));
@@ -288,7 +325,8 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                             let block = archive_reader
                                 .get_block_by_number(block_num)
                                 .await
-                                .map_err(|_| {
+                                .map_err(|e| {
+                                    warn!("Error getting block header from archiver: {e:?}");
                                     JsonRpcError::internal_error(
                                         "error getting block header from archiver".into(),
                                     )
@@ -301,7 +339,8 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                                 let bloom_receipts = archive_reader
                                     .get_block_receipts(block_num)
                                     .await
-                                    .map_err(|_| {
+                                    .map_err(|e| {
+                                        warn!("Error getting block receipts from archiver: {e:?}");
                                         JsonRpcError::internal_error(
                                             "error getting block receipts from archiver".into(),
                                         )
@@ -373,9 +412,136 @@ pub async fn monad_eth_getLogs<T: Triedb>(
         })
         .collect();
 
+    if dry_run_get_logs_index {
+        let non_indexed = HashSet::from_iter(receipt_logs.iter().cloned());
+        if let Some(archive_reader) = archive_reader.clone() {
+            tokio::spawn(async move {
+                if let Err(e) = check_dry_run_get_logs_index(
+                    archive_reader,
+                    from_block,
+                    to_block,
+                    filter,
+                    non_indexed,
+                )
+                .await
+                {
+                    warn!("Error checking dry run get logs index: {e:?}");
+                }
+            });
+        }
+    }
+
     Ok(MonadEthGetLogsResult(
         receipt_logs.into_iter().map(MonadLog).collect(),
     ))
+}
+
+async fn check_dry_run_get_logs_index(
+    archive_reader: ArchiveReader,
+    from_block: u64,
+    to_block: u64,
+    filter: Filter,
+    non_indexed: HashSet<Log>,
+) -> monad_archive::prelude::Result<()> {
+    let indexed = get_logs_with_index(&archive_reader, from_block, to_block, &filter)
+        .await
+        .map(HashSet::from_iter)
+        .wrap_err("Error getting logs with index")?;
+
+    let group_by = |mut map: HashMap<_, _>, log: &Log| {
+        let Some(block_number) = log.block_number else {
+            return map;
+        };
+        let Some(transaction_hash) = log.transaction_hash else {
+            return map;
+        };
+        map.entry(block_number)
+            .or_insert_with(|| Vec::with_capacity(2))
+            .push(transaction_hash.to_string());
+        map
+    };
+
+    let non_indexed_only = non_indexed
+        .difference(&indexed)
+        .fold(HashMap::new(), group_by);
+    let indexed_only = indexed
+        .difference(&non_indexed)
+        .fold(HashMap::new(), group_by);
+
+    if non_indexed_only.is_empty() && indexed_only.is_empty() {
+        debug!("Indexed and non-indexed logs are identical");
+    } else {
+        let non_indexed_only_json = serde_json::to_string(&non_indexed_only)?;
+        let indexed_only_json = serde_json::to_string(&indexed_only)?;
+        warn!(
+            non_indexed_only = non_indexed_only_json,
+            indexed_only = indexed_only_json,
+            "Index and non-index logs are not identical"
+        );
+    }
+
+    Ok(())
+}
+
+async fn get_logs_with_index(
+    reader: &ArchiveReader,
+    from_block: u64,
+    to_block: u64,
+    filter: &Filter,
+) -> monad_archive::prelude::Result<Vec<Log>> {
+    let log_index = reader
+        .log_index
+        .as_ref()
+        .wrap_err("Log index reader not present")?;
+
+    let latest_indexed_tx = reader
+        .get_latest_indexed()
+        .await?
+        .wrap_err("Latest indexed tx not found")?;
+
+    if latest_indexed_tx < to_block {
+        monad_archive::prelude::bail!(
+            "Latest indexed tx is less than to_block. {}, {}",
+            latest_indexed_tx,
+            to_block
+        );
+    }
+
+    let filtered_params = FilteredParams::new(Some(filter.clone()));
+
+    // Note: we an limit returned (and queried!) data by using `query_logs_index_streamed`
+    // and take_while we're under the response size limit
+    let potential_matches = log_index
+        .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
+        .await?;
+    let potential_matches = potential_matches.try_collect::<Vec<_>>().await?;
+
+    Ok(potential_matches
+        .into_iter()
+        .flat_map(|tx_data| {
+            let receipt = parse_tx_receipt(
+                tx_data.header_subset.base_fee_per_gas,
+                Some(tx_data.header_subset.block_timestamp),
+                tx_data.header_subset.block_hash,
+                tx_data.tx,
+                tx_data.header_subset.gas_used,
+                tx_data.receipt,
+                tx_data.header_subset.block_number,
+                tx_data.header_subset.tx_index,
+            );
+            receipt
+                .inner
+                .logs()
+                .iter()
+                .filter(|log: &&Log| {
+                    !(filtered_params.filter.is_some()
+                        && (!filtered_params.filter_address(&log.address())
+                            || !filtered_params.filter_topics(log.topics())))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect())
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -525,7 +691,7 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
                 tx_data.receipt,
                 tx_data.header_subset.block_number,
                 tx_data.header_subset.tx_index,
-            )?;
+            );
 
             return Ok(Some(MonadTransactionReceipt(receipt)));
         }
@@ -567,7 +733,13 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
 
     // try archive if transaction hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
-        if let Ok((tx, header_subset)) = archive_reader.get_tx(&params.tx_hash.0.into()).await {
+        if let Ok((tx, header_subset)) = archive_reader
+            .get_tx(&params.tx_hash.0.into())
+            .await
+            .inspect_err(|e| {
+                warn!("Error getting tx from archive: {e:?}");
+            })
+        {
             return parse_tx_content(
                 header_subset.block_hash,
                 header_subset.block_number,
@@ -660,7 +832,13 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {
-        if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
+        if let Ok(block) = archive_reader
+            .get_block_by_number(block_num.0)
+            .await
+            .inspect_err(|e| {
+                warn!("Error getting block by number from archive: {e:?}");
+            })
+        {
             if let Some(tx) = block.body.transactions.get(params.index.0 as usize) {
                 return parse_tx_content(
                     block.header.hash_slow(),
@@ -735,7 +913,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
                 receipt,
                 block_key.seq_num().0,
                 tx_index,
-            )?;
+            );
 
             Ok(Some(MonadTransactionReceipt(receipt)))
         }

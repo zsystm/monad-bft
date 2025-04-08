@@ -287,6 +287,8 @@ async fn rpc_select(
                 &app_state.archive_reader,
                 app_state.logs_max_block_range,
                 params,
+                app_state.use_eth_get_logs_index,
+                app_state.dry_run_get_logs_index,
             )
             .await
             .map(serialize_result)?
@@ -556,6 +558,8 @@ struct MonadRpcResources {
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
     logs_max_block_range: u64,
+    dry_run_get_logs_index: bool,
+    use_eth_get_logs_index: bool,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -580,6 +584,8 @@ impl MonadRpcResources {
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
         logs_max_block_range: u64,
+        dry_run_get_logs_index: bool,
+        use_eth_get_logs_index: bool,
     ) -> Self {
         Self {
             mempool_sender,
@@ -594,6 +600,8 @@ impl MonadRpcResources {
             allow_unprotected_txs,
             rate_limiter,
             logs_max_block_range,
+            dry_run_get_logs_index,
+            use_eth_get_logs_index,
         }
     }
 }
@@ -870,6 +878,8 @@ async fn main() -> std::io::Result<()> {
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
         args.eth_get_logs_max_block_range,
+        args.dry_run_get_logs_index,
+        args.use_eth_get_logs_index,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -960,6 +970,8 @@ mod tests {
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
+            dry_run_get_logs_index: false,
+            use_eth_get_logs_index: false,
         };
         let app = test::init_service(
             App::new()

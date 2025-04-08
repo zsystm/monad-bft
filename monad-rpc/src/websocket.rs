@@ -124,6 +124,8 @@ mod tests {
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
+            dry_run_get_logs_index: false,
+            use_eth_get_logs_index: false,
         };
         (
             MonadRpcResourcesState { ipc_receiver },
