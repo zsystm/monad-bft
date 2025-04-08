@@ -5,6 +5,43 @@ use state_snapshot::{download_bucket_to_dir, upload_directory};
 
 mod state_snapshot;
 
+#[derive(Debug, clap::Parser)]
+struct Args {
+    #[clap(subcommand)]
+    subcommand: Subcommand,
+
+    #[clap(short, long, global = true)]
+    bucket: String,
+
+    #[clap(short, long, global = true)]
+    path: PathBuf,
+
+    #[clap(short, long, global = true)]
+    concurrency: usize,
+
+    #[clap(short, long, global = true)]
+    region: String,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum Subcommand {
+    UploadService(UploadServiceArgs),
+    Upload,
+    Download,
+}
+
+#[derive(Debug, clap::Args)]
+struct UploadServiceArgs {
+    #[clap(long)]
+    period_secs: u64,
+
+    #[clap(long)]
+    otel_endpoint: Option<String>,
+
+    #[clap(long)]
+    otel_replica_name: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -12,10 +49,10 @@ async fn main() -> Result<()> {
     let s3 = Client::new(&get_aws_config(Some(args.region)).await);
 
     match args.subcommand {
-        Subcommand::Upload(upload_args) => {
+        Subcommand::Upload => {
             upload_directory(args.path, s3, args.bucket, args.concurrency).await?;
         }
-        Subcommand::Download(download_args) => {
+        Subcommand::Download => {
             download_bucket_to_dir(args.path, s3, args.bucket, args.concurrency).await?;
         }
         Subcommand::UploadService(upload_service_args) => {
@@ -65,47 +102,4 @@ async fn upload_service(
             now.elapsed().as_secs_f64().round() as u64,
         );
     }
-}
-
-#[derive(Debug, clap::Parser)]
-struct Args {
-    #[clap(subcommand)]
-    subcommand: Subcommand,
-
-    #[clap(short, long, global = true)]
-    bucket: String,
-
-    #[clap(short, long, global = true)]
-    path: PathBuf,
-
-    #[clap(short, long, global = true)]
-    concurrency: usize,
-
-    #[clap(short, long, global = true)]
-    region: String,
-}
-
-#[derive(Debug, clap::Subcommand)]
-enum Subcommand {
-    UploadService(UploadServiceArgs),
-    Upload(UploadArgs),
-    Download(DownloadArgs),
-}
-
-#[derive(Debug, clap::Args)]
-struct UploadArgs {}
-
-#[derive(Debug, clap::Args)]
-struct DownloadArgs {}
-
-#[derive(Debug, clap::Args)]
-struct UploadServiceArgs {
-    #[clap(long)]
-    period_secs: u64,
-
-    #[clap(long)]
-    otel_endpoint: Option<String>,
-
-    #[clap(long)]
-    otel_replica_name: String,
 }
