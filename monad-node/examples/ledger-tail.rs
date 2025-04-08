@@ -9,7 +9,10 @@ use futures_util::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};
 use lru::LruCache;
 use monad_block_persist::{BlockPersist, FileBlockPersist, BLOCKDB_HEADER_EXTENSION};
-use monad_consensus_types::block::{ConsensusBlockHeader, ConsensusFullBlock};
+use monad_consensus_types::{
+    block::{ConsensusBlockHeader, ConsensusFullBlock},
+    validator_data::ValidatorsConfig,
+};
 use monad_node::config::{
     ExecutionProtocolType, ForkpointConfig, SignatureCollectionType, SignatureType,
 };
@@ -56,11 +59,8 @@ async fn main() {
             .expect("forkpoint.toml not found"),
     )
     .unwrap();
-    let validators: BTreeMap<_, _> = forkpoint_config.validator_sets[0]
-        .validators
-        .get_stakes()
-        .into_iter()
-        .collect();
+
+    let mut epoch_validators = BTreeMap::default();
 
     let block_persist: FileBlockPersist<
         SignatureType,
@@ -90,12 +90,26 @@ async fn main() {
 
         for block in block_queue.into_iter().rev() {
             let now_ts = std::time::UNIX_EPOCH.elapsed().unwrap();
+
+            let validators = epoch_validators
+                .entry(block.get_epoch())
+                .or_insert_with(|| {
+                    let validators: ValidatorsConfig<SignatureCollectionType> =
+                        ValidatorsConfig::read_from_path("/monad/config/validators.toml")
+                            .unwrap_or_else(|err| panic!("failed to read validators.toml, or validators.toml corrupt. was this edited manually? err={:?}", err));
+                    validators
+                        .get_validator_set(&block.get_epoch())
+                        .get_stakes()
+                        .into_iter()
+                        .collect()
+                });
+
             for skipped_round in (last_round.0 + 1)
                 .max(block.get_round().0 - 5)
                 .min(block.get_round().0)..block.get_round().0
             {
                 let skipped_leader =
-                    WeightedRoundRobin::default().get_leader(Round(skipped_round), &validators);
+                    WeightedRoundRobin::default().get_leader(Round(skipped_round), validators);
                 info!(
                     round =? skipped_round,
                     author =? skipped_leader,
@@ -109,6 +123,7 @@ async fn main() {
             info!(
                 round =? block.get_round().0,
                 parent_round =? block.get_parent_round().0,
+                epoch =? block.header().epoch.0,
                 seq_num =? block.header().seq_num.0,
                 num_tx =? block.body().execution_body.transactions.len(),
                 author =? block.header().author,
@@ -117,6 +132,9 @@ async fn main() {
                 author_dns = node_dns.get(&block.header().author.pubkey()).cloned().unwrap_or_default(),
                 "proposed_block"
             );
+        }
+        while epoch_validators.len() > 1_000 {
+            epoch_validators.pop_first();
         }
     }
 }
