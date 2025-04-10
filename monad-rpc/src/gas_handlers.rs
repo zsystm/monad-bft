@@ -35,6 +35,7 @@ struct GasEstimator {
     sender: Address,
     block_key: BlockKey,
     state_override: StateOverrideSet,
+    gas_specified: bool,
 }
 
 impl GasEstimator {
@@ -44,6 +45,7 @@ impl GasEstimator {
         sender: Address,
         block_key: BlockKey,
         state_override: StateOverrideSet,
+        gas_specified: bool,
     ) -> Self {
         Self {
             chain_id,
@@ -51,6 +53,7 @@ impl GasEstimator {
             sender,
             block_key,
             state_override,
+            gas_specified,
         }
     }
 }
@@ -70,6 +73,7 @@ impl EthCallProvider for GasEstimator {
         let header = self.block_header.clone();
         let sender = self.sender;
         let state_override = self.state_override.clone();
+        let gas_specified = self.gas_specified;
 
         monad_ethcall::eth_call(
             chain_id,
@@ -81,6 +85,7 @@ impl EthCallProvider for GasEstimator {
             eth_call_executor.unwrap(),
             &state_override,
             false,
+            gas_specified,
         )
         .await
     }
@@ -255,6 +260,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         }
     };
 
+    let gas_specified = params.tx.gas.is_some();
     let provider_gas_limit = provider_gas_limit.min(header.header.gas_limit);
     let original_tx_gas = params.tx.gas.unwrap_or(U256::from(header.header.gas_limit));
     fill_gas_params(
@@ -285,6 +291,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         sender,
         block_key,
         params.state_override_set,
+        gas_specified,
     );
 
     // If the transaction is a regular value transfer, execute the transaction with a 21000 gas limit and return that gas limit if executes successfully.

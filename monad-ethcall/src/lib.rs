@@ -30,7 +30,13 @@ unsafe impl Send for EthCallExecutor {}
 unsafe impl Sync for EthCallExecutor {}
 
 impl EthCallExecutor {
-    pub fn new(num_threads: u32, num_fibers: u32, node_lru_size: u32, triedb_path: &Path) -> Self {
+    pub fn new(
+        num_threads: u32,
+        num_fibers: u32,
+        node_lru_size: u32,
+        high_pool_timeout_sec: u32,
+        triedb_path: &Path,
+    ) -> Self {
         let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
 
@@ -39,6 +45,7 @@ impl EthCallExecutor {
                 num_threads,
                 num_fibers,
                 node_lru_size,
+                high_pool_timeout_sec,
                 dbpath.as_c_str().as_ptr(),
             )
         };
@@ -146,6 +153,7 @@ pub async fn eth_call(
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     state_override_set: &StateOverrideSet,
     trace: bool,
+    gas_specified: bool,
 ) -> CallResult {
     // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
     if transaction.gas_limit() > block_header.gas_limit {
@@ -276,6 +284,7 @@ pub async fn eth_call(
             Some(eth_call_submit_callback),
             sender_ctx_ptr as *mut std::ffi::c_void,
             trace,
+            gas_specified,
         )
     };
 
