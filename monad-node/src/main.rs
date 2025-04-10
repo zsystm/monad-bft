@@ -177,7 +177,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         <_ as Updater<_>>::boxed(raptor_router)
     };
 
-    let val_set_update_interval = SeqNum(50_000); // TODO configurable
+    let val_set_update_interval = SeqNum(200); // TODO configurable
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
@@ -338,7 +338,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
-        epoch_start_delay: Round(5000),
+        epoch_start_delay: Round(20),
         beneficiary: node_state.node_config.beneficiary.into(),
         locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
