@@ -5,9 +5,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-alloy-primitives = { workspace = true }
+alloy-consensus = { workspace = true, features = ["serde"] }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 libc = { workspace = true }
 monad-event-ring = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json = { workspace = true }
 zstd = { workspace = true }

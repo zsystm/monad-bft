@@ -20,7 +20,8 @@ As in C, the Rust version is split into two different pieces:
 
 2. __monad-exec-events__ - the execution event data types are defined in this
    library. It defines `#[repr(C)]` Rust versions of the execution event data
-   structures that are written to shared memory.
+   structures that are written to shared memory, and some higher level APIs
+   that are more useful in native Rust programs.
 
 ## API usage overview
 

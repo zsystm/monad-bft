@@ -1,8 +1,8 @@
 //! Utility for printing monad execution events to stdout
 //!
 //! Given the slow performance of string formatting, this exists primarily as
-//! an example of how to use the monad-event-ring library, and as a debugging
-//! utility to check that everything is working.
+//! an example of how to use the monad-event-ring and monad-exec-events
+//! libraries, and as a debugging utility to check that everything is working.
 
 use std::{
     io::{Cursor, Seek, Write},
@@ -22,20 +22,44 @@ use monad_exec_events::exec_event_ctypes::{
     self, exec_event_type, EXEC_EVENT_DEFAULT_RING_PATH, EXEC_EVENT_DOMAIN_METADATA,
 };
 
+#[derive(clap::Subcommand, Clone, Debug)]
+pub enum ParseMode {
+    #[command(about = "Watch raw execution events directly from the EventRing")]
+    Raw {
+        #[arg(long, help = "display a hexdump of event payloads")]
+        hexdump: bool,
+
+        #[arg(short, long, help = "display a decoded view of event strings")]
+        decode: bool,
+    },
+
+    #[command(about = "Watch events after they've been translated using ExecEventStream")]
+    Cooked {
+        #[arg(short, long, help = "ignore transaction input")]
+        ignore_input: bool,
+
+        #[arg(short, long, help = "display the serde JSON serialized form")]
+        json: bool,
+
+        #[arg(short, long, help = "dump in pretty printed mode")]
+        pretty: bool,
+    },
+}
+
 #[derive(Parser)]
 #[command(about = "Utility for watching monad execution events")]
 struct Cli {
+    #[command(subcommand)]
+    mode: ParseMode,
+
     #[arg(short, long, help = "name of the event ring shared memory file")]
     #[arg(default_value = EXEC_EVENT_DEFAULT_RING_PATH)]
     event_ring_path: PathBuf,
-
-    #[arg(long, help = "display a hexdump of event payloads")]
-    hexdump: bool,
-
-    #[arg(short, long, help = "display a decoded view of event strings")]
-    decode: bool,
 }
 
+// Print function for "raw" mode; this visualizes the binary data that is
+// resident in the event ring's shared memory segments, and is mostly useful as
+// a low-level debugging tool
 fn print_event(
     reader: &mut EventReader,
     event: monad_event_descriptor,
@@ -147,20 +171,23 @@ fn print_event(
     }
 }
 
-// Main event loop: once we've successfully imported a shared memory event
-// ring, poll it for new events and dump them to stdout until the writer
-// process dies
-fn event_loop(
+// Raw mode event loop: poll the event ring for new events and dump them
+// directly to stdout until the writer process dies
+fn raw_event_loop(
     reader: &mut EventReader,
     metadata_table: &[EventMetadata],
     block_header_table: &[exec_event_ctypes::block_header],
-    hexdump_payload: bool,
-    decode_payload: bool,
+    options: ParseMode,
     opt_proc_exit_monitor: Option<ProcessExitMonitor>,
 ) {
     let mut not_ready_count: u64 = 0;
     let stdout = std::io::stdout();
     let mut stdout_handle = stdout.lock();
+
+    let (hexdump, decode) = match options {
+        ParseMode::Raw { hexdump, decode } => (hexdump, decode),
+        ParseMode::Cooked { .. } => panic!("unreachable"),
+    };
 
     // Create a pre-allocated buffer for print_event to use for its hexdump
     // formatting; we'd ideally do this with a thread_local in print_event
@@ -168,7 +195,7 @@ fn event_loop(
     let mut fmtbuf = vec![0u8; 1 << 25].into_boxed_slice();
     let mut fmtcursor: Cursor<&mut [u8]> = Cursor::new(fmtbuf.as_mut());
 
-    // Poll the event ring for the next event (i.e., a non-blocking reading)
+    // Poll the event ring for the next event (i.e., a non-blocking read)
     loop {
         match reader.poll() {
             PollResult::NotReady => {
@@ -205,11 +232,65 @@ fn event_loop(
                     event,
                     metadata_table,
                     block_header_table,
-                    hexdump_payload,
-                    decode_payload,
+                    hexdump,
+                    decode,
                     &mut fmtcursor,
                     &mut stdout_handle,
                 )
+            }
+        }
+    }
+}
+
+// Cooked mode event loop: rather than polling the event ring directly, we pass
+// the EventReader to an instance of the `ExecEventStream` utility. This utility
+// also follows the "polling" (i.e., non-blocking read) style of API design.
+//
+// The stream processor polls its underlying EventReader for new events. When
+// it finds one, it turns the associated low-level C-wrapper event type into a
+// more "Rust ergonomic" type, which is some variant of `pub enum ExecEvent`
+// from the `exec_events.rs` module
+fn cooked_event_loop(
+    reader: EventReader,
+    options: ParseMode,
+    opt_process_exit_monitor: Option<ProcessExitMonitor>,
+) {
+    use monad_exec_events::exec_event_stream::*;
+
+    let (ignore_input, show_json, pretty_print) = match options {
+        ParseMode::Raw { .. } => panic!("unreachable!"),
+        ParseMode::Cooked {
+            ignore_input,
+            json,
+            pretty,
+        } => (ignore_input, json, pretty),
+    };
+
+    let config = ExecEventStreamConfig {
+        parse_txn_input: !ignore_input,
+        opt_process_exit_monitor,
+    };
+    let mut stream = ExecEventStream::new(reader, config);
+
+    loop {
+        match stream.poll() {
+            PollResult::NotReady => continue,
+            PollResult::Disconnected => process::exit(0),
+            err @ PollResult::Gap { .. } | err @ PollResult::PayloadExpired { .. } => {
+                eprintln!("ERROR: {err:#?}");
+            }
+            PollResult::Ready { seqno, event } => {
+                if show_json {
+                    if pretty_print {
+                        println!("{}", serde_json::to_string_pretty(&event).unwrap());
+                    } else {
+                        println!("{}", serde_json::to_string(&event).unwrap());
+                    }
+                } else if pretty_print {
+                    println!("{seqno}. {event:#?}");
+                } else {
+                    println!("{seqno}. {event:?}");
+                }
             }
         }
     }
@@ -255,6 +336,8 @@ fn main() {
     };
 
     if is_snapshot {
+        // We're replaying a snapshot of event ring memory, so manually set
+        // the iteration point to the first event in the file
         event_reader.read_last_seqno = 0;
     }
 
@@ -265,12 +348,14 @@ fn main() {
         )
     };
 
-    event_loop(
-        &mut event_reader,
-        EXEC_EVENT_DOMAIN_METADATA.events,
-        block_header_table,
-        cli.hexdump,
-        cli.decode,
-        opt_proc_exit_monitor,
-    );
+    match cli.mode {
+        r @ ParseMode::Raw { .. } => raw_event_loop(
+            &mut event_reader,
+            EXEC_EVENT_DOMAIN_METADATA.events,
+            block_header_table,
+            r,
+            opt_proc_exit_monitor,
+        ),
+        c @ ParseMode::Cooked { .. } => cooked_event_loop(event_reader, c, opt_proc_exit_monitor),
+    }
 }
