@@ -146,6 +146,21 @@ impl<'ring> EventReader<'ring> {
         self.read_last_seqno
     }
 
+    /// Return the start of the active buffer window
+    pub fn get_buffer_window_start(&self) -> u64 {
+        self.ring_contents
+            .buffer_window_start
+            .load(Ordering::Acquire)
+    }
+
+    /// Return the number of descriptors which are ready for consumption
+    /// immediately
+    #[inline]
+    pub fn get_available_descriptors(&self) -> usize {
+        let write_last_seqno = self.ring_contents.write_last_seqno.load(Ordering::Acquire);
+        (write_last_seqno - self.read_last_seqno) as usize
+    }
+
     #[inline]
     fn sync_wait(&'_ mut self) -> u64 {
         let write_last_seqno = self.ring_contents.write_last_seqno.load(Ordering::Acquire);

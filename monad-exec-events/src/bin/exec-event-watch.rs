@@ -22,18 +22,36 @@ use monad_exec_events::exec_event_ctypes::{
     self, exec_event_type, EXEC_EVENT_DEFAULT_RING_PATH, EXEC_EVENT_DOMAIN_METADATA,
 };
 
+#[derive(clap::Subcommand, Clone, Debug)]
+pub enum ParseMode {
+    #[command(about = "Watch raw execution events directly from the EventRing")]
+    Raw {
+        #[arg(long, help = "display a hexdump of event payloads")]
+        hexdump: bool,
+
+        #[arg(short, long, help = "display a decoded view of event strings")]
+        decode: bool,
+    },
+
+    #[command(about = "Watch events after they've been translated using ExecEventStream")]
+    Cooked {
+        #[arg(short, long, help = "ignore transaction input")]
+        ignore_input: bool,
+
+        #[arg(short, long, help = "display the serde JSON serialized form")]
+        json: bool,
+    },
+}
+
 #[derive(Parser)]
 #[command(about = "Utility for watching monad execution events")]
 struct Cli {
+    #[command(subcommand)]
+    mode: ParseMode,
+
     #[arg(short, long, help = "name of the event ring shared memory file")]
     #[arg(default_value = EXEC_EVENT_DEFAULT_RING_PATH)]
     event_ring_path: PathBuf,
-
-    #[arg(long, help = "display a hexdump of event payloads")]
-    hexdump: bool,
-
-    #[arg(short, long, help = "display a decoded view of event strings")]
-    decode: bool,
 }
 
 fn print_event(
@@ -150,17 +168,21 @@ fn print_event(
 // Main event loop: once we've successfully imported a shared memory event
 // ring, poll it for new events and dump them to stdout until the writer
 // process dies
-fn event_loop(
+fn raw_event_loop(
     reader: &mut EventReader,
     metadata_table: &[EventMetadata],
     block_header_table: &[exec_event_ctypes::block_header],
-    hexdump_payload: bool,
-    decode_payload: bool,
-    opt_proc_exit_monitor: Option<&ProcessExitMonitor>,
+    options: ParseMode,
+    opt_proc_exit_monitor: Option<ProcessExitMonitor>,
 ) {
     let mut not_ready_count: u64 = 0;
     let stdout = std::io::stdout();
     let mut stdout_handle = stdout.lock();
+
+    let (hexdump, decode) = match options {
+        ParseMode::Raw { hexdump, decode } => (hexdump, decode),
+        ParseMode::Cooked { .. } => panic!("unreachable"),
+    };
 
     // Create a pre-allocated buffer for print_event to use for its hexdump
     // formatting; we'd ideally do this with a thread_local in print_event
@@ -181,7 +203,7 @@ fn event_loop(
                 if not_ready_count & ((1 << 20) - 1) == 0 {
                     let _ = stdout_handle.flush();
                     if opt_proc_exit_monitor.is_some()
-                        && opt_proc_exit_monitor.unwrap().has_exited()
+                        && opt_proc_exit_monitor.as_ref().unwrap().has_exited()
                     {
                         break;
                     }
@@ -205,11 +227,47 @@ fn event_loop(
                     event,
                     metadata_table,
                     block_header_table,
-                    hexdump_payload,
-                    decode_payload,
+                    hexdump,
+                    decode,
                     &mut fmtcursor,
                     &mut stdout_handle,
                 )
+            }
+        }
+    }
+}
+
+fn cooked_event_loop(
+    reader: EventReader,
+    options: ParseMode,
+    opt_process_exit_monitor: Option<ProcessExitMonitor>,
+) {
+    use monad_exec_events::exec_event_stream::*;
+
+    let (ignore_input, show_json) = match options {
+        ParseMode::Raw { .. } => panic!("unreachable!"),
+        ParseMode::Cooked { ignore_input, json } => (ignore_input, json),
+    };
+
+    let config = ExecEventStreamConfig {
+        parse_txn_input: !ignore_input,
+        opt_process_exit_monitor,
+    };
+    let mut stream = ExecEventStream::new(reader, config);
+
+    loop {
+        match stream.poll() {
+            PollResult::NotReady => continue,
+            PollResult::Disconnected => process::exit(0),
+            err @ PollResult::Gap { .. } | err @ PollResult::PayloadExpired { .. } => {
+                eprintln!("ERROR: {err:?}");
+            }
+            PollResult::Ready { seqno, event } => {
+                if show_json {
+                    println!("{}", serde_json::to_string_pretty(&event).unwrap());
+                } else {
+                    println!("{seqno}. {event:?}");
+                }
             }
         }
     }
@@ -265,12 +323,14 @@ fn main() {
         )
     };
 
-    event_loop(
-        &mut event_reader,
-        EXEC_EVENT_DOMAIN_METADATA.events,
-        block_header_table,
-        cli.hexdump,
-        cli.decode,
-        opt_proc_exit_monitor.as_ref(),
-    );
+    match cli.mode {
+        r @ ParseMode::Raw { .. } => raw_event_loop(
+            &mut event_reader,
+            EXEC_EVENT_DOMAIN_METADATA.events,
+            block_header_table,
+            r,
+            opt_proc_exit_monitor,
+        ),
+        c @ ParseMode::Cooked { .. } => cooked_event_loop(event_reader, c, opt_proc_exit_monitor),
+    }
 }
