@@ -4947,11 +4947,15 @@ dependencies = [
 name = "monad-exec-events"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "chrono",
  "clap 4.4.10",
  "libc",
  "monad-event-ring",
+ "serde",
+ "serde_json",
  "zstd",
 ]
 
