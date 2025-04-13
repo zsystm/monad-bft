@@ -1,0 +1,13 @@
+[package]
+name = "monad-exec-events"
+description = "Rust API for consuming execution events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy-primitives = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+libc = { workspace = true }
+monad-event-ring = { workspace = true }
+zstd = { workspace = true }
