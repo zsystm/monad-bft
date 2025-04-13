@@ -1,0 +1,12 @@
+[package]
+name = "monad-event-ring"
+description = "Rust API for monad event rings"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = { workspace = true }
+zstd = { workspace = true }
+
+[build-dependencies]
+cmake = { workspace = true }
