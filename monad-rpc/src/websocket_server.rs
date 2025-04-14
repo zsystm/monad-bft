@@ -23,16 +23,22 @@ use crate::{
     websocket::WebSocketSessionCommand,
 };
 
-const MAX_SUBSCRIPTIONS: usize = 50;
-
 pub struct WebSocketServer {
     // All active websocket sessions.
     sessions: HashMap<SessionId, Session>,
     max_sessions: usize,
+    max_subscriptions: usize,
     rx: flume::Receiver<PollResult>,
     cmd_rx: flume::Receiver<WebSocketServerCommand>,
     block_builder: BlockBuilder,
     consensus_state_tracker: ConsensusStateTracker<Box<ExecutedBlockInfo>>,
+}
+
+#[derive(Debug)]
+pub enum WebSocketServerError {
+    InternalError,
+    NotAcceptingConnections,
+    MaxSessionsReached,
 }
 
 // Commands send to WebSocketServer from active websocket sessions.
@@ -42,7 +48,7 @@ pub enum WebSocketServerCommand {
         conn_id: SessionId,
         kind: SubscriptionKind,
         filter: Option<Filter>,
-        res_tx: tokio::sync::oneshot::Sender<Option<SubscriptionId>>,
+        res_tx: tokio::sync::oneshot::Sender<Result<SubscriptionId, WebSocketServerError>>,
     },
     RemoveSubscription {
         conn_id: SessionId,
@@ -50,7 +56,7 @@ pub enum WebSocketServerCommand {
         res_tx: tokio::sync::oneshot::Sender<bool>,
     },
     AddSession {
-        res_tx: tokio::sync::oneshot::Sender<Option<SessionId>>,
+        res_tx: tokio::sync::oneshot::Sender<Result<SessionId, WebSocketServerError>>,
         conn_tx: mpsc::UnboundedSender<WebSocketSessionCommand>,
     },
     RemoveSession {
@@ -104,12 +110,14 @@ impl WebSocketServer {
         cmd_rx: flume::Receiver<WebSocketServerCommand>,
         rx: flume::Receiver<PollResult>,
         max_sessions: usize,
+        max_subscriptions: usize,
     ) -> Self {
         Self {
             sessions: HashMap::new(),
             rx,
             cmd_rx,
             max_sessions,
+            max_subscriptions,
             block_builder: BlockBuilder::new(),
             consensus_state_tracker: ConsensusStateTracker::new(),
         }
@@ -119,6 +127,7 @@ impl WebSocketServer {
         let mut accept_connections: bool = true;
         loop {
             tokio::select! {
+                biased;
                 Ok(poll_result) = self.rx.recv_async() => {
                     match poll_result {
                         PollResult::Disconnected => {
@@ -213,18 +222,18 @@ impl WebSocketServer {
                         }
                         WebSocketServerCommand::AddSession { res_tx, conn_tx } => {
                             if !accept_connections {
-                                if let Err(err) = res_tx.send(None) {
+                                if let Err(err) = res_tx.send(Err(WebSocketServerError::NotAcceptingConnections)) {
                                     warn!("WebSocketServer AddSession not_accepting send error: {err:?}");
                                 }
                             } else {
                                 let conn_id = SessionId(new_id());
                                 let ok = self.add_session(conn_id, conn_tx);
                                 if ok {
-                                    if let Err(err) = res_tx.send(Some(conn_id)) {
+                                    if let Err(err) = res_tx.send(Ok(conn_id)) {
                                         warn!("WebSocketServer AddSession ok send error: {err:?}");
                                     }
                                 } else {
-                                   if let Err(err) = res_tx.send(None) {
+                                   if let Err(err) = res_tx.send(Err(WebSocketServerError::MaxSessionsReached)) {
                                         warn!("WebSocketServer AddSession not ok send error: {err:?}");
                                     }
                                 }
@@ -244,24 +253,27 @@ impl WebSocketServer {
         conn_id: SessionId,
         kind: SubscriptionKind,
         filter: Option<Filter>,
-    ) -> Option<SubscriptionId> {
-        self.sessions.get_mut(&conn_id).and_then(|session| {
-            if session.subscriptions.len() >= MAX_SUBSCRIPTIONS {
-                warn!("max subscriptions reached for session: {:?}", conn_id);
-                None
-            } else {
-                let sub_id = SubscriptionId(new_id());
-                session.subscriptions.insert(
-                    sub_id,
-                    SubscriptionInfo {
-                        conn_id,
-                        kind,
-                        filter,
-                    },
-                );
-                Some(sub_id)
-            }
-        })
+    ) -> Result<SubscriptionId, WebSocketServerError> {
+        self.sessions.get_mut(&conn_id).map_or(
+            Err(WebSocketServerError::InternalError),
+            |session| {
+                if session.subscriptions.len() >= self.max_subscriptions {
+                    warn!("max subscriptions reached for session: {:?}", conn_id);
+                    Err(WebSocketServerError::MaxSessionsReached)
+                } else {
+                    let sub_id = SubscriptionId(new_id());
+                    session.subscriptions.insert(
+                        sub_id,
+                        SubscriptionInfo {
+                            conn_id,
+                            kind,
+                            filter,
+                        },
+                    );
+                    Ok(sub_id)
+                }
+            },
+        )
     }
 
     fn remove_subscription(&mut self, conn_id: SessionId, id: SubscriptionId) -> bool {
@@ -332,13 +344,14 @@ impl WebSocketServer {
                     None => return None,
                 };
 
-                let filtered_logs: Vec<alloy_primitives::Log> = receipt.logs().to_vec();
+                let filtered_logs: Vec<alloy_primitives::Log> =
+                    receipt.logs().to_owned().into_iter().collect();
 
                 let rpc_logs = filtered_logs
-                    .iter()
+                    .into_iter()
                     .map(|log| {
                         let rpc_log = alloy_rpc_types::Log {
-                            inner: log.clone(),
+                            inner: log,
                             block_hash: Some(block_hash),
                             block_number: Some(block_number),
                             block_timestamp: Some(block_timestamp),
@@ -367,17 +380,26 @@ impl WebSocketServer {
         // Publish the block and logs to all subscriptions
         self.sessions.iter().for_each(|(_, session)| {
             session.subscriptions.iter().for_each(|(id, info)| {
-                let subscription_msg = PublishMessage {
-                    id: *id,
-                    kind: info.kind.clone(),
-                    block_header: block.header.clone(),
-                    logs: logs.clone(),
-                    filter: info.filter.clone(),
-                    commit_state,
-                    block_id: BlockId(monad_types::Hash(block_update.proposal_meta.id.0 .0)),
-                };
+                // Check that the message is ready to be broadcast to the session.
+                if (matches!(info.kind, SubscriptionKind::NewHeads)
+                    && matches!(commit_state, BlockCommitState::Finalized))
+                    || (matches!(info.kind, SubscriptionKind::Logs)
+                        && matches!(commit_state, BlockCommitState::Finalized))
+                    || (matches!(info.kind, SubscriptionKind::MonadNewHeads))
+                    || (matches!(info.kind, SubscriptionKind::MonadLogs))
+                {
+                    let subscription_msg = PublishMessage {
+                        id: *id,
+                        kind: info.kind.clone(),
+                        block_header: block.header.clone(),
+                        logs: logs.clone(),
+                        filter: info.filter.clone(),
+                        commit_state,
+                        block_id: BlockId(monad_types::Hash(block_update.proposal_meta.id.0 .0)),
+                    };
 
-                self.publish_subscription(subscription_msg, info.conn_id);
+                    self.publish_subscription(subscription_msg, info.conn_id);
+                }
             });
         });
     }
@@ -416,14 +438,22 @@ impl WebSocketServer {
             return false;
         };
 
-        self.sessions.insert(
-            conn_id,
-            Session {
-                conn_tx,
-                subscriptions: HashMap::new(),
-            },
-        );
-        true
+        match self.sessions.get(&conn_id) {
+            Some(_) => {
+                warn!("session already exists, not adding new session");
+                false
+            }
+            None => {
+                self.sessions.insert(
+                    conn_id,
+                    Session {
+                        conn_tx,
+                        subscriptions: HashMap::new(),
+                    },
+                );
+                true
+            }
+        }
     }
 
     fn disconnect_all(&mut self) {

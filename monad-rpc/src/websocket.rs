@@ -22,7 +22,7 @@ use crate::{
         SubscriptionKind,
     },
     jsonrpc::{JsonRpcError, Request, RequestWrapper},
-    websocket_server::{SessionId, SubscriptionId, WebSocketServerCommand},
+    websocket_server::{SessionId, SubscriptionId, WebSocketServerCommand, WebSocketServerError},
 };
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -46,7 +46,7 @@ impl WebSocketServerHandle {
     async fn connect(
         &self,
         conn_tx: mpsc::UnboundedSender<WebSocketSessionCommand>,
-    ) -> Option<SessionId> {
+    ) -> Result<SessionId, WebSocketServerError> {
         let (res_tx, res_rx) = oneshot::channel();
         if let Err(err) = self
             .cmd_tx
@@ -54,7 +54,7 @@ impl WebSocketServerHandle {
         {
             warn!("WebSocketServerHandle connect send error: {err:?}");
         }
-        res_rx.await.unwrap_or(None)
+        res_rx.await.unwrap_or(Err(WebSocketServerError::InternalError))
     }
 
     async fn add_subscription(
@@ -62,7 +62,7 @@ impl WebSocketServerHandle {
         conn_id: SessionId,
         kind: SubscriptionKind,
         filter: Option<Filter>,
-    ) -> Option<SubscriptionId> {
+    ) -> Result<SubscriptionId, WebSocketServerError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         if let Err(err) = self.cmd_tx.send(WebSocketServerCommand::AddSubscription {
             conn_id,
@@ -72,7 +72,7 @@ impl WebSocketServerHandle {
         }) {
             warn!("WebSocketServerHandle add_subscription send error: {err:?}");
         }
-        rx.await.unwrap_or(None)
+        rx.await.unwrap_or(Err(WebSocketServerError::InternalError))
     }
 
     async fn remove_subscription(&self, conn_id: SessionId, id: SubscriptionId) -> bool {
@@ -123,8 +123,8 @@ async fn handler(
 
     // Add the session to the server
     let conn_id = match server.connect(conn_tx).await {
-        Some(id) => id,
-        None => {
+        Ok(id) => id,
+        Err(_) => {
             if let Err(err) = session
                 .close(Some(CloseReason {
                     code: ws::CloseCode::Error,
@@ -170,6 +170,7 @@ async fn handler(
                         last_heartbeat = Instant::now();
                     }
                     Some(Ok(AggregatedMessage::Text(body))) => {
+                        last_heartbeat = Instant::now();
                         let request = to_request::<Request>(&body);
                         match request {
                             Ok(req) => {
@@ -185,6 +186,7 @@ async fn handler(
                         };
                     }
                     Some(Ok(AggregatedMessage::Binary(body))) => {
+                        last_heartbeat = Instant::now();
                         let request = to_request::<Request>(&body);
                         match request {
                             Ok(req) => {
@@ -203,7 +205,8 @@ async fn handler(
                         server.remove_session(conn_id).await;
                         break reason;
                     }
-                    Some(Err(_err)) => {
+                    Some(Err(err)) => {
+                        error!("error in websocket stream: {:?}", err);
                         server.remove_session(conn_id).await;
                         break None;
                     }
@@ -234,7 +237,11 @@ async fn handler(
                         }
                     }
                     Some(WebSocketSessionCommand::Disconnect {}) => {
-                        break None;
+                        server.remove_session(conn_id).await;
+                        break Some(CloseReason {
+                            code: ws::CloseCode::Away,
+                            description: Some("server disconnected stream".to_string()),
+                        });
                     }
                     None => {
                         break None
@@ -257,7 +264,7 @@ async fn handle_request(
 ) {
     match request.method.as_str() {
         "eth_subscribe" => {
-            let req: EthSubscribeRequest = match serde_json::from_value(request.params.clone()) {
+            let req: EthSubscribeRequest = match serde_json::from_value(request.params) {
                 Ok(params) => params,
                 Err(_) => {
                     if let Err(err) = ctx
@@ -296,7 +303,7 @@ async fn handle_request(
 
             let sub_id = server.add_subscription(*conn_id, req.kind, filter).await;
             match sub_id {
-                Some(id) => {
+                Ok(id) => {
                     if let Err(err) = ctx
                         .text(to_response(&crate::jsonrpc::Response::from_result(
                             request.id,
@@ -307,7 +314,7 @@ async fn handle_request(
                         warn!("ws handle_request subscribe text error: {err:?}");
                     }
                 }
-                None => {
+                Err(_) => {
                     if let Err(err) = ctx
                         .text(to_response(&crate::jsonrpc::Response::new(
                             None,
@@ -324,8 +331,7 @@ async fn handle_request(
             }
         }
         "eth_unsubscribe" => {
-            let params: EthUnsubscribeRequest = match serde_json::from_value(request.params.clone())
-            {
+            let params: EthUnsubscribeRequest = match serde_json::from_value(request.params) {
                 Ok(params) => params,
                 Err(_) => {
                     if let Err(err) = ctx
@@ -631,9 +637,7 @@ mod tests {
         }
 
         async move {
-            // sleep for 1 sec
             for update in res.iter() {
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 tx.send(update.clone()).expect("send failed");
             }
         }
@@ -643,7 +647,7 @@ mod tests {
     fn create_test_server(rx_exec_events: Receiver<PollResult>) -> actix_test::TestServer {
         let (ws_tx_cmd, ws_rx_cmd) = flume::bounded::<WebSocketServerCommand>(1000);
 
-        let ws_server = WebSocketServer::new(ws_rx_cmd, rx_exec_events, 50);
+        let ws_server = WebSocketServer::new(ws_rx_cmd, rx_exec_events, 50, 50);
         tokio::spawn(async move {
             ws_server.run().await;
         });
