@@ -259,6 +259,24 @@ message ProtoConfigEvent {
   }
 }
 
+message ProtoPingRequestEvent {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  uint64 sequence = 2;
+}
+
+message ProtoPingResponseEvent {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  uint64 sequence = 2;
+}
+
+message ProtoPingTickEvent {
+
+}
+
+message ProtoTimestampUpdateValidatorsEvent {
+  uint64 epoch = 1;
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
@@ -270,5 +288,9 @@ message ProtoMonadEvent{
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;
     ProtoConfigEvent config_event = 10;
+    ProtoPingRequestEvent ping_request_event = 11;
+    ProtoPingResponseEvent ping_response_event = 12;
+    ProtoPingTickEvent ping_tick_event = 13;
+    ProtoTimestampUpdateValidatorsEvent timestamp_update_validators_event = 14;
   }
 }

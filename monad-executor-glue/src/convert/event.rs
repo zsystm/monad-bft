@@ -15,13 +15,13 @@ use monad_proto::{
     error::ProtoError,
     proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
 };
-use monad_types::ExecutionProtocol;
+use monad_types::{ExecutionProtocol, PingSequence};
 
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
-    KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, StateSyncBadVersion, StateSyncEvent,
-    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
-    StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
+    KnownPeersUpdate, MempoolEvent, MonadEvent, PingEvent, ReloadConfig, StateSyncBadVersion,
+    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
+    StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -58,6 +58,20 @@ where
                 proto_monad_event::Event::StateSyncEvent(event.into())
             }
             MonadEvent::ConfigEvent(event) => proto_monad_event::Event::ConfigEvent(event.into()),
+            MonadEvent::PingRequestEvent(event) => {
+                proto_monad_event::Event::PingRequestEvent(event.into())
+            }
+            MonadEvent::PingResponseEvent(event) => {
+                proto_monad_event::Event::PingResponseEvent(event.into())
+            }
+            MonadEvent::PingTickEvent => proto_monad_event::Event::PingTickEvent(
+                monad_proto::proto::event::ProtoPingTickEvent {},
+            ),
+            MonadEvent::TimestampUpdateValidatorsEvent(event) => {
+                proto_monad_event::Event::TimestampUpdateValidatorsEvent(
+                    ProtoTimestampUpdateValidatorsEvent { epoch: (*event) },
+                )
+            }
         };
         Self { event: Some(event) }
     }
@@ -98,6 +112,16 @@ where
             }
             Some(proto_monad_event::Event::ConfigEvent(event)) => {
                 MonadEvent::ConfigEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::PingRequestEvent(event)) => {
+                MonadEvent::PingRequestEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::PingResponseEvent(event)) => {
+                MonadEvent::PingResponseEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::PingTickEvent(_)) => MonadEvent::PingTickEvent,
+            Some(proto_monad_event::Event::TimestampUpdateValidatorsEvent(event)) => {
+                MonadEvent::TimestampUpdateValidatorsEvent(event.epoch)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -1096,5 +1120,53 @@ impl<SCT: SignatureCollection> TryFrom<ProtoConfigEvent> for ConfigEvent<SCT> {
             }
         };
         Ok(event)
+    }
+}
+
+impl<SCT: SignatureCollection> From<&PingEvent<SCT>> for ProtoPingRequestEvent {
+    fn from(value: &PingEvent<SCT>) -> Self {
+        Self {
+            sender: Some((&value.sender).into()),
+            sequence: value.sequence.0,
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> From<&PingEvent<SCT>> for ProtoPingResponseEvent {
+    fn from(value: &PingEvent<SCT>) -> Self {
+        Self {
+            sender: Some((&value.sender).into()),
+            sequence: value.sequence.0,
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoPingRequestEvent> for PingEvent<SCT> {
+    type Error = ProtoError;
+    fn try_from(value: ProtoPingRequestEvent) -> Result<Self, Self::Error> {
+        Ok(Self {
+            sender: match value.sender {
+                Some(sender) => sender.try_into()?,
+                None => Err(ProtoError::MissingRequiredField(
+                    "PingResponseEvent.sender".to_owned(),
+                ))?,
+            },
+            sequence: PingSequence(value.sequence),
+        })
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoPingResponseEvent> for PingEvent<SCT> {
+    type Error = ProtoError;
+    fn try_from(value: ProtoPingResponseEvent) -> Result<Self, Self::Error> {
+        Ok(Self {
+            sender: match value.sender {
+                Some(sender) => sender.try_into()?,
+                None => Err(ProtoError::MissingRequiredField(
+                    "PingResponseEvent.sender".to_owned(),
+                ))?,
+            },
+            sequence: PingSequence(value.sequence),
+        })
     }
 }

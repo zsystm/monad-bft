@@ -69,7 +69,7 @@ where
     leader_election: &'a LT,
     version: &'a MonadVersion,
 
-    block_timestamp: &'a BlockTimestamp,
+    block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey>,
     block_validator: &'a BVT,
     beneficiary: &'a [u8; 20],
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
@@ -108,7 +108,7 @@ where
             leader_election: &monad_state.leader_election,
             version: &monad_state.version,
 
-            block_timestamp: &monad_state.block_timestamp,
+            block_timestamp: &mut monad_state.block_timestamp,
             block_validator: &monad_state.block_validator,
             beneficiary: &monad_state.beneficiary,
             nodeid: &monad_state.nodeid,
@@ -538,7 +538,10 @@ where
                 parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::EnterRound {
                     epoch,
                     round,
-                }))
+                }));
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::TimestampUpdateValidatorsEvent(epoch.0),
+                )));
             }
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
