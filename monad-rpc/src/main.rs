@@ -985,7 +985,12 @@ async fn main() -> std::io::Result<()> {
         let (ws_tx, ws_rx) = flume::bounded::<PollResult>(10000);
         let (ws_tx_cmd, ws_rx_cmd) = flume::bounded::<WebSocketServerCommand>(1000);
 
-        let ws_server = WebSocketServer::new(ws_rx_cmd, ws_rx, 10_000);
+        let ws_server = WebSocketServer::new(
+            ws_rx_cmd,
+            ws_rx,
+            args.ws_max_connections,
+            args.ws_max_subscriptions_per_connection,
+        );
         tokio::spawn(async move {
             ws_server.run().await;
         });
