@@ -129,6 +129,6 @@ pub struct Cli {
     pub max_voted_block_cache_len: u64,
 
     /// Sets the socket path for the monad execution event server
-    #[arg(long, default_value = monad_event_ring::exec_event_types_metadata::EXEC_EVENT_DEFAULT_RING_PATH)]
+    #[arg(long, default_value = monad_exec_events::exec_event_ctypes::EXEC_EVENT_DEFAULT_RING_PATH)]
     pub exec_event_path: PathBuf,
 }

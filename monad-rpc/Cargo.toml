@@ -16,6 +16,8 @@ monad-eth-txpool-ipc = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-ethcall = { workspace = true }
+monad-exec-events = { workspace = true }
+monad-event-ring = { workspace = true }
 monad-rpc-docs = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
@@ -40,6 +42,7 @@ flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 itertools = { workspace = true }
+libc = { workspace = true }
 notify = { workspace = true }
 opentelemetry = { workspace = true, features = ["metrics"] }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }

@@ -12,18 +12,21 @@ use futures::{SinkExt, StreamExt};
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
+use monad_exec_events::{
+    exec_event_stream::*,
+    exec_event_ctypes::EXEC_EVENT_DOMAIN_METADATA
+};
 use monad_event_ring::{
     event_reader::EventReader,
     event_ring::{EventRing, EventRingType},
     event_ring_util::{monitor_single_event_ring_file_writer, path_supports_hugetlb},
-    exec_event_types_metadata::EXEC_EVENT_DOMAIN_METADATA,
 };
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -54,9 +57,6 @@ use crate::{
         monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
         monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
     },
-    exec_update_builder::{
-        BlockConsensusState, BlockPollResult, BlockUpdateBuilder, BlockUpdateBuilderConfig,
-    },
     fee::FixedFee,
     gas_handlers::{
         monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
@@ -83,7 +83,6 @@ mod debug;
 pub mod docs;
 mod eth_json_types;
 mod eth_txn_handlers;
-mod exec_update_builder;
 mod fee;
 mod gas_handlers;
 mod gas_oracle;
@@ -916,7 +915,7 @@ async fn main() -> std::io::Result<()> {
             libc::MAP_POPULATE
         };
 
-        let (ws_tx, ws_rx) = flume::bounded::<BlockPollResult>(10000);
+        let (ws_tx, ws_rx) = flume::bounded::<PollResult>(10000);
         let (ws_tx_cmd, ws_rx_cmd) = flume::bounded::<WebSocketServerCommand>(1000);
 
         let ws_server = WebSocketServer::new(ws_rx_cmd, ws_rx, 10_000);
@@ -943,24 +942,21 @@ async fn main() -> std::io::Result<()> {
             )
             .expect("failed to create event reader");
 
-            let mut builder = BlockUpdateBuilder::new(
-                &event_ring,
+            let mut event_stream = ExecEventStream::new(
                 event_reader,
-                BlockUpdateBuilderConfig {
-                    executed_consensus_state: BlockConsensusState::Proposed,
-                    parse_txn_input: false,
-                    report_orphaned_consensus_events: true,
-                    opt_process_exit_monitor: Some(proc_exit_monitor),
+                ExecEventStreamConfig {
+                    parse_txn_input: true,
+                    opt_process_exit_monitor: Some(proc_exit_monitor)
                 },
             );
             loop {
-                let finalized_block = builder.poll();
-                if matches!(finalized_block, BlockPollResult::NotReady) {
+                let exec_event = event_stream.poll();
+                if matches!(exec_event, PollResult::NotReady) {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue;
                 }
 
-                if let Err(e) = ws_tx.send_async(finalized_block).await {
+                if let Err(e) = ws_tx.send_async(exec_event).await {
                     warn!("Finalized block send to websocket failed: {}", e);
                 }
             }

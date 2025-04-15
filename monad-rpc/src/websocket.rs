@@ -201,7 +201,7 @@ async fn handler(
                                     body,
                                 );
                                 let _ = session.text(to_response(&update)).await;
-                            };
+                            }
                         }
                     }
                     Some(WebSocketSessionCommand::Disconnect {}) => {
@@ -348,38 +348,125 @@ fn to_request<T: serde::de::DeserializeOwned>(
 mod tests {
     use actix_http::{ws, ws::Frame};
     use actix_web::{web, App};
-    use alloy_consensus::{TxEip1559, TxReceipt};
-    use alloy_primitives::{hex::FromHex, Bloom, BloomInput, FixedBytes, Log, U256};
-    use alloy_rpc_types::{AccessList, Filter};
+    use alloy_consensus::TxEip1559;
+    use alloy_primitives::{hex::FromHex, Bloom, BloomInput, FixedBytes, Log, B256, U256};
+    use alloy_rpc_types::AccessList;
     use bytes::Bytes;
     use flume::Receiver;
     use futures_util::{SinkExt as _, StreamExt as _};
     use monad_event_ring::{
         event_reader::EventReader,
         event_ring::{EventRing, EventRingType},
-        event_test_util::{EventRingSnapshot, ExecEventTestScenario, ETHEREUM_MAINNET_30B_15M},
-        exec_event_types_metadata::EXEC_EVENT_DOMAIN_METADATA,
+        event_ring_util::EventRingSnapshot,
+    };
+    use monad_exec_events::{
+        block_builder::TransactionInfo,
+        exec_event_ctypes::EXEC_EVENT_DOMAIN_METADATA,
+        exec_event_stream::{ExecEventStream, ExecEventStreamConfig, PollResult},
+        exec_event_test_util::{ExecEventTestScenario, ETHEREUM_MAINNET_30B_15M},
+        exec_events::*,
     };
     use monad_types::{BlockId, Hash};
     use serde_json::json;
     use tracing_actix_web::TracingLogger;
 
+    use super::{ws_handler, WebSocketServerCommand, WebSocketServerHandle};
     use crate::{
-        eth_json_types::{EthSubscribeResult, FixedData, SpeculativeNewHead, SubscriptionResult},
-        exec_update_builder::{
-            BlockConsensusState, BlockPollResult, BlockUpdate, BlockUpdateBuilder,
-            BlockUpdateBuilderConfig, ExecutedBlockInfo, TransactionInfo,
+        eth_json_types::{
+            BlockCommitState, EthSubscribeResult, EventStreamItem, FixedData, SpeculativeNewHead,
+            SubscriptionResult,
         },
         hex,
         websocket_server::WebSocketServer,
         MonadJsonRootSpanBuilder,
     };
 
-    use super::{ws_handler, WebSocketServerCommand, WebSocketServerHandle};
+    const DUMMY_PROPOSAL_META: ProposalMetadata = ProposalMetadata {
+        round: 1,
+        epoch: 0,
+        block_number: 1,
+        id: MonadBlockId(B256::ZERO),
+        parent_round: 0,
+        parent_id: MonadBlockId(B256::ZERO),
+    };
 
-    async fn exec_event_loop(tx: flume::Sender<BlockPollResult>) {
+    const DUMMY_ETH_EXEC_INPUT: EthBlockExecInput = EthBlockExecInput {
+        parent_hash: B256::ZERO,
+        ommers_hash: B256::ZERO,
+        beneficiary: alloy_primitives::Address::ZERO,
+        transactions_root: B256::ZERO,
+        difficulty: 0,
+        number: 0,
+        gas_limit: 0,
+        timestamp: 0,
+        extra_data: alloy_primitives::Bytes::new(),
+        prev_randao: B256::ZERO,
+        nonce: alloy_primitives::B64::ZERO,
+        base_fee_per_gas: None,
+        withdrawals_root: None,
+        transaction_count: 0,
+    };
+
+    fn make_block_events(
+        proposal_meta: ProposalMetadata,
+        mut exec_input: EthBlockExecInput,
+        txn_info: &[TransactionInfo],
+        eth_block_hash: B256,
+    ) -> Vec<ExecEvent> {
+        let mut v = Vec::new();
+
+        exec_input.transaction_count = txn_info.len() as u64;
+        v.push(ExecEvent::BlockStart {
+            consensus_state: ConsensusState::Proposed,
+            proposal_meta,
+            chain_id: 1,
+            exec_input,
+        });
+
+        let mut block_gas_used: u64 = 0;
+        let mut logs_bloom = Box::new(Bloom::default());
+        for txn in txn_info {
+            v.push(ExecEvent::TransactionStart {
+                index: txn.index,
+                sender: txn.sender,
+                tx_envelope: txn.tx_envelope.clone(),
+            });
+            let log_count = txn.receipt.logs.len();
+            let call_frame_count = txn.call_frames.len();
+            for (index, log) in txn.receipt.logs.iter().enumerate() {
+                logs_bloom.accrue_log(log);
+                v.push(ExecEvent::TransactionLog {
+                    index: index as u64,
+                    log: log.clone(),
+                });
+            }
+            v.push(ExecEvent::TransactionReceipt {
+                index: txn.index,
+                status: txn.receipt.status,
+                log_count,
+                call_frame_count,
+                tx_gas_used: txn.tx_gas_used,
+            });
+            block_gas_used += txn.tx_gas_used as u64;
+        }
+
+        v.push(ExecEvent::BlockEnd {
+            eth_block_hash,
+            state_root: B256::default(),
+            receipts_root: B256::default(),
+            logs_bloom,
+            gas_used: block_gas_used,
+        });
+
+        v
+    }
+
+    async fn exec_event_loop(tx: flume::Sender<PollResult>) {
         const TEST_SCENARIO: &ExecEventTestScenario = &ETHEREUM_MAINNET_30B_15M;
-        let snapshot = EventRingSnapshot::load_from_scenario(TEST_SCENARIO);
+        let snapshot = EventRingSnapshot::load_from_zstd_bytes(
+            TEST_SCENARIO.event_ring_snapshot_zst,
+            TEST_SCENARIO.name,
+        );
         let event_ring = EventRing::mmap_from_fd(
             libc::PROT_READ,
             0,
@@ -399,13 +486,10 @@ mod tests {
         let mut event_reader = event_reader.unwrap();
         event_reader.read_last_seqno = 0;
 
-        let mut update_builder = BlockUpdateBuilder::new(
-            &event_ring,
+        let mut event_stream = ExecEventStream::new(
             event_reader,
-            BlockUpdateBuilderConfig {
-                executed_consensus_state: BlockConsensusState::Proposed,
-                parse_txn_input: false,
-                report_orphaned_consensus_events: true,
+            ExecEventStreamConfig {
+                parse_txn_input: true,
                 opt_process_exit_monitor: None,
             },
         );
@@ -415,22 +499,15 @@ mod tests {
         let mut res = Vec::new();
 
         loop {
-            let pr = update_builder.poll();
-
-            match pr {
-                BlockPollResult::Ready(_) => {
+            match event_stream.poll() {
+                pr @ PollResult::Ready { .. } => {
                     res.push(pr);
                     update_count += 1;
                     if update_count == 100 {
                         break;
                     }
                 }
-                BlockPollResult::Error(_) => {
-                    break;
-                }
-                BlockPollResult::NotReady => {
-                    break;
-                }
+                _ => break,
             }
         }
 
@@ -444,7 +521,7 @@ mod tests {
         .await;
     }
 
-    fn create_test_server(rx_exec_events: Receiver<BlockPollResult>) -> actix_test::TestServer {
+    fn create_test_server(rx_exec_events: Receiver<PollResult>) -> actix_test::TestServer {
         let (ws_tx_cmd, ws_rx_cmd) = flume::bounded::<WebSocketServerCommand>(1000);
 
         let ws_server = WebSocketServer::new(ws_rx_cmd, rx_exec_events, 50);
@@ -464,7 +541,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn websocket_wait_for_ping() {
-        let (tx, rx) = flume::bounded::<BlockPollResult>(100000000);
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
         tokio::spawn(exec_event_loop(tx));
         let mut server = create_test_server(rx);
         let mut framed = server.ws_at("/ws/").await.unwrap();
@@ -478,7 +555,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn websocket_eth_subscribe() {
-        let (tx, rx) = flume::bounded::<BlockPollResult>(100000000);
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
         tokio::spawn(exec_event_loop(tx));
         let mut server = create_test_server(rx);
 
@@ -554,7 +631,7 @@ mod tests {
                     let resp: serde_json::Value = serde_json::from_slice(&resp).unwrap();
                     let resp: crate::jsonrpc::Response = serde_json::from_value(resp).unwrap();
                     let resp: bool = serde_json::from_value(resp.result.unwrap()).unwrap();
-                    assert_eq!(resp, true);
+                    assert!(resp);
                 } else {
                     panic!("Expected a text frame");
                 };
@@ -566,7 +643,7 @@ mod tests {
     #[actix_rt::test]
     async fn websocket_multiple_connections() {
         // Create a test server with two connections
-        let (tx, rx) = flume::bounded::<BlockPollResult>(100000000);
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
         let mut server = create_test_server(rx);
         let mut conn0 = server.ws_at("/ws/").await.unwrap();
         let mut conn1 = server.ws_at("/ws/").await.unwrap();
@@ -600,23 +677,31 @@ mod tests {
         }
 
         // Send a block update
-        tx.send(BlockPollResult::Ready(BlockUpdate::Executed {
-            consensus_state: BlockConsensusState::Proposed,
-            exec_info: Box::new(ExecutedBlockInfo {
-                bft_block_id: BlockId(Hash::default()),
-                consensus_seqno: 0,
-                eth_block_hash: FixedBytes([1; 32]),
-                eth_header: Default::default(),
-                txns: vec![],
-            }),
-        }))
-        .unwrap();
-        tx.send(BlockPollResult::Ready(BlockUpdate::ConsensusStateChanged {
-            new_state: BlockConsensusState::Finalized,
-            bft_block_id: BlockId(Hash::default()),
-            block_number: 0,
-            has_untracked_proposal: false,
-        }))
+        let eth_block_hash = B256::from([1; 32]);
+        for (seqno, event) in make_block_events(
+            DUMMY_PROPOSAL_META,
+            DUMMY_ETH_EXEC_INPUT,
+            &[],
+            eth_block_hash,
+        )
+        .into_iter()
+        .enumerate()
+        {
+            tx.send(PollResult::Ready {
+                seqno: seqno as u64,
+                event,
+            })
+            .unwrap();
+        }
+
+        // We're testing newHeads, so we need an explicit Finalization
+        tx.send(PollResult::Ready {
+            seqno: 3,
+            event: ExecEvent::Referendum {
+                proposal_meta: DUMMY_PROPOSAL_META,
+                outcome: ConsensusState::Finalized,
+            },
+        })
         .unwrap();
 
         // Both connections should receive the block update
@@ -658,7 +743,7 @@ mod tests {
                 let result = &value["params"]["result"];
                 assert_eq!(
                     result["hash"].as_str().unwrap(),
-                    hex::encode(&[1u8; 32]),
+                    hex::encode(&eth_block_hash.0),
                     "Unexpected block hash in update"
                 );
             } else {
@@ -670,7 +755,7 @@ mod tests {
     #[actix_rt::test]
     async fn websocket_disconnect() {
         // Create a test server with two connections
-        let (tx, rx) = flume::bounded::<BlockPollResult>(100000000);
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
         let mut server = create_test_server(rx);
         let mut conn0 = server.ws_at("/ws/").await.unwrap();
         let mut conn1 = server.ws_at("/ws/").await.unwrap();
@@ -704,10 +789,7 @@ mod tests {
         }
 
         // Trigger disconnect
-        tx.send(BlockPollResult::Error(
-            crate::exec_update_builder::EventStreamError::Disconnected,
-        ))
-        .unwrap();
+        tx.send(PollResult::Disconnected).unwrap();
 
         // Both connections should receive a close frame
         let mut close0 = None;
@@ -752,7 +834,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn websocket_too_many_sessions() {
-        let (tx, rx) = flume::bounded::<BlockPollResult>(100000000);
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
         tokio::spawn(exec_event_loop(tx));
         let mut server = create_test_server(rx);
 
@@ -817,7 +899,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn websocket_too_many_topics() {
-        let (tx, rx) = flume::bounded::<BlockPollResult>(100000000);
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
         tokio::spawn(exec_event_loop(tx));
         let mut server = create_test_server(rx);
 
@@ -880,7 +962,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn websocket_speculative_blocks() {
-        let (tx, rx) = flume::bounded::<BlockPollResult>(100000000);
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
         let mut server = create_test_server(rx);
 
         let mut framed = server.ws_at("/ws/").await.unwrap();
@@ -916,58 +998,89 @@ mod tests {
         // finalized (1)
         // voted (2)
         // finalized (2)
-        let block_one_id = BlockId(Hash { 0: [1; 32] });
-        let block_two_id = BlockId(Hash { 0: [2; 32] });
-        tx.send(BlockPollResult::Ready(BlockUpdate::Executed {
-            consensus_state: BlockConsensusState::Proposed,
-            exec_info: Box::new(ExecutedBlockInfo {
-                bft_block_id: block_one_id,
-                consensus_seqno: 0,
-                eth_block_hash: FixedBytes([1; 32]),
-                eth_header: Default::default(),
-                txns: vec![],
-            }),
-        }))
+        let block_one_id = BlockId(Hash([1; 32]));
+        let block_two_id = BlockId(Hash([2; 32]));
+
+        let proposal_one = ProposalMetadata {
+            round: 1,
+            epoch: 0,
+            block_number: 1,
+            id: MonadBlockId(B256::from(block_one_id.0 .0)),
+            parent_round: 0,
+            parent_id: MonadBlockId(B256::ZERO),
+        };
+
+        let proposal_two = ProposalMetadata {
+            round: proposal_one.round + 1,
+            epoch: proposal_one.epoch,
+            block_number: proposal_one.block_number + 1,
+            id: MonadBlockId(B256::from(block_two_id.0 .0)),
+            parent_round: proposal_one.round,
+            parent_id: proposal_one.id,
+        };
+
+        // Block 1 execution events
+        let mut event_counter: u64 = 1;
+        for event in make_block_events(proposal_one, DUMMY_ETH_EXEC_INPUT, &[], FixedBytes([1; 32]))
+        {
+            tx.send(PollResult::Ready {
+                seqno: event_counter,
+                event,
+            })
+            .unwrap();
+            event_counter += 1;
+        }
+
+        tx.send(PollResult::Ready {
+            seqno: event_counter,
+            event: ExecEvent::Referendum {
+                proposal_meta: proposal_one,
+                outcome: ConsensusState::QC,
+            },
+        })
         .unwrap();
-        tx.send(BlockPollResult::Ready(BlockUpdate::ConsensusStateChanged {
-            new_state: BlockConsensusState::Voted,
-            bft_block_id: block_one_id,
-            block_number: 0,
-            has_untracked_proposal: false,
-        }))
+        event_counter += 1;
+
+        // Block 2 execution events
+        for event in make_block_events(proposal_two, DUMMY_ETH_EXEC_INPUT, &[], FixedBytes([1; 32]))
+        {
+            tx.send(PollResult::Ready {
+                seqno: event_counter,
+                event,
+            })
+            .unwrap();
+            event_counter += 1;
+        }
+
+        tx.send(PollResult::Ready {
+            seqno: event_counter,
+            event: ExecEvent::Referendum {
+                proposal_meta: proposal_one,
+                outcome: ConsensusState::Finalized,
+            },
+        })
         .unwrap();
-        tx.send(BlockPollResult::Ready(BlockUpdate::Executed {
-            consensus_state: BlockConsensusState::Proposed,
-            exec_info: Box::new(ExecutedBlockInfo {
-                bft_block_id: block_two_id,
-                consensus_seqno: 0,
-                eth_block_hash: FixedBytes([1; 32]),
-                eth_header: Default::default(),
-                txns: vec![],
-            }),
-        }))
+        event_counter += 1;
+
+        tx.send(PollResult::Ready {
+            seqno: event_counter,
+            event: ExecEvent::Referendum {
+                proposal_meta: proposal_two,
+                outcome: ConsensusState::QC,
+            },
+        })
         .unwrap();
-        tx.send(BlockPollResult::Ready(BlockUpdate::ConsensusStateChanged {
-            new_state: BlockConsensusState::Finalized,
-            bft_block_id: block_one_id,
-            block_number: 0,
-            has_untracked_proposal: false,
-        }))
+        event_counter += 1;
+
+        tx.send(PollResult::Ready {
+            seqno: event_counter,
+            event: ExecEvent::Referendum {
+                proposal_meta: proposal_two,
+                outcome: ConsensusState::Finalized,
+            },
+        })
         .unwrap();
-        tx.send(BlockPollResult::Ready(BlockUpdate::ConsensusStateChanged {
-            new_state: BlockConsensusState::Voted,
-            bft_block_id: block_two_id,
-            block_number: 0,
-            has_untracked_proposal: false,
-        }))
-        .unwrap();
-        tx.send(BlockPollResult::Ready(BlockUpdate::ConsensusStateChanged {
-            new_state: BlockConsensusState::Finalized,
-            bft_block_id: block_two_id,
-            block_number: 0,
-            has_untracked_proposal: false,
-        }))
-        .unwrap();
+        event_counter += 1;
 
         // Assert the order of notifications received by client.
         for idx in 0..6 {
@@ -986,27 +1099,27 @@ mod tests {
                     }) => match idx {
                         0 => {
                             assert_eq!(block_id, block_one_id);
-                            assert!(matches!(commit_state, BlockConsensusState::Proposed));
+                            assert!(matches!(commit_state, BlockCommitState::Proposed));
                         }
                         1 => {
                             assert_eq!(block_id, block_one_id);
-                            assert!(matches!(commit_state, BlockConsensusState::Voted));
+                            assert!(matches!(commit_state, BlockCommitState::Voted));
                         }
                         2 => {
                             assert_eq!(block_id, block_two_id);
-                            assert!(matches!(commit_state, BlockConsensusState::Proposed));
+                            assert!(matches!(commit_state, BlockCommitState::Proposed));
                         }
                         3 => {
                             assert_eq!(block_id, block_one_id);
-                            assert!(matches!(commit_state, BlockConsensusState::Finalized));
+                            assert!(matches!(commit_state, BlockCommitState::Finalized));
                         }
                         4 => {
                             assert_eq!(block_id, block_two_id);
-                            assert!(matches!(commit_state, BlockConsensusState::Voted));
+                            assert!(matches!(commit_state, BlockCommitState::Voted));
                         }
                         5 => {
                             assert_eq!(block_id, block_two_id);
-                            assert!(matches!(commit_state, BlockConsensusState::Finalized));
+                            assert!(matches!(commit_state, BlockCommitState::Finalized));
                         }
                         _ => {
                             panic!("Unexpected speculative new head");
@@ -1022,7 +1135,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn websocket_logs() {
-        let (tx, rx) = flume::bounded::<BlockPollResult>(100000000);
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
         let mut server = create_test_server(rx);
 
         let mut conn = server.ws_at("/ws/").await.unwrap();
@@ -1067,19 +1180,16 @@ mod tests {
         let erc20_token_addr = alloy_primitives::Address(
             FixedBytes::from_hex("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48").unwrap(),
         );
-        let transfer_topic =FixedBytes::from_hex(
+        let transfer_topic = FixedBytes::from_hex(
             "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-        ).unwrap();
+        )
+        .unwrap();
         let log_data = alloy_primitives::Bytes::from_hex(
             "0x0000000000000000000000000000000000000000000000000000000250ad9d3a",
         )
         .unwrap();
 
-        let log = Log::new_unchecked(
-            erc20_token_addr,
-            vec![transfer_topic],
-            log_data.clone(),
-        );
+        let log = Log::new_unchecked(erc20_token_addr, vec![transfer_topic], log_data.clone());
 
         let receipt = alloy_consensus::Receipt {
             cumulative_gas_used: 0,
@@ -1087,58 +1197,69 @@ mod tests {
             logs: vec![log.clone()],
         };
 
-
         let mut logs_bloom = Bloom::default();
-        logs_bloom.accrue(BloomInput::Raw(&log.address.0.0));
+        logs_bloom.accrue(BloomInput::Raw(&log.address.0 .0));
         for topic in log.topics() {
             logs_bloom.accrue(BloomInput::Raw(&topic.0));
         }
 
-        let block = BlockUpdate::Executed {
-            consensus_state: BlockConsensusState::Finalized,
-            exec_info: Box::new(ExecutedBlockInfo {
-                bft_block_id: BlockId(Hash::default()),
-                consensus_seqno: 0,
-                eth_block_hash: FixedBytes([1; 32]),
-                eth_header: alloy_consensus::Header {
-                    logs_bloom,
-                    ..Default::default()
-                },
-                txns: vec![Some(TransactionInfo {
-                    index: 0,
-                    sender: FixedBytes::from_hex("0xdEADBEeF00000000000000000000000000000000")
-                        .unwrap()
-                        .into(),
-                    receipt,
-                    tx_gas_used: 0,
-                    tx_header: alloy_consensus::TxEnvelope::Eip1559(
-                        alloy_consensus::Signed::new_unchecked(
-                            TxEip1559 {
-                                chain_id: 0,
-                                access_list: AccessList::default(),
-                                max_fee_per_gas: 0,
-                                max_priority_fee_per_gas: 0,
-                                nonce: 0,
-                                gas_limit: 0,
-                                to: alloy_primitives::TxKind::Call(
-                                    FixedBytes::from_hex(
-                                        "0xdEADBEeF00000000000000000000000000000000",
-                                    )
-                                    .unwrap()
-                                    .into(),
-                                ),
-                                value: U256::ZERO,
-                                input: alloy_primitives::Bytes::new(),
-                            },
-                            alloy_signer::Signature::new(U256::ZERO, U256::ZERO, false),
-                            FixedBytes::from_slice(&[0u8; 32]),
+        let txns = vec![TransactionInfo {
+            index: 0,
+            tx_envelope: alloy_consensus::TxEnvelope::Eip1559(
+                alloy_consensus::Signed::new_unchecked(
+                    TxEip1559 {
+                        chain_id: 0,
+                        access_list: AccessList::default(),
+                        max_fee_per_gas: 0,
+                        max_priority_fee_per_gas: 0,
+                        nonce: 0,
+                        gas_limit: 0,
+                        to: alloy_primitives::TxKind::Call(
+                            FixedBytes::from_hex("0xdEADBEeF00000000000000000000000000000000")
+                                .unwrap()
+                                .into(),
                         ),
-                    ),
-                })],
-            }),
-        };
+                        value: U256::ZERO,
+                        input: alloy_primitives::Bytes::new(),
+                    },
+                    alloy_signer::Signature::new(U256::ZERO, U256::ZERO, false),
+                    FixedBytes::from_slice(&[0u8; 32]),
+                ),
+            ),
+            sender: FixedBytes::from_hex("0xdEADBEeF00000000000000000000000000000000")
+                .unwrap()
+                .into(),
+            receipt,
+            tx_gas_used: 0,
+            call_frames: Vec::new(),
+        }];
 
-        tx.send(BlockPollResult::Ready(block)).unwrap();
+        let mut last_seqno: usize = 0;
+        for (seqno, event) in make_block_events(
+            DUMMY_PROPOSAL_META,
+            DUMMY_ETH_EXEC_INPUT,
+            txns.as_slice(),
+            FixedBytes([1; 32]),
+        )
+        .into_iter()
+        .enumerate()
+        {
+            tx.send(PollResult::Ready {
+                seqno: seqno as u64,
+                event,
+            })
+            .unwrap();
+            last_seqno = seqno
+        }
+
+        tx.send(PollResult::Ready {
+            seqno: (last_seqno + 1) as u64,
+            event: ExecEvent::Referendum {
+                proposal_meta: DUMMY_PROPOSAL_META,
+                outcome: ConsensusState::Finalized,
+            },
+        })
+        .unwrap();
 
         // Assert the order of notifications received by client.
         for idx in 0..params.len() {
@@ -1156,7 +1277,7 @@ mod tests {
                         .expect("subscription not found");
                     let log = match update.result {
                         SubscriptionResult::Logs(logs) => logs,
-                        _ => panic!("Expected logs"),
+                        r => panic!("Expected logs; got {r:#?}"),
                     };
 
                     assert_eq!(log.address(), erc20_token_addr);
@@ -1167,8 +1288,82 @@ mod tests {
                 Frame::Close(_) if idx > 4 => {
                     break;
                 }
-                _ => {
-                    panic!("Unexpected frame");
+                x => {
+                    panic!("Unexpected frame: {x:#?}");
+                }
+            };
+        }
+    }
+
+    #[actix_rt::test]
+    async fn websocket_event_stream() {
+        let (tx, rx) = flume::bounded::<PollResult>(100000000);
+        let mut server = create_test_server(rx);
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_subscribe",
+            "params": ["monadEventStream"],
+            "id": 1
+        });
+
+        let mut framed = server.ws_at("/ws/").await.unwrap();
+        framed
+            .send(ws::Message::Text(body.to_string().into()))
+            .await
+            .unwrap();
+        let frame = framed.next().await.unwrap().unwrap();
+        assert!(matches!(frame, Frame::Text(_)));
+
+        // Send a block update
+        let mut expected_updates = Vec::new();
+        let eth_block_hash = B256::from([1; 32]);
+        for (seqno, event) in make_block_events(
+            DUMMY_PROPOSAL_META,
+            DUMMY_ETH_EXEC_INPUT,
+            &[],
+            eth_block_hash,
+        )
+        .into_iter()
+        .enumerate()
+        {
+            expected_updates.push(EventStreamItem::ExecutionEvent {
+                seqno: seqno as u64,
+                event: event.clone(),
+            });
+            tx.send(PollResult::Ready {
+                seqno: seqno as u64,
+                event,
+            })
+            .unwrap();
+        }
+
+        let mut update_count = 0;
+        while update_count < expected_updates.len() {
+            let frame = framed.next().await.unwrap().unwrap();
+            match frame {
+                Frame::Text(frame_text) => {
+                    let update: serde_json::Value = serde_json::from_slice(&frame_text).unwrap();
+                    let update: crate::jsonrpc::Notification =
+                        serde_json::from_value(update).unwrap();
+                    let update: EthSubscribeResult = serde_json::from_value(update.params).unwrap();
+                    match update.result {
+                        SubscriptionResult::MonadEventStream(actual) => {
+                            let expected = expected_updates.get(update_count).unwrap();
+                            assert_eq!(actual, *expected);
+                            update_count += 1;
+                        }
+                        r => panic!("unexpected SubscriptionResult: {r:#?}"),
+                    }
+                }
+                Frame::Ping(_) => {
+                    framed
+                        .send(ws::Message::Pong(Bytes::from_static(b"")))
+                        .await
+                        .unwrap();
+                }
+                x => {
+                    panic!("Unexpected frame: {x:#?}");
                 }
             };
         }

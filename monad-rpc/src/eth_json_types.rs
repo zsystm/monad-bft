@@ -5,13 +5,13 @@ use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{
     pubsub::Params, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
 };
+use monad_exec_events::exec_events::{ExecEvent, ProposalMetadata};
 use monad_types::BlockId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tracing::debug;
 
 use crate::{
-    exec_update_builder::BlockConsensusState,
     hex::{self, decode, decode_quantity, DecodeHexError},
     jsonrpc::JsonRpcError,
 };
@@ -483,6 +483,8 @@ pub enum SubscriptionKind {
     MonadNewHeads,
     // Subscribes to all logs with their corresponding commit state.
     MonadLogs,
+    // Raw execution stream
+    MonadEventStream,
 }
 
 #[derive(Deserialize)]
@@ -506,6 +508,17 @@ pub enum SubscriptionResult {
     // NewHeads and Logs are Geth results that return finalized block details.
     NewHeads(alloy_rpc_types::eth::Header),
     Logs(alloy_rpc_types::eth::Log),
+    // MonadEventStream
+    MonadEventStream(EventStreamItem),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum BlockCommitState {
+    Proposed,
+    Voted,
+    Finalized,
+    Verified,
+    Abandoned,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -513,7 +526,7 @@ pub struct SpeculativeNewHead {
     #[serde(flatten)]
     pub header: alloy_rpc_types::eth::Header,
     pub block_id: BlockId,
-    pub commit_state: BlockConsensusState,
+    pub commit_state: BlockCommitState,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -521,7 +534,25 @@ pub struct SpeculativeLog {
     #[serde(flatten)]
     pub log: alloy_rpc_types::eth::Log,
     pub block_id: BlockId,
-    pub commit_state: BlockConsensusState,
+    pub commit_state: BlockCommitState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum EventStreamItem {
+    ExecutionEvent {
+        seqno: u64,
+        event: ExecEvent,
+    },
+
+    StreamGap {
+        last_read_seqno: u64,
+        next_seqno: u64,
+    },
+
+    AbandonedProposal {
+        #[serde(flatten)]
+        proposal_meta: ProposalMetadata,
+    },
 }
 
 pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
