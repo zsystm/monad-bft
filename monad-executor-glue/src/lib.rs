@@ -1020,6 +1020,12 @@ where
     LoadError(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRoundEvent {
+    pub epoch: Epoch,
+    pub round: Round,
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug)]
 pub enum MonadEvent<ST, SCT, EPT>
@@ -1050,8 +1056,8 @@ where
     PingRequestEvent(PingEvent<SCT>),
     PingResponseEvent(PingEvent<SCT>),
     PingTickEvent,
-    /// Events to update the block validator list
-    TimestampUpdateValidatorsEvent(u64),
+    /// Event to update the timestamp round and epoch
+    TimestampEnterRoundEvent(NewRoundEvent),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -1110,8 +1116,8 @@ where
             MonadEvent::PingRequestEvent(event) => MonadEvent::PingRequestEvent(event.clone()),
             MonadEvent::PingResponseEvent(event) => MonadEvent::PingResponseEvent(event.clone()),
             MonadEvent::PingTickEvent => MonadEvent::PingTickEvent,
-            MonadEvent::TimestampUpdateValidatorsEvent(epoch) => {
-                MonadEvent::TimestampUpdateValidatorsEvent(*epoch)
+            MonadEvent::TimestampEnterRoundEvent(event) => {
+                MonadEvent::TimestampEnterRoundEvent(event.clone())
             }
         }
     }
@@ -1186,9 +1192,7 @@ where
                 format!("PingResponseEvent: {} {}", e.sender, e.sequence.0)
             }
             MonadEvent::PingTickEvent => "PingTickEvent".to_string(),
-            MonadEvent::TimestampUpdateValidatorsEvent(_) => {
-                "TimestampUpdateValidatorsEvent".to_string()
-            }
+            MonadEvent::TimestampEnterRoundEvent(_) => "TimestampEnterRoundEvent".to_string(),
         };
 
         write!(f, "{}", s)

@@ -244,10 +244,10 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             }
             MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
             MonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),
-            &MonadEvent::PingRequestEvent(_)
-            | &MonadEvent::PingResponseEvent(_)
-            | &MonadEvent::PingTickEvent => todo!(),
-            &MonadEvent::TimestampUpdateValidatorsEvent(_) => todo!(),
+            MonadEvent::PingRequestEvent(_)
+            | MonadEvent::PingResponseEvent(_)
+            | MonadEvent::PingTickEvent => todo!(),
+            MonadEvent::TimestampEnterRoundEvent(_) => todo!(),
         }
     }
 }

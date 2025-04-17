@@ -19,9 +19,9 @@ use monad_types::{ExecutionProtocol, PingSequence};
 
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
-    KnownPeersUpdate, MempoolEvent, MonadEvent, PingEvent, ReloadConfig, StateSyncBadVersion,
-    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
+    KnownPeersUpdate, MempoolEvent, MonadEvent, NewRoundEvent, PingEvent, ReloadConfig,
+    StateSyncBadVersion, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
+    StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -67,10 +67,8 @@ where
             MonadEvent::PingTickEvent => proto_monad_event::Event::PingTickEvent(
                 monad_proto::proto::event::ProtoPingTickEvent {},
             ),
-            MonadEvent::TimestampUpdateValidatorsEvent(event) => {
-                proto_monad_event::Event::TimestampUpdateValidatorsEvent(
-                    ProtoTimestampUpdateValidatorsEvent { epoch: (*event) },
-                )
+            MonadEvent::TimestampEnterRoundEvent(event) => {
+                proto_monad_event::Event::TimestampEnterRoundEvent(event.into())
             }
         };
         Self { event: Some(event) }
@@ -120,8 +118,8 @@ where
                 MonadEvent::PingResponseEvent(event.try_into()?)
             }
             Some(proto_monad_event::Event::PingTickEvent(_)) => MonadEvent::PingTickEvent,
-            Some(proto_monad_event::Event::TimestampUpdateValidatorsEvent(event)) => {
-                MonadEvent::TimestampUpdateValidatorsEvent(event.epoch)
+            Some(proto_monad_event::Event::TimestampEnterRoundEvent(event)) => {
+                MonadEvent::TimestampEnterRoundEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -1148,7 +1146,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoPingRequestEvent> for PingEvent<SCT>
             sender: match value.sender {
                 Some(sender) => sender.try_into()?,
                 None => Err(ProtoError::MissingRequiredField(
-                    "PingResponseEvent.sender".to_owned(),
+                    "PingRequestEvent.sender".to_owned(),
                 ))?,
             },
             sequence: PingSequence(value.sequence),
@@ -1167,6 +1165,34 @@ impl<SCT: SignatureCollection> TryFrom<ProtoPingResponseEvent> for PingEvent<SCT
                 ))?,
             },
             sequence: PingSequence(value.sequence),
+        })
+    }
+}
+
+impl From<&NewRoundEvent> for ProtoTimestampEnterRoundEvent {
+    fn from(value: &NewRoundEvent) -> Self {
+        Self {
+            epoch: Some((&value.epoch).into()),
+            round: Some((&value.round).into()),
+        }
+    }
+}
+impl TryFrom<ProtoTimestampEnterRoundEvent> for NewRoundEvent {
+    type Error = ProtoError;
+    fn try_from(value: ProtoTimestampEnterRoundEvent) -> Result<Self, Self::Error> {
+        Ok(Self {
+            epoch: match value.epoch {
+                Some(epoch) => epoch.try_into()?,
+                None => Err(ProtoError::MissingRequiredField(
+                    "TimestampEnterRoundEvent.epoch".to_owned(),
+                ))?,
+            },
+            round: match value.round {
+                Some(round) => round.try_into()?,
+                None => Err(ProtoError::MissingRequiredField(
+                    "TimestampEnterRoundEvent.round".to_owned(),
+                ))?,
+            },
         })
     }
 }

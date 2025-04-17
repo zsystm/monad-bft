@@ -24,8 +24,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand, TxPoolCommand,
+    MempoolEvent, MonadEvent, NewRoundEvent, RouterCommand, StateRootHashCommand, StateSyncEvent,
+    TimeoutVariant, TimerCommand, TimestampCommand, TxPoolCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
@@ -540,7 +540,7 @@ where
                     round,
                 }));
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::TimestampUpdateValidatorsEvent(epoch.0),
+                    MonadEvent::TimestampEnterRoundEvent(NewRoundEvent { epoch, round }),
                 )));
             }
             ConsensusCommand::Publish { target, message } => {

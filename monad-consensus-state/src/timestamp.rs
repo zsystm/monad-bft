@@ -115,18 +115,15 @@ struct PingState<P: PubKey> {
     epoch_validators: BTreeMap<Epoch, HashMap<NodeId<P>, ValidatorPingState>>,
     schedule: Vec<Vec<NodeId<P>>>, // schedule of validators to ping, length is period
     tick: usize,                   // current tick index into schedule
-    period: usize,                 // number of ticks in full schedule
 }
 
 impl<P: PubKey> PingState<P> {
     pub fn new() -> Self {
-        let period = PING_PERIOD_SEC as usize;
         Self {
             current_epoch: Epoch(0),
             epoch_validators: BTreeMap::new(),
-            schedule: vec![Vec::new(); period],
+            schedule: vec![Vec::new(); PING_PERIOD_SEC as usize],
             tick: 0,
-            period,
         }
     }
 
@@ -134,7 +131,7 @@ impl<P: PubKey> PingState<P> {
         if let Some(val) = self.epoch_validators.get_mut(&self.current_epoch) {
             if let Some(validator_state) = val.get_mut(&node_id) {
                 validator_state.pong_received(sequence);
-                debug!(?node_id, latency = ?validator_state.avg_latency().unwrap_or_default().as_secs(), "ping latency secs");
+                debug!(?node_id, latency_secs = ?validator_state.avg_latency().unwrap_or_default().as_secs(), "ping latency");
             }
         }
     }
@@ -188,7 +185,7 @@ impl<P: PubKey> PingState<P> {
                 for node in cur_validators.keys() {
                     let mut hasher = DefaultHasher::new();
                     node.hash(&mut hasher);
-                    let idx = (hasher.finish() as usize) % self.period;
+                    let idx = (hasher.finish() as usize) % self.schedule.len();
                     self.schedule[idx].push(*node);
                 }
             });
@@ -204,7 +201,7 @@ impl<P: PubKey> PingState<P> {
                     pings.push((*node_id, sequence));
                 }
             }
-            self.tick = (self.tick + 1) % self.period;
+            self.tick = (self.tick + 1) % self.schedule.len();
         }
         pings
     }

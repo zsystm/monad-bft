@@ -38,9 +38,10 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, PingEvent, ReadCommand, ReloadConfig,
-    RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
-    TimeoutVariant, TimerCommand, TxPoolCommand, ValidatorEvent, WriteCommand,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, NewRoundEvent, PingEvent, ReadCommand,
+    ReloadConfig, RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent,
+    StateSyncNetworkMessage, TimeoutVariant, TimerCommand, TxPoolCommand, ValidatorEvent,
+    WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -1180,8 +1181,8 @@ where
                 }));
                 cmds
             }
-            MonadEvent::TimestampUpdateValidatorsEvent(epoch) => {
-                self.block_timestamp.enter_round(&Epoch(epoch));
+            MonadEvent::TimestampEnterRoundEvent(NewRoundEvent { round, epoch }) => {
+                self.block_timestamp.enter_round(&epoch);
                 vec![]
             }
         }

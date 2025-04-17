@@ -273,8 +273,9 @@ message ProtoPingTickEvent {
 
 }
 
-message ProtoTimestampUpdateValidatorsEvent {
-  uint64 epoch = 1;
+message ProtoTimestampEnterRoundEvent {
+  monad_proto.basic.ProtoEpoch epoch = 1;
+  monad_proto.basic.ProtoRound round = 2;
 }
 
 message ProtoMonadEvent{
@@ -291,6 +292,6 @@ message ProtoMonadEvent{
     ProtoPingRequestEvent ping_request_event = 11;
     ProtoPingResponseEvent ping_response_event = 12;
     ProtoPingTickEvent ping_tick_event = 13;
-    ProtoTimestampUpdateValidatorsEvent timestamp_update_validators_event = 14;
+    ProtoTimestampEnterRoundEvent timestamp_enter_round_event = 14;
   }
 }

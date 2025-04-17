@@ -428,9 +428,7 @@ impl Widget for &EventListWidget {
                 MonadEvent::PingRequestEvent(_) => "PINGREQUEST".to_string(),
                 MonadEvent::PingResponseEvent(_) => "PINGRESPONSE".to_string(),
                 MonadEvent::PingTickEvent => "PINGTICK".to_string(),
-                MonadEvent::TimestampUpdateValidatorsEvent(_) => {
-                    "TIMESTAMP_UPDATE_VALIDATORS".to_string()
-                }
+                MonadEvent::TimestampEnterRoundEvent(_) => "TIMESTAMP_ENTER_ROUND".to_string(),
             };
 
             let s = Span::styled(format!("{header_str:<20}"), Style::default().blue());
@@ -572,7 +570,7 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
             MonadEvent::PingRequestEvent(_) => "pingrequestevent",
             MonadEvent::PingResponseEvent(_) => "pingresponseevent",
             MonadEvent::PingTickEvent => "pingtickevent",
-            MonadEvent::TimestampUpdateValidatorsEvent(_) => "timestampupdatevalidatorsevent",
+            MonadEvent::TimestampEnterRoundEvent(_) => "timestampenterroundevent",
         };
 
         buckets
