@@ -15,7 +15,7 @@ use tracing::debug;
 
 const MAX_LATENCY_SAMPLES: usize = 100;
 
-const PING_PERIOD_SEC: u64 = 30;
+const PING_PERIOD_SEC: usize = 30;
 
 pub const PING_TICK_DURATION: Duration = Duration::from_secs(1);
 
@@ -36,6 +36,7 @@ struct RunningAverage {
 
 impl RunningAverage {
     pub fn new(max_samples: usize) -> Self {
+        assert!(max_samples > 0);
         Self {
             sum: Default::default(),
             max_samples,
@@ -113,8 +114,8 @@ impl ValidatorPingState {
 struct PingState<P: PubKey> {
     current_epoch: Epoch,
     epoch_validators: BTreeMap<Epoch, HashMap<NodeId<P>, ValidatorPingState>>,
-    schedule: Vec<Vec<NodeId<P>>>, // schedule of validators to ping, length is period
-    tick: usize,                   // current tick index into schedule
+    schedule: Box<[Vec<NodeId<P>>; PING_PERIOD_SEC]>, // schedule of validators to ping
+    tick: usize,                                      // current tick index into schedule
 }
 
 impl<P: PubKey> PingState<P> {
@@ -122,7 +123,7 @@ impl<P: PubKey> PingState<P> {
         Self {
             current_epoch: Epoch(0),
             epoch_validators: BTreeMap::new(),
-            schedule: vec![Vec::new(); PING_PERIOD_SEC as usize],
+            schedule: Box::new([const { Vec::new() }; PING_PERIOD_SEC]),
             tick: 0,
         }
     }
@@ -228,16 +229,16 @@ pub struct BlockTimestamp<P: PubKey> {
 
     last_sent_vote: Option<SentVote>, // last voted round and timestamp
 
-    latency_estimate_ns: u128,
+    default_latency_estimate_ns: u128,
 }
 
 impl<P: PubKey> BlockTimestamp<P> {
-    pub fn new(max_delta_ns: u128, latency_estimate_ns: u128) -> Self {
-        assert!(latency_estimate_ns > 0);
+    pub fn new(max_delta_ns: u128, default_latency_estimate_ns: u128) -> Self {
+        assert!(default_latency_estimate_ns > 0);
         Self {
             local_time_ns: 0,
             max_delta_ns,
-            latency_estimate_ns,
+            default_latency_estimate_ns,
             ping_state: PingState::new(),
             last_sent_vote: None,
         }
@@ -288,7 +289,7 @@ impl<P: PubKey> BlockTimestamp<P> {
             .ping_state
             .get_latency(author)
             .unwrap_or(Duration::from_nanos(
-                self.latency_estimate_ns.try_into().unwrap(),
+                self.default_latency_estimate_ns.try_into().unwrap(),
             ));
 
         let expected_block_ts = self.local_time_ns.saturating_sub(latency.as_nanos());
