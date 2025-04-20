@@ -27,6 +27,7 @@ use monad_consensus_types::{
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
+    tip::ConsensusTip,
     voting::Vote,
 };
 use monad_crypto::certificate_signature::{
@@ -67,6 +68,8 @@ where
     scheduled_vote: Option<OutgoingVoteStatus>,
     /// The highest QC (QC height determined by Round) known to this node
     high_qc: QuorumCertificate<SCT>,
+    /// The highest Tip this node has voted for
+    high_tip: Option<ConsensusTip<ST, SCT>>,
     /// Tracks and updates the current round
     pacemaker: Pacemaker<SCT, CCT, CRT>,
     /// Policy for upholding consensus safety when voting or extending branches
@@ -260,6 +263,7 @@ where
             scheduled_vote: None,
             vote_state: VoteState::new(consensus_round),
             high_qc,
+            high_tip: None,
             pacemaker: Pacemaker::new(
                 config.delta,
                 config.chain_config,
