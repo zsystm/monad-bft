@@ -10,7 +10,7 @@ use crate::{
     signature_collection::SignatureCollection,
 };
 
-#[derive(Clone, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, Eq, PartialEq, RlpEncodable, RlpDecodable)]
 pub struct ConsensusTip<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,

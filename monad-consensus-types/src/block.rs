@@ -19,6 +19,7 @@ use crate::{
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
+    tip::ConsensusTip,
 };
 
 pub const GENESIS_TIMESTAMP: u128 = 0;
@@ -359,6 +360,19 @@ where
 
     pub fn split(self) -> (ConsensusBlockHeader<ST, SCT, EPT>, ConsensusBlockBody<EPT>) {
         (self.header, self.body)
+    }
+
+    pub fn get_consensus_tip(&self) -> ConsensusTip<ST, SCT> {
+        ConsensusTip {
+            round: self.get_round(),
+            epoch: self.get_epoch(),
+            qc: self.get_qc().clone(),
+            author: *self.get_author(),
+            seq_num: self.get_seq_num(),
+            timestamp_ns: self.get_timestamp(),
+            round_signature: self.header.round_signature.clone(),
+            block_body_id: self.header.block_body_id,
+        }
     }
 }
 

@@ -382,13 +382,17 @@ impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
     }
 }
 
-impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
+impl<ST, SCT> Unvalidated<TimeoutMessage<ST, SCT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<TimeoutMessage<SCT>>, Error>
+    ) -> Result<Validated<TimeoutMessage<ST, SCT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -905,15 +909,16 @@ mod test {
             high_qc: qc,
         };
 
-        let tmo = Timeout::<SignatureCollectionType> {
+        let tmo = Timeout::<SignatureType, SignatureCollectionType> {
             tminfo: tmo_info,
             last_round_tc: Some(tc),
+            high_tip: None,
         };
 
-        let unvalidated_tmo_msg = Unvalidated::new(TimeoutMessage::<SignatureCollectionType>::new(
-            tmo,
-            &certkeys[0],
-        ));
+        let unvalidated_tmo_msg = Unvalidated::new(TimeoutMessage::<
+            SignatureType,
+            SignatureCollectionType,
+        >::new(tmo, &certkeys[0]));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -967,12 +972,14 @@ mod test {
             high_qc: qc,
         };
 
-        let tmo = Timeout::<SignatureCollectionType> {
+        let tmo = Timeout::<SignatureType, SignatureCollectionType> {
             tminfo: tmo_info,
             last_round_tc: None,
+            high_tip: None,
         };
 
         let unvalidated_byzantine_tmo_msg = Unvalidated::new(TimeoutMessage::<
+            SignatureType,
             SignatureCollectionType,
         >::new(tmo, &certkeys[0]));
 
@@ -1114,9 +1121,11 @@ mod test {
                 high_qc: QuorumCertificate::<SignatureCollectionType>::genesis_qc(),
             },
             last_round_tc: None,
+            high_tip: None,
         };
 
-        let timeout_message = TimeoutMessage::new(timeout, author_cert_key);
+        let timeout_message =
+            TimeoutMessage::<SignatureType, SignatureCollectionType>::new(timeout, author_cert_key);
 
         let unvalidated_timeout = Unvalidated::new(timeout_message);
 

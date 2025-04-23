@@ -60,13 +60,21 @@ impl<SCT: SignatureCollection> VoteMessage<SCT> {
 /// The signature is a protocol signature,can be collected into the
 /// corresponding SignatureCollection type, used to create TC from the timeouts
 #[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
-pub struct TimeoutMessage<SCT: SignatureCollection> {
-    pub timeout: Timeout<SCT>,
+pub struct TimeoutMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub timeout: Timeout<ST, SCT>,
     pub sig: SCT::SignatureType,
 }
 
-impl<SCT: SignatureCollection> TimeoutMessage<SCT> {
-    pub fn new(timeout: Timeout<SCT>, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
+impl<ST, SCT> TimeoutMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub fn new(timeout: Timeout<ST, SCT>, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
         let tmo_enc = alloy_rlp::encode(timeout.tminfo.timeout_digest());
         let sig = <SCT::SignatureType as CertificateSignature>::sign(tmo_enc.as_ref(), key);
 
@@ -75,7 +83,11 @@ impl<SCT: SignatureCollection> TimeoutMessage<SCT> {
 }
 
 /// An integrity hash over all the fields
-impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
+impl<ST, SCT> Hashable for TimeoutMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn hash(&self, state: &mut impl Hasher) {
         state.update(alloy_rlp::encode(self));
     }
@@ -110,16 +122,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use monad_bls::{BlsSignature, BlsSignatureCollection};
+    use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{quorum_certificate::QuorumCertificate, timeout::TimeoutInfo};
     use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
     use monad_multi_sig::MultiSig;
+    use monad_secp::SecpSignature;
     use monad_testutil::signing::get_certificate_key;
     use monad_types::{Epoch, Round};
 
     use super::*;
 
-    type SignatureType = BlsSignature;
+    type SignatureType = SecpSignature;
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 
@@ -140,12 +153,14 @@ mod tests {
         let tm = Timeout {
             tminfo,
             last_round_tc: None,
+            high_tip: None,
         };
 
-        let msg = TimeoutMessage::new(tm, &key);
+        let msg = TimeoutMessage::<SignatureType, SignatureCollectionType>::new(tm, &key);
 
         let b = alloy_rlp::encode(msg);
-        let c: TimeoutMessage<SignatureCollectionType> = alloy_rlp::decode_exact(b).unwrap();
+        let c: TimeoutMessage<SignatureType, SignatureCollectionType> =
+            alloy_rlp::decode_exact(b).unwrap();
 
         assert_eq!(c.timeout.tminfo.epoch, Epoch(12));
         assert_eq!(c.timeout.tminfo.round, Round(123));
@@ -167,12 +182,14 @@ mod tests {
         let tm = Timeout {
             tminfo,
             last_round_tc: None,
+            high_tip: None,
         };
 
-        let msg = TimeoutMessage::new(tm, &key);
+        let msg = TimeoutMessage::<MockSigType, MockSignatureCollectionType>::new(tm, &key);
 
         let b = alloy_rlp::encode(msg);
-        let c: TimeoutMessage<MockSignatureCollectionType> = alloy_rlp::decode_exact(b).unwrap();
+        let c: TimeoutMessage<MockSigType, MockSignatureCollectionType> =
+            alloy_rlp::decode_exact(b).unwrap();
 
         assert_eq!(c.timeout.tminfo.epoch, Epoch(12));
         assert_eq!(c.timeout.tminfo.round, Round(123));

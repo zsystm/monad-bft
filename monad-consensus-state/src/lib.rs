@@ -71,7 +71,7 @@ where
     /// The highest Tip this node has voted for
     high_tip: Option<ConsensusTip<ST, SCT>>,
     /// Tracks and updates the current round
-    pacemaker: Pacemaker<SCT, CCT, CRT>,
+    pacemaker: Pacemaker<ST, SCT, CCT, CRT>,
     /// Policy for upholding consensus safety when voting or extending branches
     safety: Safety,
     block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
@@ -652,7 +652,7 @@ where
     pub fn handle_timeout_message(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
-        tmo_msg: TimeoutMessage<SCT>,
+        tmo_msg: TimeoutMessage<ST, SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let tm = &tmo_msg.timeout;
         let mut cmds = Vec::new();
@@ -1291,6 +1291,9 @@ where
                     }
                 }
             }
+
+            let new_high_tip = validated_block.get_consensus_tip();
+            self.consensus.high_tip = Some(new_high_tip);
         }
 
         cmds
@@ -1775,7 +1778,7 @@ mod test {
         fn handle_timeout_message(
             &mut self,
             author: NodeId<SCT::NodeIdPubKey>,
-            p: TimeoutMessage<SCT>,
+            p: TimeoutMessage<ST, SCT>,
         ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
             self.wrapped_state().handle_timeout_message(author, p)
         }
@@ -1887,7 +1890,7 @@ mod test {
             )
         }
 
-        fn next_tc(&mut self, epoch: Epoch) -> Vec<Verified<ST, TimeoutMessage<SCT>>> {
+        fn next_tc(&mut self, epoch: Epoch) -> Vec<Verified<ST, TimeoutMessage<ST, SCT>>> {
             let valset = self.val_epoch_map.get_val_set(&epoch).unwrap();
             let val_cert_pubkeys = self.val_epoch_map.get_cert_pubkeys(&epoch).unwrap();
             self.proposal_gen.next_tc(
@@ -3304,7 +3307,7 @@ mod test {
 
         // now timeout someone
         let cmds = node1.wrapped_state().handle_timeout_expiry();
-        let tmo: Vec<&Timeout<SignatureCollectionType>> = cmds
+        let tmo: Vec<&Timeout<SignatureType, SignatureCollectionType>> = cmds
             .iter()
             .filter_map(|cmd| match cmd {
                 ConsensusCommand::Publish { target: _, message } => {

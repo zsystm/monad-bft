@@ -109,7 +109,7 @@ where
         keypair: &ST::KeyPairType,
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         version: u32,
-        cmd: PacemakerCommand<SCT>,
+        cmd: PacemakerCommand<ST, SCT>,
     ) -> Self {
         match cmd {
             PacemakerCommand::EnterRound((epoch, round)) => {

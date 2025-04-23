@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_types::*;
 
 use super::quorum_certificate::QuorumCertificate;
@@ -8,17 +11,23 @@ use crate::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
+    tip::ConsensusTip,
     voting::ValidatorMapping,
 };
 
 /// Timeout message to broadcast to other nodes after a local timeout
 #[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 #[rlp(trailing)]
-pub struct Timeout<SCT: SignatureCollection> {
+pub struct Timeout<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     pub tminfo: TimeoutInfo<SCT>,
     /// if the high qc round != tminfo.round-1, then this must be the
     /// TC for tminfo.round-1. Otherwise it must be None
     pub last_round_tc: Option<TimeoutCertificate<SCT>>,
+    pub high_tip: Option<ConsensusTip<ST, SCT>>,
 }
 
 /// Data to include in a timeout

@@ -169,7 +169,7 @@ where
             CertificateSignaturePubKey<ST>,
             SignatureCollectionKeyPairType<SCT>,
         >,
-    ) -> Vec<Verified<ST, TimeoutMessage<SCT>>> {
+    ) -> Vec<Verified<ST, TimeoutMessage<ST, SCT>>> {
         let node_ids = keys
             .iter()
             .map(|keypair| NodeId::new(keypair.pubkey()))
@@ -213,6 +213,7 @@ where
         let timeout = Timeout {
             tminfo,
             last_round_tc: self.last_tc.clone(),
+            high_tip: None,
         };
 
         let mut tmo_msgs = Vec::new();

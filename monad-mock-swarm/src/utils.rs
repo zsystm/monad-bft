@@ -136,6 +136,7 @@ pub mod test_tool {
             timeout: Timeout {
                 tminfo: timeout_info,
                 last_round_tc: None,
+                high_tip: None,
             },
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
