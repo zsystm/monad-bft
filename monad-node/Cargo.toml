@@ -29,6 +29,7 @@ monad-raptorcast = { workspace = true }
 monad-router-filter = { workspace = true, optional = true }
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
+monad-state-backend = { workspace = true }
 monad-statesync = { workspace = true }
 monad-triedb-cache = { workspace = true }
 monad-triedb-utils = { workspace = true }

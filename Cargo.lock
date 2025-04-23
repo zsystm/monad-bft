@@ -5093,6 +5093,7 @@ dependencies = [
  "monad-router-filter",
  "monad-secp",
  "monad-state",
+ "monad-state-backend",
  "monad-statesync",
  "monad-triedb-cache",
  "monad-triedb-utils",
