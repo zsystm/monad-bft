@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet},
     hash::{DefaultHasher, Hash, Hasher},
     time::{Duration, Instant},
 };
@@ -88,17 +88,19 @@ impl ValidatorPingState {
     }
     // initiate a new ping
     pub fn start_next(&mut self) -> PingSequence {
-        self.sequence.0 += 1;
+        self.sequence.0 = self.sequence.0.wrapping_add(1);
         self.last_ping_time = Instant::now();
         self.sequence
     }
 
-    pub fn pong_received(&mut self, sequence: PingSequence) {
+    pub fn pong_received(&mut self, sequence: PingSequence) -> Option<Duration> {
         if sequence != self.sequence {
-            return;
+            return None;
         }
         // estimate latency as half the round trip time
-        self.update_latency(self.last_ping_time.elapsed() / 2);
+        let elapsed = self.last_ping_time.elapsed() / 2;
+        self.update_latency(elapsed);
+        Some(elapsed)
     }
 
     pub fn avg_latency(&self) -> Option<Duration> {
@@ -113,7 +115,8 @@ impl ValidatorPingState {
 #[derive(Debug, Clone)]
 struct PingState<P: PubKey> {
     current_epoch: Epoch,
-    epoch_validators: BTreeMap<Epoch, HashMap<NodeId<P>, ValidatorPingState>>,
+    epoch_validators: BTreeMap<Epoch, Vec<NodeId<P>>>,
+    validators: BTreeMap<NodeId<P>, ValidatorPingState>,
     schedule: Box<[Vec<NodeId<P>>; PING_PERIOD_SEC]>, // schedule of validators to ping
     tick: usize,                                      // current tick index into schedule
 }
@@ -123,93 +126,87 @@ impl<P: PubKey> PingState<P> {
         Self {
             current_epoch: Epoch(0),
             epoch_validators: BTreeMap::new(),
+            validators: BTreeMap::new(),
             schedule: Box::new([const { Vec::new() }; PING_PERIOD_SEC]),
             tick: 0,
         }
     }
 
     pub fn pong_received(&mut self, node_id: NodeId<P>, sequence: PingSequence) {
-        if let Some(val) = self.epoch_validators.get_mut(&self.current_epoch) {
-            if let Some(validator_state) = val.get_mut(&node_id) {
-                validator_state.pong_received(sequence);
-                debug!(?node_id, latency_secs = ?validator_state.avg_latency().unwrap_or_default().as_secs(), "ping latency");
+        if let Some(validator_state) = self.validators.get_mut(&node_id) {
+            if let Some(elapsed) = validator_state.pong_received(sequence) {
+                debug!(?node_id, elapsed_secs = ?elapsed.as_secs(), avg_latency_secs = ?validator_state.avg_latency().unwrap_or_default().as_secs(), "ping latency");
             }
         }
-    }
-
-    fn get_active_validator_state(&self, node_id: &NodeId<P>) -> Option<&ValidatorPingState> {
-        if let Some(val) = self.epoch_validators.get(&self.current_epoch) {
-            return val.get(node_id);
-        }
-        None
     }
 
     fn update_validators<SCT>(
         &mut self,
         validators: &Vec<ValidatorData<SCT>>,
         my_node: &NodeId<P>,
-        epoch: &Epoch,
+        val_epoch: &Epoch,
     ) where
         SCT: SignatureCollection<NodeIdPubKey = P>,
     {
-        if !self.epoch_validators.contains_key(epoch) {
-            self.epoch_validators.insert(*epoch, HashMap::new());
+        let entry = self.epoch_validators.entry(*val_epoch).or_default();
+        entry.clear();
+        for validator in validators {
+            if validator.node_id == *my_node {
+                continue;
+            }
+            entry.push(NodeId::new(validator.node_id.pubkey()));
         }
-        let res = self
+    }
+
+    fn compute_schedule(&mut self) {
+        let active_validators = self
             .epoch_validators
-            .entry(*epoch)
-            .and_modify(|cur_validators| {
-                let removed_nodes = cur_validators
-                    .keys()
-                    .filter(|node_id| !validators.iter().any(|v| v.node_id == **node_id))
-                    .cloned()
-                    .collect::<Vec<_>>();
+            .iter()
+            .filter(|entry| {
+                *entry.0 == self.current_epoch || *entry.0 == self.current_epoch + Epoch(1)
+            })
+            .flat_map(|entry| entry.1)
+            .cloned()
+            .collect::<BTreeSet<NodeId<P>>>();
 
-                for node_id in removed_nodes {
-                    cur_validators.remove(&node_id);
-                }
+        let removed_nodes = self
+            .validators
+            .keys()
+            .filter(|node_id| !active_validators.iter().any(|v| *v == **node_id))
+            .cloned()
+            .collect::<Vec<_>>();
 
-                for validator in validators {
-                    if validator.node_id == *my_node {
-                        continue;
-                    }
-                    cur_validators
-                        .entry(NodeId::new(validator.node_id.pubkey()))
-                        .or_default();
-                }
+        for node_id in removed_nodes {
+            self.validators.remove(&node_id);
+        }
 
-                // map validators to schedule slots by hashing node id
-                for s in self.schedule.iter_mut() {
-                    s.clear();
-                }
+        for s in self.schedule.iter_mut() {
+            s.clear();
+        }
 
-                for node in cur_validators.keys() {
-                    let mut hasher = DefaultHasher::new();
-                    node.hash(&mut hasher);
-                    let idx = (hasher.finish() as usize) % self.schedule.len();
-                    self.schedule[idx].push(*node);
-                }
-            });
+        for validator in active_validators.iter() {
+            self.validators.entry(*validator).or_default();
+            let mut hasher = DefaultHasher::new();
+            validator.hash(&mut hasher);
+            let idx = (hasher.finish() as usize) % self.schedule.len();
+            self.schedule[idx].push(*validator);
+        }
     }
 
     // returns list of nodes to send pings to on this tick
     fn tick(&mut self) -> Vec<(NodeId<P>, PingSequence)> {
         let mut pings = Vec::new();
-        if let Some(val) = self.epoch_validators.get_mut(&self.current_epoch) {
-            for node_id in self.schedule[self.tick].iter() {
-                if let Some(validator_state) = val.get_mut(node_id) {
-                    let sequence = validator_state.start_next();
-                    pings.push((*node_id, sequence));
-                }
-            }
-            self.tick = (self.tick + 1) % self.schedule.len();
+        for node_id in self.schedule[self.tick].iter() {
+            let validator_state = self.validators.get_mut(node_id).unwrap();
+            let sequence = validator_state.start_next();
+            pings.push((*node_id, sequence));
         }
+        self.tick = (self.tick + 1) % self.schedule.len();
         pings
     }
 
     fn get_latency(&self, node_id: &NodeId<P>) -> Option<Duration> {
-        self.get_active_validator_state(node_id)
-            .and_then(|v| v.avg_latency())
+        self.validators.get(node_id).and_then(|v| v.avg_latency())
     }
 }
 
@@ -336,16 +333,19 @@ impl<P: PubKey> BlockTimestamp<P> {
 
     pub fn enter_round(&mut self, epoch: &Epoch) {
         debug!(?epoch, "Enter round");
-        self.ping_state.current_epoch = *epoch;
-        self.ping_state
-            .epoch_validators
-            .retain(|key, _| key >= epoch);
+        if self.ping_state.current_epoch != *epoch {
+            self.ping_state.current_epoch = *epoch;
+            self.ping_state
+                .epoch_validators
+                .retain(|key, _| key >= epoch);
+            self.ping_state.compute_schedule();
+        }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, time::Duration};
+    use std::time::Duration;
 
     use monad_consensus_types::quorum_certificate::{
         TimestampAdjustment, TimestampAdjustmentDirection,
@@ -371,19 +371,11 @@ mod test {
         assert!(b.valid_block_timestamp(0, 11, 0, &author).is_err());
 
         b.ping_state
-            .epoch_validators
-            .insert(Epoch(1), HashMap::new());
-
-        b.ping_state
-            .epoch_validators
-            .get_mut(&Epoch(1))
-            .unwrap()
+            .validators
             .insert(author, ValidatorPingState::new());
 
         b.ping_state
-            .epoch_validators
-            .get_mut(&Epoch(1))
-            .unwrap()
+            .validators
             .get_mut(&author)
             .unwrap()
             .update_latency(Duration::from_nanos(1));
@@ -493,33 +485,28 @@ mod test {
             },
         ];
 
-        s.epoch_validators.insert(Epoch(1), HashMap::new());
-
         s.update_validators(&validators, &my_node, &Epoch(1));
 
-        assert_eq!(s.epoch_validators.get_mut(&Epoch(1)).unwrap().len(), 2);
+        assert_eq!(s.epoch_validators.len(), 1);
+        assert_eq!(s.epoch_validators.get(&Epoch(1)).unwrap().len(), 2);
 
         let validators_1 = vec![validators[0].clone()];
 
         s.update_validators(&validators_1, &my_node, &Epoch(1));
+        assert_eq!(s.epoch_validators.get(&Epoch(1)).unwrap().len(), 1);
 
-        assert_eq!(s.epoch_validators.get_mut(&Epoch(1)).unwrap().len(), 1);
+        assert!(!s.validators.contains_key(&nodes[1]));
 
-        assert!(s
-            .epoch_validators
-            .get_mut(&Epoch(1))
-            .unwrap()
-            .contains_key(&nodes[1]));
+        s.compute_schedule();
+
+        assert!(s.validators.contains_key(&nodes[1]));
 
         let validators_2 = vec![validators[1].clone()];
         s.update_validators(&validators_2, &my_node, &Epoch(1));
 
         assert_eq!(s.epoch_validators.get_mut(&Epoch(1)).unwrap().len(), 1);
-        assert!(s
-            .epoch_validators
-            .get_mut(&Epoch(1))
-            .unwrap()
-            .contains_key(&nodes[2]));
+        s.compute_schedule();
+        assert!(s.validators.contains_key(&nodes[2]));
     }
 
     #[test]
@@ -550,6 +537,7 @@ mod test {
 
         s.current_epoch = Epoch(1);
         s.update_validators(&validators, &my_node, &Epoch(1));
+        s.compute_schedule();
 
         let mut pings = Vec::new();
         for _ in 0..PING_PERIOD_SEC {
