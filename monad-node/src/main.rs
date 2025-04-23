@@ -30,6 +30,7 @@ use monad_node_config::{
 };
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
+use monad_state_backend::SyncStateBackendWrapper;
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
@@ -231,8 +232,19 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         )
     };
 
-    let triedb_handle = TriedbReader::try_new(node_state.triedb_path.as_path())
-        .expect("triedb should exist in path");
+    let state_backend = SyncStateBackendWrapper::new({
+        let triedb_path = node_state.triedb_path.clone();
+
+        move || {
+            let triedb_handle =
+                TriedbReader::try_new(triedb_path.as_path()).expect("triedb should exist in path");
+
+            StateBackendCache::new(
+                triedb_handle,
+                SeqNum(node_state.node_config.consensus.execution_delay),
+            )
+        }
+    });
 
     let mut executor = ParentExecutor {
         router,
@@ -247,10 +259,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
             create_block_policy(),
-            StateBackendCache::new(
-                triedb_handle.clone(),
-                SeqNum(node_state.node_config.consensus.execution_delay),
-            ),
+            state_backend.clone(),
             EthTxPoolIpcConfig {
                 bind_path: node_state.mempool_ipc_path,
                 tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
@@ -322,19 +331,14 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .map(|p| NodeId::new(p.secp256k1_pubkey))
         .collect();
 
-    let mut last_ledger_tip = triedb_handle
-        .get_latest_finalized_block()
-        .unwrap_or(SeqNum(0));
+    let mut last_ledger_tip = SeqNum(0);
 
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
         block_validator: EthValidator::new(node_state.node_config.chain_id),
         block_policy: create_block_policy(),
-        state_backend: StateBackendCache::new(
-            triedb_handle,
-            SeqNum(node_state.node_config.consensus.execution_delay),
-        ),
+        state_backend,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
@@ -475,7 +479,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 }
 
                 let ledger_tip = executor.ledger.last_commit().unwrap_or(last_ledger_tip);
-
 
                 if ledger_tip > last_ledger_tip {
                     last_ledger_tip = ledger_tip;

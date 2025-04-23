@@ -7,9 +7,13 @@ use alloy_primitives::Address;
 use monad_eth_types::{EthAccount, Nonce};
 use monad_types::{BlockId, Round, SeqNum};
 
-pub use self::in_memory::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
+pub use self::{
+    in_memory::{InMemoryBlockState, InMemoryState, InMemoryStateInner},
+    sync::SyncStateBackendWrapper,
+};
 
 mod in_memory;
+mod sync;
 
 #[derive(Debug, PartialEq)]
 pub enum StateBackendError {
