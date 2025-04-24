@@ -469,7 +469,6 @@ mod test {
         let keys = create_keys::<NopSignature>(3);
         let nodes: Vec<_> = keys.iter().map(|k| NodeId::new(k.pubkey())).collect();
 
-        let my_key = keys[0].pubkey();
         let my_node = nodes[0];
 
         let validators = vec![
@@ -507,6 +506,170 @@ mod test {
         assert_eq!(s.epoch_validators.get_mut(&Epoch(1)).unwrap().len(), 1);
         s.compute_schedule();
         assert!(s.validators.contains_key(&nodes[2]));
+    }
+
+    #[test]
+    fn test_new_epoch() {
+        let mut b = BlockTimestamp::<NopPubKey>::new(10, 1);
+
+        let val_cnt = 5;
+        let keys = create_keys::<NopSignature>(val_cnt);
+        let nodes = keys
+            .iter()
+            .map(|k| NodeId::new(k.pubkey()))
+            .collect::<Vec<_>>();
+
+        let my_node = nodes[0];
+
+        let e1 = Epoch(1);
+        let e1_vals = vec![
+            ValidatorData {
+                node_id: nodes[0],
+                stake: Stake(1),
+                cert_pubkey: nodes[0].pubkey(),
+            },
+            ValidatorData::<SignatureCollection> {
+                node_id: nodes[1],
+                stake: Stake(1),
+                cert_pubkey: nodes[1].pubkey(),
+            },
+            ValidatorData {
+                node_id: nodes[2],
+                stake: Stake(1),
+                cert_pubkey: nodes[2].pubkey(),
+            },
+        ];
+
+        let e2 = Epoch(2);
+        let e2_vals = vec![
+            ValidatorData::<SignatureCollection> {
+                node_id: nodes[2],
+                stake: Stake(1),
+                cert_pubkey: nodes[2].pubkey(),
+            },
+            ValidatorData {
+                node_id: nodes[3],
+                stake: Stake(1),
+                cert_pubkey: nodes[3].pubkey(),
+            },
+        ];
+
+        let e3 = Epoch(3);
+        let e3_vals = vec![
+            ValidatorData::<SignatureCollection> {
+                node_id: nodes[3],
+                stake: Stake(1),
+                cert_pubkey: nodes[3].pubkey(),
+            },
+            ValidatorData {
+                node_id: nodes[4],
+                stake: Stake(1),
+                cert_pubkey: nodes[4].pubkey(),
+            },
+        ];
+
+        let mut pings = Vec::new();
+
+        let expected_e1 = [e1_vals[1].node_id, e1_vals[2].node_id];
+        b.update_validators(&e1_vals, &my_node, &e1);
+        if let Some(vals) = b.ping_state.epoch_validators.get(&e1) {
+            assert!(vals.iter().all(|x| expected_e1.contains(x)));
+        }
+        b.enter_round(&e1);
+        assert_eq!(b.ping_state.current_epoch, e1);
+        assert!(b
+            .ping_state
+            .validators
+            .keys()
+            .all(|x| expected_e1.contains(x)));
+        assert_eq!(b.ping_state.validators.keys().len(), expected_e1.len());
+        pings.clear();
+
+        for _ in 0..PING_PERIOD_SEC {
+            pings.extend(b.tick());
+        }
+        assert!(pings.iter().all(|x| expected_e1.contains(&x.0)));
+        assert_eq!(pings.len(), expected_e1.len());
+
+        let expected_e2 = [e2_vals[0].node_id, e2_vals[1].node_id];
+        b.update_validators(&e2_vals, &my_node, &e2);
+        b.enter_round(&e2);
+        assert_eq!(b.ping_state.current_epoch, e2);
+        assert!(b
+            .ping_state
+            .validators
+            .keys()
+            .all(|x| expected_e2.contains(x)));
+        assert_eq!(b.ping_state.validators.keys().len(), expected_e2.len());
+        pings.clear();
+
+        for _ in 0..PING_PERIOD_SEC {
+            pings.extend(b.tick());
+        }
+        assert!(pings.iter().all(|x| expected_e2.contains(&x.0)));
+        assert_eq!(pings.len(), expected_e2.len());
+
+        b.enter_round(&e2);
+        assert_eq!(b.ping_state.current_epoch, e2);
+        assert!(b
+            .ping_state
+            .validators
+            .keys()
+            .all(|x| expected_e2.contains(x)));
+        assert_eq!(b.ping_state.validators.keys().len(), expected_e2.len());
+        pings.clear();
+
+        for _ in 0..PING_PERIOD_SEC {
+            pings.extend(b.tick());
+        }
+        assert!(pings.iter().all(|x| expected_e2.contains(&x.0)));
+        assert_eq!(pings.len(), expected_e2.len());
+
+        b.ping_state.current_epoch = Epoch(0);
+        b.ping_state.validators.clear();
+        b.ping_state.epoch_validators.clear();
+
+        b.update_validators(&e1_vals, &my_node, &e1);
+        b.update_validators(&e2_vals, &my_node, &e2);
+        b.update_validators(&e3_vals, &my_node, &e3);
+        assert_eq!(b.ping_state.epoch_validators.len(), 3);
+        if let Some(vals) = b.ping_state.epoch_validators.get(&e1) {
+            assert!(vals.iter().all(|x| expected_e1.contains(x)));
+        }
+        if let Some(vals) = b.ping_state.epoch_validators.get(&e2) {
+            assert!(vals.iter().all(|x| expected_e2.contains(x)));
+        }
+        let expected_e1_e2 = [e1_vals[1].node_id, e2_vals[0].node_id, e2_vals[1].node_id];
+        b.enter_round(&e1);
+        assert!(b
+            .ping_state
+            .validators
+            .keys()
+            .all(|x| expected_e1_e2.contains(x)));
+        assert_eq!(b.ping_state.validators.keys().len(), expected_e1_e2.len());
+        pings.clear();
+
+        for _ in 0..PING_PERIOD_SEC {
+            pings.extend(b.tick());
+        }
+        assert!(pings.iter().all(|x| expected_e1_e2.contains(&x.0)));
+        assert_eq!(pings.len(), expected_e1_e2.len());
+
+        let expected_e2_e3 = [e2_vals[0].node_id, e2_vals[1].node_id, e3_vals[1].node_id];
+        b.enter_round(&e2);
+        assert!(b
+            .ping_state
+            .validators
+            .keys()
+            .all(|x| expected_e2_e3.contains(x)));
+        assert_eq!(b.ping_state.validators.keys().len(), expected_e2_e3.len());
+        pings.clear();
+
+        for _ in 0..PING_PERIOD_SEC {
+            pings.extend(b.tick());
+        }
+        assert!(pings.iter().all(|x| expected_e2_e3.contains(&x.0)));
+        assert_eq!(pings.len(), expected_e2_e3.len());
     }
 
     #[test]
