@@ -322,7 +322,7 @@ where
         seq_num: SeqNum,
         high_qc: QuorumCertificate<SCT>,
         round_signature: RoundSignature<SCT::SignatureType>,
-        last_round_tc: Option<TimeoutCertificate<SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
 
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -765,7 +765,11 @@ impl<SCT: SignatureCollection> Decodable for ValidatorEvent<SCT> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
+pub enum MempoolEvent<ST, SCT, EPT: ExecutionProtocol>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     Proposal {
         epoch: Epoch,
         round: Round,
@@ -775,7 +779,7 @@ pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
         round_signature: RoundSignature<SCT::SignatureType>,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
-        last_round_tc: Option<TimeoutCertificate<SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
     },
 
     /// Txs that are incoming via other nodes
@@ -788,7 +792,11 @@ pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
     ForwardTxs(Vec<Bytes>),
 }
 
-impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Encodable for MempoolEvent<SCT, EPT> {
+impl<ST, SCT, EPT: ExecutionProtocol> Encodable for MempoolEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn encode(&self, out: &mut dyn BufMut) {
         match self {
             Self::Proposal {
@@ -840,7 +848,11 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Encodable for MempoolEven
     }
 }
 
-impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Decodable for MempoolEvent<SCT, EPT> {
+impl<ST, SCT, EPT: ExecutionProtocol> Decodable for MempoolEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = Header::decode_bytes(buf, true)?;
         match u8::decode(&mut payload)? {
@@ -857,7 +869,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Decodable for MempoolEven
                 let mut tc_payload = Header::decode_bytes(&mut payload, true)?;
                 let tc = match u8::decode(&mut tc_payload)? {
                     1 => Ok(None),
-                    2 => Ok(Some(TimeoutCertificate::<SCT>::decode(&mut payload)?)),
+                    2 => Ok(Some(TimeoutCertificate::<ST, SCT>::decode(&mut payload)?)),
                     _ => Err(alloy_rlp::Error::Custom(
                         "failed to decode unknown tc in mempool event",
                     )),
@@ -890,7 +902,11 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Decodable for MempoolEven
     }
 }
 
-impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SCT, EPT> {
+impl<ST, SCT, EPT: ExecutionProtocol> Debug for MempoolEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Proposal {
@@ -1589,7 +1605,7 @@ where
     /// Events to update validator set
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
-    MempoolEvent(MempoolEvent<SCT, EPT>),
+    MempoolEvent(MempoolEvent<ST, SCT, EPT>),
     /// Execution updates
     ExecutionResultEvent(ExecutionResult<EPT>),
     /// Events for the debug control panel
@@ -1725,7 +1741,7 @@ where
             3 => Ok(Self::ValidatorEvent(ValidatorEvent::<SCT>::decode(
                 &mut payload,
             )?)),
-            4 => Ok(Self::MempoolEvent(MempoolEvent::<SCT, EPT>::decode(
+            4 => Ok(Self::MempoolEvent(MempoolEvent::<ST, SCT, EPT>::decode(
                 &mut payload,
             )?)),
             5 => Ok(Self::ExecutionResultEvent(ExecutionResult::<EPT>::decode(

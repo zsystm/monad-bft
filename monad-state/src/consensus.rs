@@ -238,7 +238,7 @@ where
 
     pub(super) fn handle_mempool_event(
         &mut self,
-        event: MempoolEvent<SCT, EPT>,
+        event: MempoolEvent<ST, SCT, EPT>,
     ) -> Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,

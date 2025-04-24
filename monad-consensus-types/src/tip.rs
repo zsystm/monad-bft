@@ -5,12 +5,14 @@ use monad_crypto::certificate_signature::{
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 
 use crate::{
+    no_endorsement::NoEndorsementCertificate,
     payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
 pub struct ConsensusTip<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -30,4 +32,6 @@ where
     // This is SCT::SignatureType because SCT signatures are guaranteed to be deterministic
     pub round_signature: RoundSignature<SCT::SignatureType>,
     pub block_body_id: ConsensusBlockBodyId,
+
+    pub nec: Option<NoEndorsementCertificate<SCT>>,
 }

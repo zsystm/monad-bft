@@ -131,12 +131,12 @@ pub mod test_tool {
             epoch: Epoch(1),
             round: Round(0),
             high_qc: fake_qc(),
+            high_tip: None, //FIXME
         };
         let internal_msg = TimeoutMessage {
             timeout: Timeout {
                 tminfo: timeout_info,
                 last_round_tc: None,
-                high_tip: None,
             },
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };

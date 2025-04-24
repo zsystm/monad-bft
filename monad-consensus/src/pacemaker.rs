@@ -49,7 +49,7 @@ where
     current_round: Round,
     /// None if we advanced to the current round via QC
     /// Some(TC) if we advanced to the current round via TC
-    last_round_tc: Option<TimeoutCertificate<SCT>>,
+    last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
 
     /// map of the TimeoutMessages from other Nodes
     /// only needs to be stored for the current round as timeout messages
@@ -115,7 +115,7 @@ where
         local_processing: Duration,
         current_epoch: Epoch,
         current_round: Round,
-        last_round_tc: Option<TimeoutCertificate<SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
     ) -> Self {
         Self {
             delta,
@@ -139,7 +139,7 @@ where
         self.current_epoch
     }
 
-    pub fn get_last_round_tc(&self) -> &Option<TimeoutCertificate<SCT>> {
+    pub fn get_last_round_tc(&self) -> &Option<TimeoutCertificate<ST, SCT>> {
         &self.last_round_tc
     }
 
@@ -209,7 +209,6 @@ where
                 PacemakerCommand::PrepareTimeout(Timeout {
                     tminfo: timeout_info,
                     last_round_tc: self.last_round_tc.clone(),
-                    high_tip: None, // FIXME, get this from consensus
                 })
             });
         cmds.extend(maybe_broadcast);
@@ -247,7 +246,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         timeout_msg: TimeoutMessage<ST, SCT>,
     ) -> (
-        Option<TimeoutCertificate<SCT>>,
+        Option<TimeoutCertificate<ST, SCT>>,
         Vec<PacemakerCommand<ST, SCT>>,
     )
     where
@@ -282,7 +281,7 @@ where
             self.phase = PhaseHonest::One;
         }
 
-        let mut ret_tc: Option<TimeoutCertificate<SCT>> = None;
+        let mut ret_tc: Option<TimeoutCertificate<ST, SCT>> = None;
         // try to create a TimeoutCertificate from the pending timeouts, filtering out
         // invalid timeout messages if there are signature errors
         while self.phase == PhaseHonest::One && validators.has_super_majority_votes(&timeouts) {
@@ -335,7 +334,7 @@ where
     #[must_use]
     pub fn advance_round_tc(
         &mut self,
-        tc: &TimeoutCertificate<SCT>,
+        tc: &TimeoutCertificate<ST, SCT>,
         epoch_manager: &EpochManager,
         metrics: &mut Metrics,
     ) -> Vec<PacemakerCommand<ST, SCT>> {
@@ -475,10 +474,10 @@ mod test {
             tminfo: TimeoutInfo {
                 epoch: timeout_epoch,
                 round: timeout_round,
+                high_tip: None,
                 high_qc,
             },
             last_round_tc: None,
-            high_tip: None,
         };
 
         let invalid_msg = b"invalid";
@@ -815,12 +814,12 @@ mod test {
         let td = TimeoutDigest {
             epoch: Epoch(1),
             round: Round(1),
-            high_qc_round: Round(0),
+            high_tip_digest: None,
         };
         let timeout_hash = alloy_rlp::encode(td);
         let tc = tc.unwrap();
-        assert_eq!(tc.high_qc_rounds.len(), 1);
-        let sc = tc.high_qc_rounds.first().unwrap().sigs.clone();
+        assert_eq!(tc.high_tip_digest_sigs.len(), 1);
+        let sc = tc.high_tip_digest_sigs.first().unwrap().sigs.clone();
         assert_eq!(
             sc.verify(&vmap, timeout_hash.as_ref())
                 .unwrap()

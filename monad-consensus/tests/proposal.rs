@@ -12,7 +12,7 @@ use monad_consensus_types::{
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighQcRoundSigColTuple, TimeoutCertificate, TimeoutDigest, TimeoutInfo},
     validation::Error,
     voting::Vote,
 };
@@ -176,8 +176,10 @@ fn define_proposal_with_tc(
     );
 
     let high_qc_sig_tuple = HighQcRoundSigColTuple {
-        high_qc_round: HighQcRound {
-            qc_round: qc.get_round(),
+        tminfo_digest: TimeoutDigest {
+            epoch: qc_epoch,
+            round: qc_round,
+            high_tip_digest: None,
         },
         sigs: MockSignatures::with_pubkeys(
             keys.iter()
@@ -190,7 +192,8 @@ fn define_proposal_with_tc(
     let tc = TimeoutCertificate {
         epoch: tc_epoch, // wrong epoch here
         round: tc_round,
-        high_qc_rounds: vec![high_qc_sig_tuple],
+        tips: vec![],
+        high_tip_digest_sigs: vec![high_qc_sig_tuple],
     };
 
     // moved here because of valmap ownership
@@ -1093,10 +1096,11 @@ fn test_validate_tc_invalid_tc_signature() {
     let tc_epoch_signed = Epoch(2);
     let tc_round_signed = Round(2);
 
-    let tmo_info = TimeoutInfo::<SignatureCollectionType> {
+    let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType> {
         epoch: tc_epoch_signed,
         round: tc_round_signed,
         high_qc: QuorumCertificate::genesis_qc(),
+        high_tip: None,
     };
 
     let tmo_digest = alloy_rlp::encode(tmo_info.timeout_digest());
@@ -1121,10 +1125,9 @@ fn test_validate_tc_invalid_tc_signature() {
     let tc = TimeoutCertificate {
         epoch: tc_epoch,
         round: tc_round,
-        high_qc_rounds: vec![HighQcRoundSigColTuple {
-            high_qc_round: HighQcRound {
-                qc_round: QuorumCertificate::<SignatureCollectionType>::genesis_qc().get_round(),
-            },
+        tips: vec![],
+        high_tip_digest_sigs: vec![HighQcRoundSigColTuple {
+            tminfo_digest: tmo_info.timeout_digest(),
             sigs: sigcol,
         }],
     };

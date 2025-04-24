@@ -1,4 +1,9 @@
-use monad_consensus_types::{timeout::TimeoutCertificate, validation::Error};
+use monad_consensus_types::{
+    signature_collection::SignatureCollection, timeout::TimeoutCertificate, validation::Error,
+};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_types::*;
 
 // (DiemBFT v4, p.12)
@@ -6,11 +11,15 @@ use monad_types::*;
 /// A timeout or proposal message of round r is well-formed if
 /// 1. it contains a QC of round r-1
 /// 2. it contains a TC of round r-1 if the QC is not from round r-1
-pub fn well_formed<SCT>(
+pub fn well_formed<ST, SCT>(
     round: Round,
     qc_round: Round,
-    tc: &Option<TimeoutCertificate<SCT>>,
-) -> Result<(), Error> {
+    tc: &Option<TimeoutCertificate<ST, SCT>>,
+) -> Result<(), Error>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     let prev_round = round - Round(1);
     let valid_qc_round = qc_round == prev_round;
 

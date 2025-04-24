@@ -104,7 +104,7 @@ where
 {
     pub block_header: ConsensusBlockHeader<ST, SCT, EPT>,
     pub block_body: ConsensusBlockBody<EPT>,
-    pub last_round_tc: Option<TimeoutCertificate<SCT>>,
+    pub last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
 }
 
 /// The last_round_tc can be independently verified. The message hash is over
@@ -148,12 +148,12 @@ mod tests {
             epoch: Epoch(12),
             round: Round(123),
             high_qc: genesis_qc.clone(),
+            high_tip: None,
         };
 
         let tm = Timeout {
             tminfo,
             last_round_tc: None,
-            high_tip: None,
         };
 
         let msg = TimeoutMessage::<SignatureType, SignatureCollectionType>::new(tm, &key);
@@ -177,12 +177,12 @@ mod tests {
             epoch: Epoch(12),
             round: Round(123),
             high_qc: genesis_qc.clone(),
+            high_tip: None,
         };
 
         let tm = Timeout {
             tminfo,
             last_round_tc: None,
-            high_tip: None,
         };
 
         let msg = TimeoutMessage::<MockSigType, MockSignatureCollectionType>::new(tm, &key);

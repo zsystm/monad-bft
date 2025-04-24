@@ -54,7 +54,7 @@ where
         seq_num: SeqNum,
         high_qc: QuorumCertificate<SCT>,
         round_signature: RoundSignature<SCT::SignatureType>,
-        last_round_tc: Option<TimeoutCertificate<SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
 
         tx_limit: usize,
         proposal_gas_limit: u64,

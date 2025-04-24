@@ -1352,7 +1352,7 @@ where
     #[must_use]
     fn process_new_round_event(
         &mut self,
-        last_round_tc: Option<TimeoutCertificate<SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let node_id = *self.nodeid;
         let round = self.consensus.pacemaker.get_current_round();

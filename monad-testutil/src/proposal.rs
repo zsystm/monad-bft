@@ -9,7 +9,7 @@ use monad_consensus_types::{
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::certificate_signature::{
@@ -25,14 +25,18 @@ use monad_validator::{
 };
 
 #[derive(Clone)]
-pub struct ProposalGen<ST, SCT, EPT> {
+pub struct ProposalGen<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     epoch: Epoch,
     round: Round,
     qc: QuorumCertificate<SCT>,
     qc_seq_num: SeqNum,
     high_qc: QuorumCertificate<SCT>,
     high_qc_seq_num: SeqNum,
-    last_tc: Option<TimeoutCertificate<SCT>>,
+    last_tc: Option<TimeoutCertificate<ST, SCT>>,
     timestamp: u128,
     phantom: PhantomData<(ST, EPT)>,
 }
@@ -178,14 +182,11 @@ where
             return Vec::new();
         }
 
-        let high_qc_round = HighQcRound {
-            qc_round: self.high_qc.get_round(),
-        };
-
         let tminfo = TimeoutInfo {
             epoch: self.epoch,
             round: self.round,
             high_qc: self.high_qc.clone(),
+            high_tip: None,
         };
 
         let tmo_digest = alloy_rlp::encode(tminfo.timeout_digest());
@@ -201,19 +202,19 @@ where
         }
         let tmo_sig_col = SCT::new(tc_sigs, validator_mapping, tmo_digest.as_ref()).unwrap();
         let high_qc_sig_tuple = HighQcRoundSigColTuple {
-            high_qc_round,
+            tminfo_digest: tminfo.timeout_digest(),
             sigs: tmo_sig_col,
         };
-        let tc = TimeoutCertificate::<SCT> {
+        let tc = TimeoutCertificate::<ST, SCT> {
             epoch: self.epoch,
             round: self.round,
-            high_qc_rounds: vec![high_qc_sig_tuple],
+            tips: vec![],
+            high_tip_digest_sigs: vec![high_qc_sig_tuple],
         };
 
         let timeout = Timeout {
             tminfo,
             last_round_tc: self.last_tc.clone(),
-            high_tip: None,
         };
 
         let mut tmo_msgs = Vec::new();
