@@ -1,7 +1,4 @@
-use std::{
-    ops::{Div, Sub},
-    sync::Arc,
-};
+use std::{ops::Div, sync::Arc};
 
 use alloy_consensus::{Header, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
@@ -93,6 +90,7 @@ async fn estimate_gas<T: EthCallProvider>(
     gas_limit: u64,
     protocol_gas_limit: u64,
 ) -> Result<Quantity, JsonRpcError> {
+    const MIN_TRANSFER_GAS: u64 = 21000;
     let mut txn: TxEnvelope = call_request.clone().try_into()?;
 
     let (gas_used, gas_refund) = match provider
@@ -120,32 +118,10 @@ async fn estimate_gas<T: EthCallProvider>(
         }
     };
 
-    let upper_bound_gas_limit = txn.gas_limit();
-    call_request.gas = Some(U256::from((gas_used + gas_refund) * 64 / 63));
-    txn = call_request.clone().try_into()?;
-
-    let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
-        if txn.gas_limit() < upper_bound_gas_limit {
-            match provider
-                .eth_call(txn.clone(), eth_call_executor.clone())
-                .await
-            {
-                monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
-                    gas_used,
-                    ..
-                }) => (gas_used.sub(1), txn.gas_limit()),
-                monad_ethcall::CallResult::Failure(_error_message) => {
-                    (txn.gas_limit(), upper_bound_gas_limit)
-                }
-                _ => {
-                    return Err(JsonRpcError::internal_error(
-                        "Unexpected CallResult type".into(),
-                    ))
-                }
-            }
-        } else {
-            (gas_used.sub(1), txn.gas_limit())
-        };
+    let mut upper_bound_gas_limit = txn.gas_limit();
+    let mut lower_bound_gas_limit = (gas_used + gas_refund)
+        .saturating_sub(1)
+        .max(MIN_TRANSFER_GAS - 1);
 
     // Binary search for the lowest gas limit.
     while (upper_bound_gas_limit - lower_bound_gas_limit) > 1 {
