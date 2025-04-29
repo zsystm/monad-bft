@@ -69,8 +69,9 @@ ENV TRIEDB_TARGET=triedb_driver
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
-    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc && \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc --bin exec-event-watch && \
     mv target/release/monad-rpc rpc && \
+    mv target/release/exec-event-watch exec-event-watch && \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libsecp256k1.so") | awk -F/ '!seen[$NF]++'` . && \
@@ -87,6 +88,7 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 
 COPY --from=builder /usr/src/monad-bft/rpc /usr/local/bin/monad-rpc
+COPY --from=builder /usr/src/monad-bft/exec-event-watch /usr/local/bin/exec-event-watch
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 

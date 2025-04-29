@@ -70,10 +70,11 @@ ARG TRIEDB_TARGET=triedb_driver
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
-    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example wal-tool --example triedb-debug --example triedb-bench && \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --bin exec-event-watch --example ledger-tail --example wal2json --example wal-tool --example triedb-debug --example triedb-bench && \
     mv target/release/monad-node monad-node && \
     mv target/release/monad-keystore keystore && \
     mv target/release/monad-debug-node monad-debug-node && \
+    mv target/release/exec-event-watch exec-event-watch && \
     mv target/release/examples/ledger-tail ledger-tail && \
     mv target/release/examples/wal2json wal2json && \
     mv target/release/examples/wal-tool wal-tool && \
@@ -95,6 +96,7 @@ ENV RUST_BACKTRACE=1
 COPY --from=builder /usr/src/monad-bft/monad-node/monad-node /usr/local/bin/monad-node
 COPY --from=builder /usr/src/monad-bft/keystore /usr/local/bin/keystore
 COPY --from=builder /usr/src/monad-bft/monad-debug-node/monad-debug-node /usr/local/bin/monad-debug-node
+COPY --from=builder /usr/src/monad-bft/exec-event-watch /usr/local/bin/exec-event-watch
 COPY --from=builder /usr/src/monad-bft/ledger-tail /usr/local/bin/ledger-tail
 COPY --from=builder /usr/src/monad-bft/wal2json /usr/local/bin/wal2json
 COPY --from=builder /usr/src/monad-bft/wal-tool /usr/local/bin/wal-tool
