@@ -4839,6 +4839,7 @@ dependencies = [
  "monad-metrics",
  "monad-state-backend",
  "monad-types",
+ "monad-updaters",
  "pin-project",
  "rayon",
  "tokio",

@@ -23,6 +23,7 @@ monad-executor-glue = { workspace = true }
 monad-metrics = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
+monad-updaters = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-rlp = { workspace = true }
