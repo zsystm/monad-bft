@@ -374,6 +374,7 @@ pub enum ExecEvent {
         /// Incremental (not cumulative!) gas used by this transaction; because
         /// transactions are potentially recorded out-of-order, cumulative
         /// transaction gas usage must be computed manually when the block ends
+        #[serde(with = "alloy_rpc_types::serde_helpers::quantity")]
         txn_gas_used: u128,
     },
 
