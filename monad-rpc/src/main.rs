@@ -23,7 +23,7 @@ use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -953,8 +953,23 @@ async fn main() -> std::io::Result<()> {
                     continue;
                 }
 
-                if let Err(e) = ws_tx.send_async(exec_event).await {
-                    warn!("Finalized block send to websocket failed: {}", e);
+                if let Err(err) = ws_tx.try_send(exec_event) {
+                    error!(
+                        "channel from execution events to websocket server is under pressure: {}",
+                        &err
+                    );
+                    let mut exec_event = err.into_inner();
+                    let mut deadline = Duration::from_micros(2);
+                    loop {
+                        match ws_tx.send_timeout(exec_event.to_owned(), deadline) {
+                            Ok(_) => break,
+                            Err(err) => {
+                                error!("channel from execution events to websocket server is under pressure: {}", err);
+                                deadline *= 2;
+                                exec_event = err.into_inner();
+                            }
+                        }
+                    }
                 }
             }
         });
