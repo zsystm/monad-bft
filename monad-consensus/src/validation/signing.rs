@@ -1065,6 +1065,7 @@ mod test {
             block_header: block,
             block_body: payload,
             last_round_tc: None,
+            nec: None,
         };
 
         let unvalidated_proposal = Unvalidated::new(proposal);

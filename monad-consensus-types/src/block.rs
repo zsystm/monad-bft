@@ -371,7 +371,7 @@ where
             seq_num: self.get_seq_num(),
             timestamp_ns: self.get_timestamp(),
             round_signature: self.header.round_signature.clone(),
-            block_body_id: self.header.block_body_id,
+            block_id: self.header.get_id(),
             nec: None,
         }
     }

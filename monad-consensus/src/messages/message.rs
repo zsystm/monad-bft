@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     block::ConsensusBlockHeader,
+    no_endorsement::NoEndorsementCertificate,
     payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate},
@@ -105,6 +106,7 @@ where
     pub block_header: ConsensusBlockHeader<ST, SCT, EPT>,
     pub block_body: ConsensusBlockBody<EPT>,
     pub last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
+    pub nec: Option<NoEndorsementCertificate<SCT>>,
 }
 
 /// The last_round_tc can be independently verified. The message hash is over

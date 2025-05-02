@@ -231,6 +231,7 @@ fn define_proposal_with_tc(
         block_header: block,
         block_body: payload,
         last_round_tc: Some(tc),
+        nec: None,
     };
 
     (keys, cert_keys, epoch_manager, val_epoch_map, proposal)
@@ -286,6 +287,7 @@ fn test_verify_incorrect_block_epoch(known_round: Round, block_round: Round) {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
     let conmsg = ConsensusMessage {
         version: 1,
@@ -342,6 +344,7 @@ fn test_verify_author_not_sender() {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     let conmsg = ConsensusMessage {
@@ -397,6 +400,7 @@ fn test_verify_invalid_signature() {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     let (other_block, other_payload) = setup_block(
@@ -419,6 +423,7 @@ fn test_verify_invalid_signature() {
         block_header: other_block,
         block_body: other_payload,
         last_round_tc: None,
+        nec: None,
     });
 
     let conmsg = ConsensusMessage {
@@ -477,6 +482,7 @@ fn test_verify_proposal_happy() {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     let conmsg = ConsensusMessage {
@@ -545,6 +551,7 @@ fn test_validate_missing_tc(qc_round: Round) {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     assert_eq!(
@@ -593,6 +600,7 @@ fn test_validate_incorrect_block_epoch(known_epoch: Epoch, block_epoch: Epoch) {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     assert_eq!(
@@ -640,6 +648,7 @@ fn test_validate_qc_epoch() {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     assert_eq!(
@@ -687,6 +696,7 @@ fn test_validate_mismatch_qc_epoch() {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     assert_eq!(
@@ -734,6 +744,7 @@ fn test_proposal_invalid_qc_validator_set() {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     assert_eq!(
@@ -777,6 +788,7 @@ fn test_validate_insufficient_qc_stake() {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     assert_eq!(
@@ -825,6 +837,7 @@ fn test_validate_qc_happy() {
         block_header: block,
         block_body: payload,
         last_round_tc: None,
+        nec: None,
     });
 
     assert!(proposal.validate(&epoch_manager, &val_epoch_map).is_ok());
@@ -1160,6 +1173,7 @@ fn test_validate_tc_invalid_tc_signature() {
         block_header: block,
         block_body: payload,
         last_round_tc: Some(tc),
+        nec: None,
     };
     let proposal = Unvalidated::new(proposal);
 

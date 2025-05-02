@@ -315,6 +315,7 @@ where
                     block_header,
                     block_body,
                     last_round_tc,
+                    nec: None,
                 };
 
                 let msg = ConsensusMessage {

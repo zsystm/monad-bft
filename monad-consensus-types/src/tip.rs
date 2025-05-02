@@ -2,13 +2,11 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
 use crate::{
-    no_endorsement::NoEndorsementCertificate,
-    payload::{ConsensusBlockBodyId, RoundSignature},
-    quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
+    no_endorsement::NoEndorsementCertificate, payload::RoundSignature,
+    quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq, RlpEncodable, RlpDecodable)]
@@ -31,7 +29,7 @@ where
     pub timestamp_ns: u128,
     // This is SCT::SignatureType because SCT signatures are guaranteed to be deterministic
     pub round_signature: RoundSignature<SCT::SignatureType>,
-    pub block_body_id: ConsensusBlockBodyId,
+    pub block_id: BlockId,
 
     pub nec: Option<NoEndorsementCertificate<SCT>>,
 }

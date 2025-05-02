@@ -153,6 +153,7 @@ where
             block_header,
             block_body,
             last_round_tc: self.last_tc.clone(),
+            nec: None,
         };
         self.last_tc = None;
 

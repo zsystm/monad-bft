@@ -82,13 +82,6 @@ where
     }
 }
 
-/*
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct HighQcRound {
-    pub qc_round: Round,
-}
-*/
-
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct HighQcRoundSigColTuple<SCT> {
     pub tminfo_digest: TimeoutDigest,
@@ -176,4 +169,36 @@ where
             .max()
             .expect("verification of received TimeoutCertificates should have rejected any with empty high_qc_rounds")
     }
+
+    pub fn find_high_tip(&self) -> ConsensusTip<ST, SCT> {
+        find_high_tip(&self.tips).expect("TimeoutCertificate must have a non-empty set of tips")
+    }
+}
+
+pub fn find_high_tip<ST, SCT>(tips: &[ConsensusTip<ST, SCT>]) -> Option<ConsensusTip<ST, SCT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    if tips.iter().any(|tip| !is_tip_fresh_proposal(tip)) {
+        return None;
+    }
+
+    tips.iter().max_by_key(|tip| tip.round).cloned()
+}
+
+pub fn is_tip_fresh_proposal<ST, SCT>(tip: &ConsensusTip<ST, SCT>) -> bool
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    if tip.round == tip.qc.get_round() + Round(1) {
+        return true;
+    }
+
+    if let Some(nec) = &tip.nec {
+        return tip.round == nec.get_round() && tip.qc.get_round() == nec.get_high_qc_round();
+    }
+
+    false
 }

@@ -388,6 +388,33 @@ where
         }
     }
 
+    fn v2_proposal_safety_check(&self, p: &ProposalMessage<ST, SCT, EPT>) -> bool {
+        if p.block_header.round == p.block_header.qc.get_round() + Round(1) {
+            return true;
+        }
+
+        if let Some(tc) = &p.last_round_tc {
+            if p.block_header.round != tc.round + Round(1) {
+                return false;
+            }
+
+            // qc in proposal and high_tip in the tc must match
+            let tc_high_tip = tc.find_high_tip();
+            if p.block_header.qc != tc_high_tip.qc {
+                return false;
+            }
+
+            if let Some(nec) = &p.nec {
+                return p.block_header.round == nec.get_round()
+                    && p.block_header.qc.get_round() == nec.get_high_qc_round();
+            }
+
+            return p.block_header.get_id() == tc.find_high_tip().block_id;
+        }
+
+        false
+    }
+
     /// handles proposal messages from other nodes
     /// validators and election are required as part of verifying the proposal certificates
     /// as well as determining the next leader
@@ -3566,6 +3593,7 @@ mod test {
             block_header: invalid_bh2,
             block_body: invalid_b2,
             last_round_tc: None,
+            nec: None,
         };
 
         let _ = node.handle_proposal_message(invalid_p2.block_header.author, invalid_p2);

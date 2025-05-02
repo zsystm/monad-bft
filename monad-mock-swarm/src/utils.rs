@@ -100,6 +100,7 @@ pub mod test_tool {
             block_header,
             block_body,
             last_round_tc: None,
+            nec: None,
         };
         ConsensusMessage {
             version: 1,

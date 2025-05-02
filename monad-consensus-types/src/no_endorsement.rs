@@ -18,3 +18,17 @@ pub struct NoEndorsementCertificate<SCT> {
     pub msg: NoEndorsementMessage,
     pub signatures: SCT,
 }
+
+impl<SCT> NoEndorsementCertificate<SCT> {
+    pub fn get_round(&self) -> Round {
+        self.msg.round
+    }
+
+    pub fn get_epoch(&self) -> Epoch {
+        self.msg.epoch
+    }
+
+    pub fn get_high_qc_round(&self) -> Round {
+        self.msg.high_qc_round
+    }
+}
