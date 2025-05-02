@@ -954,19 +954,25 @@ async fn main() -> std::io::Result<()> {
                 }
 
                 if let Err(err) = ws_tx.try_send(exec_event) {
-                    error!(
+                    warn!(
                         "channel from execution events to websocket server is under pressure: {}",
                         &err
                     );
-                    let mut exec_event = err.into_inner();
-                    let mut deadline = Duration::from_micros(2);
+
+                    let exec_event = err.into_inner();
+                    let mut timeout_duration = Duration::from_micros(10);
+
                     loop {
-                        match ws_tx.send_timeout(exec_event.to_owned(), deadline) {
+                        match tokio::time::timeout(
+                            timeout_duration,
+                            ws_tx.send_async(exec_event.clone()),
+                        )
+                        .await
+                        {
                             Ok(_) => break,
                             Err(err) => {
-                                error!("channel from execution events to websocket server is under pressure: {}", err);
-                                deadline *= 2;
-                                exec_event = err.into_inner();
+                                error!("channel from execution events to websocket server is under high pressure: {}", err);
+                                timeout_duration *= 2;
                             }
                         }
                     }
