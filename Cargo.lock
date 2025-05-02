@@ -4471,6 +4471,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-blocktimestamp"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "itertools 0.10.5",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor-glue",
+ "monad-state-backend",
+ "monad-types",
+ "prost 0.12.6",
+ "toml 0.7.8",
+ "tracing",
+]
+
+[[package]]
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
@@ -4560,6 +4577,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "itertools 0.10.5",
+ "monad-blocktimestamp",
  "monad-blocktree",
  "monad-chain-config",
  "monad-consensus",
@@ -5342,6 +5360,7 @@ dependencies = [
  "bytes",
  "itertools 0.10.5",
  "monad-blocksync",
+ "monad-blocktimestamp",
  "monad-blocktree",
  "monad-bls",
  "monad-chain-config",

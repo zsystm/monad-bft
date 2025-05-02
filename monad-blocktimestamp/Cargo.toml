@@ -1,5 +1,5 @@
 [package]
-name = "monad-state"
+name = "monad-blocktimestamp"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,31 +9,17 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-blocksync = { workspace = true }
-monad-blocktimestamp = { workspace = true }
-monad-blocktree = { workspace = true }
-monad-chain-config = { workspace = true }
-monad-consensus = { workspace = true }
-monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-executor-glue = { workspace = true }
-monad-proto = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
-monad-validator = { workspace = true }
 
+[dev-dependencies]
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 itertools = { workspace = true }
 prost = { workspace = true }
 tracing = { workspace = true }
 
-[dev-dependencies]
-monad-bls = { workspace = true }
-monad-eth-types = { workspace = true }
-monad-secp = { workspace = true }
-monad-testutil = { workspace = true }
-
 toml = { workspace = true }
-tracing = { workspace = true }

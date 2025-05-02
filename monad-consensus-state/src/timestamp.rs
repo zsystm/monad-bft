@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use monad_blocktimestamp::timestamp_command::BlockTimestampCommand;
+
 use monad_consensus_types::{
     quorum_certificate::{TimestampAdjustment, TimestampAdjustmentDirection},
     signature_collection::SignatureCollection,
@@ -11,7 +13,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{Epoch, NodeId, PingSequence, Round};
-//TODO: use monad_executor_glue::BlockTimestampEvent;
+use monad_executor_glue::BlockTimestampEvent;
 use tracing::debug;
 
 const MAX_LATENCY_SAMPLES: usize = 100;
@@ -350,7 +352,7 @@ impl<P: PubKey> BlockTimestamp<P> {
             self.ping_state.compute_schedule();
         }
     }
-    /*
+
     pub fn update<SCT>(
         &mut self,
         event: BlockTimestampEvent<SCT>,
@@ -387,7 +389,6 @@ impl<P: PubKey> BlockTimestamp<P> {
             }
         }
     }
-    */
 }
 
 #[cfg(test)]

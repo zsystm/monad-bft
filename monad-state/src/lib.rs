@@ -7,6 +7,7 @@ use monad_blocksync::{
     blocksync::{BlockSync, BlockSyncSelfRequester},
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
+use monad_blocktimestamp::timestamp_command::BlockTimestampCommand;
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
     execution_revision::ExecutionChainParams,
@@ -64,7 +65,6 @@ mod consensus;
 pub mod convert;
 mod epoch;
 mod statesync;
-mod timestamp_command;
 
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
     match e {
@@ -1152,14 +1152,14 @@ where
                     ))]
                 }
             },
-            MonadEvent::BlockTimestampEvent(timestamp_event) => match timestamp_event {
-                /* TODO: resolve with  adding BlockTimestampCommand
+         //   MonadEvent::BlockTimestampEvent(timestamp_event) => match timestamp_event {
+            MonadEvent::BlockTimestampEvent(timestamp_event) => {
                 let timestamp_cmds = self.block_timestamp.update(timestamp_event);
                 timestamp_cmds
                     .into_iter()
                     .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
-                */
+/* 
                 BlockTimestampEvent::PingRequest { sender, sequence } => {
                     tracing::debug!(?sender, ?sequence, "received ping request");
                     vec![Command::RouterCommand(RouterCommand::Publish {
@@ -1197,6 +1197,7 @@ where
                     self.block_timestamp.enter_round(&epoch);
                     vec![]
                 }
+*/
             },
         }
     }
@@ -1416,6 +1417,49 @@ where
             );
         }
         commands
+    }
+}
+
+impl<ST, SCT, EPT, BPT, SBT> From<BlockTimestampCommand<SCT>>
+    for Vec<
+        Command<
+            MonadEvent<ST, SCT, EPT>,
+            VerifiedMonadMessage<ST, SCT, EPT>,
+            ST,
+            SCT,
+            EPT,
+            BPT,
+            SBT,
+        >,
+    >
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT>,
+    SBT: StateBackend,
+{
+    fn from(command: BlockTimestampCommand<SCT>) -> Self {
+        match command {
+            BlockTimestampCommand::SendPing { target, sequence } => {
+                vec![Command::RouterCommand(RouterCommand::Publish {
+                    target: RouterTarget::TcpPointToPoint {
+                        to: target,
+                        completion: None,
+                    },
+                    message: VerifiedMonadMessage::PingRequest(sequence),
+                })]
+            }
+            BlockTimestampCommand::SendPong { target, sequence } => {
+                vec![Command::RouterCommand(RouterCommand::Publish {
+                    target: RouterTarget::TcpPointToPoint {
+                        to: target,
+                        completion: None,
+                    },
+                    message: VerifiedMonadMessage::PingResponse(sequence),
+                })]
+            }
+        }
     }
 }
 
