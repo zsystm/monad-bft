@@ -1021,9 +1021,24 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewRoundEvent {
-    pub epoch: Epoch,
-    pub round: Round,
+pub enum BlockTimestampEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    PingRequest {
+        sender: NodeId<SCT::NodeIdPubKey>,
+        sequence: PingSequence,
+    },
+    PingResponse {
+        sender: NodeId<SCT::NodeIdPubKey>,
+        sequence: PingSequence,
+    },
+    PingTick,
+    /// Event to update the timestamp round and epoch
+    TimestampEnterRound {
+        epoch: Epoch,
+        round: Round,
+    },
 }
 
 /// MonadEvent are inputs to MonadState
@@ -1052,12 +1067,8 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<SCT>),
-    /// Ping events
-    PingRequestEvent(PingEvent<SCT>),
-    PingResponseEvent(PingEvent<SCT>),
-    PingTickEvent,
-    /// Event to update the timestamp round and epoch
-    TimestampEnterRoundEvent(NewRoundEvent),
+    /// Validator latency pings/pongs and BlockTimestamp updates
+    BlockTimestampEvent(BlockTimestampEvent<SCT>),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -1113,11 +1124,8 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
-            MonadEvent::PingRequestEvent(event) => MonadEvent::PingRequestEvent(event.clone()),
-            MonadEvent::PingResponseEvent(event) => MonadEvent::PingResponseEvent(event.clone()),
-            MonadEvent::PingTickEvent => MonadEvent::PingTickEvent,
-            MonadEvent::TimestampEnterRoundEvent(event) => {
-                MonadEvent::TimestampEnterRoundEvent(event.clone())
+            MonadEvent::BlockTimestampEvent(event) => {
+                MonadEvent::BlockTimestampEvent(event.clone())
             }
         }
     }
@@ -1185,14 +1193,7 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
-            MonadEvent::PingRequestEvent(e) => {
-                format!("PingRequestEvent: {} {}", e.sender, e.sequence.0)
-            }
-            MonadEvent::PingResponseEvent(e) => {
-                format!("PingResponseEvent: {} {}", e.sender, e.sequence.0)
-            }
-            MonadEvent::PingTickEvent => "PingTickEvent".to_string(),
-            MonadEvent::TimestampEnterRoundEvent(_) => "TimestampEnterRoundEvent".to_string(),
+            MonadEvent::BlockTimestampEvent(_) => "BLOCKTIMESTAMP".to_string(),
         };
 
         write!(f, "{}", s)

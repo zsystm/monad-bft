@@ -2529,7 +2529,6 @@ mod test {
         for _ in 0..30 {
             wrapped_state.block_timestamp.tick();
         }
-        std::thread::sleep(Duration::from_millis(1));
         for val in val_set.get_members().keys() {
             wrapped_state
                 .block_timestamp

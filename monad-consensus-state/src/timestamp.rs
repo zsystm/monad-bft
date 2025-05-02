@@ -11,6 +11,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{Epoch, NodeId, PingSequence, Round};
+//TODO: use monad_executor_glue::BlockTimestampEvent;
 use tracing::debug;
 
 const MAX_LATENCY_SAMPLES: usize = 100;
@@ -116,9 +117,9 @@ impl ValidatorPingState {
 struct PingState<P: PubKey> {
     current_epoch: Epoch,
     epoch_validators: BTreeMap<Epoch, Vec<NodeId<P>>>,
-    validators: BTreeMap<NodeId<P>, ValidatorPingState>,
-    schedule: Box<[Vec<NodeId<P>>; PING_PERIOD_SEC]>, // schedule of validators to ping
-    tick: usize,                                      // current tick index into schedule
+    validators: BTreeMap<NodeId<P>, ValidatorPingState>, // a union of the current and the next epoch validator sets
+    schedule: Box<[Vec<NodeId<P>>; PING_PERIOD_SEC]>,    // schedule of validators to ping
+    tick: usize,                                         // current tick index into schedule
 }
 
 impl<P: PubKey> PingState<P> {
@@ -135,26 +136,41 @@ impl<P: PubKey> PingState<P> {
     pub fn pong_received(&mut self, node_id: NodeId<P>, sequence: PingSequence) {
         if let Some(validator_state) = self.validators.get_mut(&node_id) {
             if let Some(elapsed) = validator_state.pong_received(sequence) {
-                debug!(?node_id, elapsed_secs = ?elapsed.as_secs(), avg_latency_secs = ?validator_state.avg_latency().unwrap_or_default().as_secs(), "ping latency");
+                debug!(?node_id, elapsed_ms = ?elapsed.as_millis(), avg_latency_ms = ?validator_state.avg_latency().unwrap_or_default().as_millis(), "ping latency");
             }
         }
     }
 
     fn update_validators<SCT>(
         &mut self,
-        validators: &Vec<ValidatorData<SCT>>,
+        validators: &[ValidatorData<SCT>],
         my_node: &NodeId<P>,
         val_epoch: &Epoch,
     ) where
         SCT: SignatureCollection<NodeIdPubKey = P>,
     {
-        let entry = self.epoch_validators.entry(*val_epoch).or_default();
-        entry.clear();
-        for validator in validators {
-            if validator.node_id == *my_node {
-                continue;
+        match self.epoch_validators.entry(*val_epoch) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(
+                    validators
+                        .iter()
+                        .filter(|v| v.node_id != *my_node)
+                        .map(|v| v.node_id)
+                        .collect(),
+                );
             }
-            entry.push(NodeId::new(validator.node_id.pubkey()));
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                let val_set: Vec<_> = validators
+                    .iter()
+                    .filter(|v| v.node_id != *my_node)
+                    .map(|v| v.node_id)
+                    .collect();
+                assert_eq!(
+                    *entry.get(),
+                    val_set,
+                    "Validators update is not matching existing for the same epoch"
+                )
+            }
         }
     }
 
@@ -169,21 +185,14 @@ impl<P: PubKey> PingState<P> {
             .cloned()
             .collect::<BTreeSet<NodeId<P>>>();
 
-        let removed_nodes = self
-            .validators
-            .keys()
-            .filter(|node_id| !active_validators.iter().any(|v| *v == **node_id))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        for node_id in removed_nodes {
-            self.validators.remove(&node_id);
-        }
+        self.validators
+            .retain(|node_id, _| active_validators.contains(node_id));
 
         for s in self.schedule.iter_mut() {
             s.clear();
         }
 
+        // TODO: reimplement shuffling with rand.
         for validator in active_validators.iter() {
             self.validators.entry(*validator).or_default();
             let mut hasher = DefaultHasher::new();
@@ -215,7 +224,6 @@ struct SentVote {
     round: Round,
     timestamp: Instant,
 }
-
 #[derive(Debug)]
 pub struct BlockTimestamp<P: PubKey> {
     local_time_ns: u128,
@@ -306,7 +314,7 @@ impl<P: PubKey> BlockTimestamp<P> {
 
     pub fn update_validators<SCT>(
         &mut self,
-        validators: &Vec<ValidatorData<SCT>>,
+        validators: &[ValidatorData<SCT>],
         my_node: &NodeId<P>,
         epoch: &Epoch,
     ) where
@@ -332,8 +340,9 @@ impl<P: PubKey> BlockTimestamp<P> {
     }
 
     pub fn enter_round(&mut self, epoch: &Epoch) {
-        debug!(?epoch, "Enter round");
-        if self.ping_state.current_epoch != *epoch {
+        assert!(*epoch >= self.ping_state.current_epoch);
+        debug!(?epoch, "Enter epoch");
+        if *epoch > self.ping_state.current_epoch {
             self.ping_state.current_epoch = *epoch;
             self.ping_state
                 .epoch_validators
@@ -341,11 +350,49 @@ impl<P: PubKey> BlockTimestamp<P> {
             self.ping_state.compute_schedule();
         }
     }
+    /*
+    pub fn update<SCT>(
+        &mut self,
+        event: BlockTimestampEvent<SCT>,
+    ) -> Vec<BlockTimestampCommand<SCT>>
+    where
+        SCT: SignatureCollection<NodeIdPubKey = P>,
+    {
+        match event {
+            BlockTimestampEvent::PingRequest { sender, sequence } => {
+                let mut cmds = Vec::new();
+                tracing::debug!(?sender, ?sequence, "received ping request");
+                cmds.push(BlockTimestampCommand::<SCT>::SendPong { target: sender, sequence});
+                cmds
+            }
+            BlockTimestampEvent::PingResponse { sender, sequence } => {
+                tracing::debug!(?sender, ?sequence, "received ping response");
+                self.pong_received(sender, sequence);
+                vec![]
+            }
+            BlockTimestampEvent::PingTick{} => {
+                tracing::debug!("ping tick");
+                self
+                    .tick()
+                    .into_iter()
+                    .map(|(node, sequence)| {
+                        tracing::debug!(?node, ?sequence, "sending ping request");
+                        BlockTimestampCommand::<SCT>::SendPing { target: node, sequence}
+                    })
+                    .collect::<Vec<BlockTimestampCommand::<SCT>>>()
+            }
+            BlockTimestampEvent::TimestampEnterRound { round, epoch } => {
+                self.enter_round(&epoch);
+                vec![]
+            }
+        }
+    }
+    */
 }
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use std::{collections::BTreeSet, time::Duration};
 
     use monad_consensus_types::quorum_certificate::{
         TimestampAdjustment, TimestampAdjustmentDirection,
@@ -353,22 +400,35 @@ mod test {
     use monad_crypto::{
         certificate_signature::CertificateKeyPair, NopKeyPair, NopPubKey, NopSignature,
     };
-    use monad_testutil::signing::create_keys;
+    use monad_testutil::signing::{create_keys, get_key, MockSignatures};
     use monad_types::{Epoch, NodeId, Round, Stake};
 
+    use super::{Error, PING_PERIOD_SEC};
     use crate::{
         timestamp::{PingState, ValidatorPingState},
         BlockTimestamp, ValidatorData,
     };
+
+    type SignatureType = NopSignature;
+    type SignatureCollection = MockSignatures<SignatureType>;
 
     #[test]
     fn test_block_timestamp_validate() {
         let mut b = BlockTimestamp::<NopPubKey>::new(10, 1);
         let author = NodeId::new(NopKeyPair::from_bytes(&mut [0; 32]).unwrap().pubkey());
 
-        assert!(b.valid_block_timestamp(1, 1, 0, &author).is_err());
-        assert!(b.valid_block_timestamp(2, 1, 0, &author).is_err());
-        assert!(b.valid_block_timestamp(0, 11, 0, &author).is_err());
+        assert!(matches!(
+            b.valid_block_timestamp(1, 1, 0, &author).err().unwrap(),
+            Error::Invalid
+        ));
+        assert!(matches!(
+            b.valid_block_timestamp(2, 1, 0, &author).err().unwrap(),
+            Error::Invalid
+        ));
+        assert!(matches!(
+            b.valid_block_timestamp(0, 11, 0, &author).err().unwrap(),
+            Error::OutOfBounds
+        ));
 
         b.ping_state
             .validators
@@ -383,9 +443,18 @@ mod test {
         b.update_time(10);
         b.vote_sent(Round(0));
 
-        assert!(b.valid_block_timestamp(11, 11, 0, &author).is_err());
-        assert!(b.valid_block_timestamp(12, 11, 0, &author).is_err());
-        assert!(b.valid_block_timestamp(9, 21, 0, &author).is_err());
+        assert!(matches!(
+            b.valid_block_timestamp(11, 11, 0, &author).err().unwrap(),
+            Error::Invalid
+        ));
+        assert!(matches!(
+            b.valid_block_timestamp(12, 11, 0, &author).err().unwrap(),
+            Error::Invalid
+        ));
+        assert!(matches!(
+            b.valid_block_timestamp(9, 21, 0, &author).err().unwrap(),
+            Error::OutOfBounds
+        ));
 
         b.update_time(12);
 
@@ -455,13 +524,6 @@ mod test {
         );
     }
 
-    use monad_testutil::signing::MockSignatures;
-
-    use super::PING_PERIOD_SEC;
-
-    type SignatureType = NopSignature;
-    type SignatureCollection = MockSignatures<SignatureType>;
-
     #[test]
     fn test_update_validators() {
         let mut s = PingState::<NopPubKey>::new();
@@ -480,19 +542,23 @@ mod test {
             ValidatorData {
                 node_id: nodes[2],
                 stake: Stake(1),
-                cert_pubkey: nodes[1].pubkey(),
+                cert_pubkey: nodes[2].pubkey(),
             },
         ];
 
         s.update_validators(&validators, &my_node, &Epoch(1));
+        assert_eq!(s.epoch_validators.len(), 1);
+        assert_eq!(s.epoch_validators.get(&Epoch(1)).unwrap().len(), 2);
 
+        // test sending identical to existing set of validators for the same epoch
+        s.update_validators(&validators, &my_node, &Epoch(1));
         assert_eq!(s.epoch_validators.len(), 1);
         assert_eq!(s.epoch_validators.get(&Epoch(1)).unwrap().len(), 2);
 
         let validators_1 = vec![validators[0].clone()];
 
-        s.update_validators(&validators_1, &my_node, &Epoch(1));
-        assert_eq!(s.epoch_validators.get(&Epoch(1)).unwrap().len(), 1);
+        s.update_validators(&validators_1, &my_node, &Epoch(2));
+        assert_eq!(s.epoch_validators.get(&Epoch(2)).unwrap().len(), 1);
 
         assert!(!s.validators.contains_key(&nodes[1]));
 
@@ -501,11 +567,135 @@ mod test {
         assert!(s.validators.contains_key(&nodes[1]));
 
         let validators_2 = vec![validators[1].clone()];
-        s.update_validators(&validators_2, &my_node, &Epoch(1));
+        s.update_validators(&validators_2, &my_node, &Epoch(3));
 
-        assert_eq!(s.epoch_validators.get_mut(&Epoch(1)).unwrap().len(), 1);
+        assert_eq!(s.epoch_validators.get_mut(&Epoch(3)).unwrap().len(), 1);
         s.compute_schedule();
         assert!(s.validators.contains_key(&nodes[2]));
+    }
+
+    #[test]
+    fn test_enter_round() {
+        let mut b = BlockTimestamp::<NopPubKey>::new(10, 1);
+
+        let val_cnt = 5;
+        let keys = create_keys::<NopSignature>(val_cnt);
+        let nodes = keys
+            .iter()
+            .map(|k| NodeId::new(k.pubkey()))
+            .collect::<Vec<_>>();
+
+        let my_node = nodes[0];
+
+        let e1 = Epoch(1);
+        let e1_vals = vec![
+            ValidatorData {
+                node_id: nodes[0],
+                stake: Stake(1),
+                cert_pubkey: nodes[0].pubkey(),
+            },
+            ValidatorData::<SignatureCollection> {
+                node_id: nodes[1],
+                stake: Stake(1),
+                cert_pubkey: nodes[1].pubkey(),
+            },
+            ValidatorData {
+                node_id: nodes[2],
+                stake: Stake(1),
+                cert_pubkey: nodes[2].pubkey(),
+            },
+        ];
+
+        let e2 = Epoch(2);
+        let e2_vals = vec![
+            ValidatorData::<SignatureCollection> {
+                node_id: nodes[2],
+                stake: Stake(1),
+                cert_pubkey: nodes[2].pubkey(),
+            },
+            ValidatorData {
+                node_id: nodes[3],
+                stake: Stake(1),
+                cert_pubkey: nodes[3].pubkey(),
+            },
+        ];
+
+        let mut pings: Vec<NodeId<NopPubKey>> = Vec::new();
+
+        let expected_e1 = [e1_vals[1].node_id, e1_vals[2].node_id];
+        b.update_validators(&e1_vals, &my_node, &e1);
+        let vals = b
+            .ping_state
+            .epoch_validators
+            .get(&e1)
+            .expect("get validators");
+        assert!(vals.iter().all(|x| expected_e1.contains(x)));
+
+        b.enter_round(&e1);
+        assert_eq!(b.ping_state.current_epoch, e1);
+        assert!(b
+            .ping_state
+            .validators
+            .keys()
+            .all(|x| expected_e1.contains(x)));
+        assert_eq!(b.ping_state.validators.keys().len(), expected_e1.len());
+        pings.clear();
+
+        for _ in 0..PING_PERIOD_SEC {
+            pings.extend(
+                b.tick()
+                    .iter()
+                    .map(|x| x.0)
+                    .collect::<Vec<NodeId<NopPubKey>>>(),
+            );
+        }
+        assert!(expected_e1.iter().all(|x| pings.contains(x)));
+        assert_eq!(expected_e1.len(), pings.len());
+
+        let expected_e2 = [e2_vals[0].node_id, e2_vals[1].node_id];
+        b.update_validators(&e2_vals, &my_node, &e2);
+        b.enter_round(&e2);
+        assert_eq!(b.ping_state.current_epoch, e2);
+        assert!(b
+            .ping_state
+            .validators
+            .keys()
+            .all(|x| expected_e2.contains(x)));
+        assert_eq!(b.ping_state.validators.keys().len(), expected_e2.len());
+        pings.clear();
+
+        for _ in 0..PING_PERIOD_SEC {
+            pings.extend(
+                b.tick()
+                    .iter()
+                    .map(|x| x.0)
+                    .collect::<Vec<NodeId<NopPubKey>>>(),
+            );
+        }
+        assert!(expected_e2.iter().all(|x| pings.contains(x)));
+        assert_eq!(pings.len(), expected_e2.len());
+
+        // Test that BlockTimestamp works as expected after entering the same epoch again.
+        b.enter_round(&e2);
+        assert_eq!(b.ping_state.current_epoch, e2);
+        assert!(b
+            .ping_state
+            .validators
+            .keys()
+            .all(|x| expected_e2.contains(x)));
+        assert_eq!(b.ping_state.validators.keys().len(), expected_e2.len());
+        pings.clear();
+
+        for _ in 0..PING_PERIOD_SEC {
+            pings.extend(
+                b.tick()
+                    .iter()
+                    .map(|x| x.0)
+                    .collect::<Vec<NodeId<NopPubKey>>>(),
+            );
+        }
+        assert!(expected_e2.iter().all(|x| pings.contains(x)));
+        assert_eq!(pings.len(), expected_e2.len());
     }
 
     #[test]
@@ -568,121 +758,98 @@ mod test {
             },
         ];
 
-        let mut pings = Vec::new();
-
         let expected_e1 = [e1_vals[1].node_id, e1_vals[2].node_id];
-        b.update_validators(&e1_vals, &my_node, &e1);
-        if let Some(vals) = b.ping_state.epoch_validators.get(&e1) {
-            assert!(vals.iter().all(|x| expected_e1.contains(x)));
-        }
-        b.enter_round(&e1);
-        assert_eq!(b.ping_state.current_epoch, e1);
-        assert!(b
-            .ping_state
-            .validators
-            .keys()
-            .all(|x| expected_e1.contains(x)));
-        assert_eq!(b.ping_state.validators.keys().len(), expected_e1.len());
-        pings.clear();
-
-        for _ in 0..PING_PERIOD_SEC {
-            pings.extend(b.tick());
-        }
-        assert!(pings.iter().all(|x| expected_e1.contains(&x.0)));
-        assert_eq!(pings.len(), expected_e1.len());
-
         let expected_e2 = [e2_vals[0].node_id, e2_vals[1].node_id];
-        b.update_validators(&e2_vals, &my_node, &e2);
-        b.enter_round(&e2);
-        assert_eq!(b.ping_state.current_epoch, e2);
-        assert!(b
-            .ping_state
-            .validators
-            .keys()
-            .all(|x| expected_e2.contains(x)));
-        assert_eq!(b.ping_state.validators.keys().len(), expected_e2.len());
-        pings.clear();
 
-        for _ in 0..PING_PERIOD_SEC {
-            pings.extend(b.tick());
-        }
-        assert!(pings.iter().all(|x| expected_e2.contains(&x.0)));
-        assert_eq!(pings.len(), expected_e2.len());
-
-        b.enter_round(&e2);
-        assert_eq!(b.ping_state.current_epoch, e2);
-        assert!(b
-            .ping_state
-            .validators
-            .keys()
-            .all(|x| expected_e2.contains(x)));
-        assert_eq!(b.ping_state.validators.keys().len(), expected_e2.len());
-        pings.clear();
-
-        for _ in 0..PING_PERIOD_SEC {
-            pings.extend(b.tick());
-        }
-        assert!(pings.iter().all(|x| expected_e2.contains(&x.0)));
-        assert_eq!(pings.len(), expected_e2.len());
-
-        b.ping_state.current_epoch = Epoch(0);
-        b.ping_state.validators.clear();
-        b.ping_state.epoch_validators.clear();
+        let mut pings: Vec<NodeId<NopPubKey>> = Vec::new();
 
         b.update_validators(&e1_vals, &my_node, &e1);
         b.update_validators(&e2_vals, &my_node, &e2);
         b.update_validators(&e3_vals, &my_node, &e3);
         assert_eq!(b.ping_state.epoch_validators.len(), 3);
-        if let Some(vals) = b.ping_state.epoch_validators.get(&e1) {
-            assert!(vals.iter().all(|x| expected_e1.contains(x)));
-        }
-        if let Some(vals) = b.ping_state.epoch_validators.get(&e2) {
-            assert!(vals.iter().all(|x| expected_e2.contains(x)));
-        }
+        let vals = b
+            .ping_state
+            .epoch_validators
+            .get(&e1)
+            .expect("get validators");
+        assert_eq!(
+            vals.iter().copied().collect::<BTreeSet<_>>(),
+            expected_e1.iter().copied().collect::<BTreeSet<_>>()
+        );
+
+        let vals = b
+            .ping_state
+            .epoch_validators
+            .get(&e2)
+            .expect("get validators");
+        assert_eq!(
+            vals.iter().copied().collect::<BTreeSet<_>>(),
+            expected_e2.iter().copied().collect::<BTreeSet<_>>()
+        );
+
         let expected_e1_e2 = [e1_vals[1].node_id, e2_vals[0].node_id, e2_vals[1].node_id];
         b.enter_round(&e1);
-        assert!(b
-            .ping_state
-            .validators
-            .keys()
-            .all(|x| expected_e1_e2.contains(x)));
-        assert_eq!(b.ping_state.validators.keys().len(), expected_e1_e2.len());
+
+        assert_eq!(
+            b.ping_state
+                .validators
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            expected_e1_e2.iter().copied().collect::<BTreeSet<_>>()
+        );
         pings.clear();
 
         for _ in 0..PING_PERIOD_SEC {
-            pings.extend(b.tick());
+            pings.extend(
+                b.tick()
+                    .iter()
+                    .map(|x| x.0)
+                    .collect::<Vec<NodeId<NopPubKey>>>(),
+            );
         }
-        assert!(pings.iter().all(|x| expected_e1_e2.contains(&x.0)));
+        assert!(expected_e1_e2.iter().all(|x| pings.contains(x)));
         assert_eq!(pings.len(), expected_e1_e2.len());
 
         let expected_e2_e3 = [e2_vals[0].node_id, e2_vals[1].node_id, e3_vals[1].node_id];
         b.enter_round(&e2);
-        assert!(b
-            .ping_state
-            .validators
-            .keys()
-            .all(|x| expected_e2_e3.contains(x)));
-        assert_eq!(b.ping_state.validators.keys().len(), expected_e2_e3.len());
+        assert_eq!(
+            b.ping_state
+                .validators
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            expected_e2_e3.iter().copied().collect::<BTreeSet<_>>()
+        );
         pings.clear();
 
         for _ in 0..PING_PERIOD_SEC {
-            pings.extend(b.tick());
+            pings.extend(
+                b.tick()
+                    .iter()
+                    .map(|x| x.0)
+                    .collect::<Vec<NodeId<NopPubKey>>>(),
+            );
         }
-        assert!(pings.iter().all(|x| expected_e2_e3.contains(&x.0)));
-        assert_eq!(pings.len(), expected_e2_e3.len());
+
+        assert_eq!(
+            pings.iter().copied().collect::<BTreeSet<_>>(),
+            expected_e2_e3.iter().copied().collect::<BTreeSet<_>>()
+        );
     }
 
     #[test]
     fn test_ticks() {
         let mut s = PingState::<NopPubKey>::new();
 
-        let my_key = NopKeyPair::from_bytes(&mut [0; 32]).unwrap().pubkey();
+        //let my_key = NopKeyPair::from_bytes(&mut [0; 32]).unwrap().pubkey();
+        let my_key = get_key::<SignatureType>(1_u64).pubkey();
         let my_node = NodeId::new(my_key);
 
-        let k_1 = NopKeyPair::from_bytes(&mut [1; 32]).unwrap().pubkey();
+        let k_1 = get_key::<SignatureType>(2_u64).pubkey();
         let node_1 = NodeId::new(k_1);
 
-        let k_2 = NopKeyPair::from_bytes(&mut [2; 32]).unwrap().pubkey();
+        let k_2 = get_key::<SignatureType>(3_u64).pubkey();
         let node_2 = NodeId::new(k_2);
 
         let validators = vec![
@@ -704,13 +871,20 @@ mod test {
 
         let mut pings = Vec::new();
         for _ in 0..PING_PERIOD_SEC {
-            pings.extend(s.tick());
+            pings.extend(
+                s.tick()
+                    .iter()
+                    .map(|x| x.0)
+                    .collect::<Vec<NodeId<NopPubKey>>>(),
+            );
         }
 
         assert_eq!(
-            pings.len(),
-            validators.len(),
-            "number of pings in total period should match number of validators"
+            pings.iter().copied().collect::<BTreeSet<_>>(),
+            validators
+                .iter()
+                .map(|x| x.node_id)
+                .collect::<BTreeSet<_>>()
         );
     }
 }

@@ -36,12 +36,11 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, NewRoundEvent, PingEvent, ReadCommand,
-    ReloadConfig, RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent,
-    StateSyncNetworkMessage, TimeoutVariant, TimerCommand, TxPoolCommand, ValidatorEvent,
-    WriteCommand,
+    BlockSyncEvent, BlockTimestampEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
+    GetValidatorSet, LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig,
+    RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    TimeoutVariant, TimerCommand, TxPoolCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -65,6 +64,7 @@ mod consensus;
 pub mod convert;
 mod epoch;
 mod statesync;
+mod timestamp_command;
 
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
     match e {
@@ -502,7 +502,7 @@ where
                 Encodable::length(&enc)
             }
             Self::PingResponse(m) => {
-                let enc: Vec<&dyn Encodable> = vec![&monad_version, &6u8, &m];
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &7u8, &m];
                 Encodable::length(&enc)
             }
         }
@@ -701,14 +701,18 @@ where
             MonadMessage::StateSyncMessage(msg) => {
                 MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg))
             }
-            MonadMessage::PingRequest(sequence) => MonadEvent::PingRequestEvent(PingEvent {
-                sender: from,
-                sequence,
-            }),
-            MonadMessage::PingResponse(sequence) => MonadEvent::PingResponseEvent(PingEvent {
-                sender: from,
-                sequence,
-            }),
+            MonadMessage::PingRequest(sequence) => {
+                MonadEvent::BlockTimestampEvent(BlockTimestampEvent::PingRequest {
+                    sender: from,
+                    sequence,
+                })
+            }
+            MonadMessage::PingResponse(sequence) => {
+                MonadEvent::BlockTimestampEvent(BlockTimestampEvent::PingResponse {
+                    sender: from,
+                    sequence,
+                })
+            }
         }
     }
 }
@@ -842,7 +846,7 @@ where
         init_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
             duration: PING_TICK_DURATION,
             variant: TimeoutVariant::Ping,
-            on_timeout: MonadEvent::PingTickEvent,
+            on_timeout: MonadEvent::BlockTimestampEvent(BlockTimestampEvent::PingTick {}),
         }));
 
         (monad_state, init_cmds)
@@ -1148,43 +1152,52 @@ where
                     ))]
                 }
             },
-            MonadEvent::PingRequestEvent(PingEvent { sender, sequence }) => {
-                tracing::debug!(?sender, ?sequence, "received ping request");
-                vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::PointToPoint(sender),
-                    message: VerifiedMonadMessage::PingResponse(sequence),
-                })]
-            }
-            MonadEvent::PingResponseEvent(PingEvent { sender, sequence }) => {
-                tracing::debug!(?sender, ?sequence, "received ping response");
-                self.block_timestamp.pong_received(sender, sequence);
-                vec![]
-            }
-            MonadEvent::PingTickEvent => {
-                tracing::debug!("ping tick");
-                let mut cmds = self
-                    .block_timestamp
-                    .tick()
+            MonadEvent::BlockTimestampEvent(timestamp_event) => match timestamp_event {
+                /* TODO: resolve with  adding BlockTimestampCommand
+                let timestamp_cmds = self.block_timestamp.update(timestamp_event);
+                timestamp_cmds
                     .into_iter()
-                    .map(|(node, sequence)| {
-                        tracing::debug!(?node, ?sequence, "sending ping request");
-                        Command::RouterCommand(RouterCommand::Publish {
-                            target: RouterTarget::PointToPoint(node),
-                            message: VerifiedMonadMessage::PingRequest(sequence),
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _>>>::into)
+                    .collect::<Vec<_>>()
+                */
+                BlockTimestampEvent::PingRequest { sender, sequence } => {
+                    tracing::debug!(?sender, ?sequence, "received ping request");
+                    vec![Command::RouterCommand(RouterCommand::Publish {
+                        target: RouterTarget::PointToPoint(sender),
+                        message: VerifiedMonadMessage::PingResponse(sequence),
+                    })]
+                }
+                BlockTimestampEvent::PingResponse { sender, sequence } => {
+                    tracing::debug!(?sender, ?sequence, "received ping response");
+                    self.block_timestamp.pong_received(sender, sequence);
+                    vec![]
+                }
+                BlockTimestampEvent::PingTick => {
+                    tracing::debug!("ping tick");
+                    let mut cmds = self
+                        .block_timestamp
+                        .tick()
+                        .into_iter()
+                        .map(|(node, sequence)| {
+                            tracing::debug!(?node, ?sequence, "sending ping request");
+                            Command::RouterCommand(RouterCommand::Publish {
+                                target: RouterTarget::PointToPoint(node),
+                                message: VerifiedMonadMessage::PingRequest(sequence),
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>();
-                cmds.push(Command::TimerCommand(TimerCommand::Schedule {
-                    duration: PING_TICK_DURATION,
-                    variant: TimeoutVariant::Ping,
-                    on_timeout: MonadEvent::PingTickEvent,
-                }));
-                cmds
-            }
-            MonadEvent::TimestampEnterRoundEvent(NewRoundEvent { round, epoch }) => {
-                self.block_timestamp.enter_round(&epoch);
-                vec![]
-            }
+                        .collect::<Vec<_>>();
+                    cmds.push(Command::TimerCommand(TimerCommand::Schedule {
+                        duration: PING_TICK_DURATION,
+                        variant: TimeoutVariant::Ping,
+                        on_timeout: MonadEvent::BlockTimestampEvent(BlockTimestampEvent::PingTick),
+                    }));
+                    cmds
+                }
+                BlockTimestampEvent::TimestampEnterRound { round, epoch } => {
+                    self.block_timestamp.enter_round(&epoch);
+                    vec![]
+                }
+            },
         }
     }
 

@@ -23,8 +23,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, NewRoundEvent, RouterCommand, StateRootHashCommand, StateSyncEvent,
+    BlockSyncEvent, BlockTimestampEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand,
+    LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent,
     TimeoutVariant, TimerCommand, TimestampCommand, TxPoolCommand,
 };
 use monad_state_backend::StateBackend;
@@ -540,7 +540,10 @@ where
                     round,
                 }));
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::TimestampEnterRoundEvent(NewRoundEvent { epoch, round }),
+                    MonadEvent::BlockTimestampEvent(BlockTimestampEvent::TimestampEnterRound {
+                        epoch,
+                        round,
+                    }),
                 )));
             }
             ConsensusCommand::Publish { target, message } => {

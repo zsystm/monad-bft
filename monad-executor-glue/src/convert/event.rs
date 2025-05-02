@@ -13,13 +13,19 @@ use monad_crypto::certificate_signature::{
 };
 use monad_proto::{
     error::ProtoError,
-    proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
+    proto::{
+        blocksync::ProtoBlockSyncSelfRequest,
+        blocktimestamp::{
+            ProtoPingRequest, ProtoPingResponse, ProtoPingTick, ProtoTimestampEnterRound,
+        },
+        event::*,
+    },
 };
 use monad_types::{ExecutionProtocol, PingSequence};
 
 use crate::{
-    BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
-    KnownPeersUpdate, MempoolEvent, MonadEvent, NewRoundEvent, PingEvent, ReloadConfig,
+    BlockSyncEvent, BlockTimestampEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent,
+    GetFullNodes, GetPeers, KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig,
     StateSyncBadVersion, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
     StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
@@ -58,17 +64,8 @@ where
                 proto_monad_event::Event::StateSyncEvent(event.into())
             }
             MonadEvent::ConfigEvent(event) => proto_monad_event::Event::ConfigEvent(event.into()),
-            MonadEvent::PingRequestEvent(event) => {
-                proto_monad_event::Event::PingRequestEvent(event.into())
-            }
-            MonadEvent::PingResponseEvent(event) => {
-                proto_monad_event::Event::PingResponseEvent(event.into())
-            }
-            MonadEvent::PingTickEvent => proto_monad_event::Event::PingTickEvent(
-                monad_proto::proto::event::ProtoPingTickEvent {},
-            ),
-            MonadEvent::TimestampEnterRoundEvent(event) => {
-                proto_monad_event::Event::TimestampEnterRoundEvent(event.into())
+            MonadEvent::BlockTimestampEvent(event) => {
+                proto_monad_event::Event::BlockTimestampEvent(event.into())
             }
         };
         Self { event: Some(event) }
@@ -111,15 +108,8 @@ where
             Some(proto_monad_event::Event::ConfigEvent(event)) => {
                 MonadEvent::ConfigEvent(event.try_into()?)
             }
-            Some(proto_monad_event::Event::PingRequestEvent(event)) => {
-                MonadEvent::PingRequestEvent(event.try_into()?)
-            }
-            Some(proto_monad_event::Event::PingResponseEvent(event)) => {
-                MonadEvent::PingResponseEvent(event.try_into()?)
-            }
-            Some(proto_monad_event::Event::PingTickEvent(_)) => MonadEvent::PingTickEvent,
-            Some(proto_monad_event::Event::TimestampEnterRoundEvent(event)) => {
-                MonadEvent::TimestampEnterRoundEvent(event.try_into()?)
+            Some(proto_monad_event::Event::BlockTimestampEvent(event)) => {
+                MonadEvent::BlockTimestampEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -1121,78 +1111,87 @@ impl<SCT: SignatureCollection> TryFrom<ProtoConfigEvent> for ConfigEvent<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> From<&PingEvent<SCT>> for ProtoPingRequestEvent {
-    fn from(value: &PingEvent<SCT>) -> Self {
-        Self {
-            sender: Some((&value.sender).into()),
-            sequence: value.sequence.0,
-        }
+impl<SCT> From<&BlockTimestampEvent<SCT>> for ProtoBlockTimestampEvent
+where
+    SCT: SignatureCollection,
+{
+    fn from(value: &BlockTimestampEvent<SCT>) -> Self {
+        let event = match value {
+            BlockTimestampEvent::PingRequest { sender, sequence } => {
+                proto_block_timestamp_event::Event::PingRequest(ProtoPingRequest {
+                    sender: Some(sender.into()),
+                    sequence: sequence.0,
+                })
+            }
+            BlockTimestampEvent::PingResponse { sender, sequence } => {
+                proto_block_timestamp_event::Event::PingResponse(ProtoPingResponse {
+                    sender: Some(sender.into()),
+                    sequence: sequence.0,
+                })
+            }
+            BlockTimestampEvent::PingTick => {
+                proto_block_timestamp_event::Event::PingTick(ProtoPingTick {})
+            }
+            BlockTimestampEvent::TimestampEnterRound { epoch, round } => {
+                proto_block_timestamp_event::Event::TimestampEnterRound(ProtoTimestampEnterRound {
+                    epoch: Some(epoch.into()),
+                    round: Some(round.into()),
+                })
+            }
+        };
+        Self { event: Some(event) }
     }
 }
 
-impl<SCT: SignatureCollection> From<&PingEvent<SCT>> for ProtoPingResponseEvent {
-    fn from(value: &PingEvent<SCT>) -> Self {
-        Self {
-            sender: Some((&value.sender).into()),
-            sequence: value.sequence.0,
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> TryFrom<ProtoPingRequestEvent> for PingEvent<SCT> {
+impl<SCT: SignatureCollection> TryFrom<ProtoBlockTimestampEvent> for BlockTimestampEvent<SCT> {
     type Error = ProtoError;
-    fn try_from(value: ProtoPingRequestEvent) -> Result<Self, Self::Error> {
-        Ok(Self {
-            sender: match value.sender {
-                Some(sender) => sender.try_into()?,
-                None => Err(ProtoError::MissingRequiredField(
-                    "PingRequestEvent.sender".to_owned(),
-                ))?,
-            },
-            sequence: PingSequence(value.sequence),
-        })
-    }
-}
 
-impl<SCT: SignatureCollection> TryFrom<ProtoPingResponseEvent> for PingEvent<SCT> {
-    type Error = ProtoError;
-    fn try_from(value: ProtoPingResponseEvent) -> Result<Self, Self::Error> {
-        Ok(Self {
-            sender: match value.sender {
-                Some(sender) => sender.try_into()?,
-                None => Err(ProtoError::MissingRequiredField(
-                    "PingResponseEvent.sender".to_owned(),
-                ))?,
+    fn try_from(value: ProtoBlockTimestampEvent) -> Result<Self, Self::Error> {
+        let event = match value.event {
+            Some(event) => match event {
+                proto_block_timestamp_event::Event::PingRequest(event) => {
+                    let sender = event
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "BlockTimestampEvent.PingRequest.sender".to_owned(),
+                        ))?
+                        .try_into()?;
+                    let sequence = PingSequence(event.sequence);
+                    BlockTimestampEvent::PingRequest { sender, sequence }
+                }
+                proto_block_timestamp_event::Event::PingResponse(event) => {
+                    let sender = event
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "BlockTimestampEvent.PingResponce.sender".to_owned(),
+                        ))?
+                        .try_into()?;
+                    let sequence = PingSequence(event.sequence);
+                    BlockTimestampEvent::PingResponse { sender, sequence }
+                }
+                proto_block_timestamp_event::Event::PingTick(_event) => {
+                    BlockTimestampEvent::PingTick {}
+                }
+                proto_block_timestamp_event::Event::TimestampEnterRound(event) => {
+                    let epoch = event
+                        .epoch
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "BlockTimestampEvent.TimestampEnterRound.epoch".to_owned(),
+                        ))?
+                        .try_into()?;
+                    let round = event
+                        .round
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "BlockTimestampEvent.TimestampEnterRound.round".to_owned(),
+                        ))?
+                        .try_into()?;
+                    BlockTimestampEvent::TimestampEnterRound { epoch, round }
+                }
             },
-            sequence: PingSequence(value.sequence),
-        })
-    }
-}
-
-impl From<&NewRoundEvent> for ProtoTimestampEnterRoundEvent {
-    fn from(value: &NewRoundEvent) -> Self {
-        Self {
-            epoch: Some((&value.epoch).into()),
-            round: Some((&value.round).into()),
-        }
-    }
-}
-impl TryFrom<ProtoTimestampEnterRoundEvent> for NewRoundEvent {
-    type Error = ProtoError;
-    fn try_from(value: ProtoTimestampEnterRoundEvent) -> Result<Self, Self::Error> {
-        Ok(Self {
-            epoch: match value.epoch {
-                Some(epoch) => epoch.try_into()?,
-                None => Err(ProtoError::MissingRequiredField(
-                    "TimestampEnterRoundEvent.epoch".to_owned(),
-                ))?,
-            },
-            round: match value.round {
-                Some(round) => round.try_into()?,
-                None => Err(ProtoError::MissingRequiredField(
-                    "TimestampEnterRoundEvent.round".to_owned(),
-                ))?,
-            },
-        })
+            None => Err(ProtoError::MissingRequiredField(
+                "BlockTimestampEvent.event".to_owned(),
+            ))?,
+        };
+        Ok(event)
     }
 }
