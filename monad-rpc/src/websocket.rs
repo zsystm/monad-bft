@@ -14,7 +14,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::spawn_local,
 };
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::{
     eth_json_types::{
@@ -48,9 +48,12 @@ impl WebSocketServerHandle {
         conn_tx: mpsc::UnboundedSender<WebSocketSessionCommand>,
     ) -> Option<SessionId> {
         let (res_tx, res_rx) = oneshot::channel();
-        let _ = self
+        if let Err(err) = self
             .cmd_tx
-            .send(WebSocketServerCommand::AddSession { res_tx, conn_tx });
+            .send(WebSocketServerCommand::AddSession { res_tx, conn_tx })
+        {
+            warn!("WebSocketServerHandle connect send error: {err:?}");
+        }
         res_rx.await.unwrap_or(None)
     }
 
@@ -61,31 +64,39 @@ impl WebSocketServerHandle {
         filter: Option<Filter>,
     ) -> Option<SubscriptionId> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self.cmd_tx.send(WebSocketServerCommand::AddSubscription {
+        if let Err(err) = self.cmd_tx.send(WebSocketServerCommand::AddSubscription {
             conn_id,
             kind,
             filter,
             res_tx: tx,
-        });
+        }) {
+            warn!("WebSocketServerHandle add_subscription send error: {err:?}");
+        }
         rx.await.unwrap_or(None)
     }
 
     async fn remove_subscription(&self, conn_id: SessionId, id: SubscriptionId) -> bool {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self
+        if let Err(err) = self
             .cmd_tx
             .send(WebSocketServerCommand::RemoveSubscription {
                 conn_id,
                 id,
                 res_tx: tx,
-            });
+            })
+        {
+            warn!("WebSocketServerHandle remove_subscription send error: {err:?}");
+        }
         rx.await.unwrap_or(false)
     }
 
     async fn remove_session(&self, conn_id: SessionId) {
-        let _ = self
+        if let Err(err) = self
             .cmd_tx
-            .send(WebSocketServerCommand::RemoveSession { conn_id });
+            .send(WebSocketServerCommand::RemoveSession { conn_id })
+        {
+            warn!("WebSocketServerHandle remove_session send error: {err:?}");
+        }
     }
 }
 
@@ -114,12 +125,15 @@ async fn handler(
     let conn_id = match server.connect(conn_tx).await {
         Some(id) => id,
         None => {
-            let _ = session
+            if let Err(err) = session
                 .close(Some(CloseReason {
                     code: ws::CloseCode::Error,
                     description: Some("server is not accepting new connections".to_string()),
                 }))
-                .await;
+                .await
+            {
+                warn!("ws handler not_accepting close error: {err:?}");
+            }
             return;
         }
     };
@@ -140,13 +154,17 @@ async fn handler(
                     break None;
                 }
 
-                let _ = session.ping(b"").await;
+                if let Err(err) = session.ping(b"").await {
+                    warn!("ws handler ping error: {err:?}");
+                }
             }
             msg = msg_stream.next() => {
                 match msg {
                     Some(Ok(AggregatedMessage::Ping(bytes))) => {
                         last_heartbeat = Instant::now();
-                        let _ = session.pong(&bytes).await;
+                        if let Err(err) = session.pong(&bytes).await {
+                            warn!("ws handler pong error: {err:?}");
+                        }
                     }
                     Some(Ok(AggregatedMessage::Pong(_))) => {
                         last_heartbeat = Instant::now();
@@ -158,9 +176,11 @@ async fn handler(
                                 handle_request(&mut session, &server, &conn_id, req).await;
                             }
                             Err(e) => {
-                                let _ = session
+                                if let Err(err) = session
                                     .text(to_response(&crate::jsonrpc::Response::from_error(e)))
-                                    .await;
+                                    .await {
+                                    warn!("ws handler AggregatedMessage text error: {err:?}");
+                                }
                             }
                         };
                     }
@@ -171,9 +191,11 @@ async fn handler(
                                 handle_request(&mut session, &server, &conn_id, req).await;
                             }
                             Err(e) => {
-                                let _ = session
+                                if let Err(err) = session
                                     .binary(to_response(&crate::jsonrpc::Response::from_error(e)))
-                                    .await;
+                                    .await {
+                                    warn!("ws handler AggregatedMessage binary error: {err:?}");
+                                }
                             }
                         };
                     }
@@ -201,7 +223,9 @@ async fn handler(
                                         "eth_subscription".to_string(),
                                         body,
                                     );
-                                    let _ = session.text(to_response(&update)).await;
+                                    if let Err(err) = session.text(to_response(&update)).await {
+                                        warn!("ws handler PublishMessage text error: {err:?}");
+                                    }
                                 },
                                 Err(e) => {
                                     error!("failed to serialize websocket message {:?} : {:?}", msg, e);
@@ -219,7 +243,10 @@ async fn handler(
             }
         };
     };
-    let _ = session.close(close_reason).await;
+
+    if let Err(err) = session.close(close_reason).await {
+        warn!("ws handler close error: {err:?}");
+    }
 }
 
 async fn handle_request(
@@ -233,13 +260,16 @@ async fn handle_request(
             let req: EthSubscribeRequest = match serde_json::from_value(request.params.clone()) {
                 Ok(params) => params,
                 Err(_) => {
-                    let _ = ctx
+                    if let Err(err) = ctx
                         .text(to_response(&crate::jsonrpc::Response::new(
                             None,
                             Some(JsonRpcError::invalid_params()),
                             request.id,
                         )))
-                        .await;
+                        .await
+                    {
+                        warn!("ws handle_request subscribe invalid_params request text error: {err:?}");
+                    }
                     return;
                 }
             };
@@ -248,13 +278,18 @@ async fn handle_request(
                 Params::Logs(filter) => Some(*filter),
                 Params::None => None,
                 _ => {
-                    let _ = ctx
+                    if let Err(err) = ctx
                         .text(to_response(&crate::jsonrpc::Response::new(
                             None,
                             Some(JsonRpcError::invalid_params()),
                             request.id,
                         )))
-                        .await;
+                        .await
+                    {
+                        warn!(
+                            "ws handle_request subscribe invalid_params filter text error: {err:?}"
+                        );
+                    }
                     return;
                 }
             };
@@ -262,15 +297,18 @@ async fn handle_request(
             let sub_id = server.add_subscription(*conn_id, req.kind, filter).await;
             match sub_id {
                 Some(id) => {
-                    let _ = ctx
+                    if let Err(err) = ctx
                         .text(to_response(&crate::jsonrpc::Response::from_result(
                             request.id,
                             serialize_result(id),
                         )))
-                        .await;
+                        .await
+                    {
+                        warn!("ws handle_request subscribe text error: {err:?}");
+                    }
                 }
                 None => {
-                    let _ = ctx
+                    if let Err(err) = ctx
                         .text(to_response(&crate::jsonrpc::Response::new(
                             None,
                             Some(JsonRpcError::internal_error(
@@ -278,7 +316,10 @@ async fn handle_request(
                             )),
                             request.id,
                         )))
-                        .await;
+                        .await
+                    {
+                        warn!("ws handle_request subscribe cannot_subscribe text error: {err:?}");
+                    }
                 }
             }
         }
@@ -287,13 +328,16 @@ async fn handle_request(
             {
                 Ok(params) => params,
                 Err(_) => {
-                    let _ = ctx
+                    if let Err(err) = ctx
                         .text(to_response(&crate::jsonrpc::Response::new(
                             None,
                             Some(JsonRpcError::invalid_params()),
                             request.id,
                         )))
-                        .await;
+                        .await
+                    {
+                        warn!("ws handle_request unsubscribe invalid_params text error: {err:?}");
+                    }
                     return;
                 }
             };
@@ -301,21 +345,27 @@ async fn handle_request(
             let exists = server
                 .remove_subscription(*conn_id, SubscriptionId(params.id))
                 .await;
-            let _ = ctx
+            if let Err(err) = ctx
                 .text(to_response(&crate::jsonrpc::Response::from_result(
                     request.id,
                     serialize_result(exists),
                 )))
-                .await;
+                .await
+            {
+                warn!("ws handle_request unsubscribe text error: {err:?}");
+            }
         }
         _ => {
-            let _ = ctx
+            if let Err(err) = ctx
                 .text(to_response(&crate::jsonrpc::Response::new(
                     None,
                     Some(JsonRpcError::method_not_found()),
                     request.id,
                 )))
-                .await;
+                .await
+            {
+                warn!("ws handle_request unsubscribe method_not_found text error: {err:?}");
+            }
         }
     }
 }

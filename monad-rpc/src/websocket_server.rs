@@ -201,22 +201,32 @@ impl WebSocketServer {
                     match cmd {
                         WebSocketServerCommand::AddSubscription { conn_id,kind, filter, res_tx } => {
                             let id = self.add_subscription(conn_id, kind, filter);
-                            res_tx.send(id);
+                            if let Err(err) = res_tx.send(id) {
+                                warn!("WebSocketServer AddSubscription send error: {err:?}");
+                            }
                         }
                         WebSocketServerCommand::RemoveSubscription {conn_id, id, res_tx } => {
                             let res = self.remove_subscription(conn_id, id);
-                            res_tx.send(res);
+                            if let Err(err) = res_tx.send(res) {
+                                warn!("WebSocketServer RemoveSubscription send error: {err:?}");
+                            }
                         }
                         WebSocketServerCommand::AddSession { res_tx, conn_tx } => {
                             if !accept_connections {
-                                res_tx.send(None);
+                                if let Err(err) = res_tx.send(None) {
+                                    warn!("WebSocketServer AddSession not_accepting send error: {err:?}");
+                                }
                             } else {
                                 let conn_id = SessionId(new_id());
                                 let ok = self.add_session(conn_id, conn_tx);
                                 if ok {
-                                    res_tx.send(Some(conn_id));
+                                    if let Err(err) = res_tx.send(Some(conn_id)) {
+                                        warn!("WebSocketServer AddSession ok send error: {err:?}");
+                                    }
                                 } else {
-                                    res_tx.send(None);
+                                   if let Err(err) = res_tx.send(None) {
+                                        warn!("WebSocketServer AddSession not ok send error: {err:?}");
+                                    }
                                 }
                             }
                         }
@@ -376,17 +386,21 @@ impl WebSocketServer {
         self.sessions.iter().for_each(|(_, session)| {
             session.subscriptions.iter().for_each(|(id, info)| {
                 if matches!(info.kind, SubscriptionKind::MonadEventStream) {
-                    let _ = session
-                        .conn_tx
-                        .send(WebSocketSessionCommand::PublishMessage {
-                            messages: vec![EthSubscribeResult {
-                                subscription: id.0,
-                                result: SubscriptionResult::MonadEventStream(StreamItem {
-                                    protocol_version: 1,
-                                    event: event.clone(),
-                                }),
-                            }],
-                        });
+                    if let Err(err) =
+                        session
+                            .conn_tx
+                            .send(WebSocketSessionCommand::PublishMessage {
+                                messages: vec![EthSubscribeResult {
+                                    subscription: id.0,
+                                    result: SubscriptionResult::MonadEventStream(StreamItem {
+                                        protocol_version: 1,
+                                        event: event.clone(),
+                                    }),
+                                }],
+                            })
+                    {
+                        warn!("process_event_stream_item send error: {err:?}");
+                    }
                 }
             })
         })
@@ -414,7 +428,9 @@ impl WebSocketServer {
 
     fn disconnect_all(&mut self) {
         self.sessions.iter().for_each(|(_, session)| {
-            let _ = session.conn_tx.send(WebSocketSessionCommand::Disconnect {});
+            if let Err(err) = session.conn_tx.send(WebSocketSessionCommand::Disconnect {}) {
+                warn!("disconnect_all send error: {err:?}");
+            }
         });
     }
 
@@ -438,9 +454,11 @@ impl WebSocketServer {
                     result: SubscriptionResult::NewHeads(msg.block_header),
                 };
 
-                let _ = ctx.send(WebSocketSessionCommand::PublishMessage {
+                if let Err(err) = ctx.send(WebSocketSessionCommand::PublishMessage {
                     messages: vec![body],
-                });
+                }) {
+                    warn!("publish_subscription NewHeads send error: {err:?}");
+                }
             }
             SubscriptionKind::Logs if matches!(msg.commit_state, BlockCommitState::Finalized) => {
                 let Some(filtered_logs) = maybe_filter_logs(msg.filter, msg.block_header, msg.logs)
@@ -455,7 +473,9 @@ impl WebSocketServer {
                         result: SubscriptionResult::Logs(log),
                     })
                     .collect();
-                let _ = ctx.send(WebSocketSessionCommand::PublishMessage { messages });
+                if let Err(err) = ctx.send(WebSocketSessionCommand::PublishMessage { messages }) {
+                    warn!("publish_subscription Logs send error: {err:?}");
+                }
             }
             SubscriptionKind::MonadNewHeads => {
                 let body = EthSubscribeResult {
@@ -467,9 +487,11 @@ impl WebSocketServer {
                     }),
                 };
 
-                let _ = ctx.send(WebSocketSessionCommand::PublishMessage {
+                if let Err(err) = ctx.send(WebSocketSessionCommand::PublishMessage {
                     messages: vec![body],
-                });
+                }) {
+                    warn!("publish_subscription MonadNewHeads send error: {err:?}");
+                }
             }
             SubscriptionKind::MonadLogs => {
                 let Some(filtered_logs) = maybe_filter_logs(msg.filter, msg.block_header, msg.logs)
@@ -488,7 +510,9 @@ impl WebSocketServer {
                         }),
                     })
                     .collect();
-                let _ = ctx.send(WebSocketSessionCommand::PublishMessage { messages });
+                if let Err(err) = ctx.send(WebSocketSessionCommand::PublishMessage { messages }) {
+                    warn!("publish_subscription MonadLogs send error: {err:?}");
+                }
             }
             _ => {}
         };
