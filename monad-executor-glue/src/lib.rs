@@ -31,7 +31,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{
+    BlockId, Epoch, ExecutionProtocol, NodeId, PingSequence, Round, RouterTarget, SeqNum, Stake,
+};
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -70,6 +72,7 @@ pub enum TimeoutVariant {
     Pacemaker,
     BlockSync(BlockSyncRequestMessage),
     SendVote,
+    Ping,
 }
 
 #[derive(Debug)]
@@ -960,6 +963,12 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PingEvent<SCT: SignatureCollection> {
+    pub sender: NodeId<SCT::NodeIdPubKey>,
+    pub sequence: PingSequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlPanelEvent<SCT>
 where
     SCT: SignatureCollection,
@@ -999,6 +1008,27 @@ where
     LoadError(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockTimestampEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    PingRequest {
+        sender: NodeId<SCT::NodeIdPubKey>,
+        sequence: PingSequence,
+    },
+    PingResponse {
+        sender: NodeId<SCT::NodeIdPubKey>,
+        sequence: PingSequence,
+    },
+    PingTick,
+    /// Event to update the timestamp round and epoch
+    TimestampEnterRound {
+        epoch: Epoch,
+        round: Round,
+    },
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug)]
 pub enum MonadEvent<ST, SCT, EPT>
@@ -1025,6 +1055,8 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<SCT>),
+    /// Validator latency pings/pongs and BlockTimestamp updates
+    BlockTimestampEvent(BlockTimestampEvent<SCT>),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -1080,6 +1112,9 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
+            MonadEvent::BlockTimestampEvent(event) => {
+                MonadEvent::BlockTimestampEvent(event.clone())
+            }
         }
     }
 }
@@ -1146,6 +1181,7 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
+            MonadEvent::BlockTimestampEvent(_) => "BLOCKTIMESTAMP".to_string(),
         };
 
         write!(f, "{}", s)

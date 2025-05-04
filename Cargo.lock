@@ -4540,6 +4540,7 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-types",
+ "monad-executor-glue",
  "monad-multi-sig",
  "monad-state-backend",
  "monad-testutil",
