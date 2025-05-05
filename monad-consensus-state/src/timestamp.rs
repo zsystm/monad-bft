@@ -1,10 +1,12 @@
 use std::{
+    cmp::max,
     collections::{BTreeMap, BTreeSet},
     hash::{DefaultHasher, Hash, Hasher},
     time::{Duration, Instant},
 };
 
 use monad_consensus_types::{
+    clock::{AdjusterConfig, Clock},
     quorum_certificate::{TimestampAdjustment, TimestampAdjustmentDirection},
     signature_collection::SignatureCollection,
     validator_data::ValidatorSetDataWithEpoch,
@@ -12,6 +14,8 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{Epoch, NodeId, PingSequence, Round};
 use tracing::debug;
+
+use crate::timestamp_adjuster::TimestampAdjuster;
 
 const MAX_LATENCY_SAMPLES: usize = 100;
 
@@ -227,53 +231,77 @@ struct SentVote {
     timestamp: Instant,
 }
 #[derive(Debug)]
-pub struct BlockTimestamp<P: PubKey> {
-    local_time_ns: u128,
-
+pub struct BlockTimestamp<P: PubKey, T: Clock> {
+    clock: T,
     max_delta_ns: u128,
-
     ping_state: PingState<P>,
 
     last_sent_vote: Option<SentVote>, // last voted round and timestamp
 
     default_latency_estimate_ns: u128,
+    adjuster: Option<TimestampAdjuster>,
 }
 
-impl<P: PubKey> BlockTimestamp<P> {
-    pub fn new(max_delta_ns: u128, default_latency_estimate_ns: u128) -> Self {
+impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
+    pub fn new(
+        max_delta_ns: u128,
+        default_latency_estimate_ns: u128,
+        adjuster_config: AdjusterConfig,
+    ) -> Self {
         assert!(default_latency_estimate_ns > 0);
+        println!("adjuster_config: {:?}", adjuster_config);
         Self {
-            local_time_ns: 0,
+            clock: T::new(),
             max_delta_ns,
             default_latency_estimate_ns,
             ping_state: PingState::new(),
             last_sent_vote: None,
+            adjuster: match adjuster_config {
+                AdjusterConfig::Disabled => None,
+                AdjusterConfig::Enabled {
+                    max_delta,
+                    adjustment_period,
+                } => Some(TimestampAdjuster::new(max_delta, adjustment_period)),
+            },
         }
     }
 
     pub fn update_time(&mut self, time: u128) {
-        self.local_time_ns = time;
+        self.clock.update(time);
     }
 
     pub fn get_current_time(&self) -> u128 {
-        self.local_time_ns
-    }
-
-    pub fn get_valid_block_timestamp(&self, prev_block_ts: u128) -> u128 {
-        if self.local_time_ns <= prev_block_ts {
-            prev_block_ts + 1
+        let now = self.clock.get();
+        if let Some(adjuster) = &self.adjuster {
+            let adjustment = adjuster.get_adjustment();
+            if adjustment >= 0 {
+                now.checked_add(adjustment as u128).unwrap_or(now)
+            } else {
+                now.saturating_sub(adjustment.unsigned_abs() as u128)
+            }
         } else {
-            self.local_time_ns
+            now
         }
     }
 
     fn valid_bounds(&self, timestamp: u128, vote_delay_ns: u128) -> bool {
-        let max_delta_ns = self.max_delta_ns.saturating_add(vote_delay_ns);
+        let now = self.get_current_time();
 
-        let lower_bound = self.local_time_ns.saturating_sub(max_delta_ns);
-        let upper_bound = self.local_time_ns.saturating_add(max_delta_ns);
+        let max_delta_ns = self.max_delta_ns.saturating_add(vote_delay_ns);
+        let lower_bound = now.saturating_sub(self.max_delta_ns);
+        let upper_bound = now.saturating_add(self.max_delta_ns);
 
         lower_bound <= timestamp && timestamp <= upper_bound
+    }
+
+    pub fn handle_adjustment(&mut self, delta: TimestampAdjustment) {
+        if let Some(adjuster) = &mut self.adjuster {
+            adjuster.handle_adjustment(delta);
+        }
+    }
+
+    pub fn get_valid_block_timestamp(&self, prev_block_ts: u128) -> u128 {
+        max(prev_block_ts + 1, self.get_current_time())
     }
 
     pub fn valid_block_timestamp(
@@ -299,8 +327,16 @@ impl<P: PubKey> BlockTimestamp<P> {
                 self.default_latency_estimate_ns.try_into().unwrap(),
             ));
 
-        let expected_block_ts = self.local_time_ns.saturating_sub(latency.as_nanos());
+        let now = self.get_current_time();
+        let expected_block_ts = now.saturating_sub(latency.as_nanos());
 
+        debug!(
+            "curr_block_ts = {:?}, expected_block_ts = {:?}, local_time: {:?}, latency = {:?}",
+            curr_block_ts,
+            expected_block_ts,
+            now,
+            latency.as_nanos()
+        );
         if curr_block_ts > expected_block_ts {
             Ok(Some(TimestampAdjustment {
                 delta: curr_block_ts - expected_block_ts,
@@ -357,6 +393,7 @@ mod test {
     use std::{collections::BTreeSet, time::Duration};
 
     use monad_consensus_types::{
+        clock::TestClock,
         quorum_certificate::{TimestampAdjustment, TimestampAdjustmentDirection},
         validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
     };
@@ -368,7 +405,7 @@ mod test {
 
     use super::{Error, PING_PERIOD_SEC};
     use crate::{
-        timestamp::{PingState, ValidatorPingState},
+        timestamp::{AdjusterConfig, PingState, ValidatorPingState},
         BlockTimestamp,
     };
 
@@ -377,8 +414,9 @@ mod test {
 
     #[test]
     fn test_block_timestamp_validate() {
-        let mut b = BlockTimestamp::<NopPubKey>::new(10, 1);
+        let mut b = BlockTimestamp::<NopPubKey, TestClock>::new(10, 1, AdjusterConfig::Disabled);
         let author = NodeId::new(NopKeyPair::from_bytes(&mut [0; 32]).unwrap().pubkey());
+        b.update_time(0);
 
         assert!(matches!(
             b.valid_block_timestamp(1, 1, 0, &author).err().unwrap(),
@@ -552,7 +590,7 @@ mod test {
 
     #[test]
     fn test_enter_round() {
-        let mut b = BlockTimestamp::<NopPubKey>::new(10, 1);
+        let mut b = BlockTimestamp::<NopPubKey, TestClock>::new(10, 1, AdjusterConfig::Disabled);
 
         let val_cnt = 5;
         let keys = create_keys::<NopSignature>(val_cnt);
@@ -688,7 +726,7 @@ mod test {
 
     #[test]
     fn test_new_epoch() {
-        let mut b = BlockTimestamp::<NopPubKey>::new(10, 1);
+        let mut b = BlockTimestamp::<NopPubKey, TestClock>::new(10, 1, AdjusterConfig::Disabled);
 
         let val_cnt = 5;
         let keys = create_keys::<NopSignature>(val_cnt);
