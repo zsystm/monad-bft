@@ -483,6 +483,10 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
             }
         }
     }
+
+    pub fn create_proposal_elapsed(&mut self, round: Round, elapsed_ns: u128) {
+
+    }
 }
 
 #[cfg(test)]
