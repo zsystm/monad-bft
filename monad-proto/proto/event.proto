@@ -105,6 +105,7 @@ message ProtoProposal {
   repeated bytes delayed_execution_results = 7;
   monad_proto.block.ProtoProposedExecutionInputs proposed_execution_inputs = 8;
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 9;
+  uint64 elapsed_ns = 10;
 }
 
 message ProtoForwardedTxs {

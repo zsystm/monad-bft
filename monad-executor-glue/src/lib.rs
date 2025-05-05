@@ -497,6 +497,7 @@ pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
+        elapsed_ns: u128,
     },
 
     /// Txs that are incoming via other nodes
@@ -522,6 +523,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             } => f
                 .debug_struct("Proposal")
                 .field("epoch", epoch)
@@ -533,6 +535,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
                 .field("delayed_execution_results", delayed_execution_results)
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)
+                .field("elapsed_ns", elapsed_ns)
                 .finish(),
             Self::ForwardedTxs { sender, txs } => f
                 .debug_struct("ForwardedTxs")

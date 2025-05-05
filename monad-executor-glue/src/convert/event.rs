@@ -303,6 +303,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> From<&MempoolEvent<SCT, E
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             } => proto_mempool_event::Event::Proposal(ProtoProposal {
                 epoch: Some(epoch.into()),
                 round: Some(round.into()),
@@ -320,6 +321,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> From<&MempoolEvent<SCT, E
                     .collect(),
                 proposed_execution_inputs: Some(proposed_execution_inputs.into()),
                 last_round_tc: last_round_tc.as_ref().map(Into::into),
+                elapsed_ns: *elapsed_ns as u64,
             }),
             MempoolEvent::ForwardedTxs { sender, txs } => {
                 proto_mempool_event::Event::ForwardedTxs(ProtoForwardedTxs {
@@ -356,6 +358,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> TryFrom<ProtoMempoolEvent
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             })) => MempoolEvent::Proposal {
                 epoch: epoch
                     .ok_or(ProtoError::MissingRequiredField(
@@ -400,6 +403,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> TryFrom<ProtoMempoolEvent
                     ))?
                     .try_into()?,
                 last_round_tc: last_round_tc.map(TryInto::try_into).transpose()?,
+                elapsed_ns: elapsed_ns as u128,
             },
             Some(proto_mempool_event::Event::ForwardedTxs(forwarded)) => {
                 MempoolEvent::ForwardedTxs {
