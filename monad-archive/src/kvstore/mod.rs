@@ -2,6 +2,7 @@ pub mod cloud_proxy;
 pub mod dynamodb;
 pub mod memory;
 pub mod mongo;
+pub mod object_store;
 pub mod rocksdb_storage;
 pub mod s3;
 pub mod triedb_reader;
@@ -19,7 +20,7 @@ use tokio_retry::{
 
 use self::{
     cloud_proxy::CloudProxyReader, memory::MemoryStorage, mongo::MongoDbStorage,
-    rocksdb_storage::RocksDbClient,
+    rocksdb_storage::RocksDbClient, object_store::ObjectStore,
 };
 use crate::prelude::*;
 

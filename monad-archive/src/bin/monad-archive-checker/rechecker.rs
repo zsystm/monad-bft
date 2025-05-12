@@ -425,7 +425,7 @@ pub fn find_inconsistent_reason(
 
 #[cfg(test)]
 mod tests {
-    use monad_archive::prelude::LatestKind;
+    use monad_archive::{model::BlockArchiverErased, prelude::LatestKind};
 
     use super::*;
     use crate::{
@@ -483,6 +483,9 @@ mod tests {
 
         // Add the "good" blocks to replica2
         if let Some(archiver) = model.block_data_readers.get("replica2") {
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
             // Add block data for both blocks
             for block_num in [chunk_start + 1, chunk_start + 2] {
                 let (block, receipts, traces) = create_test_block_data(block_num, 1);
@@ -495,7 +498,7 @@ mod tests {
             }
 
             archiver
-                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .update_latest_kind(chunk_start + 2, LatestKind::Uploaded)
                 .await
                 .unwrap();
         }
@@ -516,6 +519,9 @@ mod tests {
 
         // Now fix the missing block but make it inconsistent
         if let Some(archiver) = model.block_data_readers.get(replica_name) {
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
             // Add the first block (was missing)
             let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
             archiver.archive_block(block).await.unwrap();
@@ -541,7 +547,7 @@ mod tests {
                 .unwrap();
 
             archiver
-                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .update_latest_kind(chunk_start + 2, LatestKind::Uploaded)
                 .await
                 .unwrap();
         }
@@ -561,6 +567,9 @@ mod tests {
 
         // Change the 2nd to have different receipts len to test correct reason
         if let Some(archiver) = model.block_data_readers.get(replica_name) {
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
             // Add the second block but with different data (will be inconsistent)
             let (block, receipts, traces) =
                 create_test_block_data_with_len(chunk_start + 2, 1, 3, 2); // Different variant
@@ -575,7 +584,7 @@ mod tests {
                 .unwrap();
 
             archiver
-                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .update_latest_kind(chunk_start + 2, LatestKind::Uploaded)
                 .await
                 .unwrap();
         }
@@ -595,6 +604,9 @@ mod tests {
 
         // Now fix the inconsistent block
         if let Some(archiver) = model.block_data_readers.get(replica_name) {
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
             // Add the second block with correct data
             let (block, receipts, traces) = create_test_block_data(chunk_start + 2, 1); // Same as the "good" block
             archiver.archive_block(block).await.unwrap();
@@ -608,7 +620,7 @@ mod tests {
                 .unwrap();
 
             archiver
-                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .update_latest_kind(chunk_start + 2, LatestKind::Uploaded)
                 .await
                 .unwrap();
         }

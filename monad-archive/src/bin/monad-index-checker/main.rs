@@ -1,4 +1,4 @@
-use alloy_primitives::hex::ToHexExt;
+use alloy_primitives::{hex::ToHexExt, TxHash};
 use clap::Parser;
 use futures::{stream, StreamExt};
 use monad_archive::{
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
         let start = Instant::now();
 
         // get latest indexed and indexed from s3
-        let latest_indexed = match reader.get_latest(LatestKind::Uploaded).await {
+        let latest_indexed = match reader.get_latest_indexed().await {
             Ok(number) => number.unwrap_or(0),
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
@@ -207,8 +207,21 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
             trace,
         });
 
-    let fetched = reader.get_tx_indexed_data_bulk(&hashes).await?;
     let mut faults = Vec::new();
+    let fetched = futures::stream::iter(hashes)
+        .map(|hash| {
+            let reader = reader.clone();
+            spawn_eyre(
+                async move {
+                    let resp = reader.get_tx_indexed_data(&hash).await?;
+                    Ok((hash, resp))
+                },
+                "Error fetching tx indexed data",
+            )
+        })
+        .buffer_unordered(20)
+        .try_collect::<HashMap<TxHash, TxIndexedData>>()
+        .await?;
 
     for expected in expected {
         let key = expected.tx.tx.tx_hash();
@@ -270,19 +283,19 @@ async fn get_block_data(
             if let Err(e) = block {
                 warn!("Error fetching block: {e:?}");
                 check_result.faults.push(Fault::S3MissingBlock {
-                    buckets: vec![reader.get_bucket().to_owned()],
+                    buckets: vec![reader.get_replica().to_owned()],
                 });
             }
             if let Err(e) = traces {
                 warn!("Error fetching traces: {e:?}");
                 check_result.faults.push(Fault::S3MissingTraces {
-                    buckets: vec![reader.get_bucket().to_owned()],
+                    buckets: vec![reader.get_replica().to_owned()],
                 });
             }
             if let Err(e) = receipts {
                 warn!("Error fetching receipts: {e:?}");
                 check_result.faults.push(Fault::S3MissingReceipts {
-                    buckets: vec![reader.get_bucket().to_owned()],
+                    buckets: vec![reader.get_replica().to_owned()],
                 });
             }
             Err(check_result)

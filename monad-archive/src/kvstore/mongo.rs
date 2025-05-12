@@ -348,24 +348,25 @@ pub mod mongo_tests {
             let client_options = ClientOptions::parse(format!("mongodb://localhost:{port}"))
                 .await
                 .unwrap();
-            let max_attempts = 30; // 30 * 200ms = 6 seconds max
+            const MAX_ATTEMPTS: u32 = 30; // 30 * 200ms = 6 seconds max
+            const SLEEP_TIME: u64 = 200; // 200ms
             let mut attempt = 0;
 
-            while attempt < max_attempts {
+            while attempt < MAX_ATTEMPTS {
                 match Client::with_options(client_options.clone()) {
                     Ok(client) => {
                         // Try to actually connect and run a command
                         match client.list_database_names().await {
                             Ok(_) => return Ok(Self { container_id, port }),
                             Err(_) => {
-                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                tokio::time::sleep(Duration::from_millis(SLEEP_TIME)).await;
                                 attempt += 1;
                                 continue;
                             }
                         }
                     }
                     Err(_) => {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        tokio::time::sleep(Duration::from_millis(SLEEP_TIME)).await;
                         attempt += 1;
                         continue;
                     }

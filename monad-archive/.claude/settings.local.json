@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(mkdir:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(RUST_BACKTRACE=1 cargo test *",
+      "Bash(python3:*)",
+      "Bash(jq:*)",
+      "Bash(cargo test:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(RUST_BACKTRACE=1 cargo test --package monad-archive model_v2::tests::test_basic_operations -- --ignored --nocapture 2 >& 1)"
+    ],
+    "deny": []
+  },
+  "enableAllProjectMcpServers": false
+}

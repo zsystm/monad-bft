@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
         Duration::from_secs(15),
     )?;
 
-    let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
+    let archive_writer = args.archive_sink.build_block_archiver(&metrics).await?;
     let block_data_source = args.block_data_source.build(&metrics).await?;
 
     // Optional fallback
@@ -39,11 +39,11 @@ async fn main() -> Result<()> {
     // Confirm connectivity
     if !args.skip_connectivity_check {
         block_data_source
-            .get_latest(LatestKind::Uploaded)
+            .get_latest()
             .await
             .wrap_err("Cannot connect to block data source")?;
         archive_writer
-            .get_latest(LatestKind::Uploaded)
+            .get_latest()
             .await
             .wrap_err("Cannot connect to archive sink")?;
     }
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
     if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");
         tokio::spawn(bft_block_archive_worker(
-            archive_writer.store.clone(),
+            archive_writer.object_store(),
             path,
             Duration::from_secs(args.bft_block_poll_freq_secs),
             metrics.clone(),
@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     if let Some(path) = args.wal_path {
         info!("Spawning wal checkpoint worker...");
         tokio::spawn(file_checkpoint_worker(
-            archive_writer.store.clone(),
+            archive_writer.object_store(),
             path,
             "wal".to_owned(),
             Duration::from_secs(args.wal_checkpoint_freq_secs),
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     if let Some(path) = args.forkpoint_path {
         info!("Spawning forkpoint checkpoint worker...");
         tokio::spawn(file_checkpoint_worker(
-            archive_writer.store.clone(),
+            archive_writer.object_store(),
             path,
             "forkpoint".to_owned(),
             Duration::from_secs(args.forkpoint_checkpoint_freq_secs),
@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
         let file_name = file_name.to_owned();
         info!("Spawning {} checkpoint worker...", &file_name,);
         tokio::spawn(file_checkpoint_worker(
-            archive_writer.store.clone(),
+            archive_writer.object_store(),
             path,
             file_name,
             Duration::from_secs(args.additional_checkpoint_freq_secs),
