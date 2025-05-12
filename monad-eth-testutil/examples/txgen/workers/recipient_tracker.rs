@@ -47,9 +47,13 @@ impl RecipientTracker {
             }
 
             self.handle_batch(addrs, self.non_zero.clone());
+            const LIMIT: usize = 100_000_000;
+            if self.non_zero.len() > LIMIT {
+                info!("Non-zero addresses limit reached: {LIMIT}. Resetting recipient tracker");
+                self.non_zero.clear();
+            }
 
             fetch_interval.tick().await;
-            // }
         }
     }
 
