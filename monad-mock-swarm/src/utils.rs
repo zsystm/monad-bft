@@ -140,6 +140,8 @@ pub mod test_tool {
                 last_round_tc: None,
             },
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
+            node_id: NodeId::new(kp.pubkey()),
+            high_vote: None,
         };
         ConsensusMessage {
             version: 1,

@@ -31,5 +31,8 @@ where
     pub round_signature: RoundSignature<SCT::SignatureType>,
     pub block_id: BlockId,
 
+    // TODO add consensus header delayed execution stuff
+    //
+    //
     pub nec: Option<NoEndorsementCertificate<SCT>>,
 }

@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, marker::PhantomData};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
@@ -6,7 +6,7 @@ use monad_consensus_types::{
     no_endorsement::NoEndorsementCertificate,
     payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{Timeout, TimeoutCertificate},
+    timeout::{Timeout, TimeoutCertificate, TimeoutVote},
     voting::Vote,
 };
 use monad_crypto::{
@@ -15,7 +15,7 @@ use monad_crypto::{
     },
     hasher::{Hashable, Hasher},
 };
-use monad_types::ExecutionProtocol;
+use monad_types::{ExecutionProtocol, NodeId};
 
 /// Consensus protocol vote message
 ///
@@ -61,6 +61,7 @@ impl<SCT: SignatureCollection> VoteMessage<SCT> {
 /// The signature is a protocol signature,can be collected into the
 /// corresponding SignatureCollection type, used to create TC from the timeouts
 #[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
+#[rlp(trailing)]
 pub struct TimeoutMessage<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -68,6 +69,8 @@ where
 {
     pub timeout: Timeout<ST, SCT>,
     pub sig: SCT::SignatureType,
+    pub node_id: NodeId<SCT::NodeIdPubKey>,
+    pub high_vote: Option<TimeoutVote<ST, SCT>>,
 }
 
 impl<ST, SCT> TimeoutMessage<ST, SCT>
@@ -75,11 +78,49 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(timeout: Timeout<ST, SCT>, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
+    pub fn new(
+        node_id: NodeId<SCT::NodeIdPubKey>,
+        timeout: Timeout<ST, SCT>,
+        key: &SignatureCollectionKeyPairType<SCT>,
+    ) -> Self {
         let tmo_enc = alloy_rlp::encode(timeout.tminfo.timeout_digest());
         let sig = <SCT::SignatureType as CertificateSignature>::sign(tmo_enc.as_ref(), key);
 
-        Self { timeout, sig }
+        let high_vote = match timeout.tminfo.high_tip {
+            Some(ht) => {
+                let high_vote = Vote {
+                    id: ht.block_id,
+                    round: ht.round,
+                    epoch: ht.epoch,
+                    parent_id: todo!(),
+                    parent_round: todo!(),
+                };
+
+                let high_vote_enc = alloy_rlp::encode(high_vote);
+                let high_vote_sig =
+                    <SCT::SignatureType as CertificateSignature>::sign(high_vote_enc.as_ref(), key);
+
+                Some(VoteMessage::<SCT> {
+                    vote: high_vote,
+                    sig: high_vote_sig,
+                })
+            }
+            None => None,
+        };
+
+        let high_vote = high_vote.map(|v| TimeoutVote {
+            node_id,
+            vote: v.vote,
+            sig: v.sig,
+            phantom: PhantomData,
+        });
+
+        Self {
+            timeout,
+            sig,
+            node_id,
+            high_vote,
+        }
     }
 }
 
@@ -129,7 +170,7 @@ mod tests {
     use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
     use monad_multi_sig::MultiSig;
     use monad_secp::SecpSignature;
-    use monad_testutil::signing::get_certificate_key;
+    use monad_testutil::signing::{get_certificate_key, node_id};
     use monad_types::{Epoch, Round};
 
     use super::*;
@@ -158,7 +199,11 @@ mod tests {
             last_round_tc: None,
         };
 
-        let msg = TimeoutMessage::<SignatureType, SignatureCollectionType>::new(tm, &key);
+        let msg = TimeoutMessage::<SignatureType, SignatureCollectionType>::new(
+            node_id::<SignatureType>(),
+            tm,
+            &key,
+        );
 
         let b = alloy_rlp::encode(msg);
         let c: TimeoutMessage<SignatureType, SignatureCollectionType> =
@@ -187,7 +232,11 @@ mod tests {
             last_round_tc: None,
         };
 
-        let msg = TimeoutMessage::<MockSigType, MockSignatureCollectionType>::new(tm, &key);
+        let msg = TimeoutMessage::<MockSigType, MockSignatureCollectionType>::new(
+            node_id::<MockSigType>(),
+            tm,
+            &key,
+        );
 
         let b = alloy_rlp::encode(msg);
         let c: TimeoutMessage<MockSigType, MockSignatureCollectionType> =

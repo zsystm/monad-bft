@@ -210,6 +210,7 @@ where
             epoch: self.epoch,
             round: self.round,
             tips: vec![],
+            timeout_votes: vec![],
             high_tip_digest_sigs: vec![high_qc_sig_tuple],
         };
 
@@ -220,7 +221,7 @@ where
 
         let mut tmo_msgs = Vec::new();
         for (key, certkey) in keys.iter().zip(certkeys.iter()) {
-            let tmo_msg = TimeoutMessage::new(timeout.clone(), certkey);
+            let tmo_msg = TimeoutMessage::new(NodeId::new(key.pubkey()), timeout.clone(), certkey);
             tmo_msgs.push(Verified::<ST, _>::new(tmo_msg, key));
         }
 

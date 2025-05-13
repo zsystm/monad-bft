@@ -290,7 +290,14 @@ where
                 tm_info.round,
                 self.pending_timeouts
                     .iter()
-                    .map(|(node_id, tm_msg)| (*node_id, tm_msg.timeout.tminfo.clone(), tm_msg.sig))
+                    .map(|(node_id, tm_msg)| {
+                        (
+                            *node_id,
+                            tm_msg.timeout.tminfo.clone(),
+                            tm_msg.sig,
+                            tm_msg.high_vote.clone(),
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .as_slice(),
                 validator_mapping,
@@ -460,6 +467,7 @@ mod test {
     }
 
     fn create_timeout_message<ST, SCT>(
+        key: &ST::KeyPairType,
         certkeypair: &SignatureCollectionKeyPairType<SCT>,
         timeout_epoch: Epoch,
         timeout_round: Round,
@@ -482,7 +490,8 @@ mod test {
 
         let invalid_msg = b"invalid";
 
-        let mut tmo_msg = TimeoutMessage::<ST, SCT>::new(timeout, certkeypair);
+        let mut tmo_msg =
+            TimeoutMessage::<ST, SCT>::new(NodeId::new(key.pubkey()), timeout, certkeypair);
         if !valid {
             tmo_msg.sig =
                 <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
@@ -526,6 +535,7 @@ mod test {
         );
 
         let tm0 = create_timeout_message(
+            &keys[0],
             &certkeys[0],
             timeout_epoch,
             timeout_round,
@@ -533,6 +543,7 @@ mod test {
             true,
         );
         let tm1 = create_timeout_message(
+            &keys[1],
             &certkeys[1],
             timeout_epoch,
             timeout_round,
@@ -540,6 +551,7 @@ mod test {
             true,
         );
         let tm2 = create_timeout_message(
+            &keys[2],
             &certkeys[2],
             timeout_epoch,
             timeout_round,
@@ -547,6 +559,7 @@ mod test {
             true,
         );
         let tm3 = create_timeout_message(
+            &keys[3],
             &certkeys[3],
             timeout_epoch,
             timeout_round,
@@ -643,6 +656,7 @@ mod test {
         );
 
         let tm0_valid = create_timeout_message(
+            &keys[0],
             &certkeys[0],
             timeout_epoch,
             timeout_round,
@@ -650,6 +664,7 @@ mod test {
             true,
         );
         let tm1_valid = create_timeout_message(
+            &keys[1],
             &certkeys[1],
             timeout_epoch,
             timeout_round,
@@ -657,6 +672,7 @@ mod test {
             true,
         );
         let tm2_invalid = create_timeout_message(
+            &keys[2],
             &certkeys[2],
             timeout_epoch,
             timeout_round,
@@ -756,6 +772,7 @@ mod test {
         );
 
         let tm0_invalid = create_timeout_message(
+            &keys[0],
             &certkeys[0],
             timeout_epoch,
             timeout_round,
@@ -763,6 +780,7 @@ mod test {
             false,
         );
         let tm1_valid = create_timeout_message(
+            &keys[1],
             &certkeys[1],
             timeout_epoch,
             timeout_round,
@@ -770,6 +788,7 @@ mod test {
             true,
         );
         let tm2_valid = create_timeout_message(
+            &keys[2],
             &certkeys[2],
             timeout_epoch,
             timeout_round,
@@ -872,7 +891,14 @@ mod test {
             &vmap,
         );
 
-        let tm0 = create_timeout_message(&certkeys[0], timeout_epoch, timeout_round, high_qc, true);
+        let tm0 = create_timeout_message(
+            &keys[0],
+            &certkeys[0],
+            timeout_epoch,
+            timeout_round,
+            high_qc,
+            true,
+        );
 
         pacemaker
             .pending_timeouts

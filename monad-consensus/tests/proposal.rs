@@ -193,6 +193,7 @@ fn define_proposal_with_tc(
         epoch: tc_epoch, // wrong epoch here
         round: tc_round,
         tips: vec![],
+        timeout_votes: vec![],
         high_tip_digest_sigs: vec![high_qc_sig_tuple],
     };
 
@@ -1139,6 +1140,7 @@ fn test_validate_tc_invalid_tc_signature() {
         epoch: tc_epoch,
         round: tc_round,
         tips: vec![],
+        timeout_votes: vec![],
         high_tip_digest_sigs: vec![HighQcRoundSigColTuple {
             tminfo_digest: tmo_info.timeout_digest(),
             sigs: sigcol,

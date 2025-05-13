@@ -18,10 +18,10 @@ use monad_consensus_types::{
     timeout::TimeoutCertificate,
 };
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, Round, RouterTarget, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -120,7 +120,11 @@ where
                 target: RouterTarget::Broadcast(tmo.tminfo.epoch),
                 message: ConsensusMessage {
                     version,
-                    message: ProtocolMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),
+                    message: ProtocolMessage::Timeout(TimeoutMessage::new(
+                        NodeId::new(keypair.pubkey()),
+                        tmo,
+                        cert_keypair,
+                    )),
                 }
                 .sign(keypair),
             },

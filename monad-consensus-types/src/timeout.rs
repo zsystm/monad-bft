@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, marker::PhantomData};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_crypto::certificate_signature::{
@@ -12,7 +12,7 @@ use crate::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     tip::ConsensusTip,
-    voting::ValidatorMapping,
+    voting::{ValidatorMapping, Vote},
 };
 
 /// Timeout message to broadcast to other nodes after a local timeout
@@ -48,7 +48,7 @@ where
 }
 
 /// This is the set of fields over which TimeoutMessages are signed
-#[derive(Copy, Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]
 pub struct TimeoutDigest {
     pub epoch: Epoch,
@@ -56,7 +56,7 @@ pub struct TimeoutDigest {
     pub high_tip_digest: Option<TimeoutTipDigest>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]
 pub struct TimeoutTipDigest {
     pub high_tip_round: Round,
@@ -88,6 +88,18 @@ pub struct HighQcRoundSigColTuple<SCT> {
     pub sigs: SCT,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct TimeoutVote<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub node_id: NodeId<SCT::NodeIdPubKey>,
+    pub vote: Vote,
+    pub sig: SCT::SignatureType,
+    pub phantom: PhantomData<ST>,
+}
+
 /// TimeoutCertificate is used to advance rounds when a QC is unable to
 /// form for a round
 /// A collection of Timeout messages is the basis for building a TC
@@ -104,6 +116,7 @@ where
     pub round: Round,
 
     pub tips: Vec<ConsensusTip<ST, SCT>>,
+    pub timeout_votes: Vec<TimeoutVote<ST, SCT>>,
 
     /// signatures over the round of the TC and the high qc round,
     /// proving that the supermajority of the network is locked on the
@@ -123,6 +136,7 @@ where
             NodeId<SCT::NodeIdPubKey>,
             TimeoutInfo<ST, SCT>,
             SCT::SignatureType,
+            Option<TimeoutVote<ST, SCT>>,
         )],
         validator_mapping: &ValidatorMapping<
             SCT::NodeIdPubKey,
@@ -130,7 +144,7 @@ where
         >,
     ) -> Result<Self, SignatureCollectionError<SCT::NodeIdPubKey, SCT::SignatureType>> {
         let mut sigs = HashMap::new();
-        for (node_id, tmo_info, sig) in high_qc_round_sig_tuple {
+        for (node_id, tmo_info, sig, _) in high_qc_round_sig_tuple {
             let high_tip_round = tmo_info.high_tip.as_ref().map_or(Round(0), |t| t.round);
             let tminfo_digest = tmo_info.timeout_digest();
             let entry = sigs
@@ -151,7 +165,62 @@ where
         Ok(Self {
             epoch,
             round,
+            timeout_votes: vec![],
             tips: vec![],
+            high_tip_digest_sigs,
+        })
+    }
+
+    pub fn new_v2(
+        epoch: Epoch,
+        round: Round,
+        timeout_msgs: &[(
+            NodeId<SCT::NodeIdPubKey>,
+            TimeoutInfo<ST, SCT>,
+            SCT::SignatureType,
+            Option<TimeoutVote<ST, SCT>>,
+        )],
+        validator_mapping: &ValidatorMapping<
+            SCT::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
+    ) -> Result<Self, SignatureCollectionError<SCT::NodeIdPubKey, SCT::SignatureType>> {
+        // get the matching timeout digests, their signatures, the tips and the votes
+        let mut timeouts = HashMap::new();
+        let mut tips = Vec::new();
+        let mut votes = Vec::new();
+
+        for (node_id, tmo_info, sig, vote) in timeout_msgs {
+            let tmo_digest = tmo_info.timeout_digest();
+
+            let entry = timeouts.entry(tmo_digest).or_insert(Vec::new());
+            entry.push((*node_id, *sig));
+
+            if let Some(tip) = &tmo_info.high_tip {
+                tips.push(tip.clone());
+            }
+
+            if let Some(vote) = vote {
+                votes.push(vote.clone());
+            }
+        }
+
+        let mut high_tip_digest_sigs = Vec::new();
+        for (tminfo_digest, sigs) in timeouts.into_iter() {
+            let tminfo_digest_enc = alloy_rlp::encode(tminfo_digest);
+            let sct = SCT::new(sigs, validator_mapping, tminfo_digest_enc.as_ref())?;
+
+            high_tip_digest_sigs.push(HighQcRoundSigColTuple::<SCT> {
+                tminfo_digest,
+                sigs: sct,
+            });
+        }
+
+        Ok(Self {
+            epoch,
+            round,
+            tips,
+            timeout_votes: votes,
             high_tip_digest_sigs,
         })
     }
@@ -171,7 +240,8 @@ where
     }
 
     pub fn find_high_tip(&self) -> ConsensusTip<ST, SCT> {
-        find_high_tip(&self.tips).expect("TimeoutCertificate must have a non-empty set of tips")
+        todo!();
+        //find_high_tip(&self.tips).expect("TimeoutCertificate must have a non-empty set of tips")
     }
 }
 

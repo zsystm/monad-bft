@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Debug,
+    marker::PhantomData,
+    time::Duration,
+};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
@@ -762,6 +767,7 @@ where
                         cmd,
                     )
                 });
+            self.consensus.high_tip = Some(tc.find_high_tip());
             cmds.extend(advance_round_cmds);
             cmds.extend(self.try_propose());
         }
@@ -1347,7 +1353,7 @@ where
         let leader = &self.election.get_leader(round, validator_set.get_members());
         trace!(?round, ?leader, ?self.consensus.last_proposed_round, "try propose");
 
-        // check that self is leader
+        // we should only propose if we are the leader for the current round
         if self.nodeid != leader {
             return cmds;
         }
@@ -1372,6 +1378,170 @@ where
         let last_round_tc = self.consensus.pacemaker.get_last_round_tc().clone();
         cmds.extend(self.process_new_round_event(last_round_tc));
         cmds
+    }
+
+    #[must_use]
+    fn try_repropose(
+        &mut self,
+        tc: TimeoutCertificate<ST, SCT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let mut cmds = Vec::new();
+
+        let (round, epoch, leader) = self.get_current_round_info();
+        trace!(?round, ?epoch, ?leader, ?self.consensus.last_proposed_round, "try repropose");
+
+        // we should only propose if we are the leader for the current round
+        if *self.nodeid != leader {
+            return cmds;
+        }
+
+        // make sure we haven't proposed in this round
+        if round <= self.consensus.last_proposed_round {
+            return cmds;
+        }
+
+        let high_tip = tc.find_high_tip();
+        let reproposal_block = self
+            .consensus
+            .pending_block_tree
+            .get_block(&high_tip.block_id);
+
+        // create QC from votes if possible
+        if let Some(qc) = self.try_qc_from_tc(round, &tc) {
+            debug!(?qc, "try_repropose Created QC");
+            self.metrics.consensus_events.created_qc += 1;
+
+            cmds.extend(self.process_certificate_qc(&qc));
+            cmds.extend(self.try_propose());
+            return cmds;
+        }
+
+        let ts = 0; // TODO get timestamp
+        if let Some(block) = reproposal_block {
+            cmds.extend(self.repropose_block(epoch, round, ts, high_tip, block.clone()));
+            return cmds;
+        } else {
+            /// fetch the reproposal block or put together NEC
+            todo!();
+        }
+
+        cmds
+    }
+
+    fn repropose_block(
+        &mut self,
+        epoch: Epoch,
+        round: Round,
+        ts: u128,
+        high_tip: ConsensusTip<ST, SCT>,
+        repropose_block: BPT::ValidatedBlock,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let mut cmds = Vec::new();
+
+        /*
+                let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+                    execution_body: proposed_execution_inputs.body,
+                });
+                let block_header = ConsensusBlockHeader::new(
+                    *self.nodeid,
+                    epoch,
+                    round,
+                    delayed_execution_results,
+                    proposed_execution_inputs.header,
+                    block_body.get_id(),
+                    high_qc,
+                    seq_num,
+                    timestamp_ns,
+                    round_signature,
+                );
+
+                let p = ProposalMessage {
+                    block_header,
+                    block_body,
+                    last_round_tc,
+                    nec: None,
+                };
+
+                let msg = ConsensusMessage {
+                    version: consensus.version.to_owned(),
+                    message: ProtocolMessage::Proposal(p),
+                }
+                .sign(self.keypair);
+        */
+
+        let msg = todo!();
+        cmds.push(ConsensusCommand::Publish {
+            target: RouterTarget::Raptorcast(epoch),
+            message: msg,
+        });
+
+        cmds
+    }
+
+    fn get_current_round_info(&self) -> (Round, Epoch, NodeId<SCT::NodeIdPubKey>) {
+        let (round, epoch, validator_set) = {
+            let round = self.consensus.pacemaker.get_current_round();
+            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+            // error-prone
+            let epoch = self
+                .epoch_manager
+                .get_epoch(round)
+                .expect("current epoch exists");
+            let Some(validator_set) = self.val_epoch_map.get_val_set(&epoch) else {
+                todo!("handle non-existent validatorset for next round epoch");
+            };
+            (round, epoch, validator_set)
+        };
+
+        let leader = self.election.get_leader(round, validator_set.get_members());
+
+        (round, epoch, leader)
+    }
+
+    fn try_qc_from_tc(
+        &self,
+        round: Round,
+        tc: &TimeoutCertificate<ST, SCT>,
+    ) -> Option<QuorumCertificate<SCT>> {
+        let epoch = self
+            .epoch_manager
+            .get_epoch(round)
+            .expect("current epoch exists");
+        let validator_mapping = self
+            .val_epoch_map
+            .get_cert_pubkeys(&epoch)
+            .expect("epoch should be valid");
+        let validator_set = self
+            .val_epoch_map
+            .get_val_set(&epoch)
+            .expect("epoch should be valid");
+
+        let mut matching_votes: HashMap<
+            Vote,
+            Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
+        > = HashMap::new();
+        for v in tc.timeout_votes.clone() {
+            matching_votes
+                .entry(v.vote)
+                .or_insert_with(Vec::new)
+                .push((v.node_id, v.sig))
+        }
+
+        for (vote, sigs) in matching_votes {
+            // check if there is supermajority stake in the sigs
+            if !validator_set
+                .has_super_majority_votes(&sigs.iter().map(|(addr, _)| *addr).collect::<Vec<_>>())
+            {
+                continue;
+            }
+
+            let vote_enc = alloy_rlp::encode(vote);
+            if let Ok(sigcol) = SCT::new(sigs, validator_mapping, vote_enc.as_ref()) {
+                return Some(QuorumCertificate::<SCT>::new(vote, sigcol));
+            }
+        }
+
+        None
     }
 
     /// called when the node is entering a new round and is the leader for that round
@@ -3350,7 +3520,7 @@ mod test {
         assert_eq!(tmo.len(), 1);
         assert_eq!(tmo[0].tminfo.round, Round(4));
         let author = node1.nodeid;
-        let timeout_msg = TimeoutMessage::new(tmo[0].clone(), &env.cert_keys[1]);
+        let timeout_msg = TimeoutMessage::new(author, tmo[0].clone(), &env.cert_keys[1]);
         let cmds = node0.handle_timeout_message(author, timeout_msg);
         let req = extract_blocksync_requests(cmds);
         assert_eq!(req.len(), 1);

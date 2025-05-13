@@ -695,6 +695,7 @@ mod test {
             epoch: Epoch(1),
             round: Round(round),
             tips: vec![],
+            timeout_votes: vec![],
             high_tip_digest_sigs,
         };
 
@@ -815,6 +816,7 @@ mod test {
             epoch,
             round,
             tips: vec![],
+            timeout_votes: vec![],
             high_tip_digest_sigs: high_qc_rounds,
         };
 
@@ -854,6 +856,7 @@ mod test {
             epoch: Epoch(1),
             round: Round(1),
             tips: vec![],
+            timeout_votes: vec![],
             high_tip_digest_sigs: vec![HighQcRoundSigColTuple {
                 tminfo_digest: tmo_info.timeout_digest(),
                 sigs: sigcol,
@@ -882,6 +885,7 @@ mod test {
             epoch: Epoch(1),
             round: Round(3),
             tips: vec![],
+            timeout_votes: vec![],
             high_tip_digest_sigs: vec![],
         };
 
@@ -921,7 +925,11 @@ mod test {
         let unvalidated_tmo_msg = Unvalidated::new(TimeoutMessage::<
             SignatureType,
             SignatureCollectionType,
-        >::new(tmo, &certkeys[0]));
+        >::new(
+            NodeId::new(certkeys[0].pubkey()),
+            tmo,
+            &certkeys[0],
+        ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -984,7 +992,11 @@ mod test {
         let unvalidated_byzantine_tmo_msg = Unvalidated::new(TimeoutMessage::<
             SignatureType,
             SignatureCollectionType,
-        >::new(tmo, &certkeys[0]));
+        >::new(
+            NodeId::new(certkeys[0].pubkey()),
+            tmo,
+            &certkeys[0],
+        ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1128,8 +1140,11 @@ mod test {
             last_round_tc: None,
         };
 
-        let timeout_message =
-            TimeoutMessage::<SignatureType, SignatureCollectionType>::new(timeout, author_cert_key);
+        let timeout_message = TimeoutMessage::<SignatureType, SignatureCollectionType>::new(
+            NodeId::new(author_cert_key.pubkey()),
+            timeout,
+            author_cert_key,
+        );
 
         let unvalidated_timeout = Unvalidated::new(timeout_message);
 
@@ -1244,6 +1259,7 @@ mod test {
             epoch: Epoch(2), // wrong epoch here
             round: Round(11),
             tips: vec![],
+            timeout_votes: vec![],
             high_tip_digest_sigs: vec![high_qc_sig_tuple],
         };
 
