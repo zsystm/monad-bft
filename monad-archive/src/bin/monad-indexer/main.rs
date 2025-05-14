@@ -16,8 +16,8 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-indexer",
-        args.otel_replica_name_override
-            .unwrap_or_else(|| args.archive_sink.replica_name()),
+        dbg!(dbg!(args.otel_replica_name_override)
+            .unwrap_or_else(|| args.archive_sink.replica_name())),
         Duration::from_secs(15),
     )?;
 
