@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::ConsensusFullBlock,
-    clock::AdjusterConfig,
+    clock::TimestampAdjusterConfig,
     signature_collection::SignatureCollection,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
@@ -111,7 +111,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 _phantom: PhantomData,
             },
 
-            adjuster_config: AdjusterConfig::Enabled {
+            adjuster_config: TimestampAdjusterConfig::Enabled {
                 max_delta: 10000,
                 adjustment_period: 9,
             },

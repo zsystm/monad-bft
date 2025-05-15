@@ -12,7 +12,7 @@ use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    clock::{AdjusterConfig, SystemClock},
+    clock::{SystemClock, TimestampAdjusterConfig},
     metrics::Metrics,
     signature_collection::SignatureCollection,
     validator_data::ValidatorsConfig,
@@ -358,7 +358,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             timestamp_latency_estimate_ns: 20_000_000,
             _phantom: Default::default(),
         },
-        adjuster_config: AdjusterConfig::Disabled,
+        adjuster_config: TimestampAdjusterConfig::Disabled,
         _phantom: PhantomData,
     };
 

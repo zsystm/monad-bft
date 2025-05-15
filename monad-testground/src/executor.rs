@@ -5,7 +5,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
-    clock::{AdjusterConfig, TestClock},
+    clock::{TestClock, TimestampAdjusterConfig},
     signature_collection::SignatureCollection,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
@@ -212,7 +212,7 @@ where
         locked_epoch_validators,
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
-        adjuster_config: AdjusterConfig::Disabled,
+        adjuster_config: TimestampAdjusterConfig::Disabled,
         _phantom: PhantomData,
     }
     .build()

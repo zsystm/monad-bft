@@ -25,7 +25,7 @@ use monad_consensus_types::{
     block::{BlockPolicy, OptimisticCommit},
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, LockedEpoch},
-    clock::{AdjusterConfig, Clock},
+    clock::{Clock, TimestampAdjusterConfig},
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -752,7 +752,7 @@ where
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
-    pub adjuster_config: AdjusterConfig,
+    pub adjuster_config: TimestampAdjusterConfig,
 
     pub _phantom: PhantomData<EPT>,
 }
@@ -771,6 +771,7 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
+    //TODO: move CL to MonadStateBuilder.
     pub fn build<CL: Clock>(
         self,
     ) -> (

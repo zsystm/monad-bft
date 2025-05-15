@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 #[derive(Debug)]
-pub enum AdjusterConfig {
+pub enum TimestampAdjusterConfig {
     Disabled,
     Enabled {
         max_delta: u128,

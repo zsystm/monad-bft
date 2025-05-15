@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
+use std::{cmp::max, collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
@@ -133,7 +133,7 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, TS>
+pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -145,7 +145,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
-    TS: Clock,
+    CL: Clock,
 {
     pub consensus: &'a mut ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
@@ -163,7 +163,7 @@ where
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
     /// Track local timestamp and validate proposal timestamps
-    pub block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey, TS>,
+    pub block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey, CL>,
 
     /// Destination address for proposal payments
     pub beneficiary: &'a [u8; 20],
@@ -313,8 +313,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, TS>
-    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, TS>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -326,7 +326,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
-    TS: Clock,
+    CL: Clock,
 {
     /// handles the local timeout expiry event
     pub fn handle_timeout_expiry(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
@@ -563,44 +563,33 @@ where
                 return cmds;
             }
         };
-        let block_round = block.get_round();
-
-        // TODO: ts adjustments are disabled anyways. this needs to be moved to
-        // where timestamp validation is done, in block_policy right now.
-        // block_policy doesn't have visibility on whether current round is
-        // bumped. Deferring the move
-
-        /*
-             self.block_timestamp
-                  .proposal_received(block.get_round(), &author, timestamp);
-
-             if let Some(parent_timestamp) = self
-                 .consensus
-                 .blocktree()
-                 .get_timestamp_of_qc(block.get_qc()) {
-
-                 if let Ok(Some(ts_delta)) = self.block_timestamp.valid_block_timestamp(
-                     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default(), // TODO: use the value from the caller
-                     parent_timestamp,
-                     block.get_timestamp(),
-                     self.config
-                         .chain_config
-                         .get_chain_revision(round)
-                         .chain_params()
-                         .vote_pace
-                         .as_nanos(),
-                     block_round,
-                     &author,
-                 ) {
-                     // only update timestamp if the block advanced us our round
-                     if block_round > original_round {
-                         info!(?ts_delta, "update timestamp");
-                         self.block_timestamp.handle_adjustment(ts_delta);
-                         cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
-                     }
-                 }
-             }
-        */
+        if let Some(parent_timestamp) = self
+            .consensus
+            .blocktree()
+            .get_timestamp_of_qc(block.get_qc())
+        {
+            if self
+                .block_timestamp
+                .validate_block_timestamp(
+                    parent_timestamp,
+                    block.get_timestamp(),
+                    self.config
+                        .chain_config
+                        .get_chain_revision(round)
+                        .chain_params()
+                        .vote_pace
+                        .as_nanos(),
+                )
+                .is_ok()
+                && block.get_round() > original_round
+            {
+                self.block_timestamp.proposal_received(
+                    block.get_round(),
+                    block.get_timestamp(),
+                    &author,
+                );
+            }
+        }
 
         // at this point, block is valid and can be added to the blocktree
         let res_cmds = self.try_add_and_commit_blocktree(block, Some(state_root_action));
@@ -1231,7 +1220,7 @@ where
         // verify timestamp here
         if self
             .block_timestamp
-            .valid_block_timestamp(
+            .validate_block_timestamp(
                 parent_timestamp,
                 validated_block.get_timestamp(),
                 self.config
@@ -1240,7 +1229,6 @@ where
                     .chain_params()
                     .vote_pace
                     .as_nanos(),
-                validated_block.get_author(),
             )
             .is_err()
         {
@@ -1248,7 +1236,7 @@ where
             warn!(
                 prev_block_ts = ?parent_timestamp,
                 curr_block_ts = ?validated_block.get_timestamp(),
-                local_ts = ?self.block_timestamp.get_current_time(),
+                local_ts = ?self.block_timestamp.get_adjusted_time(),
                 "Timestamp validation failed"
             );
             return cmds;
@@ -1400,14 +1388,17 @@ where
             if let Some(extending_block) = pending_blocktree_blocks.last() {
                 (
                     extending_block.get_seq_num() + SeqNum(1),
-                    self.block_timestamp
-                        .get_valid_block_timestamp(extending_block.get_timestamp()),
+                    max(
+                        extending_block.get_timestamp() + 1,
+                        self.block_timestamp.get_adjusted_time(),
+                    ),
                 )
             } else {
                 (
                     self.consensus.pending_block_tree.root().seq_num + SeqNum(1),
-                    self.block_timestamp.get_valid_block_timestamp(
-                        self.consensus.pending_block_tree.root().timestamp_ns,
+                    max(
+                        self.consensus.pending_block_tree.root().timestamp_ns + 1,
+                        self.block_timestamp.get_adjusted_time(),
                     ),
                 )
             };
@@ -1643,7 +1634,7 @@ mod test {
         },
         block_validator::BlockValidator,
         checkpoint::RootInfo,
-        clock::{AdjusterConfig, Clock, TestClock},
+        clock::{Clock, TestClock, TimestampAdjusterConfig},
         metrics::Metrics,
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
         quorum_certificate::QuorumCertificate,
@@ -2026,7 +2017,11 @@ mod test {
                     block_validator: block_validator(),
                     block_policy: block_policy(),
                     state_backend: state_backend(),
-                    block_timestamp: BlockTimestamp::new(1000, 1, AdjusterConfig::Disabled),
+                    block_timestamp: BlockTimestamp::new(
+                        1000,
+                        1,
+                        TimestampAdjusterConfig::Disabled,
+                    ),
                     beneficiary: Default::default(),
                     nodeid: NodeId::new(keys[i as usize].pubkey()),
                     consensus_config,
