@@ -11,14 +11,15 @@ use monad_types::*;
 /// A timeout or proposal message of round r is well-formed if
 /// 1. it contains a QC of round r-1
 /// 2. it contains a TC of round r-1 if the QC is not from round r-1
-pub fn well_formed<ST, SCT>(
+pub fn well_formed<ST, SCT, EPT>(
     round: Round,
     qc_round: Round,
-    tc: &Option<TimeoutCertificate<ST, SCT>>,
+    tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
 ) -> Result<(), Error>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     let prev_round = round - Round(1);
     let valid_qc_round = qc_round == prev_round;

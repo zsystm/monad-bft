@@ -29,6 +29,7 @@ pub struct ProposalGen<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     epoch: Epoch,
     round: Round,
@@ -36,7 +37,7 @@ where
     qc_seq_num: SeqNum,
     high_qc: QuorumCertificate<SCT>,
     high_qc_seq_num: SeqNum,
-    last_tc: Option<TimeoutCertificate<ST, SCT>>,
+    last_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
     timestamp: u128,
     phantom: PhantomData<(ST, EPT)>,
 }
@@ -174,7 +175,7 @@ where
             CertificateSignaturePubKey<ST>,
             SignatureCollectionKeyPairType<SCT>,
         >,
-    ) -> Vec<Verified<ST, TimeoutMessage<ST, SCT>>> {
+    ) -> Vec<Verified<ST, TimeoutMessage<ST, SCT, EPT>>> {
         let node_ids = keys
             .iter()
             .map(|keypair| NodeId::new(keypair.pubkey()))
@@ -206,7 +207,7 @@ where
             tminfo_digest: tminfo.timeout_digest(),
             sigs: tmo_sig_col,
         };
-        let tc = TimeoutCertificate::<ST, SCT> {
+        let tc = TimeoutCertificate::<ST, SCT, EPT> {
             epoch: self.epoch,
             round: self.round,
             tips: vec![],

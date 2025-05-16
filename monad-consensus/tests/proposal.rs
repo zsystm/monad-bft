@@ -1110,7 +1110,7 @@ fn test_validate_tc_invalid_tc_signature() {
     let tc_epoch_signed = Epoch(2);
     let tc_round_signed = Round(2);
 
-    let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType> {
+    let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
         epoch: tc_epoch_signed,
         round: tc_round_signed,
         high_qc: QuorumCertificate::genesis_qc(),

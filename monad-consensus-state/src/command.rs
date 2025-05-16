@@ -54,7 +54,7 @@ where
         seq_num: SeqNum,
         high_qc: QuorumCertificate<SCT>,
         round_signature: RoundSignature<SCT::SignatureType>,
-        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -109,7 +109,7 @@ where
         keypair: &ST::KeyPairType,
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         version: u32,
-        cmd: PacemakerCommand<ST, SCT>,
+        cmd: PacemakerCommand<ST, SCT, EPT>,
     ) -> Self {
         match cmd {
             PacemakerCommand::EnterRound((epoch, round)) => {

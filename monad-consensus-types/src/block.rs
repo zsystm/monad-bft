@@ -362,7 +362,7 @@ where
         (self.header, self.body)
     }
 
-    pub fn get_consensus_tip(&self) -> ConsensusTip<ST, SCT> {
+    pub fn get_consensus_tip(&self) -> ConsensusTip<ST, SCT, EPT> {
         ConsensusTip {
             round: self.get_round(),
             epoch: self.get_epoch(),
@@ -371,7 +371,10 @@ where
             seq_num: self.get_seq_num(),
             timestamp_ns: self.get_timestamp(),
             round_signature: self.header.round_signature.clone(),
+            delayed_execution_results: self.header.delayed_execution_results.clone(),
+            execution_inputs: self.header.execution_inputs.clone(),
             block_id: self.header.get_id(),
+            block_body_id: self.header.block_body_id,
             nec: None,
         }
     }

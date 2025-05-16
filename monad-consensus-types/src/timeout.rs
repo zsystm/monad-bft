@@ -18,24 +18,26 @@ use crate::{
 /// Timeout message to broadcast to other nodes after a local timeout
 #[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 #[rlp(trailing)]
-pub struct Timeout<ST, SCT>
+pub struct Timeout<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
-    pub tminfo: TimeoutInfo<ST, SCT>,
+    pub tminfo: TimeoutInfo<ST, SCT, EPT>,
     /// if the high qc round != tminfo.round-1, then this must be the
     /// TC for tminfo.round-1. Otherwise it must be None
-    pub last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
+    pub last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 }
 
 /// Data to include in a timeout
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]
-pub struct TimeoutInfo<ST, SCT>
+pub struct TimeoutInfo<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     /// Epoch where the timeout happens
     pub epoch: Epoch,
@@ -44,7 +46,7 @@ where
     /// The node's highest known qc
     pub high_qc: QuorumCertificate<SCT>,
 
-    pub high_tip: Option<ConsensusTip<ST, SCT>>,
+    pub high_tip: Option<ConsensusTip<ST, SCT, EPT>>,
 }
 
 /// This is the set of fields over which TimeoutMessages are signed
@@ -64,10 +66,11 @@ pub struct TimeoutTipDigest {
     pub high_tip_nec_round: Option<Round>,
 }
 
-impl<ST, SCT> TimeoutInfo<ST, SCT>
+impl<ST, SCT, EPT> TimeoutInfo<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn timeout_digest(&self) -> TimeoutDigest {
         TimeoutDigest {
@@ -104,10 +107,11 @@ where
 /// form for a round
 /// A collection of Timeout messages is the basis for building a TC
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct TimeoutCertificate<ST, SCT>
+pub struct TimeoutCertificate<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     /// The epoch where the TC is created
     pub epoch: Epoch,
@@ -115,7 +119,7 @@ where
     /// to create a TC
     pub round: Round,
 
-    pub tips: Vec<ConsensusTip<ST, SCT>>,
+    pub tips: Vec<ConsensusTip<ST, SCT, EPT>>,
     pub timeout_votes: Vec<TimeoutVote<ST, SCT>>,
 
     /// signatures over the round of the TC and the high qc round,
@@ -124,17 +128,18 @@ where
     pub high_tip_digest_sigs: Vec<HighQcRoundSigColTuple<SCT>>,
 }
 
-impl<ST, SCT> TimeoutCertificate<ST, SCT>
+impl<ST, SCT, EPT> TimeoutCertificate<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn new(
         epoch: Epoch,
         round: Round,
         high_qc_round_sig_tuple: &[(
             NodeId<SCT::NodeIdPubKey>,
-            TimeoutInfo<ST, SCT>,
+            TimeoutInfo<ST, SCT, EPT>,
             SCT::SignatureType,
             Option<TimeoutVote<ST, SCT>>,
         )],
@@ -176,7 +181,7 @@ where
         round: Round,
         timeout_msgs: &[(
             NodeId<SCT::NodeIdPubKey>,
-            TimeoutInfo<ST, SCT>,
+            TimeoutInfo<ST, SCT, EPT>,
             SCT::SignatureType,
             Option<TimeoutVote<ST, SCT>>,
         )],
@@ -226,10 +231,11 @@ where
     }
 }
 
-impl<ST, SCT> TimeoutCertificate<ST, SCT>
+impl<ST, SCT, EPT> TimeoutCertificate<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     pub fn max_round(&self) -> Round {
         self.high_tip_digest_sigs
@@ -239,16 +245,19 @@ where
             .expect("verification of received TimeoutCertificates should have rejected any with empty high_qc_rounds")
     }
 
-    pub fn find_high_tip(&self) -> ConsensusTip<ST, SCT> {
+    pub fn find_high_tip(&self) -> ConsensusTip<ST, SCT, EPT> {
         todo!();
         //find_high_tip(&self.tips).expect("TimeoutCertificate must have a non-empty set of tips")
     }
 }
 
-pub fn find_high_tip<ST, SCT>(tips: &[ConsensusTip<ST, SCT>]) -> Option<ConsensusTip<ST, SCT>>
+pub fn find_high_tip<ST, SCT, EPT>(
+    tips: &[ConsensusTip<ST, SCT, EPT>],
+) -> Option<ConsensusTip<ST, SCT, EPT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     if tips.iter().any(|tip| !is_tip_fresh_proposal(tip)) {
         return None;
@@ -257,10 +266,11 @@ where
     tips.iter().max_by_key(|tip| tip.round).cloned()
 }
 
-pub fn is_tip_fresh_proposal<ST, SCT>(tip: &ConsensusTip<ST, SCT>) -> bool
+pub fn is_tip_fresh_proposal<ST, SCT, EPT>(tip: &ConsensusTip<ST, SCT, EPT>) -> bool
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     if tip.round == tip.qc.get_round() + Round(1) {
         return true;

@@ -13,7 +13,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{Epoch, NodeId, Round};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round};
 use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
 use tracing::{debug, info};
 
@@ -29,10 +29,11 @@ use crate::{
 /// Timeout msgs from other nodes are received and collected into
 /// a Timeout Certificate which will advance the round
 #[derive(PartialEq, Eq, Debug)]
-pub struct Pacemaker<ST, SCT, CCT, CRT>
+pub struct Pacemaker<ST, SCT, EPT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     /// upper transmission delay bound
     /// this is used to calculate the local round timeout duration
@@ -49,13 +50,13 @@ where
     current_round: Round,
     /// None if we advanced to the current round via QC
     /// Some(TC) if we advanced to the current round via TC
-    last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
+    last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 
     /// map of the TimeoutMessages from other Nodes
     /// only needs to be stored for the current round as timeout messages
     /// carry a QC which will be processed and advance the node to the
     /// highest known round
-    pending_timeouts: BTreeMap<NodeId<SCT::NodeIdPubKey>, TimeoutMessage<ST, SCT>>,
+    pending_timeouts: BTreeMap<NodeId<SCT::NodeIdPubKey>, TimeoutMessage<ST, SCT, EPT>>,
 
     /// States for TimeoutMessage handling, ensures we only broadcast
     /// one message at each phase of handling
@@ -82,17 +83,18 @@ enum PhaseHonest {
 }
 
 #[derive(Debug)]
-pub enum PacemakerCommand<ST, SCT>
+pub enum PacemakerCommand<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     /// event emitted whenever round changes. this is used by the router
     EnterRound((Epoch, Round)),
 
     /// create the Timeout which can be signed to create a TimeoutMessage
     /// this should be broadcast to all other nodes
-    PrepareTimeout(Timeout<ST, SCT>),
+    PrepareTimeout(Timeout<ST, SCT, EPT>),
 
     /// schedule a local round timeout event after duration
     Schedule { duration: Duration },
@@ -101,10 +103,11 @@ where
     ScheduleReset,
 }
 
-impl<ST, SCT, CCT, CRT> Pacemaker<ST, SCT, CCT, CRT>
+impl<ST, SCT, EPT, CCT, CRT> Pacemaker<ST, SCT, EPT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -115,7 +118,7 @@ where
         local_processing: Duration,
         current_epoch: Epoch,
         current_round: Round,
-        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
     ) -> Self {
         Self {
             delta,
@@ -139,7 +142,7 @@ where
         self.current_epoch
     }
 
-    pub fn get_last_round_tc(&self) -> &Option<TimeoutCertificate<ST, SCT>> {
+    pub fn get_last_round_tc(&self) -> &Option<TimeoutCertificate<ST, SCT, EPT>> {
         &self.last_round_tc
     }
 
@@ -164,7 +167,7 @@ where
         &mut self,
         new_epoch: Epoch,
         new_round: Round,
-    ) -> Vec<PacemakerCommand<ST, SCT>> {
+    ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         assert!(new_epoch > self.current_epoch || new_round > self.current_round);
 
         self.phase = PhaseHonest::Zero;
@@ -189,7 +192,7 @@ where
         &self,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
-    ) -> Vec<PacemakerCommand<ST, SCT>> {
+    ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         let mut cmds = vec![PacemakerCommand::ScheduleReset];
         let maybe_broadcast = safety
             .make_timeout(
@@ -224,7 +227,7 @@ where
         &mut self,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
-    ) -> Vec<PacemakerCommand<ST, SCT>> {
+    ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         self.phase = PhaseHonest::One;
         self.local_timeout_round(safety, high_qc)
     }
@@ -244,10 +247,10 @@ where
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
         author: NodeId<SCT::NodeIdPubKey>,
-        timeout_msg: TimeoutMessage<ST, SCT>,
+        timeout_msg: TimeoutMessage<ST, SCT, EPT>,
     ) -> (
-        Option<TimeoutCertificate<ST, SCT>>,
-        Vec<PacemakerCommand<ST, SCT>>,
+        Option<TimeoutCertificate<ST, SCT, EPT>>,
+        Vec<PacemakerCommand<ST, SCT, EPT>>,
     )
     where
         VST: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -281,7 +284,7 @@ where
             self.phase = PhaseHonest::One;
         }
 
-        let mut ret_tc: Option<TimeoutCertificate<ST, SCT>> = None;
+        let mut ret_tc: Option<TimeoutCertificate<ST, SCT, EPT>> = None;
         // try to create a TimeoutCertificate from the pending timeouts, filtering out
         // invalid timeout messages if there are signature errors
         while self.phase == PhaseHonest::One && validators.has_super_majority_votes(&timeouts) {
@@ -326,7 +329,7 @@ where
     fn handle_invalid_timeout(
         &mut self,
         invalid_timeouts: Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
-    ) -> Vec<PacemakerCommand<ST, SCT>> {
+    ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         for (node_id, sig) in invalid_timeouts {
             let removed = self.pending_timeouts.remove(&node_id);
             debug_assert_eq!(removed.expect("Timeout removed").sig, sig);
@@ -341,10 +344,10 @@ where
     #[must_use]
     pub fn advance_round_tc(
         &mut self,
-        tc: &TimeoutCertificate<ST, SCT>,
+        tc: &TimeoutCertificate<ST, SCT, EPT>,
         epoch_manager: &EpochManager,
         metrics: &mut Metrics,
-    ) -> Vec<PacemakerCommand<ST, SCT>> {
+    ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         if tc.round < self.current_round {
             return Default::default();
         }
@@ -366,7 +369,7 @@ where
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &EpochManager,
         metrics: &mut Metrics,
-    ) -> Vec<PacemakerCommand<ST, SCT>> {
+    ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         if qc.get_round() < self.current_round {
             return Default::default();
         }
@@ -385,7 +388,7 @@ where
     pub fn advance_epoch(
         &mut self,
         epoch_manager: &EpochManager,
-    ) -> Vec<PacemakerCommand<ST, SCT>> {
+    ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
         let new_epoch = epoch_manager
             .get_epoch(self.current_round)
             .expect("current epoch available");
@@ -406,6 +409,7 @@ mod test {
         MockChainConfig,
     };
     use monad_consensus_types::{
+        block::MockExecutionProtocol,
         timeout::{TimeoutDigest, TimeoutInfo},
         voting::Vote,
     };
@@ -428,6 +432,7 @@ mod test {
     type SignatureCollectionType = MultiSig<SignatureType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type ExecutionProtocolType = MockExecutionProtocol;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,
@@ -466,17 +471,18 @@ mod test {
         QuorumCertificate::<SCT>::new(vote, sigcol)
     }
 
-    fn create_timeout_message<ST, SCT>(
+    fn create_timeout_message<ST, SCT, EPT>(
         key: &ST::KeyPairType,
         certkeypair: &SignatureCollectionKeyPairType<SCT>,
         timeout_epoch: Epoch,
         timeout_round: Round,
         high_qc: QuorumCertificate<SCT>,
         valid: bool,
-    ) -> TimeoutMessage<ST, SCT>
+    ) -> TimeoutMessage<ST, SCT, EPT>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
     {
         let timeout = Timeout {
             tminfo: TimeoutInfo {
@@ -491,7 +497,7 @@ mod test {
         let invalid_msg = b"invalid";
 
         let mut tmo_msg =
-            TimeoutMessage::<ST, SCT>::new(NodeId::new(key.pubkey()), timeout, certkeypair);
+            TimeoutMessage::<ST, SCT, EPT>::new(NodeId::new(key.pubkey()), timeout, certkeypair);
         if !valid {
             tmo_msg.sig =
                 <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
@@ -504,6 +510,7 @@ mod test {
         let mut pacemaker = Pacemaker::<
             SignatureType,
             SignatureCollectionType,
+            ExecutionProtocolType,
             ChainConfigType,
             ChainRevisionType,
         >::new(
@@ -625,6 +632,7 @@ mod test {
         let mut pacemaker = Pacemaker::<
             SignatureType,
             SignatureCollectionType,
+            ExecutionProtocolType,
             ChainConfigType,
             ChainRevisionType,
         >::new(
@@ -717,6 +725,7 @@ mod test {
         let mut pacemaker = Pacemaker::<
             SignatureType,
             SignatureCollectionType,
+            ExecutionProtocolType,
             ChainConfigType,
             ChainRevisionType,
         >::new(
@@ -858,6 +867,7 @@ mod test {
         let mut pacemaker = Pacemaker::<
             SignatureType,
             SignatureCollectionType,
+            ExecutionProtocolType,
             ChainConfigType,
             ChainRevisionType,
         >::new(

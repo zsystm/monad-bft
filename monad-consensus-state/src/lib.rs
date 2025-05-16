@@ -74,9 +74,9 @@ where
     /// The highest QC (QC height determined by Round) known to this node
     high_qc: QuorumCertificate<SCT>,
     /// The highest Tip this node has voted for
-    high_tip: Option<ConsensusTip<ST, SCT>>,
+    high_tip: Option<ConsensusTip<ST, SCT, EPT>>,
     /// Tracks and updates the current round
-    pacemaker: Pacemaker<ST, SCT, CCT, CRT>,
+    pacemaker: Pacemaker<ST, SCT, EPT, CCT, CRT>,
     /// Policy for upholding consensus safety when voting or extending branches
     safety: Safety,
     block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
@@ -684,7 +684,7 @@ where
     pub fn handle_timeout_message(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
-        tmo_msg: TimeoutMessage<ST, SCT>,
+        tmo_msg: TimeoutMessage<ST, SCT, EPT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let tm = &tmo_msg.timeout;
         let mut cmds = Vec::new();
@@ -1383,7 +1383,7 @@ where
     #[must_use]
     fn try_repropose(
         &mut self,
-        tc: TimeoutCertificate<ST, SCT>,
+        tc: TimeoutCertificate<ST, SCT, EPT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
 
@@ -1433,7 +1433,7 @@ where
         epoch: Epoch,
         round: Round,
         ts: u128,
-        high_tip: ConsensusTip<ST, SCT>,
+        high_tip: ConsensusTip<ST, SCT, EPT>,
         repropose_block: BPT::ValidatedBlock,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
@@ -1501,7 +1501,7 @@ where
     fn try_qc_from_tc(
         &self,
         round: Round,
-        tc: &TimeoutCertificate<ST, SCT>,
+        tc: &TimeoutCertificate<ST, SCT, EPT>,
     ) -> Option<QuorumCertificate<SCT>> {
         let epoch = self
             .epoch_manager
@@ -1549,7 +1549,7 @@ where
     #[must_use]
     fn process_new_round_event(
         &mut self,
-        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let node_id = *self.nodeid;
         let round = self.consensus.pacemaker.get_current_round();
@@ -1975,7 +1975,7 @@ mod test {
         fn handle_timeout_message(
             &mut self,
             author: NodeId<SCT::NodeIdPubKey>,
-            p: TimeoutMessage<ST, SCT>,
+            p: TimeoutMessage<ST, SCT, EPT>,
         ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
             self.wrapped_state().handle_timeout_message(author, p)
         }
@@ -2087,7 +2087,7 @@ mod test {
             )
         }
 
-        fn next_tc(&mut self, epoch: Epoch) -> Vec<Verified<ST, TimeoutMessage<ST, SCT>>> {
+        fn next_tc(&mut self, epoch: Epoch) -> Vec<Verified<ST, TimeoutMessage<ST, SCT, EPT>>> {
             let valset = self.val_epoch_map.get_val_set(&epoch).unwrap();
             let val_cert_pubkeys = self.val_epoch_map.get_cert_pubkeys(&epoch).unwrap();
             self.proposal_gen.next_tc(
@@ -3504,7 +3504,7 @@ mod test {
 
         // now timeout someone
         let cmds = node1.wrapped_state().handle_timeout_expiry();
-        let tmo: Vec<&Timeout<SignatureType, SignatureCollectionType>> = cmds
+        let tmo: Vec<&Timeout<SignatureType, SignatureCollectionType, EthExecutionProtocol>> = cmds
             .iter()
             .filter_map(|cmd| match cmd {
                 ConsensusCommand::Publish { target: _, message } => {

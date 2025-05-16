@@ -322,7 +322,7 @@ where
         seq_num: SeqNum,
         high_qc: QuorumCertificate<SCT>,
         round_signature: RoundSignature<SCT::SignatureType>,
-        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
 
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -779,7 +779,7 @@ where
         round_signature: RoundSignature<SCT::SignatureType>,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
-        last_round_tc: Option<TimeoutCertificate<ST, SCT>>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
     },
 
     /// Txs that are incoming via other nodes
@@ -869,7 +869,9 @@ where
                 let mut tc_payload = Header::decode_bytes(&mut payload, true)?;
                 let tc = match u8::decode(&mut tc_payload)? {
                     1 => Ok(None),
-                    2 => Ok(Some(TimeoutCertificate::<ST, SCT>::decode(&mut payload)?)),
+                    2 => Ok(Some(TimeoutCertificate::<ST, SCT, EPT>::decode(
+                        &mut payload,
+                    )?)),
                     _ => Err(alloy_rlp::Error::Custom(
                         "failed to decode unknown tc in mempool event",
                     )),

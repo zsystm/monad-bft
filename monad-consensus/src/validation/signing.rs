@@ -382,17 +382,18 @@ impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
     }
 }
 
-impl<ST, SCT> Unvalidated<TimeoutMessage<ST, SCT>>
+impl<ST, SCT, EPT> Unvalidated<TimeoutMessage<ST, SCT, EPT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
 {
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<TimeoutMessage<ST, SCT>>, Error>
+    ) -> Result<Validated<TimeoutMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -429,15 +430,16 @@ where
     }
 }
 
-fn verify_certificates<ST, SCT, VTF, VT>(
+fn verify_certificates<ST, SCT, EPT, VTF, VT>(
     epoch_manager: &EpochManager,
     val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    tc: &Option<TimeoutCertificate<ST, SCT>>,
+    tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
     VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
@@ -482,14 +484,15 @@ where
 /// The signature collections are created over `Hash(tc.round, high_qc.round)`
 ///
 /// See [monad_consensus_types::timeout::TimeoutInfo::timeout_digest]
-fn verify_tc<ST, SCT, VT>(
+fn verify_tc<ST, SCT, EPT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
-    tc: &TimeoutCertificate<ST, SCT>,
+    tc: &TimeoutCertificate<ST, SCT, EPT>,
 ) -> Result<(), Error>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
     let mut node_ids = Vec::new();
@@ -649,6 +652,7 @@ mod test {
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
+    type ExecutionProtocolType = MockExecutionProtocol;
 
     // NOTE: the error is an invalid author error
     //       the receiver uses the round number from TC, in this case `round` to recover the pubkey
@@ -691,13 +695,14 @@ mod test {
         })
         .collect();
 
-        let tc: TimeoutCertificate<SignatureType, SignatureCollectionType> = TimeoutCertificate {
-            epoch: Epoch(1),
-            round: Round(round),
-            tips: vec![],
-            timeout_votes: vec![],
-            high_tip_digest_sigs,
-        };
+        let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
+            TimeoutCertificate {
+                epoch: Epoch(1),
+                round: Round(round),
+                tips: vec![],
+                timeout_votes: vec![],
+                high_tip_digest_sigs,
+            };
 
         verify_tc(&vset, &vmap, &tc)
     }
@@ -812,13 +817,14 @@ mod test {
         })
         .collect();
 
-        let tc: TimeoutCertificate<SignatureType, SignatureCollectionType> = TimeoutCertificate {
-            epoch,
-            round,
-            tips: vec![],
-            timeout_votes: vec![],
-            high_tip_digest_sigs: high_qc_rounds,
-        };
+        let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
+            TimeoutCertificate {
+                epoch,
+                round,
+                tips: vec![],
+                timeout_votes: vec![],
+                high_tip_digest_sigs: high_qc_rounds,
+            };
 
         assert!(matches!(
             verify_tc(&vset, &vmap, &tc),
@@ -830,7 +836,7 @@ mod test {
     /// TC::epoch. Expect TC signature verification to fail
     #[test]
     fn test_tc_verify_epoch_no_match() {
-        let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType> {
+        let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
             epoch: Epoch(2), // an intentionally malformed tmo_info
             round: Round(1),
             high_qc: QuorumCertificate::genesis_qc(),
@@ -852,16 +858,17 @@ mod test {
         let sigs = vec![(NodeId::new(keypair.pubkey()), s)];
         let sigcol = MultiSig::new(sigs, &val_mapping, tmo_digest.as_ref()).unwrap();
 
-        let tc = TimeoutCertificate::<SignatureType, SignatureCollectionType> {
-            epoch: Epoch(1),
-            round: Round(1),
-            tips: vec![],
-            timeout_votes: vec![],
-            high_tip_digest_sigs: vec![HighQcRoundSigColTuple {
-                tminfo_digest: tmo_info.timeout_digest(),
-                sigs: sigcol,
-            }],
-        };
+        let tc =
+            TimeoutCertificate::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
+                epoch: Epoch(1),
+                round: Round(1),
+                tips: vec![],
+                timeout_votes: vec![],
+                high_tip_digest_sigs: vec![HighQcRoundSigColTuple {
+                    tminfo_digest: tmo_info.timeout_digest(),
+                    sigs: sigcol,
+                }],
+            };
 
         assert!(matches!(
             verify_tc(&vset, &val_mapping, &tc),
@@ -909,7 +916,7 @@ mod test {
 
         let qc = QuorumCertificate::new(vote, sig_col);
 
-        let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType> {
+        let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
             epoch: Epoch(1),
 
             round: Round(4),
@@ -917,19 +924,19 @@ mod test {
             high_tip: None,
         };
 
-        let tmo = Timeout::<SignatureType, SignatureCollectionType> {
+        let tmo = Timeout::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
             tminfo: tmo_info,
             last_round_tc: Some(tc),
         };
 
-        let unvalidated_tmo_msg = Unvalidated::new(TimeoutMessage::<
-            SignatureType,
-            SignatureCollectionType,
-        >::new(
-            NodeId::new(certkeys[0].pubkey()),
-            tmo,
-            &certkeys[0],
-        ));
+        let unvalidated_tmo_msg =
+            Unvalidated::new(TimeoutMessage::<
+                SignatureType,
+                SignatureCollectionType,
+                ExecutionProtocolType,
+            >::new(
+                NodeId::new(certkeys[0].pubkey()), tmo, &certkeys[0]
+            ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -977,26 +984,26 @@ mod test {
 
         let qc = QuorumCertificate::new(vote, sig_col);
 
-        let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType> {
+        let tmo_info = TimeoutInfo::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
             epoch: tmo_epoch,
             round: tmo_round,
             high_qc: qc,
             high_tip: None,
         };
 
-        let tmo = Timeout::<SignatureType, SignatureCollectionType> {
+        let tmo = Timeout::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
             tminfo: tmo_info,
             last_round_tc: None,
         };
 
-        let unvalidated_byzantine_tmo_msg = Unvalidated::new(TimeoutMessage::<
-            SignatureType,
-            SignatureCollectionType,
-        >::new(
-            NodeId::new(certkeys[0].pubkey()),
-            tmo,
-            &certkeys[0],
-        ));
+        let unvalidated_byzantine_tmo_msg =
+            Unvalidated::new(TimeoutMessage::<
+                SignatureType,
+                SignatureCollectionType,
+                ExecutionProtocolType,
+            >::new(
+                NodeId::new(certkeys[0].pubkey()), tmo, &certkeys[0]
+            ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1140,11 +1147,12 @@ mod test {
             last_round_tc: None,
         };
 
-        let timeout_message = TimeoutMessage::<SignatureType, SignatureCollectionType>::new(
-            NodeId::new(author_cert_key.pubkey()),
-            timeout,
-            author_cert_key,
-        );
+        let timeout_message =
+            TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
+                NodeId::new(author_cert_key.pubkey()),
+                timeout,
+                author_cert_key,
+            );
 
         let unvalidated_timeout = Unvalidated::new(timeout_message);
 
@@ -1192,7 +1200,9 @@ mod test {
         let verify_result = verify_certificates(
             &epoch_manager,
             &val_epoch_map,
-            &None::<TimeoutCertificate<SignatureType, SignatureCollectionType>>,
+            &None::<
+                TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+            >,
             &qc,
         );
         assert_eq!(verify_result, Err(Error::InvalidEpoch));
@@ -1232,7 +1242,7 @@ mod test {
         let qc = QuorumCertificate::new(vote, sigcol);
 
         // create invalid TC
-        let tminfo = TimeoutInfo::<SignatureType, SignatureCollectionType> {
+        let tminfo = TimeoutInfo::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
             epoch: Epoch(2), // wrong epoch
             round: Round(11),
             high_qc: qc.clone(),
@@ -1255,13 +1265,14 @@ mod test {
             sigs: tmo_sig_col,
         };
 
-        let tc = TimeoutCertificate::<SignatureType, SignatureCollectionType> {
-            epoch: Epoch(2), // wrong epoch here
-            round: Round(11),
-            tips: vec![],
-            timeout_votes: vec![],
-            high_tip_digest_sigs: vec![high_qc_sig_tuple],
-        };
+        let tc =
+            TimeoutCertificate::<SignatureType, SignatureCollectionType, ExecutionProtocolType> {
+                epoch: Epoch(2), // wrong epoch here
+                round: Round(11),
+                tips: vec![],
+                timeout_votes: vec![],
+                high_tip_digest_sigs: vec![high_qc_sig_tuple],
+            };
 
         // moved here because of valmap ownership
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
@@ -1271,7 +1282,9 @@ mod test {
         let qc_verify_result = verify_certificates(
             &epoch_manager,
             &val_epoch_map,
-            &None::<TimeoutCertificate<SignatureType, SignatureCollectionType>>,
+            &None::<
+                TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+            >,
             &qc,
         );
         assert_eq!(qc_verify_result, Ok(()));
