@@ -12,7 +12,7 @@ use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockK
 use monad_types::{Round, SeqNum};
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tracing::trace;
+use tracing::{info, trace};
 
 use crate::{
     block_handlers::get_block_key_from_tag,
@@ -101,6 +101,11 @@ async fn estimate_gas<T: EthCallProvider>(
 ) -> Result<Quantity, JsonRpcError> {
     let mut txn: TxEnvelope = call_request.clone().try_into()?;
 
+    info!(
+        "eth_estimateGas: original_tx_gas: {}, provider_gas_limit: {}, protocol_gas_limit: {}",
+        original_tx_gas, provider_gas_limit, protocol_gas_limit
+    );
+
     let (gas_used, gas_refund) = match provider
         .eth_call(txn.clone(), eth_call_executor.clone())
         .await
@@ -161,6 +166,13 @@ async fn estimate_gas<T: EthCallProvider>(
             (gas_used.sub(1), txn.gas_limit())
         };
 
+    info!(
+        "eth_estimateGas: Before while loop, lower = {}, upper = {}, gas_limit = {}",
+        lower_bound_gas_limit,
+        upper_bound_gas_limit,
+        txn.gas_limit()
+    );
+
     // Binary search for the lowest gas limit.
     while (upper_bound_gas_limit - lower_bound_gas_limit) > 1 {
         // Error ratio from geth https://github.com/ethereum/go-ethereum/blob/c736b04d9b3bec8d9281146490b05075a91e7eea/internal/ethapi/api.go#L57
@@ -175,11 +187,28 @@ async fn estimate_gas<T: EthCallProvider>(
         call_request.gas = Some(U256::from(mid));
         txn = call_request.clone().try_into()?;
 
+        info!(
+            "eth_estimateGas: In while loop, mid = {}, upper = {}, lower = {}",
+            mid, upper_bound_gas_limit, lower_bound_gas_limit
+        );
+
         match provider.eth_call(txn, eth_call_executor.clone()).await {
-            monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult { .. }) => {
+            monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
+                gas_used,
+                gas_refund,
+                ..
+            }) => {
+                info!(
+                    "eth_estimateGas: Success wtih gas_used = {}, gas_refund = {}",
+                    gas_used, gas_refund
+                );
                 upper_bound_gas_limit = mid;
             }
             monad_ethcall::CallResult::Failure(_error_message) => {
+                info!(
+                    "eth_estimateGas: Failure wtih error_message = {:?}",
+                    _error_message
+                );
                 lower_bound_gas_limit = mid;
             }
             _ => {
@@ -189,6 +218,11 @@ async fn estimate_gas<T: EthCallProvider>(
             }
         };
     }
+
+    info!(
+        "eth_estimateGas: Final return value = {}",
+        upper_bound_gas_limit
+    );
 
     Ok(Quantity(upper_bound_gas_limit))
 }

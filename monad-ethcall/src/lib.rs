@@ -164,6 +164,8 @@ pub async fn eth_call(
         });
     }
 
+    info!("eth_estimateGas/eth_call: txn = {:?}", transaction);
+
     let mut rlp_encoded_tx = vec![];
     transaction.encode_2718(&mut rlp_encoded_tx);
 
