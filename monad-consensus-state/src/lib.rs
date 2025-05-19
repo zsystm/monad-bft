@@ -22,8 +22,8 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{
-        BlockPolicy, BlockRange, ConsensusFullBlock, ExecutionResult, OptimisticPolicyCommit,
-        ProposedExecutionResult,
+        BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult,
+        OptimisticPolicyCommit, ProposedExecutionResult,
     },
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, LockedEpoch, RootInfo},
@@ -456,6 +456,11 @@ where
             return cmds;
         }
 
+        if !self.v2_proposal_safety_check(&p) {
+            // TODO log something
+            return cmds;
+        }
+
         // a valid proposal will advance the pacemaker round so capture the original round before
         // handling the proposal certificate
         let _original_round = self.consensus.pacemaker.get_current_round();
@@ -769,7 +774,7 @@ where
                 });
             self.consensus.high_tip = Some(tc.find_high_tip());
             cmds.extend(advance_round_cmds);
-            cmds.extend(self.try_propose());
+            cmds.extend(self.try_repropose(tc));
         }
 
         cmds
@@ -1418,7 +1423,7 @@ where
 
         let ts = 0; // TODO get timestamp
         if let Some(block) = reproposal_block {
-            cmds.extend(self.repropose_block(epoch, round, ts, high_tip, block.clone()));
+            cmds.extend(self.repropose_block(epoch, round, ts, high_tip, tc, block.clone()));
             return cmds;
         } else {
             /// fetch the reproposal block or put together NEC
@@ -1434,42 +1439,38 @@ where
         round: Round,
         ts: u128,
         high_tip: ConsensusTip<ST, SCT, EPT>,
+        tc: TimeoutCertificate<ST, SCT, EPT>,
         repropose_block: BPT::ValidatedBlock,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
 
-        /*
-                let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
-                    execution_body: proposed_execution_inputs.body,
-                });
-                let block_header = ConsensusBlockHeader::new(
-                    *self.nodeid,
-                    epoch,
-                    round,
-                    delayed_execution_results,
-                    proposed_execution_inputs.header,
-                    block_body.get_id(),
-                    high_qc,
-                    seq_num,
-                    timestamp_ns,
-                    round_signature,
-                );
+        let block_body = repropose_block.body().clone();
+        let block_header = ConsensusBlockHeader::new(
+            *self.nodeid,
+            epoch,
+            round,
+            high_tip.delayed_execution_results,
+            high_tip.execution_inputs,
+            repropose_block.get_body_id(),
+            high_tip.qc,
+            high_tip.seq_num,
+            high_tip.timestamp_ns,
+            high_tip.round_signature,
+        );
 
-                let p = ProposalMessage {
-                    block_header,
-                    block_body,
-                    last_round_tc,
-                    nec: None,
-                };
+        let p = ProposalMessage {
+            block_header,
+            block_body,
+            last_round_tc: Some(tc),
+            nec: high_tip.nec,
+        };
 
-                let msg = ConsensusMessage {
-                    version: consensus.version.to_owned(),
-                    message: ProtocolMessage::Proposal(p),
-                }
-                .sign(self.keypair);
-        */
+        let msg = ConsensusMessage {
+            version: self.version,
+            message: ProtocolMessage::Proposal(p),
+        }
+        .sign(self.keypair);
 
-        let msg = todo!();
         cmds.push(ConsensusCommand::Publish {
             target: RouterTarget::Raptorcast(epoch),
             message: msg,
