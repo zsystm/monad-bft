@@ -94,6 +94,26 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     /// Value in this map represents the # of excess chunks received for a successfully decoded msg
     recently_decoded_cache:
         LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, RecentlyDecodedState>,
+
+    // recent_rebroadcast: BTreeMap<
+    //     // evict everything with timestamp < now - MAX_PACKET_DELAY
+    //     u64, // timestamp
+    //     HashMap<
+    //         [u8; HEADER_LEN as usize + 20], // header + merkle root
+    //         // count_ones
+    //         BitVec<usize, Lsb0>, // rebroadcasted ESIs
+    //     >,
+
+    //     // maintain # of AppMessages rebroadcasted in last 3s by node_id, 
+    //     // maintain # of chunks rebroadcasted in last 3s by node_id, 
+    //     // maintain # of signatures rebroadcasted in last 3s by node_id
+    //     // don't rebroadcast same ESI twice
+    //     // don't accept unix_ts_ms from future
+    //     // check author is a leader from nowish before rebroadcasting
+    //     //
+    //     // should this get metered down by self stake?
+    //     // eg max the # of chunks self is willing to rebroadcast per app_message_id by self stake
+    // >,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
