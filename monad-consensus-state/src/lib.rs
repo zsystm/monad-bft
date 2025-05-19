@@ -657,7 +657,11 @@ where
             return cmds;
         }
 
-        debug!(timeout_msg = ?tm, "Remote timeout msg");
+        debug!(
+            ?author,
+            timeout_msg = ?tm,
+            "Remote timeout msg"
+        );
         self.metrics.consensus_events.remote_timeout_msg += 1;
 
         let epoch = self
