@@ -730,7 +730,7 @@ mod tests {
 
         let ws_server = WebSocketServer::new(rx_exec_events, websocket_broadcast_tx.clone());
         tokio::spawn(async move {
-            ws_server.run().await;
+            ws_server.run();
         });
 
         let ws_server_handle = WebSocketServerHandle {

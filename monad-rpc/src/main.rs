@@ -12,13 +12,13 @@ use meta::{monad_net_version, monad_web3_client_version};
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
-use monad_node_config::MonadNodeConfig;
 use monad_event_ring::{
     event_reader::EventReader,
     event_ring::{EventRing, EventRingType},
     event_ring_util::{monitor_single_event_ring_file_writer, path_supports_hugetlb},
 };
 use monad_exec_events::{exec_event_ctypes::EXEC_EVENT_DOMAIN_METADATA, exec_event_stream::*};
+use monad_node_config::MonadNodeConfig;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
@@ -987,9 +987,8 @@ async fn main() -> std::io::Result<()> {
             tokio::sync::broadcast::channel::<websocket_server::Event>(10_000);
 
         let ws_server = WebSocketServer::new(ws_rx, websocket_broadcast_tx.clone());
-        tokio::spawn(async move {
-            ws_server.run().await;
-        });
+
+        std::thread::spawn(|| ws_server.run());
 
         let ws_server_handle = WebSocketServerHandle {
             tx: websocket_broadcast_tx,

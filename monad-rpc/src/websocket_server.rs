@@ -52,9 +52,9 @@ impl WebSocketServer {
         }
     }
 
-    pub async fn run(mut self) {
+    pub fn run(mut self) {
         loop {
-            if let Ok(poll_result) = self.rx.recv_async().await {
+            if let Ok(poll_result) = self.rx.recv() {
                 match poll_result {
                     PollResult::Disconnected => {
                         error!("event stream disconnected; stopping all websocket sessions");
@@ -68,8 +68,7 @@ impl WebSocketServer {
                         self.process_event_stream_item(StreamEvent::StreamGap {
                             last_read_seqno,
                             next_seqno: last_write_seqno,
-                        })
-                        .await;
+                        });
                         self.block_builder.drop_block();
                         self.consensus_state_tracker.reset_all();
                     }
@@ -82,8 +81,7 @@ impl WebSocketServer {
                         self.process_event_stream_item(StreamEvent::StreamGap {
                             last_read_seqno: expired_seqno - 1,
                             next_seqno: last_write_seqno,
-                        })
-                        .await;
+                        });
                         self.block_builder.drop_block();
                         self.consensus_state_tracker.reset_all();
                     }
@@ -106,22 +104,19 @@ impl WebSocketServer {
                                         self.process_block_update(
                                             &abandoned.user_data,
                                             ReferendumOutcome::Abandoned,
-                                        )
-                                        .await;
+                                        );
                                         self.process_event_stream_item(
                                             StreamEvent::AbandonedProposal {
                                                 proposal_meta: abandoned.proposal_meta,
                                             },
-                                        )
-                                        .await;
+                                        );
                                     }
                                 }
                                 ConsensusStateResult::Verification(verified_proposal) => {
                                     self.process_block_update(
                                         &verified_proposal.user_data,
                                         ReferendumOutcome::Advanced(*outcome),
-                                    )
-                                    .await;
+                                    );
                                 }
                                 _ => {}
                             }
@@ -133,17 +128,9 @@ impl WebSocketServer {
                                 self.process_block_update(
                                     &opt_proposal_state.user_data,
                                     ReferendumOutcome::Advanced(*outcome),
-                                )
-                                .await;
+                                );
                             }
                         }
-
-                        // TODO(ken): cloning this is a bad idea
-                        self.process_event_stream_item(StreamEvent::ExecutionEvent {
-                            seqno,
-                            event: event.clone(),
-                        })
-                        .await;
 
                         match self.block_builder.try_append(event) {
                             Some(BlockUpdate::Failed(failed_info)) => {
@@ -165,8 +152,7 @@ impl WebSocketServer {
                                     self.process_block_update(
                                         &updated_proposal.user_data,
                                         ReferendumOutcome::Advanced(ConsensusState::Proposed),
-                                    )
-                                    .await
+                                    );
                                 }
                             }
 
@@ -190,7 +176,7 @@ impl WebSocketServer {
         }
     }
 
-    async fn process_block_update(
+    fn process_block_update(
         &mut self,
         block_update: &ExecutedBlockInfo,
         referendum_outcome: ReferendumOutcome,
@@ -306,7 +292,7 @@ impl WebSocketServer {
         }
     }
 
-    async fn process_event_stream_item(&mut self, event: StreamEvent) {
+    fn process_event_stream_item(&mut self, event: StreamEvent) {
         if self.broadcaster.receiver_count() > 0 {
             if let Err(err) = self.broadcaster.send(Event::Event(StreamItem {
                 protocol_version: 1,
