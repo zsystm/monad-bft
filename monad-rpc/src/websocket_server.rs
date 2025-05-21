@@ -195,6 +195,10 @@ impl WebSocketServer {
         block_update: &ExecutedBlockInfo,
         referendum_outcome: ReferendumOutcome,
     ) {
+        if self.broadcaster.receiver_count() == 0 {
+            return;
+        }
+
         // Given a block update, convert it to a rpc block and logs.
         let difficulty = block_update.eth_header.difficulty;
         let block_hash = block_update.eth_block_hash;
@@ -303,11 +307,13 @@ impl WebSocketServer {
     }
 
     async fn process_event_stream_item(&mut self, event: StreamEvent) {
-        if let Err(err) = self.broadcaster.send(Event::Event(StreamItem {
-            protocol_version: 1,
-            event: event.clone(),
-        })) {
-            warn!("could not broadcast event stream item: {err}")
+        if self.broadcaster.receiver_count() > 0 {
+            if let Err(err) = self.broadcaster.send(Event::Event(StreamItem {
+                protocol_version: 1,
+                event: event.clone(),
+            })) {
+                warn!("could not broadcast event stream item: {err}")
+            }
         }
     }
 }
