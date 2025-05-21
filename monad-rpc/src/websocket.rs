@@ -134,7 +134,10 @@ async fn handler(
             cmd = broadcast_rx.recv() => {
                 match cmd {
                     Ok(msg) => {
-                        handle_notification(&mut session, &subscriptions, msg).await;
+                        if let Err(_) = handle_notification(&mut session, &subscriptions, msg).await {
+                            warn!("cannot send notification on closed connection");
+                            break None;
+                        }
                     }
                     Err(err) => {
                         warn!("received error from websocket server: {err:?}");
@@ -154,7 +157,7 @@ async fn handle_notification(
     mut session: &mut actix_ws::Session,
     subscriptions: &HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     msg: crate::websocket_server::Event,
-) {
+) -> Result<(), actix_ws::Closed> {
     match msg {
         crate::websocket_server::Event::ProcessedBlock {
             header,
@@ -165,7 +168,7 @@ async fn handle_notification(
                 Ok(result) => {
                     if let Some(subs) = subscriptions.get(&SubscriptionKind::NewHeads) {
                         for (id, _) in subs.iter() {
-                            send_notification(&mut session, id.clone(), result.clone()).await;
+                            send_notification(&mut session, id.clone(), result.clone()).await?;
                         }
                     }
                 }
@@ -189,7 +192,7 @@ async fn handle_notification(
                 Ok(result) => {
                     if let Some(subs) = subscriptions.get(&SubscriptionKind::MonadNewHeads) {
                         for (id, _) in subs.iter() {
-                            send_notification(&mut session, id.clone(), result.clone()).await;
+                            send_notification(&mut session, id.clone(), result.clone()).await?;
                         }
                     }
                 }
@@ -214,7 +217,7 @@ async fn handle_notification(
                                 match serde_json::to_value(SubscriptionResult::Logs(log.clone())) {
                                     Ok(result) => {
                                         send_notification(&mut session, id.clone(), result.clone())
-                                            .await;
+                                            .await?;
                                     }
                                     Err(err) => {
                                         error!("error serializing Logs to JSON: {err:?}");
@@ -249,7 +252,7 @@ async fn handle_notification(
                                 )) {
                                     Ok(result) => {
                                         send_notification(&mut session, id.clone(), result.clone())
-                                            .await;
+                                            .await?;
                                     }
                                     Err(err) => {
                                         error!("error serializing MonadLogs to JSON: {err:?}");
@@ -269,7 +272,7 @@ async fn handle_notification(
                 Ok(result) => {
                     if let Some(subs) = subscriptions.get(&SubscriptionKind::MonadEventStream) {
                         for (id, _) in subs.iter() {
-                            send_notification(&mut session, id.clone(), result.clone()).await;
+                            send_notification(&mut session, id.clone(), result.clone()).await?;
                         }
                     }
                 }
@@ -279,7 +282,8 @@ async fn handle_notification(
             }
         }
         _ => {}
-    }
+    };
+    Ok(())
 }
 
 fn maybe_filter_logs<'a>(
@@ -447,18 +451,17 @@ async fn handle_request(
 }
 
 #[inline]
-async fn send_notification(session: &mut actix_ws::Session, id: SubscriptionId, result: Value) {
+async fn send_notification(session: &mut actix_ws::Session, id: SubscriptionId, result: Value) -> Result<(), actix_ws::Closed> {
     match serde_json::to_value(EthSubscribeResult::new(id.0, result)) {
         Ok(body) => {
             let update = crate::jsonrpc::Notification::new("eth_subscription".to_string(), body);
-            if let Err(err) = session.text(to_response(&update)).await {
-                warn!("ws handler PublishMessage text error: {err:?}");
-            };
+            session.text(to_response(&update)).await
         }
         Err(err) => {
             error!("error serializing EthSubscribeResult to JSON: {err:?}");
+            Ok(())
         }
-    };
+    }
 }
 
 #[inline]
