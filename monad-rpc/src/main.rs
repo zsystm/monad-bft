@@ -984,7 +984,7 @@ async fn main() -> std::io::Result<()> {
 
         let (ws_tx, ws_rx) = flume::bounded::<PollResult>(10_000);
         let (websocket_broadcast_tx, _) =
-            tokio::sync::broadcast::channel::<websocket_server::Event>(10_000);
+            tokio::sync::broadcast::channel::<websocket_server::Event>(1_000_000);
 
         let ws_server = WebSocketServer::new(ws_rx, websocket_broadcast_tx.clone());
 
@@ -1060,7 +1060,7 @@ async fn main() -> std::io::Result<()> {
             })
             .bind((args.rpc_addr.clone(), args.ws_port))?
             .shutdown_timeout(1)
-            .workers(2),
+            .workers(4),
         )
     } else {
         None
