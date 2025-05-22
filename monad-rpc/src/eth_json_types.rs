@@ -2,12 +2,12 @@ use std::str::FromStr;
 
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
-use schemars::JsonSchema;
 use alloy_rpc_types::{
     pubsub::Params, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
 };
 use monad_exec_events::exec_events::{ExecEvent, ProposalMetadata};
 use monad_types::BlockId;
+use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tracing::debug;

@@ -983,8 +983,9 @@ async fn main() -> std::io::Result<()> {
         };
 
         let (ws_tx, ws_rx) = flume::bounded::<PollResult>(10_000);
-        let (websocket_broadcast_tx, _) =
-            tokio::sync::broadcast::channel::<websocket_server::Event>(1_000_000);
+        let (websocket_broadcast_tx, _) = tokio::sync::broadcast::channel::<
+            Result<websocket_server::Event, websocket_server::Error>,
+        >(1_000_000);
 
         let ws_server = WebSocketServer::new(ws_rx, websocket_broadcast_tx.clone());
 

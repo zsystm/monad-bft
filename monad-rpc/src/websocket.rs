@@ -32,7 +32,9 @@ pub struct SubscriptionId(pub FixedData<16>);
 
 #[derive(Clone)]
 pub struct WebSocketServerHandle {
-    pub tx: tokio::sync::broadcast::Sender<crate::websocket_server::Event>,
+    pub tx: tokio::sync::broadcast::Sender<
+        Result<crate::websocket_server::Event, crate::websocket_server::Error>,
+    >,
 }
 
 pub async fn ws_handler(
@@ -48,7 +50,9 @@ pub async fn ws_handler(
 async fn handler(
     mut session: actix_ws::Session,
     msg_stream: actix_ws::MessageStream,
-    rx: tokio::sync::broadcast::Receiver<crate::websocket_server::Event>,
+    rx: tokio::sync::broadcast::Receiver<
+        Result<crate::websocket_server::Event, crate::websocket_server::Error>,
+    >,
 ) {
     debug!("new websocket connection started");
     let mut last_heartbeat = Instant::now();
@@ -133,15 +137,19 @@ async fn handler(
             }
             cmd = broadcast_rx.recv() => {
                 match cmd {
-                    Ok(msg) => {
+                    Ok(Ok(msg)) => {
                         if let Err(_) = handle_notification(&mut session, &subscriptions, msg).await {
                             warn!("cannot send notification on closed connection");
                             break None;
                         }
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         warn!("received error from websocket server: {err:?}");
-                        break Some(CloseReason { code: ws::CloseCode::Error, description: Some("websocket server is not running".to_string()) })
+                        break Some(CloseReason { code: ws::CloseCode::Error, description: Some(err.to_string()) })
+                    }
+                    Err(err) => {
+                        warn!("all websocket senders have been dropped: {err:?}");
+                        break None;
                     }
                 }
             }
@@ -451,7 +459,11 @@ async fn handle_request(
 }
 
 #[inline]
-async fn send_notification(session: &mut actix_ws::Session, id: SubscriptionId, result: Value) -> Result<(), actix_ws::Closed> {
+async fn send_notification(
+    session: &mut actix_ws::Session,
+    id: SubscriptionId,
+    result: Value,
+) -> Result<(), actix_ws::Closed> {
     match serde_json::to_value(EthSubscribeResult::new(id.0, result)) {
         Ok(body) => {
             let update = crate::jsonrpc::Notification::new("eth_subscription".to_string(), body);
@@ -527,7 +539,7 @@ mod tests {
             SubscriptionResult,
         },
         hex,
-        websocket_server::{Event, WebSocketServer},
+        websocket_server::{self, Event, WebSocketServer},
         MonadJsonRootSpanBuilder,
     };
 
@@ -728,13 +740,11 @@ mod tests {
     }
 
     fn create_test_server(rx_exec_events: Receiver<PollResult>) -> actix_test::TestServer {
-        let (websocket_broadcast_tx, websocket_broadcast_rx) =
-            tokio::sync::broadcast::channel::<Event>(10_000);
+        let (websocket_broadcast_tx, _) =
+            tokio::sync::broadcast::channel::<Result<Event, websocket_server::Error>>(10_000);
 
         let ws_server = WebSocketServer::new(rx_exec_events, websocket_broadcast_tx.clone());
-        tokio::spawn(async move {
-            ws_server.run();
-        });
+        std::thread::spawn(|| ws_server.run());
 
         let ws_server_handle = WebSocketServerHandle {
             tx: websocket_broadcast_tx,
@@ -833,17 +843,28 @@ mod tests {
                     .await
                     .unwrap();
 
-                let frame = framed.next().await.unwrap().unwrap();
-                assert!(matches!(frame, Frame::Text(_)));
-                if let Frame::Text(resp) = frame {
-                    let resp: serde_json::Value = serde_json::from_slice(&resp).unwrap();
-                    let resp: crate::jsonrpc::Response = serde_json::from_value(resp).unwrap();
-                    let resp: bool = serde_json::from_value(resp.result.unwrap()).unwrap();
-                    assert!(resp);
-                } else {
-                    panic!("Expected a text frame");
-                };
-                break;
+                loop {
+                    let frame = framed.next().await.unwrap().unwrap();
+                    assert!(matches!(frame, Frame::Text(_)));
+                    if let Frame::Text(resp) = frame {
+                        let resp: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+                        let resp: Result<crate::jsonrpc::Response, serde_json::Error> =
+                            serde_json::from_value(resp);
+                        match resp {
+                            Ok(resp) => {
+                                let resp: bool =
+                                    serde_json::from_value(resp.result.unwrap()).unwrap();
+                                assert!(resp);
+                                return;
+                            }
+                            Err(_) => {
+                                continue;
+                            }
+                        }
+                    } else {
+                        panic!("Expected a text frame");
+                    };
+                }
             }
         }
     }
@@ -1038,12 +1059,6 @@ mod tests {
         // Further reads should return None as the connection is closed
         assert!(conn0.next().await.is_none());
         assert!(conn1.next().await.is_none());
-
-        // Connect to the server again, expect an error
-        let mut conn2 = server.ws_at("/ws/").await.unwrap();
-
-        let frame = conn2.next().await.unwrap().unwrap();
-        assert!(matches!(frame, Frame::Close(_)));
     }
 
     #[actix_rt::test]

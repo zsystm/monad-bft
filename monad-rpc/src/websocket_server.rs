@@ -15,12 +15,25 @@ pub struct WebSocketServer {
     rx: flume::Receiver<PollResult>,
     block_builder: BlockBuilder,
     consensus_state_tracker: ConsensusStateTracker<Box<ExecutedBlockInfo>>,
-    broadcaster: tokio::sync::broadcast::Sender<Event>,
+    broadcaster: tokio::sync::broadcast::Sender<Result<Event, Error>>,
 }
 
 enum ReferendumOutcome {
     Advanced(ConsensusState),
     Abandoned,
+}
+
+#[derive(Clone, Debug)]
+pub enum Error {
+    Disconnected,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Disconnected => write!(f, "monad event stream is disconnected"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -42,7 +55,7 @@ pub enum Event {
 impl WebSocketServer {
     pub fn new(
         rx: flume::Receiver<PollResult>,
-        broadcaster: tokio::sync::broadcast::Sender<Event>,
+        broadcaster: tokio::sync::broadcast::Sender<Result<Event, Error>>,
     ) -> Self {
         Self {
             rx,
@@ -58,6 +71,7 @@ impl WebSocketServer {
                 match poll_result {
                     PollResult::Disconnected => {
                         error!("event stream disconnected; stopping all websocket sessions");
+                        self.broadcaster.send(Err(Error::Disconnected)).map_err(|err| warn!("could not send event stream disconnect message to clients: {err}"));
                         return;
                     }
                     PollResult::Gap {
@@ -131,6 +145,12 @@ impl WebSocketServer {
                                 );
                             }
                         }
+
+                        // TODO(ken): cloning this is a bad idea
+                        self.process_event_stream_item(StreamEvent::ExecutionEvent {
+                            seqno,
+                            event: event.clone(),
+                        });
 
                         match self.block_builder.try_append(event) {
                             Some(BlockUpdate::Failed(failed_info)) => {
@@ -274,30 +294,30 @@ impl WebSocketServer {
             ReferendumOutcome::Abandoned => BlockCommitState::Abandoned,
         };
 
-        if let Err(err) = self.broadcaster.send(Event::ProcessedBlock {
+        if let Err(err) = self.broadcaster.send(Ok(Event::ProcessedBlock {
             header: block.header.clone(),
             block_id: BlockId(monad_types::Hash(block_update.proposal_meta.id.0 .0)),
             commit_state,
-        }) {
+        })) {
             warn!("publish processed block send error: {err}");
         }
 
-        if let Err(err) = self.broadcaster.send(Event::ProcessedLogs {
+        if let Err(err) = self.broadcaster.send(Ok(Event::ProcessedLogs {
             logs,
             header: block.header.clone(),
             block_id: BlockId(monad_types::Hash(block_update.proposal_meta.id.0 .0)),
             commit_state,
-        }) {
+        })) {
             warn!("publish processed log send error: {err}");
         }
     }
 
     fn process_event_stream_item(&mut self, event: StreamEvent) {
         if self.broadcaster.receiver_count() > 0 {
-            if let Err(err) = self.broadcaster.send(Event::Event(StreamItem {
+            if let Err(err) = self.broadcaster.send(Ok(Event::Event(StreamItem {
                 protocol_version: 1,
-                event: event.clone(),
-            })) {
+                event,
+            }))) {
                 warn!("could not broadcast event stream item: {err}")
             }
         }
