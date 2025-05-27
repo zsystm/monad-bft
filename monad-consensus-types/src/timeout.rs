@@ -1,4 +1,7 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{
+    collections::{BTreeSet, HashMap},
+    marker::PhantomData,
+};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_crypto::certificate_signature::{
@@ -79,7 +82,7 @@ where
             high_tip_digest: self.high_tip.as_ref().map(|ht| TimeoutTipDigest {
                 high_tip_round: ht.round,
                 high_tip_qc_round: ht.qc.get_round(),
-                high_tip_nec_round: ht.nec.as_ref().map(|nec| nec.msg.round),
+                high_tip_nec_round: ht.nec.as_ref().map(|nec| nec.round),
             }),
         }
     }
@@ -246,8 +249,7 @@ where
     }
 
     pub fn find_high_tip(&self) -> ConsensusTip<ST, SCT, EPT> {
-        todo!();
-        //find_high_tip(&self.tips).expect("TimeoutCertificate must have a non-empty set of tips")
+        find_high_tip(&self.tips).expect("TimeoutCertificate must have a non-empty set of tips")
     }
 }
 
@@ -259,11 +261,29 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    if tips.is_empty() {
+        return None;
+    }
+
     if tips.iter().any(|tip| !is_tip_fresh_proposal(tip)) {
         return None;
     }
 
-    tips.iter().max_by_key(|tip| tip.round).cloned()
+    let max_round = tips
+        .iter()
+        .max_by_key(|tip| tip.round)
+        .expect("non empty tips")
+        .round;
+
+    let high_tip_block_ids: BTreeSet<BlockId> = tips
+        .iter()
+        .filter_map(|tip| (tip.round == max_round).then_some(tip.block_id))
+        .collect();
+    if high_tip_block_ids.len() > 1 {
+        todo!("collect evidence, different high tips for same round");
+    }
+
+    tips.iter().find(|tip| tip.round == max_round).cloned()
 }
 
 pub fn is_tip_fresh_proposal<ST, SCT, EPT>(tip: &ConsensusTip<ST, SCT, EPT>) -> bool

@@ -3,10 +3,11 @@ use std::{fmt::Debug, marker::PhantomData};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     block::ConsensusBlockHeader,
-    no_endorsement::NoEndorsementCertificate,
+    no_endorsement::{self, NoEndorsement, NoEndorsementCertificate},
     payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate, TimeoutVote},
+    tip::ConsensusTip,
     voting::Vote,
 };
 use monad_crypto::{
@@ -15,7 +16,7 @@ use monad_crypto::{
     },
     hasher::{Hashable, Hasher},
 };
-use monad_types::{ExecutionProtocol, NodeId};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, Round};
 
 /// Consensus protocol vote message
 ///
@@ -161,6 +162,54 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct RoundRecoveryMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub round: Round,
+    pub epoch: Epoch,
+    pub high_tip: ConsensusTip<ST, SCT, EPT>,
+    pub tc: TimeoutCertificate<ST, SCT, EPT>,
+}
+
+impl<ST, SCT, EPT> Hashable for RoundRecoveryMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct NoEndorsementMessage<SCT: SignatureCollection> {
+    pub no_endorsement: NoEndorsement,
+    pub sig: SCT::SignatureType,
+}
+
+impl<SCT: SignatureCollection> NoEndorsementMessage<SCT> {
+    pub fn new(no_endorsement: NoEndorsement, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
+        let enc = alloy_rlp::encode(no_endorsement);
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(enc.as_ref(), key);
+
+        Self {
+            no_endorsement,
+            sig,
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> Hashable for NoEndorsementMessage<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(alloy_rlp::encode(self));
     }

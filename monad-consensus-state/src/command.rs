@@ -12,6 +12,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, OptimisticPolicyCommit},
     checkpoint::Checkpoint,
+    no_endorsement::NoEndorsementCertificate,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -21,7 +22,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
+use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -55,6 +56,7 @@ where
         high_qc: QuorumCertificate<SCT>,
         round_signature: RoundSignature<SCT::SignatureType>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        nec: Option<NoEndorsementCertificate<SCT>>,
 
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -72,6 +74,11 @@ where
     RequestSync(BlockRange),
     /// Cancels BlockSync request
     CancelSync(BlockRange),
+    /// Serviced by block_sync in MonadState
+    /// TODO: Add specific node to request from
+    RequestSyncDirect(BlockId),
+    /// Cancels a direct BlockSync request
+    CancelSyncDirect(BlockId),
     /// Too far behind, request StateSync with:
     /// 1. New blocktree root
     /// 2. New high_qc

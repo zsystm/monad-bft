@@ -24,7 +24,10 @@ use monad_validator::{
 use crate::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{
+            NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage,
+            VoteMessage,
+        },
     },
     validation::message::well_formed,
 };
@@ -304,6 +307,22 @@ where
                     message: Unvalidated::new(ProtocolMessage::Timeout(validated.into_inner())),
                 }
             }
+            ProtocolMessage::RoundRecovery(r) => {
+                let validated = Unvalidated::new(r).validate(epoch_manager, val_epoch_map)?;
+                Validated {
+                    message: Unvalidated::new(ProtocolMessage::RoundRecovery(
+                        validated.into_inner(),
+                    )),
+                }
+            }
+            ProtocolMessage::NoEndorsement(n) => {
+                let validated = Unvalidated::new(n).validate(epoch_manager)?;
+                Validated {
+                    message: Unvalidated::new(ProtocolMessage::NoEndorsement(
+                        validated.into_inner(),
+                    )),
+                }
+            }
         })
     }
 }
@@ -425,6 +444,69 @@ where
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
         match epoch_manager.get_epoch(self.obj.timeout.tminfo.round) {
             Some(epoch) if self.obj.timeout.tminfo.epoch == epoch => Ok(()),
+            _ => Err(Error::InvalidEpoch),
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Unvalidated<RoundRecoveryMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn validate<VTF, VT>(
+        self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+    ) -> Result<Validated<RoundRecoveryMessage<ST, SCT, EPT>>, Error>
+    where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
+        self.verify_epoch(epoch_manager)?;
+
+        let tc_epoch = self.obj.tc.epoch;
+        let local_tc_epoch = epoch_manager
+            .get_epoch(self.obj.tc.round)
+            .ok_or(Error::InvalidEpoch)?;
+        if tc_epoch != local_tc_epoch {
+            return Err(Error::InvalidEpoch);
+        }
+        let validator_set = val_epoch_map
+            .get_val_set(&tc_epoch)
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
+        let validator_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&tc_epoch)
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
+        verify_tc(validator_set, validator_cert_pubkeys, &self.obj.tc)?;
+
+        Ok(Validated { message: self })
+    }
+
+    /// Check local epoch manager record for round_recovery.round is equal to round_recovery.epoch
+    fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
+        match epoch_manager.get_epoch(self.obj.round) {
+            Some(epoch) if self.obj.epoch == epoch => Ok(()),
+            _ => Err(Error::InvalidEpoch),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> Unvalidated<NoEndorsementMessage<SCT>> {
+    pub fn validate(
+        self,
+        epoch_manager: &EpochManager,
+    ) -> Result<Validated<NoEndorsementMessage<SCT>>, Error> {
+        self.verify_epoch(epoch_manager)?;
+
+        Ok(Validated { message: self })
+    }
+
+    /// Check local epoch manager record for no_endorsement.round is equal to no_endorsement.epoch
+    fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
+        match epoch_manager.get_epoch(self.obj.no_endorsement.round) {
+            Some(epoch) if self.obj.no_endorsement.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }

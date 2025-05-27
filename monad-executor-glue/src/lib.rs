@@ -19,6 +19,7 @@ use monad_consensus_types::{
     },
     checkpoint::Checkpoint,
     metrics::Metrics,
+    no_endorsement::NoEndorsementCertificate,
     payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
@@ -323,6 +324,7 @@ where
         high_qc: QuorumCertificate<SCT>,
         round_signature: RoundSignature<SCT::SignatureType>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        nec: Option<NoEndorsementCertificate<SCT>>,
 
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -457,6 +459,10 @@ where
         block_range: BlockRange,
         full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
     },
+    /// a block that was previously requested
+    BlockSyncDirect {
+        full_block: ConsensusFullBlock<ST, SCT, EPT>,
+    },
     SendVote(Round),
 }
 
@@ -488,6 +494,10 @@ where
             }
             Self::SendVote(round) => {
                 let enc: [&dyn Encodable; 2] = [&4u8, &round];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::BlockSyncDirect { full_block } => {
+                let enc: [&dyn Encodable; 2] = [&5u8, &full_block];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -523,6 +533,10 @@ where
                 })
             }
             4 => Ok(Self::SendVote(Round::decode(&mut payload)?)),
+            5 => {
+                let full_block = ConsensusFullBlock::<ST, SCT, EPT>::decode(&mut payload)?;
+                Ok(Self::BlockSyncDirect { full_block })
+            }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown ConsensusEvent",
             )),
@@ -558,6 +572,10 @@ where
             ConsensusEvent::SendVote(round) => {
                 f.debug_struct("SendVote").field("round", round).finish()
             }
+            ConsensusEvent::BlockSyncDirect { full_block } => f
+                .debug_struct("BlockSyncDirect")
+                .field("full_block", full_block)
+                .finish(),
         }
     }
 }
@@ -596,6 +614,17 @@ where
     /// self sending us missing block (from ledger)
     SelfResponse {
         response: BlockSyncResponseMessage<ST, SCT, EPT>,
+    },
+    /// self requesting for a single missing block
+    /// this request must be retried if necessary
+    SelfRequestDirect {
+        requester: BlockSyncSelfRequester,
+        block_id: BlockId,
+    },
+    /// cancel request for direct block
+    SelfCancelRequestDirect {
+        requester: BlockSyncSelfRequester,
+        block_id: BlockId,
     },
 }
 
@@ -638,6 +667,22 @@ where
                 .field("response", response)
                 .finish(),
             Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
+            Self::SelfRequestDirect {
+                requester,
+                block_id,
+            } => f
+                .debug_struct("BlockSyncSelfRequestDirect")
+                .field("requester", requester)
+                .field("block_id", block_id)
+                .finish(),
+            Self::SelfCancelRequestDirect {
+                requester,
+                block_id,
+            } => f
+                .debug_struct("BlockSyncSelfCancelRequestDirect")
+                .field("requester", requester)
+                .field("block_id", block_id)
+                .finish(),
         }
     }
 }
@@ -678,6 +723,20 @@ where
             }
             Self::SelfResponse { response } => {
                 let enc: [&dyn Encodable; 2] = [&6u8, &response];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::SelfRequestDirect {
+                requester,
+                block_id,
+            } => {
+                let enc: [&dyn Encodable; 3] = [&7u8, &requester, &block_id];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::SelfCancelRequestDirect {
+                requester,
+                block_id,
+            } => {
+                let enc: [&dyn Encodable; 3] = [&8u8, &requester, &block_id];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -725,6 +784,22 @@ where
             6 => {
                 let response = BlockSyncResponseMessage::<ST, SCT, EPT>::decode(&mut payload)?;
                 Ok(Self::SelfResponse { response })
+            }
+            7 => {
+                let requester = BlockSyncSelfRequester::decode(&mut payload)?;
+                let block_id = BlockId::decode(&mut payload)?;
+                Ok(Self::SelfRequestDirect {
+                    requester,
+                    block_id,
+                })
+            }
+            8 => {
+                let requester = BlockSyncSelfRequester::decode(&mut payload)?;
+                let block_id = BlockId::decode(&mut payload)?;
+                Ok(Self::SelfCancelRequestDirect {
+                    requester,
+                    block_id,
+                })
             }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown BlockSyncEvent",
@@ -780,6 +855,7 @@ where
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        nec: Option<NoEndorsementCertificate<SCT>>,
     },
 
     /// Txs that are incoming via other nodes
@@ -809,6 +885,7 @@ where
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                nec,
             } => {
                 let mut tc_buf = BytesMut::new();
                 match last_round_tc {
@@ -821,8 +898,19 @@ where
                         encode_list::<_, dyn Encodable>(&enc, &mut tc_buf);
                     }
                 }
+                let mut nec_buf = BytesMut::new();
+                match nec {
+                    None => {
+                        let enc: [&dyn Encodable; 1] = [&1u8];
+                        encode_list::<_, dyn Encodable>(&enc, &mut nec_buf);
+                    }
+                    Some(nec) => {
+                        let enc: [&dyn Encodable; 2] = [&2u8, &nec];
+                        encode_list::<_, dyn Encodable>(&enc, &mut nec_buf);
+                    }
+                }
 
-                let enc: [&dyn Encodable; 10] = [
+                let enc: [&dyn Encodable; 11] = [
                     &1u8,
                     epoch,
                     round,
@@ -833,6 +921,7 @@ where
                     delayed_execution_results,
                     proposed_execution_inputs,
                     &tc_buf,
+                    &nec_buf,
                 ];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
@@ -876,6 +965,14 @@ where
                         "failed to decode unknown tc in mempool event",
                     )),
                 }?;
+                let mut nec_payload = Header::decode_bytes(&mut payload, true)?;
+                let nec = match u8::decode(&mut nec_payload)? {
+                    1 => Ok(None),
+                    2 => Ok(Some(NoEndorsementCertificate::<SCT>::decode(&mut payload)?)),
+                    _ => Err(alloy_rlp::Error::Custom(
+                        "failed to decode unknown nec in mempool event",
+                    )),
+                }?;
                 Ok(Self::Proposal {
                     epoch,
                     round,
@@ -886,6 +983,7 @@ where
                     delayed_execution_results,
                     proposed_execution_inputs,
                     last_round_tc: tc,
+                    nec,
                 })
             }
             2 => {
@@ -921,6 +1019,7 @@ where
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                nec,
             } => f
                 .debug_struct("Proposal")
                 .field("epoch", epoch)
@@ -932,6 +1031,7 @@ where
                 .field("delayed_execution_results", delayed_execution_results)
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)
+                .field("nec", nec)
                 .finish(),
             Self::ForwardedTxs { sender, txs } => f
                 .debug_struct("ForwardedTxs")

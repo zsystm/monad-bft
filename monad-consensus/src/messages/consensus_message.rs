@@ -8,8 +8,9 @@ use monad_crypto::{
 };
 use monad_types::{ExecutionProtocol, Round};
 
+use super::message::NoEndorsementMessage;
 use crate::{
-    messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    messages::message::{ProposalMessage, RoundRecoveryMessage, TimeoutMessage, VoteMessage},
     validation::signing::{Validated, Verified},
 };
 
@@ -31,6 +32,12 @@ where
 
     /// Consensus protocol timeout message
     Timeout(TimeoutMessage<ST, SCT, EPT>),
+
+    /// Consensus protocol round recovery message
+    RoundRecovery(RoundRecoveryMessage<ST, SCT, EPT>),
+
+    /// No endorsement message
+    NoEndorsement(NoEndorsementMessage<SCT>),
 }
 
 impl<ST, SCT, EPT> Debug for ProtocolMessage<ST, SCT, EPT>
@@ -44,6 +51,8 @@ where
             ProtocolMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
             ProtocolMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
             ProtocolMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
+            ProtocolMessage::RoundRecovery(r) => f.debug_tuple("").field(&r).finish(),
+            ProtocolMessage::NoEndorsement(n) => f.debug_tuple("").field(&n).finish(),
         }
     }
 }
@@ -86,6 +95,14 @@ where
                 let enc: [&dyn Encodable; 3] = [&name, &3u8, &m];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            ProtocolMessage::RoundRecovery(r) => {
+                let enc: [&dyn Encodable; 3] = [&name, &4u8, &r];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            ProtocolMessage::NoEndorsement(n) => {
+                let enc: [&dyn Encodable; 3] = [&name, &5u8, &n];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -113,6 +130,12 @@ where
             3 => Ok(ProtocolMessage::Timeout(TimeoutMessage::decode(
                 &mut payload,
             )?)),
+            4 => Ok(ProtocolMessage::RoundRecovery(
+                RoundRecoveryMessage::decode(&mut payload)?,
+            )),
+            5 => Ok(ProtocolMessage::NoEndorsement(
+                NoEndorsementMessage::decode(&mut payload)?,
+            )),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown ProtocolMessage",
             )),
@@ -164,6 +187,8 @@ where
             ProtocolMessage::Proposal(p) => p.block_header.round,
             ProtocolMessage::Vote(v) => v.vote.round,
             ProtocolMessage::Timeout(t) => t.timeout.tminfo.round,
+            ProtocolMessage::RoundRecovery(r) => r.round,
+            ProtocolMessage::NoEndorsement(n) => n.no_endorsement.round,
         }
     }
 }

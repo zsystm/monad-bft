@@ -217,6 +217,12 @@ where
                     Ok((author, ProtocolMessage::Timeout(msg))) => {
                         consensus.handle_timeout_message(author, msg)
                     }
+                    Ok((author, ProtocolMessage::RoundRecovery(msg))) => {
+                        consensus.handle_round_recovery_message(author, msg)
+                    }
+                    Ok((author, ProtocolMessage::NoEndorsement(msg))) => {
+                        consensus.handle_no_endorsement_message(author, msg)
+                    }
                     Err(evidence) => evidence,
                 }
             }
@@ -226,6 +232,9 @@ where
                 full_blocks,
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
+            ConsensusEvent::BlockSyncDirect { full_block } => {
+                consensus.handle_block_sync_direct(full_block)
+            }
         };
         consensus_cmds
             .into_iter()
@@ -293,6 +302,7 @@ where
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                nec,
             } => {
                 consensus.metrics.consensus_events.creating_proposal += 1;
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
@@ -315,7 +325,7 @@ where
                     block_header,
                     block_body,
                     last_round_tc,
-                    nec: None,
+                    nec,
                 };
 
                 let msg = ConsensusMessage {
@@ -564,6 +574,7 @@ where
                 high_qc,
                 round_signature,
                 last_round_tc,
+                nec,
 
                 tx_limit,
                 proposal_gas_limit,
@@ -581,6 +592,7 @@ where
                     high_qc,
                     round_signature,
                     last_round_tc,
+                    nec,
 
                     tx_limit,
                     proposal_gas_limit,
@@ -641,6 +653,22 @@ where
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequest {
                         requester: BlockSyncSelfRequester::Consensus,
                         block_range,
+                    }),
+                )));
+            }
+            ConsensusCommand::RequestSyncDirect(block_id) => {
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequestDirect {
+                        requester: BlockSyncSelfRequester::Consensus,
+                        block_id,
+                    }),
+                )));
+            }
+            ConsensusCommand::CancelSyncDirect(block_id) => {
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequestDirect {
+                        requester: BlockSyncSelfRequester::Consensus,
+                        block_id,
                     }),
                 )));
             }

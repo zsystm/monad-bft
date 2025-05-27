@@ -14,7 +14,10 @@ use monad_chain_config::{
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{
+            NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage,
+            VoteMessage,
+        },
     },
     pacemaker::Pacemaker,
     validation::safety::Safety,
@@ -28,6 +31,7 @@ use monad_consensus_types::{
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, LockedEpoch, RootInfo},
     metrics::Metrics,
+    no_endorsement::{NoEndorsement, NoEndorsementCertificate},
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -81,6 +85,7 @@ where
     safety: Safety,
     block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
     last_proposed_round: Round,
+    leader_state: Option<LeaderState<ST, SCT, EPT>>,
 
     finalized_execution_results: BTreeMap<SeqNum, EPT::FinalizedHeader>,
     proposed_execution_results: BTreeMap<Round, ProposedExecutionResult<EPT>>,
@@ -137,6 +142,16 @@ struct BlockSyncRequestStatus {
 enum OutgoingVoteStatus {
     TimerFired,
     VoteReady(Vote),
+}
+
+enum LeaderState<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    Proposed,
+    RecoveringHighTip((Round, ConsensusTip<ST, SCT, EPT>, RecoveryState<SCT>)),
 }
 
 pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
@@ -296,6 +311,7 @@ where
             //
             // on our first proposal, we will set this to the appropriate value
             last_proposed_round: GENESIS_ROUND,
+            leader_state: None,
 
             finalized_execution_results: Default::default(),
             proposed_execution_results: Default::default(),
@@ -1405,12 +1421,6 @@ where
             return cmds;
         }
 
-        let high_tip = tc.find_high_tip();
-        let reproposal_block = self
-            .consensus
-            .pending_block_tree
-            .get_block(&high_tip.block_id);
-
         // create QC from votes if possible
         if let Some(qc) = self.try_qc_from_tc(round, &tc) {
             debug!(?qc, "try_repropose Created QC");
@@ -1421,13 +1431,43 @@ where
             return cmds;
         }
 
+        let high_tip = tc.find_high_tip();
+        let reproposal_block = self
+            .consensus
+            .pending_block_tree
+            .get_block(&high_tip.block_id);
+
         let ts = 0; // TODO get timestamp
         if let Some(block) = reproposal_block {
             cmds.extend(self.repropose_block(epoch, round, ts, high_tip, tc, block.clone()));
             return cmds;
         } else {
-            /// fetch the reproposal block or put together NEC
-            todo!();
+            // request block to repropose
+            cmds.push(ConsensusCommand::RequestSyncDirect(high_tip.block_id));
+
+            // send recovery message to create NEC
+            let round_recovery_msg = RoundRecoveryMessage {
+                round,
+                epoch,
+                high_tip: high_tip.clone(),
+                tc,
+            };
+            let msg = ConsensusMessage {
+                version: self.version,
+                message: ProtocolMessage::RoundRecovery(round_recovery_msg),
+            }
+            .sign(self.keypair);
+            let round_recovery_cmd = ConsensusCommand::Publish {
+                target: RouterTarget::Broadcast(epoch),
+                message: msg,
+            };
+            cmds.push(round_recovery_cmd);
+
+            self.consensus.leader_state = Some(LeaderState::RecoveringHighTip((
+                round,
+                high_tip,
+                RecoveryState::new(),
+            )));
         }
 
         cmds
@@ -1475,6 +1515,120 @@ where
             target: RouterTarget::Raptorcast(epoch),
             message: msg,
         });
+
+        cmds
+    }
+
+    #[must_use]
+    pub fn handle_round_recovery_message(
+        &mut self,
+        author: NodeId<SCT::NodeIdPubKey>,
+        round_recovery_message: RoundRecoveryMessage<ST, SCT, EPT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let mut cmds = Vec::new();
+
+        info!(?round_recovery_message, "received round recovery message");
+        let advance_round_cmds = self
+            .consensus
+            .pacemaker
+            .advance_round_tc(&round_recovery_message.tc, self.epoch_manager, self.metrics)
+            .into_iter()
+            .map(|cmd| {
+                ConsensusCommand::from_pacemaker_command(
+                    self.keypair,
+                    self.cert_keypair,
+                    self.version,
+                    cmd,
+                )
+            });
+        cmds.extend(advance_round_cmds);
+
+        let (round, epoch, leader) = self.get_current_round_info();
+
+        // check if message is for the current round
+        if round_recovery_message.round != round {
+            return cmds;
+        }
+
+        // check if the message is from leader
+        if author != leader {
+            return cmds;
+        }
+
+        let high_tip_id = round_recovery_message.high_tip.block_id;
+        if self
+            .consensus
+            .pending_block_tree
+            .get_block(&high_tip_id)
+            .is_none()
+        {
+            let no_endorsement = NoEndorsement {
+                round,
+                epoch,
+                high_qc_round: self.consensus.high_qc.get_round(),
+            };
+            let no_endorsement_msg = NoEndorsementMessage::new(no_endorsement, self.cert_keypair);
+            let msg = ConsensusMessage {
+                version: self.version,
+                message: ProtocolMessage::NoEndorsement(no_endorsement_msg),
+            }
+            .sign(self.keypair);
+            let send_cmd = ConsensusCommand::Publish {
+                target: RouterTarget::PointToPoint(leader),
+                message: msg,
+            };
+            debug!(
+                ?round,
+                ?no_endorsement,
+                high_tip = ?round_recovery_message.high_tip,
+                ?leader,
+                "created no endorsement message"
+            );
+            cmds.push(send_cmd);
+        }
+
+        cmds
+    }
+
+    #[must_use]
+    pub fn handle_no_endorsement_message(
+        &mut self,
+        author: NodeId<SCT::NodeIdPubKey>,
+        no_endorsement_message: NoEndorsementMessage<SCT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let cmds = Vec::new();
+
+        let (round, _, _) = self.get_current_round_info();
+        if let Some(leader_state) = &mut self.consensus.leader_state {
+            match leader_state {
+                LeaderState::Proposed => {}
+                LeaderState::RecoveringHighTip((recovering_round, high_tip, recovery_state)) => {
+                    assert_eq!(*recovering_round, round);
+
+                    let no_endorsement = no_endorsement_message.no_endorsement;
+
+                    // check if no endorsement is for the recovering round
+                    if *recovering_round != no_endorsement.round {
+                        return cmds;
+                    }
+
+                    if let Some(nec) =
+                        recovery_state.process_no_endorsement_message(no_endorsement_message)
+                    {
+                    }
+                }
+            }
+        }
+
+        cmds
+    }
+
+    #[must_use]
+    pub fn handle_block_sync_direct(
+        &mut self,
+        block: ConsensusFullBlock<ST, SCT, EPT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let cmds = Vec::new();
 
         cmds
     }
@@ -1551,6 +1705,7 @@ where
     fn process_new_round_event(
         &mut self,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        nec: Option<NoEndorsementCertificate<SCT>>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let node_id = *self.nodeid;
         let round = self.consensus.pacemaker.get_current_round();
@@ -1620,6 +1775,7 @@ where
             high_qc,
             round_signature,
             last_round_tc,
+            nec,
 
             tx_limit: self
                 .config
