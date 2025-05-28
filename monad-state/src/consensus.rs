@@ -232,8 +232,8 @@ where
                 full_blocks,
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
-            ConsensusEvent::BlockSyncDirect { full_block } => {
-                consensus.handle_block_sync_direct(full_block)
+            ConsensusEvent::RecoveryBlockSync { full_block } => {
+                consensus.handle_recovery_block_sync(full_block)
             }
         };
         consensus_cmds
@@ -656,17 +656,17 @@ where
                     }),
                 )));
             }
-            ConsensusCommand::RequestSyncDirect(block_id) => {
+            ConsensusCommand::RequestRecoverySync(block_id) => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequestDirect {
+                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRecoveryRequest {
                         requester: BlockSyncSelfRequester::Consensus,
                         block_id,
                     }),
                 )));
             }
-            ConsensusCommand::CancelSyncDirect(block_id) => {
+            ConsensusCommand::CancelRecoverySync(block_id) => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequestDirect {
+                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRecoveryRequest {
                         requester: BlockSyncSelfRequester::Consensus,
                         block_id,
                     }),

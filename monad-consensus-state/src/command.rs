@@ -76,9 +76,9 @@ where
     CancelSync(BlockRange),
     /// Serviced by block_sync in MonadState
     /// TODO: Add specific node to request from
-    RequestSyncDirect(BlockId),
+    RequestRecoverySync(BlockId),
     /// Cancels a direct BlockSync request
-    CancelSyncDirect(BlockId),
+    CancelRecoverySync(BlockId),
     /// Too far behind, request StateSync with:
     /// 1. New blocktree root
     /// 2. New high_qc

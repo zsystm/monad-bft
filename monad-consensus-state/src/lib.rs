@@ -20,6 +20,7 @@ use monad_consensus::{
         },
     },
     pacemaker::Pacemaker,
+    round_recovery_state::RoundRecoveryState,
     validation::safety::Safety,
     vote_state::VoteState,
 };
@@ -85,7 +86,8 @@ where
     safety: Safety,
     block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
     last_proposed_round: Round,
-    leader_state: Option<LeaderState<ST, SCT, EPT>>,
+
+    leader_recovery_state: Option<LeaderRecoveryState<ST, SCT, EPT>>,
 
     finalized_execution_results: BTreeMap<SeqNum, EPT::FinalizedHeader>,
     proposed_execution_results: BTreeMap<Round, ProposedExecutionResult<EPT>>,
@@ -144,14 +146,16 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-enum LeaderState<ST, SCT, EPT>
+struct LeaderRecoveryState<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    Proposed,
-    RecoveringHighTip((Round, ConsensusTip<ST, SCT, EPT>, RecoveryState<SCT>)),
+    recovering_round: Round,
+    recovering_high_tip: ConsensusTip<ST, SCT, EPT>,
+    tc: TimeoutCertificate<ST, SCT, EPT>,
+    round_recovery_state: RoundRecoveryState<SCT>,
 }
 
 pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
@@ -311,7 +315,7 @@ where
             //
             // on our first proposal, we will set this to the appropriate value
             last_proposed_round: GENESIS_ROUND,
-            leader_state: None,
+            leader_recovery_state: None,
 
             finalized_execution_results: Default::default(),
             proposed_execution_results: Default::default(),
@@ -694,7 +698,7 @@ where
             self.metrics.consensus_events.created_qc += 1;
 
             cmds.extend(self.process_certificate_qc(&qc));
-            cmds.extend(self.try_propose());
+            cmds.extend(self.try_propose(None));
         };
 
         cmds
@@ -736,20 +740,7 @@ where
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
             info!(?last_round_tc, "advance round from remote TC");
             self.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
-            let advance_round_cmds = self
-                .consensus
-                .pacemaker
-                .advance_round_tc(last_round_tc, self.epoch_manager, self.metrics)
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                });
-            cmds.extend(advance_round_cmds);
+            cmds.extend(self.process_ceritficate_tc(last_round_tc));
         }
 
         let (tc, remote_timeout_cmds) = self
@@ -775,21 +766,8 @@ where
         if let Some(tc) = tc {
             info!(?tc, "Created TC");
             self.metrics.consensus_events.created_tc += 1;
-            let advance_round_cmds = self
-                .consensus
-                .pacemaker
-                .advance_round_tc(&tc, self.epoch_manager, self.metrics)
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                });
+            cmds.extend(self.process_ceritficate_tc(&tc));
             self.consensus.high_tip = Some(tc.find_high_tip());
-            cmds.extend(advance_round_cmds);
             cmds.extend(self.try_repropose(tc));
         }
 
@@ -1137,6 +1115,7 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
+        let curr_round = self.consensus.pacemaker.get_current_round();
         cmds.extend(
             self.consensus
                 .pacemaker
@@ -1151,6 +1130,11 @@ where
                     )
                 }),
         );
+        let new_round = self.consensus.pacemaker.get_current_round();
+        if new_round != curr_round {
+            // entering a new round should remove recovering state
+            self.consensus.leader_recovery_state = None;
+        }
 
         // retrieve missing blocks if processed QC is highest and points at an
         // unknown block
@@ -1161,6 +1145,37 @@ where
         self.consensus
             .vote_state
             .start_new_round(self.consensus.pacemaker.get_current_round());
+
+        cmds
+    }
+
+    #[must_use]
+    fn process_ceritficate_tc(
+        &mut self,
+        tc: &TimeoutCertificate<ST, SCT, EPT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+        let mut cmds = Vec::new();
+
+        let curr_round = self.consensus.pacemaker.get_current_round();
+        cmds.extend(
+            self.consensus
+                .pacemaker
+                .advance_round_tc(tc, self.epoch_manager, self.metrics)
+                .into_iter()
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        self.keypair,
+                        self.cert_keypair,
+                        self.version,
+                        cmd,
+                    )
+                }),
+        );
+        let new_round = self.consensus.pacemaker.get_current_round();
+        if new_round != curr_round {
+            // entering a new round should remove recovering state
+            self.consensus.leader_recovery_state = None;
+        }
 
         cmds
     }
@@ -1184,7 +1199,7 @@ where
                 state_root_action.expect("should exist if proposal was handled this round");
             cmds.extend(self.try_vote(&block, state_root_action));
         } else {
-            cmds.extend(self.try_propose());
+            cmds.extend(self.try_propose(None));
         }
 
         // statesync if too far from tip
@@ -1347,6 +1362,7 @@ where
             }
 
             let new_high_tip = validated_block.get_consensus_tip();
+            // TODO add NEC here
             self.consensus.high_tip = Some(new_high_tip);
         }
 
@@ -1354,7 +1370,10 @@ where
     }
 
     #[must_use]
-    fn try_propose(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
+    fn try_propose(
+        &mut self,
+        nec: Option<NoEndorsementCertificate<SCT>>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
 
         let (round, validator_set) = {
@@ -1397,7 +1416,7 @@ where
         self.consensus.last_proposed_round = round;
 
         let last_round_tc = self.consensus.pacemaker.get_last_round_tc().clone();
-        cmds.extend(self.process_new_round_event(last_round_tc));
+        cmds.extend(self.process_new_round_event(last_round_tc, nec));
         cmds
     }
 
@@ -1427,7 +1446,7 @@ where
             self.metrics.consensus_events.created_qc += 1;
 
             cmds.extend(self.process_certificate_qc(&qc));
-            cmds.extend(self.try_propose());
+            cmds.extend(self.try_propose(None));
             return cmds;
         }
 
@@ -1443,14 +1462,14 @@ where
             return cmds;
         } else {
             // request block to repropose
-            cmds.push(ConsensusCommand::RequestSyncDirect(high_tip.block_id));
+            cmds.push(ConsensusCommand::RequestRecoverySync(high_tip.block_id));
 
             // send recovery message to create NEC
             let round_recovery_msg = RoundRecoveryMessage {
                 round,
                 epoch,
                 high_tip: high_tip.clone(),
-                tc,
+                tc: tc.clone(),
             };
             let msg = ConsensusMessage {
                 version: self.version,
@@ -1463,11 +1482,12 @@ where
             };
             cmds.push(round_recovery_cmd);
 
-            self.consensus.leader_state = Some(LeaderState::RecoveringHighTip((
-                round,
-                high_tip,
-                RecoveryState::new(),
-            )));
+            self.consensus.leader_recovery_state = Some(LeaderRecoveryState {
+                recovering_round: round,
+                recovering_high_tip: high_tip,
+                tc,
+                round_recovery_state: RoundRecoveryState::new(),
+            });
         }
 
         cmds
@@ -1528,20 +1548,7 @@ where
         let mut cmds = Vec::new();
 
         info!(?round_recovery_message, "received round recovery message");
-        let advance_round_cmds = self
-            .consensus
-            .pacemaker
-            .advance_round_tc(&round_recovery_message.tc, self.epoch_manager, self.metrics)
-            .into_iter()
-            .map(|cmd| {
-                ConsensusCommand::from_pacemaker_command(
-                    self.keypair,
-                    self.cert_keypair,
-                    self.version,
-                    cmd,
-                )
-            });
-        cmds.extend(advance_round_cmds);
+        cmds.extend(self.process_ceritficate_tc(&round_recovery_message.tc));
 
         let (round, epoch, leader) = self.get_current_round_info();
 
@@ -1596,39 +1603,130 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         no_endorsement_message: NoEndorsementMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
 
-        let (round, _, _) = self.get_current_round_info();
-        if let Some(leader_state) = &mut self.consensus.leader_state {
-            match leader_state {
-                LeaderState::Proposed => {}
-                LeaderState::RecoveringHighTip((recovering_round, high_tip, recovery_state)) => {
-                    assert_eq!(*recovering_round, round);
+        let (current_round, epoch, _) = self.get_current_round_info();
+        let maybe_nec =
+            if let Some(leader_recovery_state) = &mut self.consensus.leader_recovery_state {
+                assert_eq!(leader_recovery_state.recovering_round, current_round);
 
-                    let no_endorsement = no_endorsement_message.no_endorsement;
+                let no_endorsement = no_endorsement_message.no_endorsement;
 
-                    // check if no endorsement is for the recovering round
-                    if *recovering_round != no_endorsement.round {
-                        return cmds;
-                    }
-
-                    if let Some(nec) =
-                        recovery_state.process_no_endorsement_message(no_endorsement_message)
-                    {
-                    }
+                // check if no endorsement is for the recovering round
+                if leader_recovery_state.recovering_round != no_endorsement.round {
+                    return cmds;
                 }
-            }
+
+                let validator_set = self
+                    .val_epoch_map
+                    .get_val_set(&epoch)
+                    .expect("timeout message was verified");
+                let validator_mapping = self
+                    .val_epoch_map
+                    .get_cert_pubkeys(&epoch)
+                    .expect("timeout message was verified");
+
+                leader_recovery_state
+                    .round_recovery_state
+                    .process_no_endorsement_message(
+                        validator_set,
+                        validator_mapping,
+                        author,
+                        no_endorsement_message,
+                    )
+            } else {
+                None
+            };
+
+        if let Some(nec) = maybe_nec {
+            // reset leader recovery state after NEC is formed
+            self.consensus.leader_recovery_state = None;
+
+            // TODO cancel recovery sync
+
+            cmds.extend(self.try_propose(Some(nec)));
         }
 
         cmds
     }
 
     #[must_use]
-    pub fn handle_block_sync_direct(
+    pub fn handle_recovery_block_sync(
         &mut self,
-        block: ConsensusFullBlock<ST, SCT, EPT>,
+        full_block: ConsensusFullBlock<ST, SCT, EPT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
+
+        let Some((recovering_block_id, tc)) =
+            self.consensus
+                .leader_recovery_state
+                .as_ref()
+                .map(|leader_recovery_state| {
+                    (
+                        leader_recovery_state.recovering_high_tip.block_id,
+                        leader_recovery_state.tc.clone(),
+                    )
+                })
+        else {
+            return cmds;
+        };
+
+        if recovering_block_id != full_block.get_id() {
+            return cmds;
+        }
+
+        let (header, body) = full_block.split();
+
+        let author_pubkey = self
+            .val_epoch_map
+            .get_cert_pubkeys(&header.epoch)
+            .expect("epoch should be available for blocksync'd block")
+            .map
+            .get(&header.author)
+            .expect("blocksync'd block author should be in validator set");
+
+        let ChainParams {
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
+            vote_pace: _,
+        } = self
+            .config
+            .chain_config
+            .get_chain_revision(header.round)
+            .chain_params();
+
+        let ExecutionChainParams { max_code_size } = {
+            // u64::MAX seconds is ~500 Billion years
+            let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
+                .try_into()
+                .expect("blocksync'd block timestamp > ~500B years");
+            self.config
+                .chain_config
+                .get_execution_chain_revision(timestamp_s)
+                .execution_chain_params()
+        };
+
+        let block = self
+            .block_validator
+            .validate(
+                header,
+                body,
+                Some(author_pubkey),
+                *tx_limit,
+                *proposal_gas_limit,
+                *proposal_byte_limit,
+                *max_code_size,
+            )
+            .expect("majority extended invalid block");
+
+        self.consensus.pending_block_tree.add(block.clone());
+        cmds.extend(self.try_update_coherency(block.get_id()));
+
+        // reset state since we received the block
+        self.consensus.leader_recovery_state = None;
+
+        cmds.extend(self.try_repropose(tc));
 
         cmds
     }
@@ -1898,20 +1996,7 @@ where
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
             debug!(?last_round_tc, "Handled proposal with TC");
             self.metrics.consensus_events.proposal_with_tc += 1;
-            let advance_round_cmds = self
-                .consensus
-                .pacemaker
-                .advance_round_tc(last_round_tc, self.epoch_manager, self.metrics)
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        self.keypair,
-                        self.cert_keypair,
-                        self.version,
-                        cmd,
-                    )
-                });
-            cmds.extend(advance_round_cmds);
+            cmds.extend(self.process_ceritficate_tc(last_round_tc));
         }
 
         cmds

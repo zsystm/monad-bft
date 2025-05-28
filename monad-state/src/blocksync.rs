@@ -119,6 +119,18 @@ where
                 block_sync_wrapper.handle_peer_response(sender, response)
             }
             BlockSyncEvent::Timeout(request) => block_sync_wrapper.handle_timeout(request),
+            BlockSyncEvent::SelfRecoveryRequest {
+                requester,
+                block_id,
+            } => {
+                block_sync_wrapper.handle_self_recovery_request(requester, block_id)
+            }
+            BlockSyncEvent::SelfCancelRecoveryRequest {
+                requester,
+                block_id,
+            } => {
+                block_sync_wrapper.handle_self_cancel_recovery_request(requester, block_id)
+            }
         };
         cmds.into_iter()
             .map(|command| WrappedBlockSyncCommand {
@@ -214,6 +226,20 @@ where
                             MonadEvent::ConsensusEvent(ConsensusEvent::BlockSync {
                                 block_range,
                                 full_blocks,
+                            })
+                        }
+                    },
+                ))]
+            }
+            BlockSyncCommand::EmitFullBlock(requester, full_block) => {
+                vec![Command::LoopbackCommand(LoopbackCommand::Forward(
+                    match requester {
+                        BlockSyncSelfRequester::StateSync => {
+                            unreachable!("statesync should not request full block")
+                        }
+                        BlockSyncSelfRequester::Consensus => {
+                            MonadEvent::ConsensusEvent(ConsensusEvent::RecoveryBlockSync {
+                                full_block,
                             })
                         }
                     },

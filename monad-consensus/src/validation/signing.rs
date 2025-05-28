@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
+    no_endorsement::NoEndorsementCertificate,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{TimeoutCertificate, TimeoutDigest},
@@ -351,6 +352,7 @@ where
             epoch_manager,
             val_epoch_map,
             &self.obj.last_round_tc,
+            &self.obj.nec,
             &self.obj.block_header.qc,
         )?;
 
@@ -424,6 +426,7 @@ where
             epoch_manager,
             val_epoch_map,
             &self.obj.timeout.last_round_tc,
+            &None,
             &self.obj.timeout.tminfo.high_qc,
         )?;
 
@@ -481,7 +484,19 @@ where
             .ok_or(Error::ValidatorSetDataUnavailable)?;
         verify_tc(validator_set, validator_cert_pubkeys, &self.obj.tc)?;
 
+        self.verify_high_tip()?;
+
         Ok(Validated { message: self })
+    }
+
+    // Check if the high tip in TC is the requested high tip to recover
+    fn verify_high_tip(&self) -> Result<(), Error> {
+        let tc_high_tip = self.obj.tc.find_high_tip();
+        if tc_high_tip != self.obj.high_tip {
+            return Err(Error::InvalidHighTip);
+        }
+
+        Ok(())
     }
 
     /// Check local epoch manager record for round_recovery.round is equal to round_recovery.epoch
@@ -516,6 +531,7 @@ fn verify_certificates<ST, SCT, EPT, VTF, VT>(
     epoch_manager: &EpochManager,
     val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     tc: &Option<TimeoutCertificate<ST, SCT, EPT>>,
+    nec: &Option<NoEndorsementCertificate<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
@@ -540,6 +556,23 @@ where
             .get_cert_pubkeys(&tc_epoch)
             .ok_or(Error::ValidatorSetDataUnavailable)?;
         verify_tc(validator_set, validator_cert_pubkeys, tc)?;
+    }
+
+    if let Some(nec) = nec {
+        let nec_epoch = nec.epoch;
+        let local_nec_epoch = epoch_manager
+            .get_epoch(nec.round)
+            .ok_or(Error::InvalidEpoch)?;
+        if nec_epoch != local_nec_epoch {
+            return Err(Error::InvalidEpoch);
+        }
+        let validator_set = val_epoch_map
+            .get_val_set(&nec_epoch)
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
+        let validator_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&nec_epoch)
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
+        verify_nec(validator_set, validator_cert_pubkeys, nec)?;
     }
 
     let qc_epoch = qc.get_epoch();
@@ -630,6 +663,44 @@ where
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
+
+    if !validators.has_super_majority_votes(&node_ids) {
+        return Err(Error::InsufficientStake);
+    }
+
+    Ok(())
+}
+
+/// Verify the no endorsement certificate
+fn verify_nec<SCT, VT>(
+    validators: &VT,
+    validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+    nec: &NoEndorsementCertificate<SCT>,
+) -> Result<(), Error>
+where
+    SCT: SignatureCollection,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+{
+    let mut node_ids = Vec::new();
+    for n in nec.no_endorsement_sig_col.iter() {
+        if n.no_endorsement.round != nec.round {
+            return Err(Error::InvalidNecRound);
+        }
+
+        if n.no_endorsement.high_qc_round >= nec.round {
+            return Err(Error::InvalidNecRound);
+        }
+
+        let msg = alloy_rlp::encode(n.no_endorsement);
+
+        // TODO-3: evidence collection
+        let signers = n
+            .signatures
+            .verify(validator_mapping, msg.as_ref())
+            .map_err(|_| Error::InvalidSignature)?;
+
+        node_ids.extend(signers);
+    }
 
     if !validators.has_super_majority_votes(&node_ids) {
         return Err(Error::InsufficientStake);
@@ -1285,6 +1356,7 @@ mod test {
             &None::<
                 TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
             >,
+            &None,
             &qc,
         );
         assert_eq!(verify_result, Err(Error::InvalidEpoch));
@@ -1367,10 +1439,12 @@ mod test {
             &None::<
                 TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
             >,
+            &None,
             &qc,
         );
         assert_eq!(qc_verify_result, Ok(()));
-        let tc_verify_result = verify_certificates(&epoch_manager, &val_epoch_map, &Some(tc), &qc);
+        let tc_verify_result =
+            verify_certificates(&epoch_manager, &val_epoch_map, &Some(tc), &None, &qc);
         assert_eq!(tc_verify_result, Err(Error::InvalidEpoch));
     }
 }

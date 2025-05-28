@@ -460,7 +460,7 @@ where
         full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
     },
     /// a block that was previously requested
-    BlockSyncDirect {
+    RecoveryBlockSync {
         full_block: ConsensusFullBlock<ST, SCT, EPT>,
     },
     SendVote(Round),
@@ -496,7 +496,7 @@ where
                 let enc: [&dyn Encodable; 2] = [&4u8, &round];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
-            Self::BlockSyncDirect { full_block } => {
+            Self::RecoveryBlockSync { full_block } => {
                 let enc: [&dyn Encodable; 2] = [&5u8, &full_block];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
@@ -535,7 +535,7 @@ where
             4 => Ok(Self::SendVote(Round::decode(&mut payload)?)),
             5 => {
                 let full_block = ConsensusFullBlock::<ST, SCT, EPT>::decode(&mut payload)?;
-                Ok(Self::BlockSyncDirect { full_block })
+                Ok(Self::RecoveryBlockSync { full_block })
             }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown ConsensusEvent",
@@ -572,8 +572,8 @@ where
             ConsensusEvent::SendVote(round) => {
                 f.debug_struct("SendVote").field("round", round).finish()
             }
-            ConsensusEvent::BlockSyncDirect { full_block } => f
-                .debug_struct("BlockSyncDirect")
+            ConsensusEvent::RecoveryBlockSync { full_block } => f
+                .debug_struct("RecoveryBlockSync")
                 .field("full_block", full_block)
                 .finish(),
         }
@@ -615,14 +615,15 @@ where
     SelfResponse {
         response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
-    /// self requesting for a single missing block
+    /// consensus requesting for a single missing block
+    /// for reproposal
     /// this request must be retried if necessary
-    SelfRequestDirect {
+    SelfRecoveryRequest {
         requester: BlockSyncSelfRequester,
         block_id: BlockId,
     },
-    /// cancel request for direct block
-    SelfCancelRequestDirect {
+    /// cancel request for the missing block
+    SelfCancelRecoveryRequest {
         requester: BlockSyncSelfRequester,
         block_id: BlockId,
     },
@@ -667,19 +668,19 @@ where
                 .field("response", response)
                 .finish(),
             Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
-            Self::SelfRequestDirect {
+            Self::SelfRecoveryRequest {
                 requester,
                 block_id,
             } => f
-                .debug_struct("BlockSyncSelfRequestDirect")
+                .debug_struct("BlockSyncSelfRecoveryRequest")
                 .field("requester", requester)
                 .field("block_id", block_id)
                 .finish(),
-            Self::SelfCancelRequestDirect {
+            Self::SelfCancelRecoveryRequest {
                 requester,
                 block_id,
             } => f
-                .debug_struct("BlockSyncSelfCancelRequestDirect")
+                .debug_struct("BlockSyncSelfCancelRecoveryRequest")
                 .field("requester", requester)
                 .field("block_id", block_id)
                 .finish(),
@@ -725,14 +726,14 @@ where
                 let enc: [&dyn Encodable; 2] = [&6u8, &response];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
-            Self::SelfRequestDirect {
+            Self::SelfRecoveryRequest {
                 requester,
                 block_id,
             } => {
                 let enc: [&dyn Encodable; 3] = [&7u8, &requester, &block_id];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
-            Self::SelfCancelRequestDirect {
+            Self::SelfCancelRecoveryRequest {
                 requester,
                 block_id,
             } => {
@@ -788,7 +789,7 @@ where
             7 => {
                 let requester = BlockSyncSelfRequester::decode(&mut payload)?;
                 let block_id = BlockId::decode(&mut payload)?;
-                Ok(Self::SelfRequestDirect {
+                Ok(Self::SelfRecoveryRequest {
                     requester,
                     block_id,
                 })
@@ -796,7 +797,7 @@ where
             8 => {
                 let requester = BlockSyncSelfRequester::decode(&mut payload)?;
                 let block_id = BlockId::decode(&mut payload)?;
-                Ok(Self::SelfCancelRequestDirect {
+                Ok(Self::SelfCancelRecoveryRequest {
                     requester,
                     block_id,
                 })

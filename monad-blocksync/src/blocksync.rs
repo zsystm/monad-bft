@@ -1,4 +1,4 @@
-use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
+use std::{collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap}, ops::Deref};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::BufMut;
@@ -14,7 +14,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum};
+use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -25,8 +25,8 @@ use rand_chacha::ChaCha8Rng;
 use tracing::debug;
 
 use crate::messages::message::{
-    BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncRequestMessage,
-    BlockSyncResponseMessage,
+    BlockSyncBodyResponse, BlockSyncFullBlockResponse, BlockSyncHeadersResponse,
+    BlockSyncRequestMessage, BlockSyncResponseMessage,
 };
 
 // TODO configurable
@@ -99,6 +99,10 @@ where
         BlockSyncSelfRequester,
         (BlockRange, Vec<ConsensusFullBlock<ST, SCT, EPT>>),
     ),
+    /// Response to a BlockSyncEvent::SelfRecoveryRequest
+    EmitFullBlock(
+        BlockSyncSelfRequester, ConsensusFullBlock<ST, SCT, EPT>,
+    )
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -143,6 +147,8 @@ where
     /// in self_payload_requests
     self_completed_headers_requests: HashMap<BlockRange, SelfCompletedHeader<ST, SCT, EPT>>,
 
+    self_full_block_requests: HashMap<BlockId, SelfRequest<CertificateSignaturePubKey<ST>>>,
+
     self_request_mode: BlockSyncSelfRequester,
 
     override_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -180,6 +186,7 @@ where
             self_payload_requests: Default::default(),
             self_payload_requests_in_flight: 0,
             self_completed_headers_requests: Default::default(),
+            self_full_block_requests: Default::default(),
             self_request_mode: BlockSyncSelfRequester::StateSync,
             override_peers,
             rng: ChaCha8Rng::seed_from_u64(123456),
@@ -384,6 +391,30 @@ where
                     .or_default();
                 entry.insert(sender);
                 cmds.push(BlockSyncCommand::FetchPayload(payload_id));
+            }
+            BlockSyncRequestMessage::FullBlock(block_id) => {
+                let cached_block = match self.block_cache {
+                    BlockCache::BlockTree(blocktree) => blocktree.get_block(&block_id),
+                    BlockCache::BlockBuffer(_) => None, // TODO
+                };
+
+                if let Some(block) = cached_block {
+                    cmds.push(BlockSyncCommand::SendResponse {
+                        to: sender,
+                        response: BlockSyncResponseMessage::FullBlockResponse(
+                            BlockSyncFullBlockResponse::Found(block.deref().clone()),
+                        ),
+                    });
+                } else {
+                    // TODO should technically fetch from ledger, but this is used only for
+                    // recovering block for reproposal which should be in the blocktree
+                    cmds.push(BlockSyncCommand::SendResponse {
+                        to: sender,
+                        response: BlockSyncResponseMessage::FullBlockResponse(
+                            BlockSyncFullBlockResponse::NotAvailable(block_id),
+                        ),
+                    });
+                }
             }
         }
 
@@ -907,6 +938,9 @@ where
 
                 cmds.extend(self.handle_payload_response_for_self(None, payload_response));
             }
+            BlockSyncResponseMessage::FullBlockResponse(_) => {
+                unreachable!("full block responses should not come from ledger");
+            }
         }
 
         cmds
@@ -924,6 +958,25 @@ where
             }
             BlockSyncResponseMessage::PayloadResponse(payload_response) => {
                 self.handle_payload_response_for_self(Some(sender), payload_response)
+            }
+            BlockSyncResponseMessage::FullBlockResponse(full_block_response) => {
+                let block_id = full_block_response.get_block_id();
+
+                if !self.block_sync.self_full_block_requests.contains_key(&block_id) {
+                    return Vec::new();
+                }
+
+                match full_block_response {
+                    BlockSyncFullBlockResponse::Found(full_block) => {
+                        let self_request = self.block_sync.self_full_block_requests.remove(&block_id).expect("asserted");
+                        return vec![BlockSyncCommand::EmitFullBlock(self_request.requester, full_block)];
+                    }
+                    BlockSyncFullBlockResponse::NotAvailable(_block_id) => {
+                        // wait for timeout
+                        // TODO rerequest immediately
+                        Vec::new()
+                    }
+                }
             }
         }
     }
@@ -991,9 +1044,88 @@ where
                     }
                 }
             }
+            BlockSyncRequestMessage::FullBlock(block_id) => {
+                if let Entry::Occupied(mut entry) = self.block_sync.self_full_block_requests.entry(block_id) {
+                    let self_request = entry.get_mut();
+                    if self_request.to.is_some() {
+                        let to = Self::pick_peer(
+                            self.nodeid,
+                            self.current_epoch,
+                            self.val_epoch_map,
+                            &self.block_sync.override_peers,
+                            &mut self.block_sync.rng,
+                        );
+                        self_request.to = Some(to);
+                        cmds.push(BlockSyncCommand::SendRequest {
+                            to,
+                            request: BlockSyncRequestMessage::FullBlock(block_id),
+                        });
+                        cmds.push(BlockSyncCommand::ScheduleTimeout(
+                            BlockSyncRequestMessage::FullBlock(block_id),
+                        ));
+                    }
+                }
+            }
         }
 
         cmds
+    }
+
+    #[must_use]
+    pub fn handle_self_recovery_request(
+        &mut self,
+        requester: BlockSyncSelfRequester,
+        block_id: BlockId,
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
+        assert_eq!(requester, BlockSyncSelfRequester::Consensus);
+        let mut cmds = Vec::new();
+
+        debug!(?requester, ?block_id, "blocksync: self recovery request");
+        if self.block_sync.self_full_block_requests.contains_key(&block_id) {
+            return cmds;
+        }
+        
+        let to = Self::pick_peer(
+            self.nodeid,
+            self.current_epoch,
+            self.val_epoch_map,
+            &self.block_sync.override_peers,
+            &mut self.block_sync.rng,
+        );
+
+        self.block_sync.self_full_block_requests.insert(
+            block_id,
+            SelfRequest {
+                requester,
+                to: Some(to),
+            },
+        );
+
+        cmds.push(BlockSyncCommand::SendRequest {
+            to,
+            request: BlockSyncRequestMessage::FullBlock(block_id),
+        });
+        cmds.push(BlockSyncCommand::ScheduleTimeout(
+            BlockSyncRequestMessage::FullBlock(block_id),
+        ));
+
+        cmds
+    }
+
+    #[must_use]
+    pub fn handle_self_cancel_recovery_request(
+        &mut self,
+        requester: BlockSyncSelfRequester,
+        block_id: BlockId,
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
+        assert_eq!(requester, BlockSyncSelfRequester::Consensus);
+
+        debug!(?requester, ?block_id, "blocksync: self cancel recovery request");
+        if let Entry::Occupied(entry) = self.block_sync.self_full_block_requests.entry(block_id) {
+            entry.remove();
+        }
+
+        Vec::new()
     }
 }
 

@@ -76,6 +76,12 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
         validation::Error::InvalidTcRound => {
             metrics.validation_errors.invalid_tc_round += 1;
         }
+        validation::Error::InvalidNecRound => {
+            // TODO metrics
+        }
+        validation::Error::InvalidHighTip => {
+            // TODO metrics
+        }
         validation::Error::InsufficientStake => {
             metrics.validation_errors.insufficient_stake += 1;
         }

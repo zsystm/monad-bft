@@ -44,6 +44,14 @@ impl<SCT> NoEndorsementCertificate<SCT> {
     pub fn get_epoch(&self) -> Epoch {
         self.epoch
     }
+
+    pub fn get_high_qc_round(&self) -> Round {
+        self.no_endorsement_sig_col
+            .iter()
+            .map(|no_endorsement_sig_col| no_endorsement_sig_col.no_endorsement.high_qc_round)
+            .max()
+            .expect("atleast 1 signature collection in NEC")
+    }
 }
 
 impl<SCT: SignatureCollection> NoEndorsementCertificate<SCT> {
