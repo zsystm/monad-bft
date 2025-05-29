@@ -180,6 +180,7 @@ sha2 = "0.10"
 simple-xml-builder = "1.1"
 sorted_vector_map = "0.2.0"
 sorted-vec = "0.8.3"
+strum = "0.26.3"
 syn = { version = "1.0.0", features = ["full"] }
 tempfile = "3.5"
 test-case = "3.0"
