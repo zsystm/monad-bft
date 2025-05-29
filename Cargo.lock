@@ -4908,6 +4908,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-exec-events"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.71.1",
+ "chrono",
+ "clap 4.4.10",
+ "criterion",
+ "hex",
+ "libc",
+ "monad-event-ring",
+ "serde",
+ "serde_json",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
 name = "monad-executor"
 version = "0.1.0"
 dependencies = [
