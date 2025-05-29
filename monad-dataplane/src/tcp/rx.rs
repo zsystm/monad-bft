@@ -4,103 +4,144 @@ use std::{
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use bytes::{Bytes, BytesMut};
+use governor::{Quota, RateLimiter};
 use monoio::{
     io::AsyncReadRentExt,
     net::{ListenerOpts, TcpListener, TcpStream},
-    spawn,
+    select, spawn,
     time::timeout,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
-use super::{message_timeout, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT};
-use crate::buffer_ext::SocketBufferExt;
-
-const PER_PEER_CONNECTION_LIMIT: usize = 100;
+use super::{
+    message_timeout, TcpConfig, TcpControl, TcpControlMsg, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION,
+    TCP_MESSAGE_LENGTH_LIMIT,
+};
+use crate::addrlist::{Addrlist, Status};
 
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 struct RxState {
     inner: Rc<RefCell<RxStateInner>>,
+    addrlist: Arc<Addrlist>,
 }
 
 impl RxState {
-    fn new() -> RxState {
+    fn new(
+        addrlist: Arc<Addrlist>,
+        tcp_connections_limit: usize,
+        tcp_per_ip_connections_limit: usize,
+    ) -> RxState {
         let inner = Rc::new(RefCell::new(RxStateInner {
-            num_connections: BTreeMap::new(),
+            tcp_connections_limit,
+            tcp_per_ip_connections_limit,
+            num_connections: 0,
+            num_connections_per_ip: BTreeMap::new(),
         }));
 
-        RxState { inner }
+        RxState { addrlist, inner }
     }
 
-    fn check_new_connection(&self, ip: IpAddr) -> Result<(), ()> {
-        let mut inner_ref = self.inner.borrow_mut();
-
-        let count_ref = inner_ref.num_connections.entry(ip).or_insert(0);
-
-        if *count_ref < PER_PEER_CONNECTION_LIMIT {
-            *count_ref += 1;
-
-            Ok(())
-        } else {
-            Err(())
+    fn apply_limits(&self, ip: IpAddr) -> Result<(), ()> {
+        let status = self.addrlist.status(&ip);
+        trace!(?ip, %status, "accepting incoming TCP connection");
+        match status {
+            Status::Banned => {
+                warn!(?ip, "address is banned, rejecting tcp connection");
+                Ok(())
+            }
+            Status::Trusted => Ok(()),
+            Status::Unknown => {
+                let mut inner_ref = self.inner.borrow_mut();
+                if inner_ref.num_connections >= inner_ref.tcp_connections_limit {
+                    return Err(());
+                }
+                {
+                    let per_ip_limit = inner_ref.tcp_per_ip_connections_limit;
+                    let count_ref = inner_ref.num_connections_per_ip.entry(ip).or_insert(0);
+                    if *count_ref >= per_ip_limit {
+                        return Err(());
+                    }
+                    *count_ref += 1;
+                }
+                inner_ref.num_connections += 1;
+                Ok(())
+            }
         }
     }
 
     fn drop_connection(&self, ip: &IpAddr) {
         let mut inner_ref = self.inner.borrow_mut();
+        inner_ref.num_connections -= 1;
 
-        let count_ref = inner_ref.num_connections.get_mut(ip).unwrap();
-
+        let count_ref = inner_ref.num_connections_per_ip.get_mut(ip).unwrap();
         if *count_ref > 1 {
             *count_ref -= 1;
         } else {
-            inner_ref.num_connections.remove(ip);
+            inner_ref.num_connections_per_ip.remove(ip);
         }
     }
 }
 
 struct RxStateInner {
-    num_connections: BTreeMap<IpAddr, usize>,
+    tcp_connections_limit: usize,
+    tcp_per_ip_connections_limit: usize,
+    num_connections: usize,
+    num_connections_per_ip: BTreeMap<IpAddr, usize>,
 }
 
-pub async fn task(
+pub(crate) async fn task(
     local_addr: SocketAddr,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
-    buffer_size: Option<usize>,
 ) {
+    let addrlist = Arc::new(Addrlist::new());
+    let tcp_config = TcpConfig {
+        rps: 1000,
+        rps_burst: 100,
+        connections_limit: 1000,
+        per_ip_connections_limit: 100,
+    };
+    let TcpConfig {
+        rps,
+        rps_burst,
+        connections_limit,
+        per_ip_connections_limit,
+    } = tcp_config;
+    let tcp_control_map = TcpControl::new();
     let opts = ListenerOpts::new().reuse_addr(true);
     let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
-    let rx_state = RxState::new();
+    let rx_state = RxState::new(addrlist, connections_limit, per_ip_connections_limit);
 
     let mut conn_id: u64 = 0;
-
     loop {
         match tcp_listener.accept().await {
-            Ok((tcp_stream, addr)) => match rx_state.check_new_connection(addr.ip()) {
+            Ok((tcp_stream, addr)) => match rx_state.apply_limits(addr.ip()) {
                 Ok(()) => {
-                    trace!(conn_id, ?addr, "accepting incoming TCP connection");
-
+                    trace!(conn_id, ?addr, "accepted TCP connection");
                     spawn(task_connection(
+                        rps,
+                        rps_burst,
+                        tcp_control_map.clone(),
                         rx_state.clone(),
                         conn_id,
                         addr,
                         tcp_stream,
                         tcp_ingress_tx.clone(),
-                        buffer_size,
                     ));
                 }
                 Err(()) => {
                     debug!(
                         conn_id,
                         ?addr,
-                        "per-peer connection limit reached, rejecting TCP connection"
+                        "connection limit reached, rejecting TCP connection"
                     );
                 }
             },
@@ -114,49 +155,54 @@ pub async fn task(
 }
 
 async fn task_connection(
+    tcp_rps: usize,
+    tcp_rps_burst: usize,
+    tcp_control_map: TcpControl,
     rx_state: RxState,
     conn_id: u64,
     addr: SocketAddr,
     mut tcp_stream: TcpStream,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
-    buffer_size: Option<usize>,
 ) {
-    if let Some(requested_buffer_size) = buffer_size {
-        tcp_stream
-            .set_recv_buffer_size(requested_buffer_size)
-            .expect("unable to set receive buffer size");
-        let actual_buffer_size = tcp_stream
-            .recv_buffer_size()
-            .expect("unable to get receive buffer size");
-        if actual_buffer_size < requested_buffer_size {
-            panic!(
-                "unable to set tcp receive buffer size for connection {:?} to address {:?}. requested {}, actual {}. maximal net.ipv4.tcp_wmem should be set to at least {}",
-                conn_id,
-                addr,
-                requested_buffer_size,
-                actual_buffer_size,
-                requested_buffer_size
-            );
-        }
-    }
-
+    let mut control_rx = tcp_control_map.register((addr.ip(), addr.port(), conn_id));
     let mut message_id: u64 = 0;
-
-    while let Some(message) = read_message(conn_id, addr, message_id, &mut tcp_stream).await {
-        if let Err(err) = tcp_ingress_tx.send((addr, message)).await {
-            warn!(
-                conn_id,
-                ?addr,
-                message_id,
-                ?err,
-                "error queueing up received TCP message",
-            );
-            break;
+    let rate_limiter = RateLimiter::direct(
+        Quota::per_second((tcp_rps as u32).try_into().unwrap())
+            .allow_burst((tcp_rps_burst as u32).try_into().unwrap()),
+    );
+    loop {
+        select! {
+            biased;
+            ctl = control_rx.recv() => {
+                if let Some(TcpControlMsg::Disconnect) = ctl {
+                    trace!(conn_id, ?addr, "disconnecting tcp connection");
+                    break;
+                }
+            },
+            msg = read_message(conn_id, addr, message_id, &mut tcp_stream) => {
+                if rate_limiter.check().is_err() {
+                    warn!(conn_id, ?addr, "rate limit exceeded");
+                    break;
+                }
+                if let Some(message) = msg {
+                    if let Err(err) = tcp_ingress_tx.send((addr, message)).await {
+                        warn!(
+                            conn_id,
+                            ?addr,
+                            message_id,
+                            ?err,
+                            "error queueing up received TCP message",
+                        );
+                        break;
+                    }
+                    message_id += 1;
+                } else {
+                    break;
+                };
+            }
         }
-
-        message_id += 1;
     }
-
+    tcp_control_map.unregister(&(addr.ip(), addr.port(), conn_id));
     rx_state.drop_connection(&addr.ip());
 }
 
@@ -219,7 +265,6 @@ async fn read_message(
         );
         return None;
     }
-
     if header_version.get() != HEADER_VERSION {
         debug!(
             conn_id,
