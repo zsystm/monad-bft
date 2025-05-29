@@ -29,6 +29,10 @@ use monoio::{IoUringDriver, RuntimeBuilder};
 use tokio::sync::{mpsc, mpsc::error::TrySendError};
 use tracing::warn;
 
+#[allow(unused)]
+pub(crate) mod addrlist;
+#[allow(unused)]
+pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
