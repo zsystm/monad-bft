@@ -14,6 +14,7 @@ use zerocopy::{
 };
 
 use super::TcpMsg;
+use crate::Addrlist;
 
 pub mod rx;
 pub mod tx;
@@ -41,14 +42,22 @@ impl TcpMsgHdr {
     }
 }
 
-pub fn spawn_tasks(
+pub(crate) fn spawn_tasks(
+    cfg: TcpConfig,
+    tcp_control_map: TcpControl,
+    addrlist: Arc<Addrlist>,
     local_addr: SocketAddr,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
-    buffer_size: Option<usize>,
 ) {
-    spawn(rx::task(local_addr, tcp_ingress_tx));
-    spawn(tx::task(tcp_egress_rx, buffer_size));
+    spawn(rx::task(
+        cfg,
+        tcp_control_map,
+        addrlist,
+        local_addr,
+        tcp_ingress_tx,
+    ));
+    spawn(tx::task(tcp_egress_rx, None));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are

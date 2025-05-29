@@ -99,23 +99,18 @@ struct RxStateInner {
 }
 
 pub(crate) async fn task(
+    tcp_config: TcpConfig,
+    tcp_control_map: TcpControl,
+    addrlist: Arc<Addrlist>,
     local_addr: SocketAddr,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
 ) {
-    let addrlist = Arc::new(Addrlist::new());
-    let tcp_config = TcpConfig {
-        rps: 1000,
-        rps_burst: 100,
-        connections_limit: 1000,
-        per_ip_connections_limit: 100,
-    };
     let TcpConfig {
         rps,
         rps_burst,
         connections_limit,
         per_ip_connections_limit,
     } = tcp_config;
-    let tcp_control_map = TcpControl::new();
     let opts = ListenerOpts::new().reuse_addr(true);
     let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
     let rx_state = RxState::new(addrlist, connections_limit, per_ip_connections_limit);
