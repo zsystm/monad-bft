@@ -4,7 +4,7 @@ use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 use tracing::trace;
 
 use crate::{
-    cli::AwsCliArgs,
+    cli::{AwsCliArgs, V2CliArgs},
     failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},
     kvstore::{cloud_proxy::CloudProxyReader, mongo::MongoDbStorage},
     model::logs_index::LogsIndexArchiver,
@@ -20,7 +20,7 @@ pub enum LatestKind {
 #[derive(Clone)]
 pub struct ArchiveReader {
     block_data_executor: Arc<FallbackExecutor<BlockDataReaderErased, BlockDataReaderErased>>,
-    index_executor: Arc<FallbackExecutor<IndexReaderImpl, IndexReaderImpl>>,
+    index_executor: Arc<FallbackExecutor<IndexReaderErased, IndexReaderErased>>,
     pub log_index: Option<LogsIndexArchiver>,
 }
 
@@ -39,7 +39,7 @@ impl ArchiveReader {
 
     pub fn new(
         block_data_reader: impl Into<BlockDataReaderErased>,
-        tx_index_reader: IndexReaderImpl,
+        tx_index_reader: impl Into<IndexReaderErased>,
         fallback: Option<Box<ArchiveReader>>,
         log_index: Option<LogsIndexArchiver>,
     ) -> ArchiveReader {
@@ -69,7 +69,7 @@ impl ArchiveReader {
                 block_circuit_breaker,
             )),
             index_executor: Arc::new(FallbackExecutor::new(
-                tx_index_reader,
+                tx_index_reader.into(),
                 fallback_index_reader,
                 index_circuit_breaker,
             )),
@@ -79,7 +79,7 @@ impl ArchiveReader {
         reader
     }
 
-    pub async fn init_mongo_reader(
+    pub async fn init_v1_mongo_reader(
         url: String,
         db: String,
         metrics: Metrics,
@@ -114,7 +114,13 @@ impl ArchiveReader {
         ))
     }
 
-    pub async fn init_aws_reader(
+    pub async fn init_v2_mongo_reader(args: &V2CliArgs) -> Result<ArchiveReader> {
+        info!(?args, "Initializing MongoDB ArchiveReader");
+        let model_v2 = args.build_model_v2(&Metrics::none()).await?;
+        Ok(ArchiveReader::new(model_v2.clone(), model_v2, None, None))
+    }
+
+    pub async fn init_v1_aws_reader(
         bucket: String,
         region: Option<String>,
         url: &str,
@@ -203,15 +209,6 @@ impl IndexReader for ArchiveReader {
             .await
     }
 
-    async fn get_tx_indexed_data_bulk(
-        &self,
-        tx_hashes: &[alloy_primitives::TxHash],
-    ) -> Result<HashMap<alloy_primitives::TxHash, TxIndexedData>> {
-        self.index_executor
-            .execute(|idx| idx.get_tx_indexed_data_bulk(tx_hashes))
-            .await
-    }
-
     async fn get_tx(
         &self,
         tx_hash: &alloy_primitives::TxHash,
@@ -236,22 +233,16 @@ impl IndexReader for ArchiveReader {
             .execute(|idx| idx.get_receipt(tx_hash))
             .await
     }
-
-    async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData> {
-        self.index_executor
-            .execute(|idx| idx.resolve_from_bytes(bytes))
-            .await
-    }
 }
 
 impl BlockDataReader for ArchiveReader {
-    fn get_bucket(&self) -> &str {
-        self.block_data_executor.primary.get_bucket()
+    fn get_replica(&self) -> &str {
+        self.block_data_executor.primary.get_replica()
     }
 
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<Option<u64>> {
+    async fn get_latest(&self) -> Result<Option<u64>> {
         self.block_data_executor
-            .execute(|bdr| bdr.get_latest(latest_kind))
+            .execute(|bdr| bdr.get_latest())
             .await
     }
 
@@ -276,33 +267,6 @@ impl BlockDataReader for ArchiveReader {
     async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
         self.block_data_executor
             .execute(|bdr| bdr.get_block_traces(block_number))
-            .await
-    }
-
-    async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets> {
-        self.block_data_executor
-            .execute(|bdr| bdr.get_block_data_with_offsets(block_num))
-            .await
-    }
-
-    #[doc = " Get a block by its number, or return None if not found"]
-    async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>> {
-        self.block_data_executor
-            .execute(|bdr| bdr.try_get_block_by_number(block_num))
-            .await
-    }
-
-    #[doc = " Get receipts for a block, or return None if not found"]
-    async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>> {
-        self.block_data_executor
-            .execute(|bdr| bdr.try_get_block_receipts(block_number))
-            .await
-    }
-
-    #[doc = " Get execution traces for a block, or return None if not found"]
-    async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>> {
-        self.block_data_executor
-            .execute(|bdr| bdr.try_get_block_traces(block_number))
             .await
     }
 }

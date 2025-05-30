@@ -24,6 +24,27 @@ impl MemoryStorage {
             name: name.into(),
         }
     }
+
+    pub async fn get_range(&self, key: &str, start: i32, end: i32) -> Result<Bytes> {
+        let data = self
+            .get(key)
+            .await?
+            .ok_or_else(|| eyre::eyre!("Key not found: {}", key))?;
+
+        let start = start as usize;
+        let end = (end + 1) as usize; // S3 range is inclusive
+
+        if start >= data.len() || end > data.len() {
+            return Err(eyre::eyre!(
+                "Range out of bounds: start={}, end={}, len={}",
+                start,
+                end - 1,
+                data.len()
+            ));
+        }
+
+        Ok(data.slice(start..end))
+    }
 }
 
 impl KVReader for MemoryStorage {

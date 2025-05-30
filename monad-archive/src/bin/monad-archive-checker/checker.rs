@@ -826,6 +826,7 @@ pub mod tests {
     use alloy_rlp::Encodable;
     use monad_archive::{
         kvstore::memory::MemoryStorage,
+        model::BlockArchiverErased,
         test_utils::{mock_block, mock_rx, mock_tx},
     };
 
@@ -1253,7 +1254,7 @@ pub mod tests {
         for i in 1..=replicas {
             let reader_store: KVStoreErased = MemoryStorage::new(format!("reader-{}", i)).into();
             let reader = BlockDataArchive::new(reader_store);
-            block_data_readers.insert(format!("replica{}", i), reader);
+            block_data_readers.insert(format!("replica{}", i), reader.into());
         }
 
         CheckerModel {
@@ -1280,6 +1281,9 @@ pub mod tests {
             let (block1, receipts1, traces1) = blocks.remove(&block_num).unwrap();
 
             if let Some(archiver) = model.block_data_readers.get("replica1") {
+                let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                    panic!("Archiver is not a BlockDataArchive");
+                };
                 archiver.archive_block(block1.clone()).await.unwrap();
                 archiver
                     .archive_receipts(receipts1.clone(), block_num)
@@ -1290,12 +1294,15 @@ pub mod tests {
                     .await
                     .unwrap();
                 archiver
-                    .update_latest(block_num, LatestKind::Uploaded)
+                    .update_latest_kind(block_num, LatestKind::Uploaded)
                     .await
                     .unwrap();
             }
 
             if let Some(archiver) = model.block_data_readers.get("replica2") {
+                let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                    panic!("Archiver is not a BlockDataArchive");
+                };
                 archiver.archive_block(block1.clone()).await.unwrap();
                 archiver
                     .archive_receipts(receipts1.clone(), block_num)
@@ -1306,7 +1313,7 @@ pub mod tests {
                     .await
                     .unwrap();
                 archiver
-                    .update_latest(block_num, LatestKind::Uploaded)
+                    .update_latest_kind(block_num, LatestKind::Uploaded)
                     .await
                     .unwrap();
             }
@@ -1322,6 +1329,9 @@ pub mod tests {
                 };
 
                 if let Some(archiver) = model.block_data_readers.get("replica3") {
+                    let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                        panic!("Archiver is not a BlockDataArchive");
+                    };
                     archiver.archive_block(block3).await.unwrap();
                     archiver
                         .archive_receipts(receipts3, block_num)
@@ -1329,7 +1339,7 @@ pub mod tests {
                         .unwrap();
                     archiver.archive_traces(traces3, block_num).await.unwrap();
                     archiver
-                        .update_latest(block_num, LatestKind::Uploaded)
+                        .update_latest_kind(block_num, LatestKind::Uploaded)
                         .await
                         .unwrap();
                 }
@@ -1411,6 +1421,10 @@ pub mod tests {
         // For replica3, leave block 205 missing (don't populate it)
         let missing_block = 205;
         if let Some(archiver) = model.block_data_readers.get("replica3") {
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
+
             // For each block except the missing one, archive the data
             for block_num in start_block..=end_block {
                 if block_num == missing_block {
@@ -1431,7 +1445,7 @@ pub mod tests {
                 archiver.archive_traces(traces, block_num).await.unwrap();
             }
             archiver
-                .update_latest(end_block, LatestKind::Uploaded)
+                .update_latest_kind(end_block, LatestKind::Uploaded)
                 .await
                 .unwrap();
         }
@@ -1472,6 +1486,10 @@ pub mod tests {
 
         let invalid_block_num = 305;
         if let Some(archiver) = model.block_data_readers.get("replica3") {
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
+            
             let (mut block, _, _) = model
                 .fetch_block_data_for_replica(invalid_block_num, "replica1")
                 .await

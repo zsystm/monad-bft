@@ -63,6 +63,19 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
         }
         _ => None,
     };
+    info!("Log index archiver: {:?}", log_index_archiver.is_some());
+
+    // Confirm connectivity
+    if !args.skip_connectivity_check {
+        block_data_reader
+            .get_latest()
+            .await
+            .wrap_err("Cannot connect to block data source")?;
+        tx_index_archiver
+            .get_latest_indexed()
+            .await
+            .wrap_err("Cannot connect to archive sink")?;
+    }
 
     // for testing
     if args.reset_index {

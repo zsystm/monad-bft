@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 
 use eyre::{eyre, Context, Result};
-use futures::stream;
 use monad_archive::prelude::*;
 use opentelemetry::KeyValue;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     model::{CheckerModel, Fault, FaultKind},
-    rechecker_v2::recheck_chunk_from_scratch,
+    rechecker::recheck_fault_chunk,
     CHUNK_SIZE,
 };
 
@@ -20,8 +19,6 @@ pub async fn run_fixer(
     dry_run: bool,
     verify: bool,
     specific_replicas: Option<Vec<String>>,
-    start: Option<u64>,
-    end: Option<u64>,
 ) -> Result<(usize, usize)> {
     let replicas: Vec<String> = if let Some(replicas) = specific_replicas {
         // Validate that specified replicas exist
@@ -48,83 +45,56 @@ pub async fn run_fixer(
             info!("Fixing faults for replica '{}'...", replica);
         }
 
-        let start_idx = if let Some(start) = start {
-            start / CHUNK_SIZE
-        } else {
-            0
-        };
-
-        let end_idx = if let Some(end) = end {
-            end.min(latest_checked) / CHUNK_SIZE
-        } else {
-            latest_checked / CHUNK_SIZE
-        };
+        let mut replica_fixed = 0;
+        let mut replica_failed = 0;
 
         // Process chunks of CHUNK_SIZE blocks at a time
-        let (replica_fixed, replica_failed) = stream::iter(start_idx..end_idx)
-            .map(|idx| {
-                let replica = replica.clone();
-                async move {
-                    let chunk_start = idx * CHUNK_SIZE;
+        for idx in 0..(latest_checked / CHUNK_SIZE) {
+            let chunk_start = idx * CHUNK_SIZE;
 
-                    // Get current faults for this chunk
-                    let faults = model.get_faults_chunk(&replica, chunk_start).await?;
-                    if faults.is_empty() {
-                        return eyre::Ok((0, 0));
-                    }
+            // Get current faults for this chunk
+            let faults = model.get_faults_chunk(&replica, chunk_start).await?;
+            if faults.is_empty() {
+                continue;
+            }
 
-                    debug!(
-                        num_faults = faults.len(),
-                        chunk_start, "Retrieved faults for chunk"
-                    );
+            debug!(
+                num_faults = faults.len(),
+                chunk_start, "Retrieved faults for chunk"
+            );
 
-                    // Attempt to fix faults in this chunk (or simulate in dry run)
-                    let (fixed, failed) = fix_faults_in_range(
-                        model,
-                        chunk_start,
-                        &replica,
-                        metrics,
-                        dry_run,
-                        &faults,
-                    )
+            // Attempt to fix faults in this chunk (or simulate in dry run)
+            let (fixed, failed) =
+                fix_faults_in_range(model, chunk_start, &replica, metrics, dry_run, &faults)
                     .await?;
 
-                    // replica_fixed += fixed;
-                    // replica_failed += failed;
+            replica_fixed += fixed;
+            replica_failed += failed;
 
-                    // If verification is requested and not in dry run, verify the fixes
-                    if verify && !dry_run && fixed > 0 {
-                        info!("Verifying fixes for chunk starting at {}...", chunk_start);
+            // If verification is requested and not in dry run, verify the fixes
+            if verify && !dry_run && fixed > 0 {
+                info!("Verifying fixes for chunk starting at {}...", chunk_start);
+                let remaining_faults = recheck_fault_chunk(model, chunk_start, &replica).await?;
 
-                        // Recheck the chunk from scratch
-                        recheck_chunk_from_scratch(model, chunk_start, dry_run).await?;
+                if !remaining_faults.is_empty() {
+                    warn!(
+                        "Verification found {} remaining faults in chunk {} after fixing",
+                        remaining_faults.len(),
+                        chunk_start
+                    );
 
-                        // Get the updated faults for this replica
-                        let remaining_faults =
-                            model.get_faults_chunk(&replica, chunk_start).await?;
-
-                        if !remaining_faults.is_empty() {
-                            warn!(
-                                "Verification found {} remaining faults in chunk {} after fixing",
-                                remaining_faults.len(),
-                                chunk_start
-                            );
-                        } else {
-                            info!(
-                                "All faults in chunk {} successfully fixed and verified",
-                                chunk_start
-                            );
-                        }
-                    }
-
-                    Ok((fixed, failed))
+                    // Store the updated fault list
+                    model
+                        .set_faults_chunk(&replica, chunk_start, remaining_faults)
+                        .await?;
+                } else {
+                    info!(
+                        "All faults in chunk {} successfully fixed and verified",
+                        chunk_start
+                    );
                 }
-            })
-            .buffered(if dry_run { 1 } else { 2 })
-            .try_fold((0, 0), |(fixed_count, failed_count), (fixed, failed)| {
-                futures::future::ready(Ok((fixed_count + fixed, failed_count + failed)))
-            })
-            .await?;
+            }
+        }
 
         // Print summary for this replica
         if dry_run {
@@ -182,12 +152,13 @@ async fn fix_faults_in_range(
         .await?
         .block_num_to_replica;
 
+    let mut fixed_count = 0;
+    let mut failed_count = 0;
+
     // Process each fault
-    // If dry run, just check if we would be able to fix it
-    if dry_run {
-        let mut fixed_count = 0;
-        let mut failed_count = 0;
-        for fault in faults {
+    for fault in faults {
+        // If dry run, just check if we would be able to fix it
+        if dry_run {
             // Check if we have a good replica for this block
             if good_block_mapping.contains_key(&fault.block_num) {
                 let good_replica = good_block_mapping.get(&fault.block_num).unwrap();
@@ -224,38 +195,36 @@ async fn fix_faults_in_range(
                 );
                 failed_count += 1;
             }
+            continue;
         }
-        return Ok((fixed_count, failed_count));
-    }
 
-    let fixed_count = stream::iter(faults)
-        .map(|fault| async move {
-            // Attempt to fix the fault
-            let result = fix_fault(model, fault, good_block_mapping).await;
+        // Attempt to fix the fault
+        let result = fix_fault(model, fault, good_block_mapping).await;
 
-            if let Err(e) = result {
-                error!(
-                    "Failed to fix fault for block {} in replica {}: {:?}",
-                    fault.block_num, replica, e
-                );
+        if let Err(e) = result {
+            error!(
+                "Failed to fix fault for block {} in replica {}: {:?}",
+                fault.block_num, replica, e
+            );
 
-                // Report error metric
-                metrics.counter_with_attrs(
-                    MetricNames::REPLICA_FAULTS_FIX_FAILED,
-                    1,
-                    &[
-                        KeyValue::new("replica", replica.to_owned()),
-                        KeyValue::new("block_num", fault.block_num.to_string()),
-                        KeyValue::new("error", e.to_string()),
-                    ],
-                );
+            // Report error metric
+            metrics.counter_with_attrs(
+                MetricNames::REPLICA_FAULTS_FIX_FAILED,
+                1,
+                &[
+                    KeyValue::new("replica", replica.to_owned()),
+                    KeyValue::new("block_num", fault.block_num.to_string()),
+                    KeyValue::new("error", e.to_string()),
+                ],
+            );
 
-                // Fail fast on errors
-                return Err(e.wrap_err(format!(
-                    "Failed to fix fault for block {} in replica {}",
-                    fault.block_num, replica
-                )));
-            }
+            // Fail fast on errors
+            return Err(e.wrap_err(format!(
+                "Failed to fix fault for block {} in replica {}",
+                fault.block_num, replica
+            )));
+        } else {
+            fixed_count += 1;
 
             // Report success metric
             metrics.counter_with_attrs(
@@ -267,15 +236,10 @@ async fn fix_faults_in_range(
                     KeyValue::new("fault_type", fault.fault.variant_name()),
                 ],
             );
-            Ok(())
-        })
-        .buffered(200)
-        .try_fold(0, |fixed_count, _| {
-            futures::future::ready(Ok(fixed_count + 1))
-        })
-        .await?;
+        }
+    }
 
-    Ok((fixed_count, 0))
+    Ok((fixed_count, failed_count))
 }
 
 /// Fixes a single fault by copying the good block data to the faulty replica
@@ -309,35 +273,13 @@ async fn fix_fault(
     // Extract components from the good block data
     let (block, receipts, traces) = good_block_data;
 
-    // Archive the block
+    // Archive all block data
     faulty_replica_archiver
-        .archive_block(block.clone())
+        .archive_block_data(block.clone(), receipts.clone(), traces.clone())
         .await
         .with_context(|| {
             format!(
-                "Failed to archive block {} for replica {}",
-                fault.block_num, fault.replica
-            )
-        })?;
-
-    // Archive the receipts
-    faulty_replica_archiver
-        .archive_receipts(receipts.clone(), fault.block_num)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to archive receipts for block {} for replica {}",
-                fault.block_num, fault.replica
-            )
-        })?;
-
-    // Archive the traces
-    faulty_replica_archiver
-        .archive_traces(traces.clone(), fault.block_num)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to archive traces for block {} for replica {}",
+                "Failed to archive block data for block {} for replica {}",
                 fault.block_num, fault.replica
             )
         })?;
@@ -346,15 +288,12 @@ async fn fix_fault(
     // This is only needed for previously missing blocks
     if matches!(fault.fault, FaultKind::MissingBlock) {
         // Get the current latest uploaded block
-        let latest = faulty_replica_archiver
-            .get_latest(LatestKind::Uploaded)
-            .await?
-            .unwrap_or(0);
+        let latest = faulty_replica_archiver.get_latest().await?.unwrap_or(0);
 
         // Update the latest if this block is newer
         if latest < fault.block_num {
             faulty_replica_archiver
-                .update_latest(fault.block_num, LatestKind::Uploaded)
+                .update_latest(fault.block_num)
                 .await?;
         }
     }
@@ -371,19 +310,19 @@ async fn fix_fault(
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::Bytes;
-    use monad_archive::prelude::LatestKind;
+    use monad_archive::{model::BlockArchiverErased, prelude::LatestKind};
 
     use super::*;
     use crate::{
-        checker::tests::{create_test_block_data, create_test_block_data_range, setup_test_model},
+        checker::tests::{create_test_block_data, setup_test_model},
         model::{GoodBlocks, InconsistentBlockReason},
+        rechecker::recheck_fault_chunk,
     };
 
     #[tokio::test]
     async fn test_fix_fault() {
         // Setup test model with memory storage
-        let model = setup_test_model(2);
+        let model = setup_test_model();
         let chunk_start = 100;
         let replica_name = "replica1";
         let good_replica_name = "replica2";
@@ -408,18 +347,13 @@ mod tests {
         // Add the "good" block to replica2
         if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
             // Add block data
-            let (block, receipts, traces) = create_test_block_data(block_num, 1, None);
-            archiver.archive_block(block).await.unwrap();
+            let (block, receipts, traces) = create_test_block_data(block_num, 1);
             archiver
-                .archive_receipts(receipts, block_num)
+                .archive_block_data(block, receipts, traces)
                 .await
                 .unwrap();
-            archiver.archive_traces(traces, block_num).await.unwrap();
 
-            archiver
-                .update_latest(block_num, LatestKind::Uploaded)
-                .await
-                .unwrap();
+            archiver.update_latest(block_num).await.unwrap();
         }
 
         // Create a fault record (missing block)
@@ -464,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn test_fix_fault_chunk() {
         // Setup test model with memory storage
-        let model = setup_test_model(3);
+        let model = setup_test_model();
         let metrics = Metrics::none();
         let chunk_start = 100;
         let replica_name = "replica1";
@@ -509,34 +443,28 @@ mod tests {
             .await
             .unwrap();
 
-        let blocks = create_test_block_data_range(chunk_start + 1, [1, 2]);
-
-        // Add the "good" blocks to replica2 and replica3
-        for good_replica in [good_replica_name, "replica3"] {
-            if let Some(archiver) = model.block_data_readers.get(good_replica) {
-                // Add block data for both blocks
-                for block_num in [chunk_start + 1, chunk_start + 2] {
-                    let (block, receipts, traces) = blocks.get(&block_num).unwrap().clone();
-                    archiver.archive_block(block).await.unwrap();
-                    archiver
-                        .archive_receipts(receipts, block_num)
-                        .await
-                        .unwrap();
-                    archiver.archive_traces(traces, block_num).await.unwrap();
-                }
-
+        // Add the "good" blocks to replica2
+        if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
+            // Add block data for both blocks
+            for block_num in [chunk_start + 1, chunk_start + 2] {
+                let (block, receipts, traces) = create_test_block_data(block_num, 1);
                 archiver
-                    .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                    .archive_block_data(block, receipts, traces)
                     .await
                     .unwrap();
+                archiver.update_latest(block_num).await.unwrap();
             }
         }
 
         // Add an inconsistent block to replica1
         if let Some(archiver) = model.block_data_readers.get(replica_name) {
             // Add the second block with incorrect data
-            let (mut block, receipts, traces) = blocks.get(&(chunk_start + 2)).unwrap().clone();
-            block.header.extra_data = Bytes::from(vec![2]);
+            let (block, receipts, traces) = create_test_block_data(chunk_start + 2, 2); // Different data
+
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
+
             archiver.archive_block(block).await.unwrap();
             archiver
                 .archive_receipts(receipts, chunk_start + 2)
@@ -548,7 +476,7 @@ mod tests {
                 .unwrap();
 
             archiver
-                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .update_latest_kind(chunk_start + 2, LatestKind::Uploaded)
                 .await
                 .unwrap();
         }
@@ -595,20 +523,29 @@ mod tests {
             "Previously inconsistent blocks should now match"
         );
 
-        // The test has verified that:
-        // 1. The missing block (block 101) is now present in replica1
-        // 2. The inconsistent block (block 102) now matches the good replica
-        // Both blocks have been fixed successfully
+        // Run the rechecker to update the fault records
+        let updated_faults = recheck_fault_chunk(&model, chunk_start, replica_name)
+            .await
+            .unwrap();
 
-        // Note: We don't run recheck_chunk_from_scratch here because it would check
-        // the entire chunk (blocks 100-1099) and find many missing blocks that aren't
-        // part of this test setup.
+        // Store the updated faults
+        model
+            .set_faults_chunk(replica_name, chunk_start, updated_faults)
+            .await
+            .unwrap();
+
+        // Recheck to ensure no faults remain
+        let faults = model
+            .get_faults_chunk(replica_name, chunk_start)
+            .await
+            .unwrap();
+        assert!(faults.is_empty(), "No faults should remain after fixing");
     }
 
     #[tokio::test]
     async fn test_dry_run_mode() {
         // Setup test model with memory storage
-        let model = setup_test_model(2);
+        let model = setup_test_model();
         let metrics = Metrics::none();
         let chunk_start = 100;
         let replica_name = "replica1";
@@ -646,7 +583,11 @@ mod tests {
         // Add the "good" block to replica2
         if let Some(archiver) = model.block_data_readers.get(good_replica_name) {
             // Add block data
-            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1, None);
+            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
+
+            let BlockArchiverErased::BlockDataArchive(archiver) = archiver else {
+                panic!("Archiver is not a BlockDataArchive");
+            };
             archiver.archive_block(block).await.unwrap();
             archiver
                 .archive_receipts(receipts, chunk_start + 1)
@@ -658,7 +599,7 @@ mod tests {
                 .unwrap();
 
             archiver
-                .update_latest(chunk_start + 1, LatestKind::Uploaded)
+                .update_latest_kind(chunk_start + 1, LatestKind::Uploaded)
                 .await
                 .unwrap();
         }
