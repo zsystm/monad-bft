@@ -481,7 +481,7 @@ pub fn build_messages<ST>(
     epoch_no: u64,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
-    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<SocketAddr>>,
 ) -> Vec<(SocketAddr, Bytes)>
 where
     ST: CertificateSignatureRecoverable,
@@ -516,7 +516,7 @@ pub fn build_messages_with_length<ST>(
     epoch_no: u64,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
-    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<SocketAddr>>,
 ) -> Vec<(SocketAddr, Bytes)>
 where
     ST: CertificateSignatureRecoverable,
@@ -616,11 +616,13 @@ where
     // populate chunk_recipient and outbound_gso_idx
     match build_target {
         BuildTarget::PointToPoint(to) => {
-            let Some(addr) = known_addresses.get(to) else {
+            let Some(addrs) = known_addresses.get(to) else {
                 tracing::warn!(?to, "not sending message, address unknown");
                 return Vec::new();
             };
-            outbound_gso_idx.push((*addr, 0..segment_size as usize * num_packets));
+            for addr in addrs {
+                outbound_gso_idx.push((*addr, 0..segment_size as usize * num_packets));
+            }
             for (chunk_idx, (chunk_symbol_id, chunk_data)) in chunk_datas.iter_mut().enumerate() {
                 // populate chunk_recipient
                 chunk_data[0..20].copy_from_slice(&compute_hash(to).0);
@@ -639,11 +641,13 @@ where
                 if start_idx == end_idx {
                     continue;
                 }
-                if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
-                        *addr,
-                        start_idx * segment_size as usize..end_idx * segment_size as usize,
-                    ));
+                if let Some(addrs) = known_addresses.get(node_id) {
+                    for addr in addrs {
+                        outbound_gso_idx.push((
+                            *addr,
+                            start_idx * segment_size as usize..end_idx * segment_size as usize,
+                        ));
+                    }
                 } else {
                     tracing::warn!(?node_id, "not sending message, address unknown")
                 }
@@ -688,11 +692,13 @@ where
                 if start_idx == end_idx {
                     continue;
                 }
-                if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
-                        *addr,
-                        start_idx * segment_size as usize..end_idx * segment_size as usize,
-                    ));
+                if let Some(addrs) = known_addresses.get(node_id) {
+                    for addr in addrs {
+                        outbound_gso_idx.push((
+                            *addr,
+                            start_idx * segment_size as usize..end_idx * segment_size as usize,
+                        ));
+                    }
                 } else {
                     tracing::warn!(?node_id, "not sending message, address unknown")
                 }
@@ -703,65 +709,8 @@ where
                     chunk_idx += 1;
                 }
             }
-
-            // Dedicated full nodes get a copy of all raptorcast chunks.
-            // When our node is not the leader, chunks are forwarded in the handle_message path.
-            // When our node is the leader generating chunks, we're forwarding all chunks here.
-            for node_id in full_nodes_view.view() {
-                // TODO: assign a sub-segment of range to each full node
-                if let Some(addr) = known_addresses.get(node_id) {
-                    full_node_gso_idx.push((*addr, 0..(num_packets * segment_size as usize)));
-                } else {
-                    tracing::warn!(
-                        ?node_id,
-                        "not sending message to full node, address unknown"
-                    );
-                }
-            }
         }
-        BuildTarget::FullNodeRaptorCast(group) => {
-            assert!(is_broadcast && is_raptor_broadcast);
-
-            tracing::trace!(
-                ?self_id,
-                unix_ts_ms,
-                app_message_len,
-                redundancy,
-                data_size,
-                num_packets,
-                ?app_message_hash,
-                "raptorcasting v2fn message"
-            );
-
-            let total_peers = group.size_excl_self();
-            let mut pp = 0;
-            // Group shuffling so chunks for small proposals aren't always assigned
-            // to the same nodes, before researchers come up with something better.
-            for node_id in group.iter_skip_self_and_author(&self_id, rand::random::<usize>()) {
-                let start_idx: usize = num_packets * pp / total_peers;
-                pp += 1;
-                let end_idx: usize = num_packets * pp / total_peers;
-
-                if start_idx == end_idx {
-                    continue;
-                }
-                if let Some(addr) = known_addresses.get(node_id) {
-                    outbound_gso_idx.push((
-                        *addr,
-                        start_idx * segment_size as usize..end_idx * segment_size as usize,
-                    ));
-                } else {
-                    tracing::warn!(?node_id, "not sending v2fn message, address unknown")
-                }
-                for (chunk_idx, (chunk_symbol_id, chunk_data)) in
-                    chunk_datas[start_idx..end_idx].iter_mut().enumerate()
-                {
-                    // populate chunk_recipient
-                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
-                    *chunk_symbol_id = Some(chunk_idx as u16);
-                }
-            }
-        }
+        BuildTarget::FullNodeRaptorCast(group) => {}
     };
 
     // In practice, a "symbol" is a UDP datagram payload of some 1220 bytes

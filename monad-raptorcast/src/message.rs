@@ -4,8 +4,6 @@ use monad_compress::{util::BoundedWriter, zstd::ZstdCompression, CompressionAlgo
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_peer_discovery::PeerDiscoveryMessage;
 
-use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
-
 const SERIALIZE_VERSION: u32 = 1;
 
 enum CompressionVersion {
@@ -58,7 +56,6 @@ const MESSAGE_TYPE_GROUP: u8 = 3;
 pub enum OutboundRouterMessage<OM, ST: CertificateSignatureRecoverable> {
     AppMessage(OM),
     PeerDiscoveryMessage(PeerDiscoveryMessage<ST>),
-    FullNodesGroup(FullNodesGroupMessage<ST>),
 }
 
 #[derive(Debug)]
@@ -109,11 +106,6 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
                     [&version, &MESSAGE_TYPE_PEER_DISC, &peer_disc_message];
                 encode_list::<_, dyn Encodable>(&enc, &mut buf);
             }
-            Self::FullNodesGroup(group_message) => {
-                // encode as uncompressed message
-                let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_GROUP, &group_message];
-                encode_list::<_, dyn Encodable>(&enc, &mut buf);
-            }
         };
 
         Ok(buf.into())
@@ -123,7 +115,6 @@ impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<O
 pub enum InboundRouterMessage<M, ST: CertificateSignatureRecoverable> {
     AppMessage(M),
     PeerDiscoveryMessage(PeerDiscoveryMessage<ST>),
-    FullNodesGroup(FullNodesGroupMessage<ST>),
 }
 
 #[derive(Debug)]
@@ -185,11 +176,6 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
                 let peer_disc_message =
                     PeerDiscoveryMessage::decode(&mut payload).map_err(DeserializeError::from)?;
                 Ok(Self::PeerDiscoveryMessage(peer_disc_message))
-            }
-            MESSAGE_TYPE_GROUP => {
-                let group_message =
-                    FullNodesGroupMessage::decode(&mut payload).map_err(DeserializeError::from)?;
-                Ok(Self::FullNodesGroup(group_message))
             }
             _ => Err(DeserializeError("unknown message type".into())),
         }

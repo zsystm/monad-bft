@@ -164,18 +164,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .validators
         .clone();
 
-    {
-        let mut bootstrap_peers_seen = BTreeSet::new();
-        for peer in node_state.node_config.bootstrap.peers.iter() {
-            if !bootstrap_peers_seen.insert(peer.secp256k1_pubkey) {
-                panic!(
-                    "Multiple bootstrap entries for pubkey={}",
-                    peer.secp256k1_pubkey
-                );
-            }
-        }
-    }
-
     let known_addresses: Vec<_> = node_state
         .node_config
         .bootstrap
@@ -632,7 +620,12 @@ where
     };
     RaptorCast::new(RaptorCastConfig {
         key: identity,
-        known_addresses: known_addresses.into_iter().collect(),
+        known_addresses: known_addresses
+            .into_iter()
+            .fold(HashMap::new(), |mut m, (n, a)| {
+                m.entry(n).or_default().push(a);
+                m
+            }),
         full_nodes: full_nodes
             .iter()
             .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))

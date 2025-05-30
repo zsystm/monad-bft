@@ -35,7 +35,6 @@ use tracing::{debug, error, warn};
 
 pub mod config;
 pub mod message;
-pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 use util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator};
@@ -48,7 +47,7 @@ where
     ST: CertificateSignatureRecoverable,
 {
     // TODO support dynamic updating
-    pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<SocketAddr>>,
     pub full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     pub peer_discovery_builder: B,
 
@@ -82,7 +81,7 @@ where
     // TODO support dynamic updating
     full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
     // TODO: replace known_addresses with peer_discovery_driver
-    known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<SocketAddr>>,
     peer_discovery_driver: PeerDiscoveryDriver<PD>,
 
     current_epoch: Epoch,
@@ -156,28 +155,30 @@ where
         &mut self,
         to: &NodeId<CertificateSignaturePubKey<ST>>,
         make_app_message: impl FnOnce() -> Bytes,
-        completion: Option<oneshot::Sender<()>>,
+        mut completion: Option<oneshot::Sender<()>>,
     ) {
         match self.known_addresses.get(to) {
             None => {
                 warn!(?to, "not sending message, address unknown");
             }
-            Some(address) => {
+            Some(addresses) => {
                 let app_message = make_app_message();
-                // TODO make this more sophisticated
-                // include timestamp, etc
-                let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
-                let signature = ST::sign(&app_message, &self.key).serialize();
-                assert_eq!(signature.len(), SIGNATURE_SIZE);
-                signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
-                signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.dataplane.tcp_write(
-                    *address,
-                    TcpMsg {
-                        msg: signed_message.freeze(),
-                        completion,
-                    },
-                );
+                for address in addresses {
+                    // TODO make this more sophisticated
+                    // include timestamp, etc
+                    let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
+                    let signature = ST::sign(&app_message, &self.key).serialize();
+                    assert_eq!(signature.len(), SIGNATURE_SIZE);
+                    signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
+                    signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
+                    self.dataplane.tcp_write(
+                        *address,
+                        TcpMsg {
+                            msg: signed_message.freeze(),
+                            completion: completion.take(),
+                        },
+                    );
+                }
             }
         };
     }
@@ -347,18 +348,18 @@ where
                     };
                 }
                 RouterCommand::GetPeers => {
-                    let peer_list = self
-                        .known_addresses
-                        .iter()
-                        .map(|(node_id, sock_addr)| (*node_id, *sock_addr))
-                        .collect::<Vec<_>>();
-                    self.pending_events
-                        .push_back(RaptorCastEvent::PeerManagerResponse(
-                            PeerManagerResponse::PeerList(peer_list),
-                        ));
+                    // let peer_list = self
+                    //     .known_addresses
+                    //     .iter()
+                    //     .map(|(node_id, sock_addr)| (*node_id, *sock_addr))
+                    //     .collect::<Vec<_>>();
+                    // self.pending_events
+                    //     .push_back(RaptorCastEvent::PeerManagerResponse(
+                    //         PeerManagerResponse::PeerList(peer_list),
+                    //     ));
                 }
                 RouterCommand::UpdatePeers(new_peers) => {
-                    self.known_addresses = new_peers.into_iter().collect();
+                    // self.known_addresses = new_peers.into_iter().collect();
                 }
                 RouterCommand::GetFullNodes => {
                     let full_nodes = self.full_nodes.list.clone();
@@ -386,7 +387,7 @@ fn udp_build<ST: CertificateSignatureRecoverable>(
     mtu: u16,
     key: &ST::KeyPairType,
     redundancy: u8,
-    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<SocketAddr>>,
 ) -> UnicastMsg {
     let segment_size = segment_size_for_mtu(mtu);
 
@@ -454,13 +455,6 @@ where
             return Poll::Ready(Some(event.into()));
         }
 
-        let full_node_addrs = this
-            .full_nodes
-            .list
-            .iter()
-            .filter_map(|node_id| this.known_addresses.get(node_id).copied())
-            .collect::<Vec<_>>();
-
         loop {
             // while let doesn't compile
             let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
@@ -482,7 +476,9 @@ where
                         // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
                         let target_addrs: Vec<SocketAddr> = targets
                             .into_iter()
-                            .filter_map(|target| this.known_addresses.get(&target).copied())
+                            .filter_map(|target| this.known_addresses.get(&target))
+                            .flat_map(|x| x.iter())
+                            .copied()
                             .collect();
 
                         dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
@@ -493,11 +489,6 @@ where
                     },
                     |payload, bcast_stride| {
                         // callback for forwarding chunks to full nodes
-                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
-                            payload,
-                            stride: bcast_stride,
-                        });
                     },
                     message,
                 )
@@ -517,10 +508,6 @@ where
                                         this.peer_discovery_driver
                                             .update(peer_disc_message.event(from));
                                     }
-                                    None
-                                }
-                                InboundRouterMessage::FullNodesGroup(_full_nodes_group_message) => {
-                                    warn!("Handling of FullNodesGroup implemented in upcoming PR");
                                     None
                                 }
                             },
@@ -582,11 +569,6 @@ where
                         ?message,
                         "dropping peer discovery message, should come through udp channel"
                     );
-                    continue;
-                }
-                InboundRouterMessage::FullNodesGroup(_group_message) => {
-                    // pass TCP message to MultiRouter
-                    warn!("FullNodesGroup protocol via TCP not implemented");
                     continue;
                 }
             }
