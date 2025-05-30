@@ -47,7 +47,7 @@ use monad_updaters::{
     checkpoint::FileCheckpoint,
     config_loader::ConfigLoader,
     loopback::LoopbackExecutor,
-    parent::{ParentExecutor, ParentExecutorMetrics},
+    parent::{ExecutorMetrics, ParentExecutor, ParentExecutorMetrics},
     timer::TokioTimer,
     tokio_timestamp::TokioTimestamp,
     triedb_state_root_hash::StateRootHashTriedbPoll,
@@ -342,6 +342,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             node_state.node_config.bootstrap.peers,
             known_addresses,
         ),
+        metrics: ExecutorMetrics::default(),
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
@@ -433,11 +434,14 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                     checkpoint: &(),
                     state_root_hash: &(),
                     timestamp: &(),
+
                     txpool,
                     control_panel: &(),
                     loopback: &(),
                     state_sync,
                     config_loader: &(),
+
+                    executor,
                 } = executor.metrics();
 
                 let mut on_counter = |name: &'static str, counter: &monad_metrics::Counter| {
@@ -506,35 +510,63 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                             .build();
                     };
 
+                let mut on_histogram =
+                    |name: &'static str,
+                     config: monad_metrics::CallbackHistogramConfig,
+                     histogram: &monad_metrics::CallbackHistogram| {
+                        let otel_histogram = meter
+                            .u64_histogram(name)
+                            .with_boundaries(
+                                config.buckets.into_iter().map(|x| *x as f64).collect(),
+                            )
+                            .build();
+
+                        histogram.register_callback(Box::new(move |value| {
+                            otel_histogram.record(value, &[]);
+                        }));
+                    };
+
                 raptorcast.for_each(
                     &mut on_counter,
                     &mut on_counter_labeled,
                     &mut on_gauge,
                     &mut on_gauge_labeled,
+                    &mut on_histogram,
                 );
                 dataplane.for_each(
                     &mut on_counter,
                     &mut on_counter_labeled,
                     &mut on_gauge,
                     &mut on_gauge_labeled,
+                    &mut on_histogram,
                 );
                 ledger.for_each(
                     &mut on_counter,
                     &mut on_counter_labeled,
                     &mut on_gauge,
                     &mut on_gauge_labeled,
+                    &mut on_histogram,
                 );
                 txpool.for_each(
                     &mut on_counter,
                     &mut on_counter_labeled,
                     &mut on_gauge,
                     &mut on_gauge_labeled,
+                    &mut on_histogram,
                 );
                 state_sync.for_each(
                     &mut on_counter,
                     &mut on_counter_labeled,
                     &mut on_gauge,
                     &mut on_gauge_labeled,
+                    &mut on_histogram,
+                );
+                executor.for_each(
+                    &mut on_counter,
+                    &mut on_counter_labeled,
+                    &mut on_gauge,
+                    &mut on_gauge_labeled,
+                    &mut on_histogram,
                 );
 
                 state.metrics().for_each(
@@ -542,6 +574,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                     &mut on_counter_labeled,
                     &mut on_gauge,
                     &mut on_gauge_labeled,
+                    &mut on_histogram,
                 );
 
                 (provider, meter)

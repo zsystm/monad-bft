@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 monad-metrics-macro = { workspace = true }
+
+boxcar = { workspace = true }

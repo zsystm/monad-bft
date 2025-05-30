@@ -15,6 +15,7 @@ use monad_executor_glue::{
     LoopbackCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, TimerCommand,
     TimestampCommand, TxPoolCommand,
 };
+use monad_metrics::metrics_bft;
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
 
@@ -37,6 +38,7 @@ pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
     //   1) exec
     //   2) poll_next
     //   3) ParentExecutorMetrics
+    pub metrics: ExecutorMetrics,
 }
 
 pub struct ParentExecutorMetrics<'a, RM, TM, LM, CM, SM, TSM, TPM, CPM, LOM, SSM, CLM> {
@@ -52,6 +54,8 @@ pub struct ParentExecutorMetrics<'a, RM, TM, LM, CM, SM, TSM, TPM, CPM, LOM, SSM
     pub loopback: &'a LOM,
     pub state_sync: &'a SSM,
     pub config_loader: &'a CLM,
+
+    pub executor: &'a ExecutorMetrics,
 }
 
 impl<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE, E, OM, ST, SCT, EPT, BPT, SBT>
@@ -92,17 +96,37 @@ where
             config_reload_cmds,
         ) = Command::split_commands(commands);
 
-        self.router.exec(router_cmds);
-        self.timer.exec(timer_cmds);
-        self.ledger.exec(ledger_cmds);
-        self.checkpoint.exec(checkpoint_cmds);
-        self.state_root_hash.exec(state_root_hash_cmds);
-        self.timestamp.exec(timestamp_cmds);
-        self.txpool.exec(txpool_cmds);
-        self.control_panel.exec(control_panel_cmds);
-        self.loopback.exec(loopback_cmds);
-        self.state_sync.exec(state_sync_cmds);
-        self.config_loader.exec(config_reload_cmds);
+        exec_with_timer(&mut self.router, router_cmds, &self.metrics.router);
+        exec_with_timer(&mut self.timer, timer_cmds, &self.metrics.timer);
+        exec_with_timer(&mut self.ledger, ledger_cmds, &self.metrics.ledger);
+        exec_with_timer(
+            &mut self.checkpoint,
+            checkpoint_cmds,
+            &self.metrics.checkpoint,
+        );
+        exec_with_timer(
+            &mut self.state_root_hash,
+            state_root_hash_cmds,
+            &self.metrics.state_root_hash,
+        );
+        exec_with_timer(&mut self.timestamp, timestamp_cmds, &self.metrics.timestamp);
+        exec_with_timer(&mut self.txpool, txpool_cmds, &self.metrics.txpool);
+        exec_with_timer(
+            &mut self.control_panel,
+            control_panel_cmds,
+            &self.metrics.control_panel,
+        );
+        exec_with_timer(&mut self.loopback, loopback_cmds, &self.metrics.loopback);
+        exec_with_timer(
+            &mut self.state_sync,
+            state_sync_cmds,
+            &self.metrics.state_sync,
+        );
+        exec_with_timer(
+            &mut self.config_loader,
+            config_reload_cmds,
+            &self.metrics.config_loader,
+        );
     }
 
     pub fn metrics(
@@ -128,13 +152,28 @@ where
             checkpoint: self.checkpoint.metrics(),
             state_root_hash: self.state_root_hash.metrics(),
             timestamp: self.timestamp.metrics(),
+
             txpool: self.txpool.metrics(),
             control_panel: self.control_panel.metrics(),
             loopback: self.loopback.metrics(),
             state_sync: self.state_sync.metrics(),
             config_loader: self.config_loader.metrics(),
+
+            executor: &self.metrics,
         }
     }
+}
+
+fn exec_with_timer<E>(
+    executor: &mut E,
+    cmds: Vec<E::Command>,
+    histogram: &monad_metrics::CallbackHistogram,
+) where
+    E: Executor,
+{
+    let now = tokio::time::Instant::now();
+    executor.exec(cmds);
+    histogram.record(now.elapsed().as_nanos() as u64);
 }
 
 impl<E, R, T, L, C, S, TS, TP, CP, LO, SS, CL> Stream
@@ -179,5 +218,65 @@ where
 impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
     pub fn ledger(&self) -> &L {
         &self.ledger
+    }
+}
+
+metrics_bft! {
+    Executor {
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        router,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        timer,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        ledger,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        checkpoint,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        state_root_hash,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        timestamp,
+
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        txpool,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        control_panel,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        loopback,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        state_sync,
+
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
+        config_loader,
     }
 }

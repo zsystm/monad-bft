@@ -19,11 +19,18 @@ use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, Verifi
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ledger::MockLedger,
-    local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
-    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor, timer::TokioTimer,
-    tokio_timestamp::TokioTimestamp, txpool::MockTxPoolExecutor, BoxUpdater, Updater,
-    VoidMetricUpdater,
+    checkpoint::MockCheckpoint,
+    config_loader::MockConfigLoader,
+    ledger::MockLedger,
+    local_router::LocalPeerRouter,
+    loopback::LoopbackExecutor,
+    parent::{ExecutorMetrics, ParentExecutor},
+    state_root_hash::MockStateRootHashNop,
+    statesync::MockStateSyncExecutor,
+    timer::TokioTimer,
+    tokio_timestamp::TokioTimestamp,
+    txpool::MockTxPoolExecutor,
+    BoxUpdater, Updater, VoidMetricUpdater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
@@ -141,6 +148,7 @@ where
             Vec::new(),
         ),
         config_loader: MockConfigLoader::default(),
+        metrics: ExecutorMetrics::default(),
     }
 }
 

@@ -5,7 +5,7 @@ use quote::ToTokens;
 use syn::{spanned::Spanned, Ident};
 
 use crate::input::{
-    Attrs, MetricName, MetricsInput, MetricsInputList, ScalarAttrs, ScalarLabelAttrs,
+    Attrs, HistogramAttrs, MetricName, MetricsInput, ScalarAttrs, ScalarLabelAttrs,
 };
 
 pub struct MetricsDef {
@@ -31,6 +31,9 @@ impl MetricsDef {
         let (scalar_fields, scalar_calls, scalar_ts) =
             Self::generate_scalar_metrics(&struct_name_str, &reported_name, input.scalars);
 
+        let (histogram_fields, histogram_calls) =
+            Self::generate_histograms(&reported_name, input.histograms);
+
         let (component_fields, component_calls, component_ts): (Vec<_>, Vec<_>, Vec<_>) =
             Self::generate_components(struct_name_str, reported_name, input.components);
 
@@ -44,6 +47,7 @@ impl MetricsDef {
             pub struct #struct_name {
                 #( pub #component_fields, )*
                 #( pub #scalar_fields, )*
+                #( pub #histogram_fields, )*
             }
 
             impl #struct_name {
@@ -53,11 +57,13 @@ impl MetricsDef {
                     on_counter_labeled: &mut impl FnMut(&'static str, &'static str, &[(&'static str, &monad_metrics::Counter)]),
                     on_gauge: &mut impl FnMut(&'static str, &monad_metrics::Gauge),
                     on_gauge_labeled: &mut impl FnMut(&'static str, &'static str, &[(&'static str, &monad_metrics::Gauge)]),
+                    on_histogram: &mut impl FnMut(&'static str, monad_metrics::CallbackHistogramConfig, &monad_metrics::CallbackHistogram),
                 ) {
                     #ts_error
 
                     #( #component_calls )*
                     #( #scalar_calls )*
+                    #( #histogram_calls )*
                 }
             }
         };
@@ -158,13 +164,50 @@ impl MetricsDef {
         (fields, calls, struct_defs.into_iter().flatten().collect())
     }
 
+    fn generate_histograms(
+        parent_reported_name: &String,
+        histograms: Vec<MetricName<Attrs<HistogramAttrs>>>,
+    ) -> (Vec<TokenStream>, Vec<TokenStream>) {
+        histograms
+            .into_iter()
+            .map(|histogram| {
+                let reported_name = format!(
+                    "{}.{}",
+                    parent_reported_name,
+                    histogram.path.ident.to_string().to_case(Case::Snake)
+                );
+
+                let ts_field = histogram.ts_field;
+                let ts_error = histogram.ts_error;
+
+                let buckets = histogram.data.data.buckets;
+
+                (
+                    quote::quote! {
+                        #ts_field: monad_metrics::CallbackHistogram
+                    },
+                    quote::quote! {
+                        #ts_error
+
+                        on_histogram(
+                            #reported_name,
+                            monad_metrics::CallbackHistogramConfig {
+                                buckets: &[ #( #buckets ),* ],
+                            },
+                            &self.#ts_field
+                        );
+                    },
+                )
+            })
+            .multiunzip()
+    }
+
     fn generate_components(
         struct_name_str: String,
         reported_name: String,
-        components: MetricsInputList,
+        components: Vec<MetricsInput>,
     ) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
         components
-            .0
             .into_iter()
             .map(|input| {
                 let Self {
@@ -178,7 +221,7 @@ impl MetricsDef {
                         #namespace: #struct_name
                     },
                     quote::quote! {
-                        self.#namespace.for_each(on_counter, on_counter_labeled, on_gauge, on_gauge_labeled);
+                        self.#namespace.for_each(on_counter, on_counter_labeled, on_gauge, on_gauge_labeled, on_histogram);
                     },
                     ts,
                 )

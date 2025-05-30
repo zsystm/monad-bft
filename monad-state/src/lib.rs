@@ -991,6 +991,7 @@ where
                                 );
                             }
                         },
+                        &mut |_, _, _| {},
                     );
 
                     counters.extend(labeled_counters);

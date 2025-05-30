@@ -4,13 +4,13 @@ use proc_macro2::TokenStream;
 use quote::TokenStreamExt;
 use syn::{
     braced,
-    parse::{discouraged::Speculative, Parse, ParseStream},
+    parse::{discouraged::Speculative, Parse, ParseBuffer, ParseStream},
     spanned::Spanned,
-    Ident, Token,
+    Ident, Result, Token,
 };
 
 pub use self::{
-    attrs::{Attrs, ScalarAttrs, ScalarLabelAttrs},
+    attrs::{Attrs, HistogramAttrs, ScalarAttrs, ScalarLabelAttrs},
     name::MetricName,
 };
 
@@ -22,7 +22,8 @@ pub struct MetricsInput {
     pub struct_name: Ident,
     pub ts_error: TokenStream,
     pub scalars: Vec<MetricName<Attrs<ScalarAttrs>>>,
-    pub components: MetricsInputList,
+    pub histograms: Vec<MetricName<Attrs<HistogramAttrs>>>,
+    pub components: Vec<MetricsInput>,
 }
 
 impl Parse for MetricsInput {
@@ -42,7 +43,7 @@ impl Parse for MetricsInput {
 
         let mut ts_error = TokenStream::new();
 
-        if ["counters", "gauges"].contains(&namespace.to_string().as_str()) {
+        if ["counters", "gauges", "histograms"].contains(&namespace.to_string().as_str()) {
             ts_error.append_all([quote::quote_spanned! {
                 namespace.span() => compile_error!("Metric namespace cannot be instrument name!");
             }]);
@@ -52,16 +53,19 @@ impl Parse for MetricsInput {
         braced!(content in input);
 
         let mut scalars: Vec<MetricName<Attrs<ScalarAttrs>>> = Vec::default();
+        let mut histograms: Vec<MetricName<Attrs<HistogramAttrs>>> = Vec::default();
+        let mut components: Vec<MetricsInput> = Vec::default();
 
         loop {
-            let fork = content.fork();
-
-            let Ok(scalar) = fork.parse() else {
+            if let Ok(scalar) = fork_parse(&content) {
+                scalars.push(scalar);
+            } else if let Ok(histogram) = fork_parse(&content) {
+                histograms.push(histogram);
+            } else if let Ok(component) = fork_parse(&content) {
+                components.push(component);
+            } else {
                 break;
-            };
-
-            scalars.push(scalar);
-            content.advance_to(&fork);
+            }
 
             if content.is_empty() {
                 break;
@@ -70,25 +74,25 @@ impl Parse for MetricsInput {
             content.parse::<Token![,]>()?;
         }
 
-        for metric in scalars.iter_mut() {
-            if metric.path.ident.to_string().ends_with("_total") {
-                metric.ts_error.append_all([quote::quote_spanned! {
-                    metric.path.span() => compile_error!("Metric should not end in _total");
-                }]);
-            }
-        }
+        // for metric in scalars.iter_mut() {
+        //     if metric.path.ident.to_string().ends_with("_total") {
+        //         metric.ts_error.append_all([quote::quote_spanned! {
+        //             metric.path.span() => compile_error!("Metric should not end in _total");
+        //         }]);
+        //     }
+        // }
 
-        for (ident, ts_error) in scalars
-            .iter_mut()
-            .map(|metric| (metric.path.ident.to_owned(), &mut metric.ts_error))
-            .duplicates_by(|(ident, _)| ident.to_string())
-        {
-            ts_error.append_all([quote::quote_spanned! {
-                ident.span() => compile_error!("Duplicate metric name!");
-            }]);
-        }
+        // for (ident, ts_error) in scalars
+        //     .iter_mut()
+        //     .map(|metric| (metric.path.ident.to_owned(), &mut metric.ts_error))
+        //     .duplicates_by(|(ident, _)| ident.to_string())
+        // {
+        //     ts_error.append_all([quote::quote_spanned! {
+        //         path.span() => compile_error!("Duplicate metric name!");
+        //     }]);
+        // }
 
-        let components = content.parse().unwrap();
+        // let components = content.parse().unwrap();
 
         if !content.is_empty() {
             return Err(syn::Error::new(content.span(), "Unexpected token stream!"));
@@ -99,28 +103,34 @@ impl Parse for MetricsInput {
             namespace,
             ts_error,
             scalars,
+            histograms,
             components,
         })
     }
 }
 
-#[derive(Default)]
-pub struct MetricsInputList(pub Vec<MetricsInput>);
+fn fork_parse<T>(input: &ParseBuffer<'_>) -> Result<T>
+where
+    T: Parse,
+{
+    let fork = input.fork();
 
-impl Parse for MetricsInputList {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut components = Vec::default();
+    let value = fork.parse()?;
+    input.advance_to(&fork);
 
-        while !input.is_empty() {
-            components.push(input.parse()?);
-
-            if input.is_empty() {
-                break;
-            }
-
-            input.parse::<Token![,]>()?;
-        }
-
-        Ok(Self(components))
-    }
+    Ok(value)
 }
+
+// const INVALID_METRIC_SUFFIXES: &'static [&'static str] = &["_total", "_bucket", "_count"];
+
+// fn enforce_naming_suffixes<T>(metrics: &mut MetricNames<T>) {
+//     for (path, ts_error) in metrics.iter_path_ts_error() {
+//         for invalid_suffix in INVALID_METRIC_SUFFIXES {
+//             if path.ident.to_string().ends_with(invalid_suffix) {
+//                 ts_error.append_all([quote::quote_spanned! {
+//                     path.span() => compile_error!(format!("Metric should not end in {}", invalid_suffix));
+//                 }]);
+//             }
+//         }
+//     }
+// }

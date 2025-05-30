@@ -4,7 +4,7 @@ use syn::{
     bracketed, parenthesized,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Ident, LitStr, Path, Result, Token,
+    Expr, ExprLit, Ident, Lit, LitStr, Path, Result, Token,
 };
 
 pub struct Attrs<T>
@@ -103,6 +103,57 @@ impl Parse for ScalarLabelAttrs {
         Ok(Self {
             label,
             variants: variants.into_iter().collect(),
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct HistogramAttrs {
+    pub buckets: Vec<u64>,
+}
+
+impl Parse for HistogramAttrs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let path: Path = input.parse()?;
+
+        if !path.is_ident("histogram") {
+            return Err(syn::Error::new_spanned(
+                path,
+                "expected `histogram` attribute",
+            ));
+        }
+
+        let content;
+        parenthesized!(content in input);
+
+        let path: Path = content.parse()?;
+
+        if !path.is_ident("buckets") {
+            return Err(syn::Error::new_spanned(
+                path,
+                "expected `buckets` attribute",
+            ));
+        }
+
+        let buckets;
+        parenthesized!(buckets in content);
+
+        let buckets: Punctuated<Expr, Token![,]> = buckets.parse_terminated(Expr::parse)?;
+
+        Ok(Self {
+            buckets: buckets
+                .into_iter()
+                .map(|expr| match expr {
+                    Expr::Lit(ExprLit {
+                        attrs,
+                        lit: Lit::Int(lit_int),
+                    }) => {
+                        assert!(attrs.is_empty());
+                        lit_int.base10_parse().unwrap()
+                    }
+                    _ => panic!("replace this"),
+                })
+                .collect(),
         })
     }
 }
