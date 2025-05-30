@@ -5,6 +5,10 @@ pub use alloy_signer_local::PrivateKeySigner;
 
 pub use crate::{kvstore::memory::MemoryStorage, prelude::*};
 
+pub fn mock_trace(salt: u64) -> Vec<u8> {
+    vec![salt as u8; 1000]
+}
+
 pub fn mock_tx(salt: u64) -> TxEnvelopeWithSender {
     let tx = TxEip1559 {
         nonce: salt,
