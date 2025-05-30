@@ -342,7 +342,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_basic_operations() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -362,7 +361,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_large_value() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -382,7 +380,6 @@ pub mod mongo_tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_bulk_operations() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -416,7 +413,6 @@ pub mod mongo_tests {
 
     #[ignore]
     #[tokio::test]
-    #[serial]
     async fn test_prefix_scan() {
         let (_container, storage) = setup().await.unwrap();
 
