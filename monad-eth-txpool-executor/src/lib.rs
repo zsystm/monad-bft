@@ -177,10 +177,9 @@ where
                         Ok(proposed_execution_inputs) => {
                             let elapsed = create_proposal_start.elapsed();
 
-                            self.metrics.create_proposal.inc();
                             self.metrics
-                                .create_proposal_elapsed_ns
-                                .add(elapsed.as_nanos() as u64);
+                                .create_proposal
+                                .record(elapsed.as_nanos() as u64);
 
                             self.events_tx
                                 .send(MempoolEvent::Proposal {

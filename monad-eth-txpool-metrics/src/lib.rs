@@ -3,11 +3,10 @@ use monad_metrics::metrics_bft;
 metrics_bft! {
     #[txpool]
     TxPool {
-        #[counter]
+        #[histogram(
+            buckets(10_000, 25_000, 100_000, 250_000, 1_000_000, 2_500_000, 10_000_000, 25_000_000, 100_000_000, 250_000_000, 1_000_000_000)
+        )]
         create_proposal,
-
-        #[counter]
-        create_proposal_elapsed_ns,
 
         #[counter(
             label = "error",
