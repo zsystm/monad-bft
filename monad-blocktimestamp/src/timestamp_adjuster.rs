@@ -2,7 +2,7 @@ use monad_consensus_types::quorum_certificate::{
     TimestampAdjustment, TimestampAdjustmentDirection,
 };
 use sorted_vec::SortedVec;
-use tracing::{info, trace};
+use tracing::{debug, info};
 
 #[derive(Debug)]
 pub struct TimestampAdjuster {
@@ -32,18 +32,21 @@ impl TimestampAdjuster {
     }
 
     pub fn add_delta(&mut self, delta: i64) {
-        trace!(delta, "add delta");
+        debug!(delta, "add delta");
         self.deltas.insert(delta);
         if self.deltas.len() == self.adjustment_period {
             let i = self.deltas.len() / 2;
-            self.adjustment += self.deltas[i];
+            let adjustment = self.deltas[i];
 
             info!(
+                median_idx = i,
                 median_delta = self.deltas[i],
-                adjustment = self.adjustment,
-                "local timestamper adjustment"
+                old_adjustment = self.adjustment,
+                new_adjustment = adjustment,
+                "Set block timestamper adjustment"
             );
 
+            self.adjustment = adjustment;
             self.deltas.clear();
         }
     }
