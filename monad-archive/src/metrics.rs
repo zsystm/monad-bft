@@ -186,7 +186,7 @@ impl Metrics {
             let counter = inner
                 .counters
                 .entry(metric)
-                .or_insert_with(|| inner.meter.u64_counter(metric.as_str()).build());
+                .or_insert_with(|| inner.meter.u64_counter(metric.as_str()).init());
 
             counter.add(val, attributes)
         }
@@ -205,7 +205,7 @@ impl Metrics {
             let histogram = inner
                 .histograms
                 .entry(metric)
-                .or_insert_with(|| inner.meter.f64_histogram(metric.as_str()).build());
+                .or_insert_with(|| inner.meter.f64_histogram(metric.as_str()).init());
             histogram.record(value, attributes);
         }
     }
@@ -227,7 +227,7 @@ impl Metrics {
             let gauge = inner
                 .gauges
                 .entry(metric)
-                .or_insert_with(|| inner.meter.u64_gauge(metric.as_str()).build());
+                .or_insert_with(|| inner.meter.u64_gauge(metric.as_str()).init());
             gauge.record(value, attributes);
         }
     }

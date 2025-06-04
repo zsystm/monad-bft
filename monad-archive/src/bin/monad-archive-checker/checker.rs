@@ -5,8 +5,7 @@ use futures::stream;
 use monad_archive::prelude::*;
 
 use crate::{
-    model::{CheckerModel, Fault, FaultKind, GoodBlocks},
-    rechecker::find_inconsistent_reason,
+    model::{CheckerModel, Fault, FaultKind, GoodBlocks, InconsistentBlockReason},
     CHUNK_SIZE,
 };
 
@@ -104,7 +103,7 @@ async fn process_block_batch(
 
     // Store results in S3
     info!("Storing checking results");
-    store_checking_results(model, start_block, faults_by_replica, good_blocks).await?;
+    store_checking_results(model, start_block, &faults_by_replica, good_blocks).await?;
 
     // Update the latest checked block for each replica
     info!(end_block, "Updating latest checked block");
@@ -117,8 +116,8 @@ async fn process_block_batch(
     Ok(end_block + 1)
 }
 
-/// Fetches block data from all replicas for a range of blocks
-async fn fetch_block_data(
+/// Fetches block data from all replicas for a range of blocks.
+pub async fn fetch_block_data(
     model: &CheckerModel,
     block_nums: impl IntoIterator<Item = u64>,
     replicas: &[&str],
@@ -152,8 +151,8 @@ async fn fetch_block_data(
         .collect()
 }
 
-/// Processes blocks to find faults and good blocks
-fn process_blocks(
+/// Processes blocks to find faults and good blocks by comparing data across replicas.
+pub fn process_blocks(
     data_by_block_num: &HashMap<u64, HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>>,
     start_block: u64,
     end_block: u64,
@@ -349,37 +348,85 @@ fn find_consensus(
             }
         }
     } else {
-        panic!("No equivalence group found. This means we do not know which block has the correct data. Manual intervention required!");
+        // This should not happen with proper consensus, but log critical error if it does
+        error!(
+            block_num,
+            "No equivalence group found - unable to determine correct block data. Manual intervention required!"
+        );
+
+        // Mark all replicas as having unresolvable inconsistencies
+        for replica_name in valid_replicas.keys() {
+            faults_by_replica
+                .entry(replica_name.clone())
+                .or_default()
+                .push(Fault {
+                    block_num,
+                    replica: replica_name.clone(),
+                    fault: FaultKind::InconsistentBlock(InconsistentBlockReason::NoConsensus),
+                });
+        }
     }
 }
 
-/// Stores checking results in S3
-async fn store_checking_results(
+/// Stores checking results in S3, including faults and good block references.
+///
+/// This function handles both storing new faults and clearing old faults that no longer exist.
+/// For each replica, it either:
+/// - Stores new faults if any were found
+/// - Deletes the fault chunk if no faults exist but old faults were previously stored
+/// - Does nothing if no faults exist and none were previously stored
+///
+/// # Arguments
+/// * `model` - The checker model for accessing storage
+/// * `starting_block_num` - The starting block number of the chunk
+/// * `faults_by_replica` - Map of replica names to their faults
+/// * `good_blocks` - Reference to replicas with correct data for each block
+pub async fn store_checking_results(
     model: &CheckerModel,
     starting_block_num: u64,
-    faults_by_replica: HashMap<String, Vec<Fault>>,
+    faults_by_replica: &HashMap<String, Vec<Fault>>,
     good_blocks: GoodBlocks,
 ) -> Result<()> {
-    // Store faults by replica in S3
-    for (replica, faults) in &faults_by_replica {
-        if !faults.is_empty() {
-            info!(
-                %replica,
-                fault_count = faults.len(),
-                starting_block = starting_block_num,
-                "Storing faults for replica"
-            );
+    // First, handle all replicas to ensure we clear faults for replicas that no longer have any
+    for replica in model.block_data_readers.keys() {
+        match faults_by_replica.get(replica) {
+            Some(faults) if !faults.is_empty() => {
+                // Replica has faults - store them
+                info!(
+                    %replica,
+                    fault_count = faults.len(),
+                    starting_block = starting_block_num,
+                    "Storing faults for replica"
+                );
 
-            model
-                .set_faults_chunk(replica, starting_block_num, faults.clone())
-                .await?;
-        } else {
-            debug!(
-                %replica,
-                starting_block = starting_block_num,
-                "No faults to store for replica"
-            );
-        }
+                model
+                    .set_faults_chunk(replica, starting_block_num, faults.clone())
+                    .await?;
+            }
+            _ => {
+                // Replica has no faults - check if we need to clear old faults
+                let old_faults = model.get_faults_chunk(replica, starting_block_num).await?;
+                if !old_faults.is_empty() {
+                    info!(
+                        %replica,
+                        old_fault_count = old_faults.len(),
+                        starting_block = starting_block_num,
+                        "Clearing previously stored faults for replica"
+                    );
+
+                    // Delete the fault chunk since there are no faults anymore
+                    model
+                        .delete_faults_chunk(replica, starting_block_num)
+                        .await?;
+                } else {
+                    debug!(
+                        %replica,
+                        starting_block = starting_block_num,
+                        "No faults to store or clear for replica"
+                    );
+                }
+            }
+        };
     }
 
     // Store good blocks reference in S3
@@ -444,6 +491,154 @@ fn verify_block(
         });
     }
     Ok(())
+}
+
+/// Determines the specific reason why two blocks are inconsistent
+pub fn find_inconsistent_reason(
+    good: (&Block, &BlockReceipts, &BlockTraces),
+    faulty: (&Block, &BlockReceipts, &BlockTraces),
+    replica: &str,
+    block_num: u64,
+) -> InconsistentBlockReason {
+    debug!(
+        %replica,
+        block_num,
+        "Replica still inconsistent with good replica"
+    );
+    let (good_block, good_receipts, good_traces) = good;
+    let (faulty_block, faulty_receipts, faulty_traces) = faulty;
+
+    if good_block != faulty_block {
+        debug!(
+            %replica,
+            block_num,
+            "Block does not match good replica"
+        );
+        if good_block.header != faulty_block.header {
+            debug!(
+                %replica,
+                block_num,
+                "Block header does not match good replica"
+            );
+            InconsistentBlockReason::Header
+        } else if good_block.body.transactions.len() != faulty_block.body.transactions.len() {
+            debug!(
+                %replica,
+                block_num,
+                good_len = good_block.body.transactions.len(),
+                faulty_len = faulty_block.body.transactions.len(),
+                "Block body length does not match good replica"
+            );
+            InconsistentBlockReason::BodyLen
+        } else {
+            debug!(
+                %replica,
+                block_num,
+                "Block body does not match good replica"
+            );
+            let mut count = 0;
+            for (good_tx, faulty_tx) in good_block
+                .body
+                .transactions
+                .iter()
+                .zip(faulty_block.body.transactions.iter())
+            {
+                if let (Ok(good_tx), Ok(faulty_tx)) = (
+                    serde_json::to_string(good_tx),
+                    serde_json::to_string(faulty_tx),
+                ) {
+                    debug!(
+                        %replica,
+                        block_num,
+                        count,
+                        max_count = 10,
+                        good_tx,
+                        faulty_tx,
+                        "Transaction does not match good replica"
+                    );
+                }
+                count += 1;
+                if count > 10 {
+                    break;
+                }
+            }
+            InconsistentBlockReason::BodyContents
+        }
+    } else if good_receipts.len() != faulty_receipts.len() {
+        debug!(
+            %replica,
+            block_num,
+            good_len = good_receipts.len(),
+            faulty_len = faulty_receipts.len(),
+            "Receipts length does not match good replica"
+        );
+        InconsistentBlockReason::ReceiptsLen
+    } else if good_receipts != faulty_receipts {
+        debug!(
+            %replica,
+            block_num,
+            "Receipts do not match good replica"
+        );
+        let mut count = 0;
+        for (good_receipt, faulty_receipt) in good_receipts.iter().zip(faulty_receipts.iter()) {
+            if let (Ok(good_receipt), Ok(faulty_receipt)) = (
+                serde_json::to_string(good_receipt),
+                serde_json::to_string(faulty_receipt),
+            ) {
+                debug!(
+                    %replica,
+                    block_num,
+                    count,
+                    max_count = 10,
+                    good_receipt,
+                    faulty_receipt,
+                    "Receipt does not match good replica"
+                );
+            }
+            count += 1;
+            if count > 10 {
+                break;
+            }
+        }
+        InconsistentBlockReason::ReceiptsContents
+    } else if good_traces.len() != faulty_traces.len() {
+        debug!(
+            %replica,
+            block_num,
+            good_len = good_traces.len(),
+            faulty_len = faulty_traces.len(),
+            "Traces length does not match good replica"
+        );
+        InconsistentBlockReason::TracesLen
+    } else {
+        debug!(
+            %replica,
+            block_num,
+            "Traces do not match good replica"
+        );
+        let mut count = 0;
+        for (good_trace, faulty_trace) in good_traces.iter().zip(faulty_traces.iter()) {
+            if let (Ok(good_trace), Ok(faulty_trace)) = (
+                serde_json::to_string(good_trace),
+                serde_json::to_string(faulty_trace),
+            ) {
+                debug!(
+                    %replica,
+                    block_num,
+                    count,
+                    max_count = 10,
+                    good_trace,
+                    faulty_trace,
+                    "Trace does not match good replica"
+                );
+            }
+            count += 1;
+            if count > 10 {
+                break;
+            }
+        }
+        InconsistentBlockReason::TracesContents
+    }
 }
 
 #[cfg(test)]
@@ -769,13 +964,13 @@ pub mod tests {
         }
     }
 
-    pub(crate) fn setup_test_model() -> CheckerModel {
+    pub(crate) fn setup_test_model(replicas: usize) -> CheckerModel {
         let store: KVStoreErased = MemoryStorage::new("test-store").into();
 
         let mut block_data_readers = HashMap::new();
 
         // Create memory-based readers for testing
-        for i in 1..=3 {
+        for i in 1..=replicas {
             let reader_store: KVStoreErased = MemoryStorage::new(format!("reader-{}", i)).into();
             let reader = BlockDataArchive::new(reader_store);
             block_data_readers.insert(format!("replica{}", i), reader);
@@ -783,7 +978,7 @@ pub mod tests {
 
         CheckerModel {
             store,
-            block_data_readers,
+            block_data_readers: Arc::new(block_data_readers),
         }
     }
 
@@ -858,7 +1053,7 @@ pub mod tests {
     #[tokio::test]
     async fn test_process_block_batch() {
         // Setup test model with memory storage
-        let model = setup_test_model();
+        let model = setup_test_model(3);
 
         // Populate replicas with test data for blocks 100-110
         let start_block = 100;
@@ -917,7 +1112,7 @@ pub mod tests {
     #[tokio::test]
     async fn test_process_block_batch_with_missing_data() {
         // Setup test model with memory storage
-        let model = setup_test_model();
+        let model = setup_test_model(3);
 
         // Populate replicas with test data for blocks 200-210
         let start_block = 200;
@@ -978,7 +1173,7 @@ pub mod tests {
     #[tokio::test]
     async fn test_process_block_batch_with_invalid_block_number() {
         // Setup test model with memory storage
-        let model = setup_test_model();
+        let model = setup_test_model(3);
 
         // Populate replicas with test data for blocks 300-310
         let start_block = 300;
@@ -1059,5 +1254,127 @@ pub mod tests {
             has_invalid_block_fault,
             "Expected InvalidBlockNumber fault for block {invalid_block_num}"
         );
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_checker_with_mongo() {
+        use monad_archive::{kvstore::mongo::MongoDbStorage, test_utils::TestMongoContainer};
+
+        // Start MongoDB container
+        let container = TestMongoContainer::new().await.unwrap();
+
+        // Create MemoryStorage for checker state
+        let checker_store: KVStoreErased = MemoryStorage::new("checker-state").into();
+
+        // Create mixed storage for replicas: 1 MongoDB, 2 MemoryStorage
+        let mut block_data_readers = HashMap::new();
+
+        // Replica1: MongoDB storage
+        let mongo_store = MongoDbStorage::new(
+            &container.uri,
+            "replica_db",
+            "blocks",
+            Some(1), // 1gb cap
+            Metrics::none(),
+        )
+        .await
+        .unwrap();
+
+        let mongo_reader = BlockDataArchive::new(mongo_store);
+        block_data_readers.insert("replica1".to_string(), mongo_reader);
+
+        // Replica2 and Replica3: MemoryStorage
+        for i in 2..=3 {
+            let memory_store: KVStoreErased = MemoryStorage::new(format!("replica{}", i)).into();
+            let memory_reader = BlockDataArchive::new(memory_store);
+            block_data_readers.insert(format!("replica{}", i), memory_reader);
+        }
+
+        let model = CheckerModel {
+            store: checker_store,
+            block_data_readers: Arc::new(block_data_readers),
+        };
+
+        // Test data setup
+        let start_block = 100;
+        let end_block = 105;
+
+        // Populate test data in all replicas
+        for block_num in start_block..=end_block {
+            // For replica1 (MongoDB) and replica2 (Memory), add identical data
+            let (block1, receipts1, traces1) = create_test_block_data(block_num, 1);
+
+            for replica_name in ["replica1", "replica2"] {
+                if let Some(archiver) = model.block_data_readers.get(replica_name) {
+                    archiver.archive_block(block1.clone()).await.unwrap();
+                    archiver
+                        .archive_receipts(receipts1.clone(), block_num)
+                        .await
+                        .unwrap();
+                    archiver
+                        .archive_traces(traces1.clone(), block_num)
+                        .await
+                        .unwrap();
+                    archiver
+                        .update_latest(block_num, LatestKind::Uploaded)
+                        .await
+                        .unwrap();
+                }
+            }
+
+            // For replica3 (Memory), add different data for every other block
+            if let Some(archiver) = model.block_data_readers.get("replica3") {
+                let (block3, receipts3, traces3) = if block_num % 2 == 0 {
+                    create_test_block_data(block_num, 2) // Different data
+                } else {
+                    (block1, receipts1, traces1) // Same data
+                };
+
+                archiver.archive_block(block3).await.unwrap();
+                archiver
+                    .archive_receipts(receipts3, block_num)
+                    .await
+                    .unwrap();
+                archiver.archive_traces(traces3, block_num).await.unwrap();
+                archiver
+                    .update_latest(block_num, LatestKind::Uploaded)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // Process blocks with checker
+        let next_block = process_block_batch(&model, start_block, end_block)
+            .await
+            .unwrap();
+
+        assert_eq!(next_block, end_block + 1);
+
+        // Verify results stored in checker's MemoryStorage
+        // Check that faults were recorded for replica3 on even blocks
+        let faults = model
+            .get_faults_chunk("replica3", start_block)
+            .await
+            .unwrap();
+
+        let expected_fault_count = ((end_block - start_block + 1) / 2) as usize;
+        assert!(faults.len() >= expected_fault_count);
+
+        // Verify good blocks were stored
+        let good_blocks = model.get_good_blocks(start_block).await.unwrap();
+        assert_eq!(
+            good_blocks.block_num_to_replica.len(),
+            (end_block - start_block + 1) as usize
+        );
+
+        // Verify latest checked was updated
+        for replica_name in ["replica1", "replica2", "replica3"] {
+            let latest_checked = model
+                .get_latest_checked_for_replica(replica_name)
+                .await
+                .unwrap();
+            assert_eq!(latest_checked, end_block);
+        }
     }
 }
