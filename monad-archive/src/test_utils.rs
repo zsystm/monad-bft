@@ -1,7 +1,10 @@
+use std::{process::Command, sync::atomic::AtomicU16};
+
 pub use alloy_consensus::{Receipt, SignableTransaction, TxEip1559};
 pub use alloy_primitives::{Bloom, Log, LogData, B256};
 pub use alloy_signer::SignerSync;
 pub use alloy_signer_local::PrivateKeySigner;
+use mongodb::{options::ClientOptions, Client};
 
 pub use crate::{kvstore::memory::MemoryStorage, prelude::*};
 
@@ -60,5 +63,102 @@ pub fn mock_block(number: u64, transactions: Vec<TxEnvelopeWithSender>) -> Block
             ommers: vec![],
             withdrawals: Some(alloy_eips::eip4895::Withdrawals::default()),
         },
+    }
+}
+
+pub struct TestMongoContainer {
+    pub container_id: String,
+    pub uri: String,
+    pub port: u16,
+}
+
+static NEXT_PORT: AtomicU16 = AtomicU16::new(27017);
+
+impl TestMongoContainer {
+    pub async fn new() -> Result<Self> {
+        let container_id = mongodb::bson::uuid::Uuid::new();
+        let container_name = format!("mongo_test_{}", container_id);
+        let port = NEXT_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Start container
+        let output = Command::new("docker")
+            .args([
+                "run",
+                "-d",
+                "-p",
+                &format!("{port}:27017"),
+                "--name",
+                &container_name,
+                "mongo:latest",
+            ])
+            .output()
+            .wrap_err("Failed to start MongoDB container")?;
+
+        let container_id = String::from_utf8(output.stdout)
+            .wrap_err("Invalid container ID output")?
+            .trim()
+            .to_string();
+
+        println!(
+            "Starting MongoDB container: {}, {}",
+            container_name, container_id
+        );
+
+        let output = Command::new("docker")
+            .args(["ps"])
+            .output()
+            .expect("Failed to list containers");
+
+        println!("Containers: {}", String::from_utf8(output.stdout).unwrap());
+
+        // Poll until MongoDB is ready
+        let client_options = ClientOptions::parse(format!("mongodb://localhost:{port}"))
+            .await
+            .unwrap();
+        let max_attempts = 30; // 30 * 200ms = 6 seconds max
+        let mut attempt = 0;
+
+        while attempt < max_attempts {
+            match Client::with_options(client_options.clone()) {
+                Ok(client) => {
+                    // Try to actually connect and run a command
+                    match client.list_database_names().await {
+                        Ok(_) => {
+                            return Ok(Self {
+                                container_id,
+                                uri: format!("mongodb://localhost:{port}"),
+                                port,
+                            })
+                        }
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            attempt += 1;
+                            continue;
+                        }
+                    }
+                }
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    attempt += 1;
+                    continue;
+                }
+            }
+        }
+
+        bail!("MongoDB container failed to become ready")
+    }
+}
+
+impl Drop for TestMongoContainer {
+    fn drop(&mut self) {
+        println!("Stopping MongoDB container: {}", self.container_id);
+        Command::new("docker")
+            .args(["stop", &self.container_id])
+            .output()
+            .expect("Failed to stop MongoDB container");
+        Command::new("docker")
+            .args(["rm", &self.container_id])
+            .output()
+            .expect("Failed to remove MongoDB container");
     }
 }

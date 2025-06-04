@@ -13,11 +13,13 @@ use tracing_subscriber::EnvFilter;
 mod checker;
 mod cli;
 mod fault_fixer;
+mod inspector;
 mod model;
-mod rechecker;
+mod rechecker_v2;
 
-/// Number of blocks to check per iteration
-/// Also the number of blocks per stored object
+/// Number of blocks to check per iteration and the number of blocks per stored object.
+/// This value determines the granularity of fault detection and storage.
+/// A chunk is the smallest unit of blocks that can be rechecked or have faults cleared.
 pub const CHUNK_SIZE: u64 = 1000;
 
 #[tokio::main]
@@ -88,7 +90,8 @@ async fn main() -> Result<()> {
 
             // Start the rechecker worker if enabled
             let rechecker_handle = if !checker_args.disable_rechecker {
-                tokio::spawn(rechecker::recheck_worker(
+                info!("Starting rechecker worker (runs alongside checker)");
+                tokio::spawn(rechecker_v2::rechecker_v2_worker(
                     recheck_freq,
                     model.clone(),
                     metrics.clone(),
@@ -103,16 +106,23 @@ async fn main() -> Result<()> {
         }
         cli::Mode::Rechecker(rechecker_args) => {
             info!(
-                "Starting in rechecker mode with recheck_freq_min: {}",
-                rechecker_args.recheck_freq_min
+                "Starting in rechecker mode with recheck_freq_min: {}, dry_run: {}, worker: {}, start: {:?}, end: {:?}, force_recheck: {}",
+                rechecker_args.recheck_freq_min, rechecker_args.dry_run, rechecker_args.worker, rechecker_args.start_block, rechecker_args.end_block, rechecker_args.force_recheck
             );
-
             let model = CheckerModel::new(s3, &metrics, None).await?;
             let recheck_freq = Duration::from_secs_f64(rechecker_args.recheck_freq_min * 60.);
-            info!("Recheck frequency set to {:?}", recheck_freq);
 
-            info!("Starting rechecker worker");
-            tokio::spawn(rechecker::recheck_worker(recheck_freq, model, metrics)).await??;
+            tokio::spawn(rechecker_v2::rechecker_v2_standalone(
+                recheck_freq,
+                model,
+                metrics,
+                rechecker_args.dry_run,
+                rechecker_args.start_block,
+                rechecker_args.end_block,
+                rechecker_args.force_recheck,
+                rechecker_args.worker,
+            ))
+            .await??;
         }
         cli::Mode::FaultFixer(fixer_args) => {
             info!(
@@ -143,6 +153,30 @@ async fn main() -> Result<()> {
                     "SUMMARY: Fixed {} faults ({} failed)",
                     total_fixed, total_failed
                 );
+            }
+        }
+        cli::Mode::Inspector(inspector_args) => {
+            info!("Starting in inspector mode");
+
+            let model = CheckerModel::new(s3, &metrics, None).await?;
+
+            match inspector_args.command {
+                cli::InspectorCommand::ListFaults => {
+                    info!("Listing all fault ranges");
+                    inspector::list_fault_ranges(&model).await?;
+                }
+                cli::InspectorCommand::ListFaultyBlocks { start, end } => {
+                    info!("Listing faulty blocks in range {:?} to {:?}", start, end);
+                    inspector::list_faulty_blocks(&model, start, end).await?;
+                }
+                cli::InspectorCommand::InspectBlock {
+                    block_num,
+                    format,
+                    print_data,
+                } => {
+                    info!("Inspecting block {} with format {:?}", block_num, format);
+                    inspector::inspect_block(&model, block_num, format, print_data).await?;
+                }
             }
         }
     }
