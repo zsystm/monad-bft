@@ -32,7 +32,7 @@ pub fn good_blocks_key(starting_block_num: u64) -> String {
 #[derive(Clone)]
 pub struct CheckerModel {
     pub store: KVStoreErased,
-    pub block_data_readers: HashMap<String, BlockDataArchive>,
+    pub block_data_readers: Arc<HashMap<String, BlockDataArchive>>,
 }
 
 impl CheckerModel {
@@ -43,7 +43,8 @@ impl CheckerModel {
         init_replicas: Option<HashSet<ArchiveArgs>>,
     ) -> Result<Self> {
         let store = store.into();
-        let block_data_readers = Self::load_replicas(&store, metrics, init_replicas).await?;
+        let block_data_readers =
+            Arc::new(Self::load_replicas(&store, metrics, init_replicas).await?);
         Ok(Self {
             store,
             block_data_readers,
@@ -173,6 +174,24 @@ impl CheckerModel {
         Ok(())
     }
 
+    pub async fn find_chunk_starts_with_faults(&self) -> Result<HashSet<u64>> {
+        let keys = self
+            .store
+            .scan_prefix(format!("{}", FAULTS_CHUNK_PREFIX).as_str())
+            .await?;
+        let chunks = keys
+            .into_iter()
+            .map(|key| {
+                key.split('/')
+                    .nth(2)
+                    .unwrap()
+                    .parse::<u64>()
+                    .wrap_err("Failed to parse chunk start")
+            })
+            .collect::<Result<HashSet<u64>>>()?;
+        Ok(chunks)
+    }
+
     /// Retrieves faults for a specific replica and block range
     pub async fn get_faults_chunk(
         &self,
@@ -188,6 +207,26 @@ impl CheckerModel {
             }
             None => Ok(Vec::new()), // Return empty vec if not found
         }
+    }
+
+    pub async fn get_faults_chunks_all_replicas(
+        &self,
+        starting_block_num: u64,
+    ) -> Result<HashMap<String, Vec<Fault>>> {
+        let mut handles = Vec::new();
+        for replica in self.block_data_readers.keys() {
+            let replica = replica.clone();
+            let model = self.clone();
+            handles.push(tokio::spawn(async move {
+                model.get_faults_chunk(&replica, starting_block_num).await
+            }));
+        }
+        let results = try_join_all(handles).await?;
+        self.block_data_readers
+            .keys()
+            .zip(results)
+            .map(|(replica, result)| Ok((replica.clone(), result?)))
+            .collect()
     }
 
     /// Retrieves faults object for a specific replica and block range
@@ -298,6 +337,8 @@ pub enum InconsistentBlockReason {
     ReceiptsLen,
     TracesContents,
     TracesLen,
+    /// No consensus could be reached among replicas
+    NoConsensus,
 }
 
 impl InconsistentBlockReason {
@@ -310,6 +351,7 @@ impl InconsistentBlockReason {
             InconsistentBlockReason::ReceiptsLen => "inconsistent_receipts_len",
             InconsistentBlockReason::TracesContents => "inconsistent_traces_contents",
             InconsistentBlockReason::TracesLen => "inconsistent_traces_len",
+            InconsistentBlockReason::NoConsensus => "no_consensus",
         }
     }
 }
@@ -327,6 +369,7 @@ impl std::fmt::Display for InconsistentBlockReason {
                 InconsistentBlockReason::ReceiptsLen => "Receipts Length",
                 InconsistentBlockReason::TracesContents => "Traces Contents",
                 InconsistentBlockReason::TracesLen => "Traces Length",
+                InconsistentBlockReason::NoConsensus => "No Consensus",
             }
         )
     }

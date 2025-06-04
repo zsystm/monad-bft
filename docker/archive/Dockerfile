@@ -73,12 +73,10 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     CC=gcc-15 CXX=g++-15 cargo build --release \
     --bin monad-archiver \
     --bin monad-archive-checker \
-    --bin monad-indexer \
-    --bin monad-index-checker &&\
+    --bin monad-indexer && \
     mv target/release/monad-archiver archiver && \
     mv target/release/monad-archive-checker archive-checker && \
     mv target/release/monad-indexer indexer && \
-    mv target/release/monad-index-checker index-checker && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
 
 # Debug runner
@@ -92,7 +90,6 @@ ENV RUST_BACKTRACE=1
 COPY --from=builder /usr/src/monad-bft/archiver /usr/local/bin/monad-archiver
 COPY --from=builder /usr/src/monad-bft/archive-checker /usr/local/bin/monad-archive-checker
 COPY --from=builder /usr/src/monad-bft/indexer /usr/local/bin/monad-indexer
-COPY --from=builder /usr/src/monad-bft/index-checker /usr/local/bin/monad-index-checker
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 
 # Runner
@@ -102,5 +99,4 @@ RUN strip \
     /usr/local/bin/monad-archiver \
     /usr/local/bin/monad-archive-checker \
     /usr/local/bin/monad-indexer \
-    /usr/local/bin/monad-index-checker \
     /usr/local/lib/*.so

@@ -2,7 +2,32 @@ use clap::{Parser, Subcommand};
 use monad_archive::cli::ArchiveArgs;
 
 #[derive(Debug, Parser)]
-#[command(name = "monad-archive-checker", about, long_about = None)]
+#[command(
+    name = "monad-archive-checker",
+    about = "Archive consistency checker for validating blockchain data across multiple replicas",
+    long_about = "Archive consistency checker for validating blockchain data across multiple replicas.\n\n\
+EXAMPLES:\n\n\
+  # Start main checker with 3 replicas (runs continuously)\n\
+  monad-archive-checker --bucket checker-state --region us-east-1 checker \\\n\
+    --init-replicas 'aws archive-1 20,aws archive-2 20,aws archive-3 20'\n\n\
+  # Inspect specific faults\n\
+  monad-archive-checker --bucket checker-state inspector list-faults\n\
+  monad-archive-checker --bucket checker-state inspector inspect-block 12345 --format all\n\n\
+  # Fix faults by copying from good replicas (dry run first)\n\
+  monad-archive-checker --bucket checker-state fault-fixer\n\
+  monad-archive-checker --bucket checker-state fault-fixer --commit-changes --verify\n\n\
+  # Run standalone rechecker to fix false positives (runs once and exits)\n\
+  monad-archive-checker --bucket checker-state rechecker\n\n\
+  # Run rechecker in worker mode (runs periodically)\n\
+  monad-archive-checker --bucket checker-state rechecker --worker --recheck-freq-min 5\n\n\
+  # Advanced: Recheck specific block range with dry run\n\
+  monad-archive-checker --bucket checker-state rechecker \\\n\
+    --start-block 1000 --end-block 5000 --dry-run\n\n\
+  # Force recheck all chunks even without faults\n\
+  monad-archive-checker --bucket checker-state rechecker \\\n\
+    --start-block 0 --end-block 10000 --force-recheck --dry-run\n\n\
+"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub mode: Mode,
@@ -24,9 +49,14 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Mode {
+    /// Main checker mode - continuously validates blocks across replicas
     Checker(CheckerArgs),
+    /// Standalone rechecker - rechecks fault chunks from scratch (runs once by default)
     Rechecker(Rechecker),
+    /// Repairs faults by copying data from good replicas
     FaultFixer(FaultFixerArgs),
+    /// Inspects and analyzes fault data
+    Inspector(InspectorArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -54,9 +84,29 @@ pub struct CheckerArgs {
 
 #[derive(Parser, Debug)]
 pub struct Rechecker {
-    /// How frequently to recheck faults in minutes
+    /// How frequently to recheck faults in minutes (only used with --worker)
     #[arg(long, default_value_t = 5.)]
     pub recheck_freq_min: f64,
+
+    /// Dry run mode - only print differences without updating faults
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Optional start block to recheck (inclusive)
+    #[arg(long)]
+    pub start_block: Option<u64>,
+
+    /// Optional end block to recheck (inclusive)
+    #[arg(long)]
+    pub end_block: Option<u64>,
+
+    /// Force rechecking all chunks in range even if no faults are present
+    #[arg(long)]
+    pub force_recheck: bool,
+
+    /// Run continuously as a worker (default is to run once and exit)
+    #[arg(long)]
+    pub worker: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -73,4 +123,53 @@ pub struct FaultFixerArgs {
     /// Comma-separated list of specific replicas to fix (defaults to all)
     #[clap(long, value_delimiter = ',')]
     pub replicas: Option<Vec<String>>,
+}
+
+#[derive(Parser, Debug)]
+pub struct InspectorArgs {
+    #[command(subcommand)]
+    pub command: InspectorCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum InspectorCommand {
+    /// List all fault ranges collapsed to start-end format
+    ListFaults,
+
+    /// List all blocks with faults in a given range
+    ListFaultyBlocks {
+        /// Start block (inclusive)
+        #[arg(long)]
+        start: Option<u64>,
+
+        /// End block (inclusive)
+        #[arg(long)]
+        end: Option<u64>,
+    },
+
+    /// Inspect a specific block across all replicas
+    InspectBlock {
+        /// Block number to inspect
+        block_num: u64,
+
+        /// Output format
+        #[arg(long, default_value = "summary")]
+        format: InspectorOutputFormat,
+
+        /// Print full parsed data
+        #[arg(long)]
+        print_data: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum InspectorOutputFormat {
+    /// Show all replicas
+    All,
+    /// Show only replicas with faults
+    FaultsOnly,
+    /// Show only the good replica
+    GoodOnly,
+    /// Show summary statistics only
+    Summary,
 }
