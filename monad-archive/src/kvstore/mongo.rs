@@ -320,107 +320,16 @@ impl KVStore for MongoDbStorage {
 
 #[cfg(test)]
 pub mod mongo_tests {
-    use std::{process::Command, sync::atomic::AtomicU16};
-
-    use mongodb::bson::uuid::Uuid;
     use serial_test::serial;
 
     use super::*;
-
-    pub struct TestMongoContainer {
-        pub container_id: String,
-        pub port: u16,
-    }
-
-    static NEXT_PORT: AtomicU16 = AtomicU16::new(27017);
-
-    impl TestMongoContainer {
-        pub async fn new() -> Result<Self> {
-            let container_name = format!("mongo_test_{}", Uuid::new());
-            let port = NEXT_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-            // Start container
-            let output = Command::new("docker")
-                .args([
-                    "run",
-                    "-d",
-                    "-p",
-                    &format!("{port}:27017"),
-                    "--name",
-                    &container_name,
-                    "mongo:latest",
-                ])
-                .output()
-                .wrap_err("Failed to start MongoDB container")?;
-
-            let container_id = String::from_utf8(output.stdout)
-                .wrap_err("Invalid container ID output")?
-                .trim()
-                .to_string();
-
-            println!(
-                "Starting MongoDB container: {}, {}",
-                container_name, container_id
-            );
-
-            let output = Command::new("docker")
-                .args(["ps"])
-                .output()
-                .expect("Failed to list containers");
-
-            println!("Containers: {}", String::from_utf8(output.stdout).unwrap());
-
-            // Poll until MongoDB is ready
-            let client_options = ClientOptions::parse(format!("mongodb://localhost:{port}"))
-                .await
-                .unwrap();
-            let max_attempts = 30; // 30 * 200ms = 6 seconds max
-            let mut attempt = 0;
-
-            while attempt < max_attempts {
-                match Client::with_options(client_options.clone()) {
-                    Ok(client) => {
-                        // Try to actually connect and run a command
-                        match client.list_database_names().await {
-                            Ok(_) => return Ok(Self { container_id, port }),
-                            Err(_) => {
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                                attempt += 1;
-                                continue;
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        attempt += 1;
-                        continue;
-                    }
-                }
-            }
-
-            bail!("MongoDB container failed to become ready")
-        }
-    }
-
-    impl Drop for TestMongoContainer {
-        fn drop(&mut self) {
-            println!("Stopping MongoDB container: {}", self.container_id);
-            Command::new("docker")
-                .args(["stop", &self.container_id])
-                .output()
-                .expect("Failed to stop MongoDB container");
-            Command::new("docker")
-                .args(["rm", &self.container_id])
-                .output()
-                .expect("Failed to remove MongoDB container");
-        }
-    }
+    use crate::test_utils::TestMongoContainer;
 
     async fn setup() -> Result<(TestMongoContainer, MongoDbStorage)> {
         let container = TestMongoContainer::new().await?;
 
         let storage = MongoDbStorage::new(
-            &format!("mongodb://localhost:{}", container.port),
+            &container.uri,
             "test_db",
             "test_collection",
             Some(5), // 5gb cap

@@ -253,15 +253,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        cli::BlockDataReaderArgs,
-        kvstore::mongo::{mongo_tests::TestMongoContainer, MongoDbStorage},
+        cli::BlockDataReaderArgs, kvstore::mongo::MongoDbStorage, test_utils::TestMongoContainer,
     };
 
     async fn setup() -> Result<(TestMongoContainer, LogsIndexArchiver, TxIndexArchiver)> {
         let container = TestMongoContainer::new().await?;
 
         let mongo_storage = MongoDbStorage::new_index_store(
-            &format!("mongodb://localhost:{}", container.port),
+            &container.uri,
             "archive-db",
             Some(100_000),
             Metrics::none(),
