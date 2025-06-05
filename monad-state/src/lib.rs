@@ -1128,7 +1128,7 @@ where
                     tracing::debug!(?sender, ?message, "received ping request");
                     let mut vote_wait: u128 = 0;
                     if let Some(avg_vote_wait) = self.block_timestamp.get_vote_wait(&sender) {
-                        vote_wait = avg_vote_wait;
+                        vote_wait = avg_vote_wait.as_nanos();
                     }
                     let message = PingResponseMessage {
                         sequence: message.sequence,

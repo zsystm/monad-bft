@@ -16,6 +16,7 @@ monad-proto = { workspace = true }
 
 alloy-rlp = { workspace = true }
 sorted-vec = { workspace = true }
+rand = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

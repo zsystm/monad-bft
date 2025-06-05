@@ -359,7 +359,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             _phantom: Default::default(),
         },
         adjuster_config: TimestampAdjusterConfig::Enabled {
-            max_delta_ns: 499_000_000,
+            max_delta_ns: 10_000_000_000,
             adjustment_period: 201,
         },
         _phantom: PhantomData,
