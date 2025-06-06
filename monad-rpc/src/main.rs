@@ -12,12 +12,14 @@ use meta::{monad_net_version, monad_web3_client_version};
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
+use monad_event_ring::EventRing;
+use monad_exec_events::ExecEventRingType;
 use monad_node_config::MonadNodeConfig;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -48,6 +50,7 @@ use crate::{
         monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
         monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
     },
+    event::{EventServer, EventServerClient},
     gas_handlers::{
         monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
         monad_eth_maxPriorityFeePerGas,
@@ -63,7 +66,6 @@ use crate::{
     },
     txpool::{EthTxPoolBridge, EthTxPoolBridgeClient},
     vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
-    websocket::Disconnect,
 };
 
 mod account_handlers;
@@ -73,6 +75,7 @@ mod cli;
 mod debug;
 mod eth_json_types;
 mod eth_txn_handlers;
+mod event;
 mod fee;
 mod gas_handlers;
 mod gas_oracle;
@@ -644,14 +647,6 @@ struct MonadRpcResources {
     enable_eth_call_statistics: bool,
 }
 
-impl Handler<Disconnect> for MonadRpcResources {
-    type Result = ();
-
-    fn handle(&mut self, _msg: Disconnect, ctx: &mut Self::Context) -> Self::Result {
-        debug!("received disconnect {:?}", ctx);
-    }
-}
-
 impl MonadRpcResources {
     pub fn new(
         txpool_bridge_client: EthTxPoolBridgeClient,
@@ -906,7 +901,38 @@ async fn main() -> std::io::Result<()> {
         .as_ref()
         .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
 
-    // main server app
+    // Configure the websocket server
+    let ws_server = if args.ws_enabled {
+        // TODO(andr-dev): retry
+        let event_ring = EventRing::<ExecEventRingType>::new_from_path(args.exec_event_path)
+            .expect("Execution event ring is ready");
+
+        // let error_name = args.exec_event_path.to_str().unwrap();
+        // let proc_exit_monitor = monitor_single_event_ring_file_writer(
+        //     std::os::fd::AsRawFd::as_raw_fd(&event_ring_file),
+        //     error_name,
+        // )
+        // .expect("failed to monitor event ring file writer");
+
+        let ws_server_handle = EventServer::new(event_ring);
+
+        Some(
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(ws_server_handle.clone()))
+                    .service(
+                        web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
+                    )
+            })
+            .bind((args.rpc_addr.clone(), args.ws_port))?
+            .shutdown_timeout(1)
+            .workers(4),
+        )
+    } else {
+        None
+    };
+
+    // Configure the rpc server with or without metrics
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
             App::new()
@@ -916,7 +942,6 @@ async fn main() -> std::io::Result<()> {
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
-                .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
@@ -929,7 +954,6 @@ async fn main() -> std::io::Result<()> {
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
-                .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
@@ -937,13 +961,21 @@ async fn main() -> std::io::Result<()> {
         .run(),
     };
 
+    let ws_fut = ws_server.map(|ws| ws.run());
+
     tokio::select! {
         result = app => {
             let () = result?;
         }
 
-        () = txpool_bridge_handle => {
-            error!("txpool bridge crashed");
+        result = async {
+            if let Some(fut) = ws_fut {
+                fut.await
+            } else {
+                futures::future::pending().await
+            }
+        } => {
+            let () = result?;
         }
     }
 
@@ -994,7 +1026,9 @@ mod tests {
                 .app_data(web::PayloadConfig::default().limit(2_000_000))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
-                .service(web::resource("/ws/").route(web::get().to(websocket::handler))),
+                .service(
+                    web::resource("/ws/").route(web::get().to(websocket::handler::ws_handler)),
+                ),
         )
         .await
     }
