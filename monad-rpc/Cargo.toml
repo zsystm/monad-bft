@@ -23,6 +23,8 @@ monad-eth-txpool-ipc = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-ethcall = { workspace = true }
+monad-event-ring = { workspace = true }
+monad-exec-events = { workspace = true }
 monad-node-config = { workspace = true }
 monad-rpc-docs = { workspace = true }
 monad-triedb-utils = { workspace = true }

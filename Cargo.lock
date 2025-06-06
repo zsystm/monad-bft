@@ -5288,6 +5288,8 @@ dependencies = [
  "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-ethcall",
+ "monad-event-ring",
+ "monad-exec-events",
  "monad-node-config",
  "monad-rpc-docs",
  "monad-triedb-utils",
