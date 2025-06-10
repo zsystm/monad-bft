@@ -60,6 +60,72 @@ RUN apt update && apt install -y \
   libboost-stacktrace1.83-dev \
   libboost1.83-dev
 
+ARG NPROC=4
+
+RUN apt install -y \
+            autoconf automake ca-certificates clang cmake cppcheck \
+            curl gcc g++ git libncurses-dev \
+            libtool make ninja-build \
+            python3 python3-dev python3-numpy \
+            python3-pip python3-pytest-xdist python3-setuptools \
+            python3-typing-extensions zlib1g-dev && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -sf /usr/bin/python3 /usr/bin/python
+
+# Install protobuf
+ARG PROTOBUF_VERSION=21.12
+RUN git clone -b v${PROTOBUF_VERSION} --recursive https://github.com/protocolbuffers/protobuf.git \
+    && cd protobuf && ./autogen.sh \
+    && ./configure --enable-static=no \
+    && make -j${NPROC} install && ldconfig \
+    && cd .. && rm -rf protobuf
+
+# Clone and build llvm-project and run tests
+ARG BUILD_SHARED_LIBS=OFF
+RUN git clone -n https://github.com/llvm/llvm-project.git \
+    && cd llvm-project \
+    && git checkout 43d71baae36c8d8b5a9995aa35efebe09cc9c2d6 \
+    && mkdir -p build && cd build \
+# Build with clang since gcc on ppc64le doesn't support __builtin_thread_pointer
+    && CC=clang CXX=clang++ \
+       cmake -G Ninja ../llvm \
+             -DLLVM_ENABLE_PROJECTS=mlir \
+             -DLLVM_TARGETS_TO_BUILD="host" \
+             -DCMAKE_BUILD_TYPE=Release \
+             -DLLVM_ENABLE_ASSERTIONS=ON \
+             -DLLVM_ENABLE_RTTI=ON \
+             -DLLVM_ENABLE_LIBEDIT=OFF \
+             -DBUILD_SHARED_LIBS=${BUILD_SHARED_LIBS} \
+    && cmake --build . --parallel ${NPROC} -- ${MAKEFLAGS} \
+    && (cmake --build . --parallel ${NPROC} --target check-mlir || \
+        [ "$(uname -m)" = "s390x" ]) \
+    && rm -rf /tmp/* \
+    && echo "llvm-project commit $(git rev-parse HEAD) successfully built"
+
+RUN git clone --recursive https://github.com/onnx/onnx-mlir.git \
+    && cd onnx-mlir/third_party/onnx \
+    && CMAKE_ARGS="-DCMAKE_INSTALL_LIBDIR=lib -DONNX_USE_PROTOBUF_SHARED_LIBS=ON" python3 -m pip install --break-system-packages .
+
+RUN  LLVM_PROJECT_ROOT=$(pwd)/llvm-project \
+# Install llc, opt, and libraries
+    && cp ${LLVM_PROJECT_ROOT}/build/bin/llc /usr/local/bin \
+    && cp ${LLVM_PROJECT_ROOT}/build/bin/opt /usr/local/bin \
+    && cp -a ${LLVM_PROJECT_ROOT}/build/lib/* /usr/local/lib \
+# Build onnx-mlir, run tests, and install
+    && cd onnx-mlir \
+    && rm -rf build && mkdir -p build && cd build \
+# NNPA acclerator is built on all archs to enable lit tests
+# (dependent libzdnn is built on s390x only)
+    && CC=clang CXX=clang++ \
+       cmake -DMLIR_DIR=${LLVM_PROJECT_ROOT}/build/lib/cmake/mlir \
+             -DCMAKE_BUILD_TYPE=Release \
+             -DLLVM_ENABLE_ASSERTIONS=ON \
+             -DCMAKE_INSTALL_MESSAGE=NEVER .. \
+    && cmake --build . -j${NPROC}
+
+RUN cp onnx-mlir/build/Release/bin/onnx-mlir /usr/local/bin && cp onnx-mlir/build/Release/lib/* /usr/local/lib/
+
+
 # install cargo
 ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
@@ -102,6 +168,7 @@ COPY --from=builder /usr/src/monad-bft/triedb-debug /usr/local/bin/triedb-debug
 COPY --from=builder /usr/src/monad-bft/triedb-bench /usr/local/bin/triedb-bench
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
+COPY --from=builder /usr/local/lib/libprotobuf.* /usr/local/lib
 
 # Runner
 FROM runner-debug AS runner
