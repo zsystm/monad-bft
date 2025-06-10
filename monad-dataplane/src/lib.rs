@@ -10,7 +10,10 @@ use std::{
 use bytes::Bytes;
 use futures::channel::oneshot;
 use monoio::{IoUringDriver, RuntimeBuilder};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    Mutex,
+};
 use tracing::warn;
 
 pub(crate) mod buffer_ext;
@@ -170,7 +173,7 @@ impl DataplaneWriter {
 
         match self.tcp_egress_tx.try_send((addr, msg)) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(TrySendError::Full(_)) => {
                 let tcp_msgs_dropped = self.tcp_msgs_dropped.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -194,7 +197,7 @@ impl DataplaneWriter {
                 .try_send((target, msg.payload.clone(), msg.stride))
             {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(TrySendError::Full(_)) => {
                     let num_msgs_dropped = num_targets - i as u64;
                     let udp_msg_dropped = self
                         .udp_msgs_dropped
@@ -208,7 +211,7 @@ impl DataplaneWriter {
 
                     return;
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
+                Err(TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
             }
         }
     }
@@ -219,7 +222,7 @@ impl DataplaneWriter {
         for (i, (addr, payload)) in msg.msgs.into_iter().enumerate() {
             match self.udp_egress_tx.try_send((addr, payload, msg.stride)) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(TrySendError::Full(_)) => {
                     let num_msgs_dropped = num_msgs - i as u64;
                     let udp_msgs_dropped = self
                         .udp_msgs_dropped
@@ -233,7 +236,7 @@ impl DataplaneWriter {
 
                     return;
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
+                Err(TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
             }
         }
     }
@@ -253,7 +256,7 @@ impl DataplaneReader {
         self.tcp_reader.tcp_read().await
     }
 
-    pub async fn udp_read(&mut self) -> RecvMsg {
+    pub async fn udp_read(&self) -> RecvMsg {
         self.udp_reader.read().await
     }
 }
@@ -277,14 +280,14 @@ pub struct UdpReader {
 }
 
 impl UdpReader {
-    pub fn read_blocking(&mut self) -> RecvMsg {
+    pub fn read_blocking(&self) -> RecvMsg {
         self.udp_ingress_rx
             .blocking_lock()
             .blocking_recv()
             .expect("udp_ingress_rx channel should never be closed")
     }
 
-    pub async fn read(&mut self) -> RecvMsg {
+    pub async fn read(&self) -> RecvMsg {
         self.udp_ingress_rx
             .lock()
             .await
