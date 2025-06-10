@@ -2,7 +2,6 @@ use std::{net::SocketAddr, time::Duration};
 
 use bytes::Bytes;
 use monoio::spawn;
-use tokio::sync::mpsc;
 use zerocopy::{
     byteorder::little_endian::{U32, U64},
     AsBytes, FromBytes,
@@ -38,11 +37,12 @@ impl TcpMsgHdr {
 
 pub fn spawn_tasks(
     local_addr: SocketAddr,
-    tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
-    tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    tcp_ingress_tx: tokio::sync::mpsc::Sender<(SocketAddr, Bytes)>,
+    tcp_egress_rx: tokio::sync::mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    buffer_size: Option<usize>,
 ) {
-    spawn(rx::task(local_addr, tcp_ingress_tx));
-    spawn(tx::task(tcp_egress_rx));
+    spawn(rx::task(local_addr, tcp_ingress_tx, buffer_size));
+    spawn(tx::task(tcp_egress_rx, buffer_size));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are

@@ -14,10 +14,6 @@ use monoio::{
     spawn,
     time::{sleep, timeout},
 };
-use tokio::sync::mpsc::{
-    self,
-    error::{TryRecvError, TrySendError},
-};
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
@@ -52,13 +48,13 @@ impl TxState {
         &self,
         addr: &SocketAddr,
         msg: TcpMsg,
-    ) -> Option<(mpsc::Receiver<TcpMsg>, TxStatePeerHandle)> {
+    ) -> Option<(tokio::sync::mpsc::Receiver<TcpMsg>, TxStatePeerHandle)> {
         let mut ret = None;
 
         let mut inner_ref = self.inner.borrow_mut();
 
         let msg_sender = inner_ref.peer_channels.entry(*addr).or_insert_with(|| {
-            let (sender, receiver) = mpsc::channel(QUEUED_MESSAGE_LIMIT);
+            let (sender, receiver) = tokio::sync::mpsc::channel(QUEUED_MESSAGE_LIMIT);
 
             ret = Some((
                 receiver,
@@ -73,7 +69,7 @@ impl TxState {
 
         match msg_sender.try_send(msg) {
             Ok(()) => {
-                let message_count = msg_sender.max_capacity() - msg_sender.capacity();
+                let message_count = QUEUED_MESSAGE_LIMIT - msg_sender.capacity();
 
                 if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
                     warn!(
@@ -82,14 +78,14 @@ impl TxState {
                     );
                 }
             }
-            Err(TrySendError::Full(_)) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 warn!(
                     ?addr,
-                    message_count = msg_sender.max_capacity(),
+                    message_count = QUEUED_MESSAGE_LIMIT,
                     "peer message limit reached, dropping message"
                 );
             }
-            Err(TrySendError::Closed(_)) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 warn!(?addr, "channel unexpectedly closed");
             }
         }
@@ -117,10 +113,13 @@ struct TxStateInner {
     // There is a transmit connection task running for a given peer iff there is an
     // entry for the peer address in this map.  Exiting the transmit connection task
     // drops a TxStatePeerHandle which removes the entry from this map.
-    peer_channels: BTreeMap<SocketAddr, mpsc::Sender<TcpMsg>>,
+    peer_channels: BTreeMap<SocketAddr, tokio::sync::mpsc::Sender<TcpMsg>>,
 }
 
-pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
+pub async fn task(
+    mut tcp_egress_rx: tokio::sync::mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    buffer_size: Option<usize>,
+) {
     let tx_state = TxState::new();
 
     let mut conn_id: u64 = 0;
@@ -140,6 +139,7 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
                 addr,
                 msg_receiver,
                 tx_state_peer_handle,
+                buffer_size,
             ));
 
             conn_id += 1;
@@ -150,8 +150,9 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
 async fn task_connection(
     conn_id: u64,
     addr: SocketAddr,
-    mut msg_receiver: mpsc::Receiver<TcpMsg>,
+    mut msg_receiver: tokio::sync::mpsc::Receiver<TcpMsg>,
     _tx_state_peer_handle: TxStatePeerHandle,
+    buffer_size: Option<usize>,
 ) {
     trace!(
         conn_id,
@@ -159,7 +160,7 @@ async fn task_connection(
         "starting TCP transmit connection task for peer"
     );
 
-    if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver).await {
+    if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver, buffer_size).await {
         let mut additional_messages_dropped = 0;
 
         // Throw away (and fail) all remaining queued messages immediately.
@@ -189,7 +190,8 @@ async fn task_connection(
 async fn connect_and_send_messages(
     conn_id: u64,
     addr: &SocketAddr,
-    msg_receiver: &mut mpsc::Receiver<TcpMsg>,
+    msg_receiver: &mut tokio::sync::mpsc::Receiver<TcpMsg>,
+    buffer_size: Option<usize>,
 ) -> Result<(), Error> {
     let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
@@ -205,8 +207,7 @@ async fn connect_and_send_messages(
     loop {
         let msg = match msg_receiver.try_recv() {
             Ok(msg) => msg,
-            Err(TryRecvError::Disconnected) => break,
-            Err(TryRecvError::Empty) => {
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                 conn_cork(stream.as_raw_fd(), false);
 
                 match timeout(MSG_WAIT_TIMEOUT, msg_receiver.recv()).await {
@@ -218,9 +219,10 @@ async fn connect_and_send_messages(
                     Err(_) => break,
                 }
             }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
         };
 
-        let message_count = msg_receiver.max_capacity() - msg_receiver.capacity();
+        let message_count = QUEUED_MESSAGE_LIMIT - msg_receiver.capacity();
 
         if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
             warn!(

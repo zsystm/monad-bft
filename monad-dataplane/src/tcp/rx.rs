@@ -14,7 +14,6 @@ use monoio::{
     spawn,
     time::timeout,
 };
-use tokio::sync::mpsc;
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
@@ -69,7 +68,11 @@ struct RxStateInner {
     num_connections: BTreeMap<IpAddr, usize>,
 }
 
-pub async fn task(local_addr: SocketAddr, tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>) {
+pub async fn task(
+    local_addr: SocketAddr,
+    tcp_ingress_tx: tokio::sync::mpsc::Sender<(SocketAddr, Bytes)>,
+    buffer_size: Option<usize>,
+) {
     let opts = ListenerOpts::new().reuse_addr(true);
     let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
     let rx_state = RxState::new();
@@ -88,6 +91,7 @@ pub async fn task(local_addr: SocketAddr, tcp_ingress_tx: mpsc::Sender<(SocketAd
                         addr,
                         tcp_stream,
                         tcp_ingress_tx.clone(),
+                        buffer_size,
                     ));
                 }
                 Err(()) => {
@@ -112,7 +116,8 @@ async fn task_connection(
     conn_id: u64,
     addr: SocketAddr,
     mut tcp_stream: TcpStream,
-    tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
+    tcp_ingress_tx: tokio::sync::mpsc::Sender<(SocketAddr, Bytes)>,
+    buffer_size: Option<usize>,
 ) {
     let mut message_id: u64 = 0;
 

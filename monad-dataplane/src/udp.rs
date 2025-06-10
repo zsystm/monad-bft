@@ -8,7 +8,6 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use monoio::{net::udp::UdpSocket, spawn, time};
-use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 use super::RecvMsg;
@@ -31,8 +30,8 @@ const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
 
 pub fn spawn_tasks(
     local_addr: SocketAddr,
-    udp_ingress_tx: mpsc::Sender<RecvMsg>,
-    udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
+    udp_ingress_tx: tokio::sync::mpsc::Sender<RecvMsg>,
+    udp_egress_rx: tokio::sync::mpsc::Receiver<(SocketAddr, Bytes, u16)>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
@@ -90,7 +89,7 @@ pub fn spawn_tasks(
     spawn(tx(udp_socket_tx, udp_egress_rx, up_bandwidth_mbps));
 }
 
-async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
+async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: tokio::sync::mpsc::Sender<RecvMsg>) {
     loop {
         let buf = BytesMut::with_capacity(ETHERNET_SEGMENT_SIZE.into());
 
@@ -103,7 +102,6 @@ async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
                     payload,
                     stride: len.max(1).try_into().unwrap(),
                 };
-
                 if let Err(err) = udp_ingress_tx.send(msg).await {
                     warn!(?src_addr, ?err, "error queueing up received UDP message");
                     break;
@@ -120,7 +118,7 @@ const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(
 
 async fn tx(
     socket_tx: UdpSocket,
-    mut udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
+    mut udp_egress_rx: tokio::sync::mpsc::Receiver<(SocketAddr, Bytes, u16)>,
     up_bandwidth_mbps: u64,
 ) {
     let mut udp_segment_size: u16 = DEFAULT_SEGMENT_SIZE;
