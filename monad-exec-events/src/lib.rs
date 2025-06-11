@@ -57,6 +57,7 @@ pub enum ExecEvents {
         data_bytes: Box<[u8]>,
     },
     TxnCallFrame {
+        txn_index: u32,
         txn_call_frame: monad_exec_txn_call_frame,
         input_bytes: Box<[u8]>,
         return_bytes: Box<[u8]>,
@@ -95,6 +96,7 @@ pub enum ExecEventsRef<'reader> {
         data_bytes: &'reader [u8],
     },
     TxnCallFrame {
+        txn_index: u32,
         txn_call_frame: &'reader monad_exec_txn_call_frame,
         input_bytes: &'reader [u8],
         return_bytes: &'reader [u8],
@@ -218,10 +220,12 @@ impl<'reader> ExecEventsRef<'reader> {
                 data_bytes: data_bytes.to_vec().into_boxed_slice(),
             },
             Self::TxnCallFrame {
+                txn_index,
                 txn_call_frame,
                 input_bytes,
                 return_bytes,
             } => ExecEvents::TxnCallFrame {
+                txn_index,
                 txn_call_frame: *txn_call_frame,
                 input_bytes: input_bytes.to_vec().into_boxed_slice(),
                 return_bytes: return_bytes.to_vec().into_boxed_slice(),
@@ -326,6 +330,7 @@ impl EventRingType for ExecEventRingType {
                     .expect("TxnCallFrame event valid");
 
                 ExecEventsRef::TxnCallFrame {
+                    txn_index: txn_index_from_info(&info),
                     txn_call_frame,
                     input_bytes,
                     return_bytes,

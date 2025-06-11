@@ -3,8 +3,8 @@ use monad_event_ring::{EventDescriptor, EventDescriptorPayload, SnapshotEventDes
 use crate::{
     ffi::{
         monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_eth_txn_receipt,
-        monad_exec_block_header, monad_exec_block_result, monad_exec_txn_receipt,
-        monad_exec_txn_start,
+        monad_exec_block_header, monad_exec_block_result, monad_exec_txn_call_frame,
+        monad_exec_txn_receipt, monad_exec_txn_start,
     },
     ExecEventRingType, ExecEvents, ExecEventsRef,
 };
@@ -17,6 +17,13 @@ pub struct ExecutedBlock {
 }
 
 #[derive(Debug)]
+pub struct CallFrame {
+    pub txn_call_frame: monad_exec_txn_call_frame,
+    pub input_bytes: Box<[u8]>,
+    pub return_bytes: Box<[u8]>,
+}
+
+#[derive(Debug)]
 pub struct ExecutedTxn {
     pub hash: monad_c_bytes32,
     pub sender: monad_c_address,
@@ -24,6 +31,7 @@ pub struct ExecutedTxn {
     pub input: Box<[u8]>,
     pub logs: Box<[ExecutedTxnLog]>,
     pub receipt: monad_c_eth_txn_receipt,
+    pub call_frames: Box<[CallFrame]>,
 }
 
 #[derive(Debug)]
@@ -45,6 +53,7 @@ pub struct TxnReassemblyState {
     input: Box<[u8]>,
     logs: Vec<ExecutedTxnLog>,
     receipt: Option<monad_c_eth_txn_receipt>,
+    call_frames: Vec<CallFrame>,
 }
 
 pub enum BlockBuilderResult {
@@ -90,6 +99,7 @@ pub enum ReassemblyError {
 #[derive(Default)]
 pub struct BlockBuilder {
     state: Option<BlockReassemblyState>,
+    include_call_frames: bool,
 }
 
 impl BlockBuilder {
@@ -114,7 +124,13 @@ impl BlockBuilder {
         &mut self,
         event_descriptor: &SnapshotEventDescriptor<'ring, 'reader, ExecEventRingType>,
     ) -> Option<BlockBuilderResult> {
-        self.process_exec_event(event_descriptor.try_map_payload(Self::select_event_ref)?)
+        let f = if self.include_call_frames {
+            Self::select_event_ref_with_traces
+        } else {
+            Self::select_event_ref
+        };
+
+        self.process_exec_event(event_descriptor.try_map_payload(f)?)
     }
 
     fn select_event_ref(event_ref: ExecEventsRef<'_>) -> Option<ExecEvents> {
@@ -131,12 +147,18 @@ impl BlockBuilder {
         }
     }
 
+    fn select_event_ref_with_traces(event_ref: ExecEventsRef<'_>) -> Option<ExecEvents> {
+        match event_ref {
+            ExecEventsRef::TxnCallFrame { .. } => Some(event_ref.into_owned()),
+            event => Self::select_event_ref(event),
+        }
+    }
+
     fn process_exec_event(&mut self, exec_event: ExecEvents) -> Option<BlockBuilderResult> {
         match exec_event {
             ExecEvents::BlockQC(_)
             | ExecEvents::BlockFinalized(_)
             | ExecEvents::BlockVerified(_)
-            | ExecEvents::TxnCallFrame { .. }
             | ExecEvents::AccountAccessListHeader(_)
             | ExecEvents::AccountAccess(_)
             | ExecEvents::StorageAccess(_) => unreachable!(),
@@ -182,6 +204,7 @@ impl BlockBuilder {
                                  input,
                                  logs,
                                  receipt,
+                                 call_frames,
                              }| ExecutedTxn {
                                 hash,
                                 sender,
@@ -190,6 +213,7 @@ impl BlockBuilder {
                                 logs: logs.into_boxed_slice(),
                                 receipt: receipt
                                     .expect("BlockBuilder received TxnReeceipt for txn"),
+                                call_frames: call_frames.into_boxed_slice(),
                             },
                         )
                         .collect(),
@@ -227,6 +251,7 @@ impl BlockBuilder {
                     input: data_bytes,
                     logs: Vec::default(),
                     receipt: None,
+                    call_frames: Vec::default(),
                 });
 
                 None
@@ -291,6 +316,38 @@ impl BlockBuilder {
                     address: txn_log.address,
                     topic: topic_bytes,
                     data: data_bytes,
+                });
+
+                None
+            }
+            ExecEvents::TxnCallFrame {
+                txn_index,
+                txn_call_frame,
+                input_bytes,
+                return_bytes,
+            } => {
+                debug_assert!(
+                    self.include_call_frames,
+                    "TxnCallFrame event received without include_call_frames flag"
+                );
+
+                let Some(state) = self.state.as_mut() else {
+                    return None;
+                };
+
+                let txn_ref = state
+                    .txns
+                    .get_mut(TryInto::<usize>::try_into(txn_index).unwrap())
+                    .expect("BlockBuilder TxnCallFrame txn_index within bounds")
+                    .as_mut()
+                    .expect(
+                        "BlockBuilder TxnCallFrame txn_index populated from preceding TxnStart",
+                    );
+
+                txn_ref.call_frames.push(CallFrame {
+                    txn_call_frame,
+                    input_bytes,
+                    return_bytes,
                 });
 
                 None

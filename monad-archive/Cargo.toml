@@ -30,6 +30,7 @@ default = []
 mongodb-integration-tests = []
 
 [dependencies]
+monad-exec-events = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 
@@ -69,6 +70,7 @@ tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url = { workspace = true }
+itertools = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true } 

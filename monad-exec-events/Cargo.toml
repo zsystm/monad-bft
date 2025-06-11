@@ -4,6 +4,7 @@ description = "Rust API for consuming execution events"
 version = "0.1.0"
 edition = "2021"
 
+
 [dependencies]
 monad-event-ring = { workspace = true }
 
