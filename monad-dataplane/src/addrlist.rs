@@ -91,6 +91,30 @@ impl Addrlist {
         }
     }
 
+    pub(crate) fn update_trusted(
+        &self,
+        added: impl Iterator<Item = IpAddr>,
+        removed: impl Iterator<Item = IpAddr>,
+    ) {
+        let mut entries = self.entries.lock().unwrap();
+
+        for addr in removed {
+            if let Some(entry) = entries.get_mut(&addr) {
+                entry.set_trusted(false);
+                if !entry.is_banned() {
+                    entries.remove(&addr);
+                }
+            }
+        }
+
+        for addr in added {
+            entries
+                .entry(addr)
+                .and_modify(|e| e.set_trusted(true))
+                .or_insert_with(AddrEntry::new_trusted);
+        }
+    }
+
     pub(crate) fn ban(&self, addr: IpAddr, timestamp: Instant) {
         let mut entries = self.entries.lock().unwrap();
         entries

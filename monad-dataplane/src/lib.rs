@@ -214,6 +214,10 @@ impl Dataplane {
         self.addrlist.remove_trusted(addr);
     }
 
+    pub fn update_trusted(&self, added: impl Iterator<Item = IpAddr>, removed: impl Iterator<Item = IpAddr>) {
+        self.addrlist.update_trusted(added, removed);
+    }
+
     /// ban ip address. ban duration is specified in dataplane config.
     pub fn ban(&self, ip: IpAddr) {
         let now = Instant::now();

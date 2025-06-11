@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, VecDeque},
+    iter::empty,
     marker::PhantomData,
     net::SocketAddr,
     ops::DerefMut,
@@ -245,6 +246,11 @@ where
                             },
                         );
                         assert!(removed.is_none());
+                        let trusted = validator_set
+                            .iter()
+                            .filter_map(|(node_id, _)| self.known_addresses.get(node_id))
+                            .map(|socket| socket.ip());
+                        self.dataplane.update_trusted(trusted, empty());
                     }
                     self.peer_discovery_driver
                         .update(PeerDiscoveryEvent::UpdateValidatorSet {
@@ -542,13 +548,17 @@ where
             }
         }
 
-        while let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
-        {
+        loop {
+            let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
+            else {
+                break;
+            };
             let signature_bytes = &message[..SIGNATURE_SIZE];
             let signature = match ST::deserialize(signature_bytes) {
                 Ok(signature) => signature,
                 Err(err) => {
                     warn!(?err, ?from_addr, "invalid signature");
+                    this.dataplane.disconnect(from_addr);
                     continue;
                 }
             };
@@ -558,6 +568,7 @@ where
                     Ok(message) => message,
                     Err(err) => {
                         warn!(?err, ?from_addr, "failed to deserialize message");
+                        this.dataplane.disconnect(from_addr);
                         continue;
                     }
                 };
@@ -565,6 +576,7 @@ where
                 Ok(from) => from,
                 Err(err) => {
                     warn!(?err, ?from_addr, "failed to recover pubkey");
+                    this.dataplane.disconnect(from_addr);
                     continue;
                 }
             };
@@ -582,11 +594,13 @@ where
                         ?message,
                         "dropping peer discovery message, should come through udp channel"
                     );
+                    this.dataplane.disconnect(from_addr);
                     continue;
                 }
                 InboundRouterMessage::FullNodesGroup(_group_message) => {
                     // pass TCP message to MultiRouter
                     warn!("FullNodesGroup protocol via TCP not implemented");
+                    this.dataplane.disconnect(from_addr);
                     continue;
                 }
             }
