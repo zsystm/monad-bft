@@ -781,6 +781,11 @@ where
                     },
                 )),
             },
+            StateSyncEvent::BadPeer(node_id) => Self {
+                event: Some(proto_state_sync_event::Event::BadPeer(ProtoBadPeer {
+                    node_id: Some(node_id.into()),
+                })),
+            }
         }
     }
 }
@@ -982,6 +987,14 @@ where
                         .map(|b| b.try_into())
                         .collect::<Result<Vec<_>, _>>()?,
                 },
+                proto_state_sync_event::Event::BadPeer(bad_peer) => StateSyncEvent::BadPeer(
+                    bad_peer
+                        .node_id
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "BadPeer::node_id".to_owned(),
+                        ))?
+                        .try_into()?,
+                ),
             }
         })
     }

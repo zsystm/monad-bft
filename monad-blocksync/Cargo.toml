@@ -1,7 +1,7 @@
 [package]
 name = "monad-blocksync"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # this is necessary for criterion bench options
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
@@ -19,6 +19,7 @@ monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 itertools = { workspace = true }
+lru = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing = { workspace = true }

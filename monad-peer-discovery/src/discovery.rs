@@ -1,9 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddrV4,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+use lru::LruCache;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -22,6 +23,12 @@ use crate::{
 const MAX_PEER_IN_RESPONSE: usize = 16;
 /// Number of peers to send lookup request to if fall below min active connections
 const NUM_LOOKUP_PEERS: usize = 3;
+
+/// Maximum number of outstanding ping/lookup requests to track
+const MAX_OUTSTANDING_REQUESTS: usize = 10_000;
+
+/// Maximum age for outstanding requests (2 minutes)
+const MAX_REQUEST_AGE: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, Copy)]
 pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
@@ -50,6 +57,10 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     // mapping of node IDs to their corresponding name records
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
     pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
+
+    pub outstanding_pings: LruCache<NodeId<CertificateSignaturePubKey<ST>>, Instant>,
+    pub outstanding_lookups: LruCache<NodeId<CertificateSignaturePubKey<ST>>, Instant>,
+
     pub metrics: PeerDiscMetrics,
     // duration before sending next ping
     pub ping_period: Duration,
@@ -105,6 +116,8 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             dedicated_full_nodes: self.dedicated_full_nodes,
             peer_info: self.peer_info.clone(),
             outstanding_lookup_requests: Default::default(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: Default::default(),
             ping_period: self.ping_period,
             refresh_period: self.refresh_period,
@@ -246,12 +259,15 @@ where
         };
 
         // TODO: use connection heuristics to decide if attaching local_name_record
+        let ping_id = self.rng.next_u32();
         let ping_msg = Ping {
-            id: self.rng.next_u32(),
+            id: ping_id,
             local_name_record: Some(self.self_record),
         };
 
         peer_entry.last_ping = Some(ping_msg);
+
+        self.outstanding_pings.put(to, Instant::now());
 
         // reset timer to schedule for the next ping
         cmds.extend(self.reset_ping_timer(to, ping_msg.id));
@@ -335,7 +351,21 @@ where
         debug!(?from, ?pong_msg, "handling pong response");
         *self.metrics.entry("recv_pong").or_default() += 1;
 
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
+
+        if let Some(request_time) = self.outstanding_pings.get(&from) {
+            if request_time.elapsed() > MAX_REQUEST_AGE {
+                warn!(?from, "dropping pong, request too old");
+                *self.metrics.entry("drop_pong_old").or_default() += 1;
+                cmds.push(PeerDiscoveryCommand::BadPeer(from));
+                return cmds;
+            }
+        } else {
+            warn!(?from, "dropping pong, no matching outstanding ping");
+            *self.metrics.entry("drop_pong_no_match").or_default() += 1;
+            cmds.push(PeerDiscoveryCommand::BadPeer(from));
+            return cmds;
+        }
 
         // if ping id matches, update peer info
         if let Some(info) = self.peer_info.get_mut(&from) {
@@ -411,6 +441,9 @@ where
                 receiver: to,
                 open_discovery,
             });
+
+        self.outstanding_lookups.put(to, Instant::now());
+
         let peer_lookup_request = PeerLookupRequest {
             lookup_id,
             target,
@@ -493,6 +526,26 @@ where
         *self.metrics.entry("recv_lookup_response").or_default() += 1;
 
         let mut cmds = Vec::new();
+
+        if let Some(request_time) = self.outstanding_lookups.get(&from) {
+            if request_time.elapsed() > MAX_REQUEST_AGE {
+                warn!(?from, "dropping lookup response, request too old");
+                *self.metrics.entry("drop_lookup_response_old").or_default() += 1;
+                cmds.push(PeerDiscoveryCommand::BadPeer(from));
+                return cmds;
+            }
+        } else {
+            warn!(
+                ?from,
+                "dropping lookup response, no matching outstanding request"
+            );
+            *self
+                .metrics
+                .entry("drop_lookup_response_no_match")
+                .or_default() += 1;
+            cmds.push(PeerDiscoveryCommand::BadPeer(from));
+            return cmds;
+        }
 
         // if lookup id is not in outstanding requests, drop the response
         if self
@@ -831,6 +884,8 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -889,6 +944,8 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -928,6 +985,8 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -991,6 +1050,8 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -1056,6 +1117,8 @@ mod tests {
                     open_discovery: false,
                 }),
             ]),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -1065,6 +1128,7 @@ mod tests {
             max_active_connections: 50,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
+        state.outstanding_lookups.put(peer1_pubkey, Instant::now());
 
         // should not update name record if record has lower sequence number
         let record = generate_name_record(peer1, 0);
@@ -1117,6 +1181,8 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -1158,6 +1224,8 @@ mod tests {
                 receiver: peer1_pubkey,
                 open_discovery: false,
             })]),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -1204,6 +1272,8 @@ mod tests {
                 receiver: peer1_pubkey,
                 open_discovery: false,
             })]),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -1242,6 +1312,8 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -1306,6 +1378,8 @@ mod tests {
             dedicated_full_nodes,
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -1343,6 +1417,8 @@ mod tests {
                 name_record: generate_name_record(node1_key, 1),
             })]),
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),
@@ -1433,6 +1509,8 @@ mod tests {
             dedicated_full_nodes: BTreeSet::new(),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
+            outstanding_pings: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
+            outstanding_lookups: LruCache::new(MAX_OUTSTANDING_REQUESTS.try_into().unwrap()),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
             refresh_period: Duration::from_secs(120),

@@ -214,7 +214,11 @@ impl Dataplane {
         self.addrlist.remove_trusted(addr);
     }
 
-    pub fn update_trusted(&self, added: impl Iterator<Item = IpAddr>, removed: impl Iterator<Item = IpAddr>) {
+    pub fn update_trusted(
+        &self,
+        added: impl Iterator<Item = IpAddr>,
+        removed: impl Iterator<Item = IpAddr>,
+    ) {
         self.addrlist.update_trusted(added, removed);
     }
 

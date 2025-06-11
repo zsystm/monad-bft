@@ -6,12 +6,12 @@ use monad_proto::{
     error::ProtoError,
     proto::{
         blocksync::{
-            proto_block_sync_body_response, proto_block_sync_headers_response,
             ProtoBlockSyncBodyResponse, ProtoBlockSyncHeaders, ProtoBlockSyncHeadersResponse,
+            proto_block_sync_body_response, proto_block_sync_headers_response,
         },
         message::{
-            proto_block_sync_request_message, proto_block_sync_response_message,
             ProtoBlockSyncRequestMessage, ProtoBlockSyncResponseMessage,
+            proto_block_sync_request_message, proto_block_sync_response_message,
         },
     },
 };

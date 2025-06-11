@@ -957,6 +957,9 @@ where
                     commands.extend(self.maybe_start_consensus());
                     commands
                 }
+                StateSyncEvent::BadPeer(node_id) => {
+                    vec![Command::RouterCommand(RouterCommand::BadPeer(node_id))]
+                }
             },
             MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
                 ControlPanelEvent::GetMetricsEvent => {

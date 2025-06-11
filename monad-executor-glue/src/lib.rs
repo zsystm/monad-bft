@@ -52,6 +52,7 @@ pub enum RouterCommand<PT: PubKey, OM> {
     UpdatePeers(Vec<(NodeId<PT>, SocketAddr)>),
     GetFullNodes,
     UpdateFullNodes(Vec<NodeId<PT>>),
+    BadPeer(NodeId<PT>),
 }
 
 pub trait Message: Clone + Send + Sync {
@@ -957,6 +958,9 @@ where
         root: ConsensusBlockHeader<ST, SCT, EPT>,
         high_qc: QuorumCertificate<SCT>,
     },
+
+    // Bad peer detected
+    BadPeer(NodeId<SCT::NodeIdPubKey>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1076,6 +1080,7 @@ where
                         root: root.clone(),
                         high_qc: high_qc.clone(),
                     },
+                    StateSyncEvent::BadPeer(node_id) => StateSyncEvent::BadPeer(*node_id),
                 };
                 MonadEvent::StateSyncEvent(event)
             }

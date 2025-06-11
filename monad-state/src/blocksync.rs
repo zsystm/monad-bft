@@ -219,6 +219,9 @@ where
                     },
                 ))]
             }
+            BlockSyncCommand::BadPeer(node_id) => {
+                vec![Command::RouterCommand(RouterCommand::BadPeer(node_id))]
+            }
         }
     }
 }

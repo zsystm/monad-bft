@@ -160,6 +160,7 @@ pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
         message: PeerDiscoveryMessage<ST>,
     },
     TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
+    BadPeer(NodeId<CertificateSignaturePubKey<ST>>),
 }
 
 pub trait PeerDiscoveryAlgo {

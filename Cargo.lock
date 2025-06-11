@@ -4433,6 +4433,7 @@ dependencies = [
  "alloy-rlp",
  "bytes",
  "itertools 0.10.5",
+ "lru",
  "monad-blocktree",
  "monad-consensus-types",
  "monad-crypto",
@@ -5116,6 +5117,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-rlp",
  "futures",
+ "lru",
  "monad-crypto",
  "monad-executor-glue",
  "monad-secp",

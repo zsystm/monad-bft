@@ -1,4 +1,4 @@
-use alloy_rlp::{bytes, encode_list, Decodable, Encodable, Header};
+use alloy_rlp::{Decodable, Encodable, Header, bytes, encode_list};
 use monad_consensus_types::{
     block::{BlockRange, ConsensusBlockHeader},
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},

@@ -376,6 +376,11 @@ where
                 RouterCommand::UpdateFullNodes(new_full_nodes) => {
                     self.full_nodes.list = new_full_nodes;
                 }
+                RouterCommand::BadPeer(node_id) => {
+                    if let Some(socket) = self.known_addresses.get(&node_id) {
+                        self.dataplane.disconnect(*socket);
+                    }
+                }
             }
         }
     }
@@ -634,6 +639,11 @@ where
                                 continue;
                             }
                         }
+                    }
+                    PeerDiscoveryEmit::BadPeer(_node_id) => {
+                        // TODO: implement peer banning/disconnection logic
+                        // For now, just log that we received a BadPeer from peer discovery
+                        debug!("BadPeer reported by peer discovery");
                     }
                 }
             }

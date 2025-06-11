@@ -24,6 +24,7 @@ pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         message: PeerDiscoveryMessage<ST>,
     },
+    BadPeer(NodeId<CertificateSignaturePubKey<ST>>),
 }
 
 struct PeerDiscTimers<ST: CertificateSignatureRecoverable> {
@@ -189,6 +190,9 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 }
                 PeerDiscoveryCommand::TimerCommand(timer_cmd) => {
                     timer_cmds.push(timer_cmd);
+                }
+                PeerDiscoveryCommand::BadPeer(node_id) => {
+                    emits.push(PeerDiscoveryEmit::BadPeer(node_id))
                 }
             }
         }

@@ -66,6 +66,7 @@ where
                 RouterCommand::UpdatePeers(_) => Some(cmd),
                 RouterCommand::GetFullNodes => Some(cmd),
                 RouterCommand::UpdateFullNodes(_vec) => Some(cmd),
+                RouterCommand::BadPeer(_) => Some(cmd),
             })
             .collect_vec();
 

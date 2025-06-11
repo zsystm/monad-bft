@@ -255,7 +255,9 @@ where
                 Self::Command::UpdateFullNodes(..) => {
                     panic!("Command routed to secondary RaptorCast: UpdateFullNodes")
                 }
-
+                Self::Command::BadPeer(..) => {
+                    panic!("Command routed to secondary RaptorCast: BadPeer")
+                }
                 Self::Command::UpdateCurrentRound(epoch, round) => match &mut self.role {
                     Role::Client(client) => {
                         client.enter_round(round);

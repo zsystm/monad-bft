@@ -224,6 +224,10 @@ message ProtoRequestSync {
   monad_proto.quorum_certificate.ProtoQuorumCertificate high_qc = 2;
 }
 
+message ProtoBadPeer {
+  monad_proto.basic.ProtoNodeId node_id = 1;
+}
+
 message ProtoStateSyncEvent {
   oneof event {
     ProtoInboundStateMessage inbound = 1;
@@ -231,6 +235,7 @@ message ProtoStateSyncEvent {
     ProtoDoneSync done_sync = 3;
     ProtoRequestSync request_sync = 4;
     ProtoBlockSyncFullBlocks block_sync = 5;
+    ProtoBadPeer bad_peer = 6;
   }
 }
 

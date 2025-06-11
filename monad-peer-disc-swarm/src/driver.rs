@@ -188,6 +188,9 @@ where
                 PeerDiscoveryCommand::TimerCommand(peer_discovery_timer_command) => {
                     self.timer.exec(vec![peer_discovery_timer_command]);
                 }
+                PeerDiscoveryCommand::BadPeer(node_id) => {
+                    router_cmds.push(RouterCommand::BadPeer(node_id))
+                }
             }
         }
         router_cmds
