@@ -74,6 +74,7 @@ metrics!(
             invalid_epoch
         ]
     ),
+    (Consensus, consensus, [in_validator_set, stake]),
     (
         ConsensusEvents,
         consensus_events,
