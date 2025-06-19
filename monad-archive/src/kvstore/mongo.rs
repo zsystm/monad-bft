@@ -320,8 +320,6 @@ impl KVStore for MongoDbStorage {
 
 #[cfg(test)]
 pub mod mongo_tests {
-    use serial_test::serial;
-
     use super::*;
     use crate::test_utils::TestMongoContainer;
 
