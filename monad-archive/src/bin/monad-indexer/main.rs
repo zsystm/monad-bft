@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use clap::Parser;
+use eyre::OptionExt;
 use monad_archive::{
     cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,
     workers::index_worker::index_worker,

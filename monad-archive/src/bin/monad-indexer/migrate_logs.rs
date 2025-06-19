@@ -51,6 +51,7 @@ pub async fn run_migrate_logs(args: crate::cli::Cli) -> Result<()> {
         stop_block,
     ))
     .await?
+    .map_err(Into::into)
 }
 
 async fn reindex_worker(
