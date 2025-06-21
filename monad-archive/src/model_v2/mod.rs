@@ -15,6 +15,7 @@ use mongodb::{
     Client, Collection, IndexModel,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 use crate::{kvstore::object_store::ObjectStore, model::BlockArchiver, prelude::*};
 
@@ -446,6 +447,44 @@ impl BlockArchiver for ModelV2 {
     }
 }
 
+type OpFuture<O> = Box<dyn Future<Output = Result<O>> + Send + Unpin>;
+type OpFactory<O> = Box<dyn Fn() -> OpFuture<O> + Send + 'static>;
+
+type ErasedOp = Box<dyn Future<Output = ()> + Send>;
+
+fn erase_op<O>(op: impl Fn() -> OpFuture<O>) -> (ErasedOp, mpsc::Receiver<Result<O>>) {
+    let (tx, rx) = mpsc::channel(1);
+    (
+        Box::new(async move {
+            let res = op().await;
+            tx.send(res).await.expect("Failed to send op result");
+        }),
+        rx,
+    )
+}
+
+struct Op<O> {
+    factory: OpFactory<O>,
+    tx: mpsc::Sender<Result<O>>,
+}
+
+// struct MongoExecutor {
+//     concurrency: usize,
+//     rx: mpsc::Receiver<OpFuture<()>>,
+// }
+
+// impl MongoExecutor {
+//     pub fn spawn<F, O, E>(&self, f: F) -> impl Future<Output = Result<O, E>>
+//     where
+//         F: Future<Output = Result<O, E>> + Send + 'static,
+//         O: Send + 'static,
+//         E: Send + 'static,
+//     {
+//         let f = tokio::spawn(f);
+//         f.await.wrap_err("Failed to spawn mongo future")
+//     }
+// }
+
 impl BlockDataReader for ModelV2 {
     async fn get_latest(&self) -> Result<Option<u64>> {
         Ok(self
@@ -646,11 +685,7 @@ pub fn rlp_encode<T: Encodable>(data: &T) -> Binary {
 mod tests {
     use super::*;
     use crate::{
-        kvstore::{
-            memory::MemoryStorage,
-            mongo::new_client,
-            object_store::ObjectStore,
-        },
+        kvstore::{memory::MemoryStorage, mongo::new_client, object_store::ObjectStore},
         test_utils::{mock_block, mock_rx, mock_trace, mock_tx, TestMongoContainer},
     };
 
