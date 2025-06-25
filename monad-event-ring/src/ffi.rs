@@ -13,7 +13,10 @@ pub(crate) use self::bindings::{
     monad_event_ring, monad_event_ring_type_MONAD_EVENT_RING_TYPE_COUNT,
     monad_event_ring_type_MONAD_EVENT_RING_TYPE_NONE,
 };
-pub use self::bindings::{monad_event_ring_type, monad_event_ring_type_MONAD_EVENT_RING_TYPE_TEST};
+pub use self::bindings::{
+    monad_event_ring_type, monad_event_ring_type_MONAD_EVENT_RING_TYPE_EXEC,
+    monad_event_ring_type_MONAD_EVENT_RING_TYPE_TEST,
+};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 mod bindings {

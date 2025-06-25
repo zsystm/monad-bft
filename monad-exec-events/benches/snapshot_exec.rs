@@ -1,16 +1,15 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use monad_event_ring::{
-    DecodedEventRing, EventDescriptorPayload, EventNextResult, RawEventDecoder, SnapshotEventRing,
-};
+use monad_event_ring::{DecodedEventRing, EventNextResult, SnapshotEventRing};
+use monad_exec_events::ExecEventDecoder;
 
 fn bench_snapshot(c: &mut Criterion) {
     const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
     const SNAPSHOT_ZSTD_BYTES: &[u8] =
         include_bytes!("../../monad-exec-events/test/data/exec-events-emn-30b-15m.zst");
 
-    let mut g = c.benchmark_group("snapshot_raw");
+    let mut g = c.benchmark_group("snapshot_exec");
 
-    let snapshot = SnapshotEventRing::<RawEventDecoder>::new_from_zstd_bytes(
+    let snapshot = SnapshotEventRing::<ExecEventDecoder>::new_from_zstd_bytes(
         SNAPSHOT_ZSTD_BYTES,
         SNAPSHOT_NAME,
     )
@@ -34,15 +33,9 @@ fn bench_snapshot(c: &mut Criterion) {
         items
     };
 
-    g.bench_function("reader_create_drop", |b| {
-        b.iter(|| {
-            black_box(snapshot.create_reader());
-        });
-    });
-
     g.throughput(criterion::Throughput::Elements(items));
-    g.bench_function("iter", |b| {
-        let snapshot = SnapshotEventRing::<RawEventDecoder>::new_from_zstd_bytes(
+    g.bench_function("iter_read", |b| {
+        let snapshot = SnapshotEventRing::<ExecEventDecoder>::new_from_zstd_bytes(
             SNAPSHOT_ZSTD_BYTES,
             SNAPSHOT_NAME,
         )
@@ -53,10 +46,7 @@ fn bench_snapshot(c: &mut Criterion) {
             |event_reader| loop {
                 match event_reader.next_descriptor() {
                     EventNextResult::Ready(event_descriptor) => {
-                        let actual_payload: EventDescriptorPayload<Option<u8>> = event_descriptor
-                            .try_filter_map_raw(|_, bytes| {
-                                black_box(Some(bytes.first().cloned().unwrap_or_default()))
-                            });
+                        let actual_payload = event_descriptor.try_read();
 
                         black_box(actual_payload);
                     }
