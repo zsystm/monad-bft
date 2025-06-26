@@ -348,7 +348,7 @@ where
                 block_number,
                 CommittedBlock {
                     block_id: block.get_id(),
-                    round: block.get_round(),
+                    round: block.get_block_round(),
                     nonces: BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
@@ -496,7 +496,7 @@ where
             Ok(BlockLookupIndex {
                 block_id: proposed_block.get_id(),
                 seq_num: *base_seq_num,
-                round: proposed_block.get_round(),
+                round: proposed_block.get_block_round(),
                 is_finalized: false,
             })
         } else {
@@ -670,7 +670,7 @@ where
         if block.get_seq_num() != extending_seq_num + SeqNum(1) {
             warn!(
                 seq_num =? block.header().seq_num,
-                round =? block.header().round,
+                round =? block.header().block_round,
                 "block not coherent, doesn't equal parent_seq_num + 1"
             );
             return Err(BlockPolicyError::BlockNotCoherent);
@@ -679,7 +679,7 @@ where
         if block.get_timestamp() <= extending_timestamp {
             warn!(
                 seq_num =? block.header().seq_num,
-                round =? block.header().round,
+                round =? block.header().block_round,
                 ?extending_timestamp,
                 block_timestamp =? block.get_timestamp(),
                 "block not coherent, timestamp not monotonically increasing"
@@ -695,7 +695,7 @@ where
         if block.get_execution_results() != &expected_execution_results {
             warn!(
                 seq_num =? block.header().seq_num,
-                round =? block.header().round,
+                round =? block.header().block_round,
                 ?expected_execution_results,
                 block_execution_results =? block.get_execution_results(),
                 "block not coherent, execution result mismatch"
@@ -735,7 +735,7 @@ where
             if &txn_nonce != expected_nonce {
                 warn!(
                     seq_num =? block.header().seq_num,
-                    round =? block.header().round,
+                    round =? block.header().block_round,
                     "block not coherent, invalid nonce"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);
@@ -775,7 +775,7 @@ where
                 );
                 warn!(
                     seq_num =? block.header().seq_num,
-                    round =? block.header().round,
+                    round =? block.header().block_round,
                     "block not coherent, invalid balance"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);

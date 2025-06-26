@@ -18,7 +18,8 @@ pub mod test_tool {
         },
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
-        timeout::{Timeout, TimeoutInfo},
+        timeout::{HighExtendVote, TimeoutInfo},
+        tip::ConsensusTip,
         voting::Vote,
     };
     use monad_crypto::{
@@ -96,8 +97,15 @@ pub mod test_tool {
         round: Round,
     ) -> VerifiedMonadMessage<ST, SC, EP> {
         let (block_header, block_body) = fake_block(round);
+        let block_header_signature = ST::sign(&alloy_rlp::encode(&block_header), kp);
         let internal_msg = ProposalMessage {
-            block_header,
+            proposal_epoch: block_header.epoch,
+            proposal_round: block_header.block_round,
+            tip: ConsensusTip {
+                block_header,
+                signature: block_header_signature,
+                fresh_certificate: None,
+            },
             block_body,
             last_round_tc: None,
         };
@@ -130,14 +138,14 @@ pub mod test_tool {
         let timeout_info = TimeoutInfo {
             epoch: Epoch(1),
             round: Round(0),
-            high_qc: fake_qc(),
+            high_qc_round: Round(0),
+            high_tip_round: Round(0),
         };
         let internal_msg = TimeoutMessage {
-            timeout: Timeout {
-                tminfo: timeout_info,
-                last_round_tc: None,
-            },
-            sig: NopSignature::sign(&[0x00_u8, 32], kp),
+            tminfo: timeout_info,
+            high_extend: HighExtendVote::Qc(QuorumCertificate::genesis_qc()),
+            last_round_tc: None,
+            timeout_signature: NopSignature::sign(&[0x00_u8, 32], kp),
         };
         ConsensusMessage {
             version: 1,
