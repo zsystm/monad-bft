@@ -351,6 +351,10 @@ where
                 },
                 tc,
             )?;
+            // last_round_tc must be from the previous round
+            if self.obj.proposal_round != tc.round + Round(1) {
+                return Err(Error::NotWellFormed);
+            }
         }
 
         verify_tip(
@@ -372,18 +376,15 @@ where
     fn well_formed_proposal(&self) -> Result<(), Error> {
         if self.obj.proposal_round == self.obj.tip.block_header.qc.get_round() + Round(1) {
             // Consecutive QC
-            if self.obj.last_round_tc.is_some() {
-                return Err(Error::NotWellFormed);
-            }
+
+            // last_round_tc is unnecessary if the QC is consecutive
+            // regardless, we allow for it to exist
             return Ok(());
         }
-        // TC must exist from last round
+        // last_round_tc must exist
         let Some(tc) = &self.obj.last_round_tc else {
             return Err(Error::NotWellFormed);
         };
-        if self.obj.proposal_round != tc.round + Round(1) {
-            return Err(Error::NotWellFormed);
-        }
 
         // check that nec.tip corresponds to last_round_tc.high_tip
         if let Some(FreshProposalCertificate::Nec(nec)) = &self.obj.tip.fresh_certificate {
@@ -458,6 +459,10 @@ where
                 },
                 tc,
             )?;
+            // last_round_tc must be from the previous round
+            if self.obj.tminfo.round != tc.round + Round(1) {
+                return Err(Error::NotWellFormed);
+            }
         }
         verify_high_extend(
             &|epoch, round| {
@@ -477,18 +482,15 @@ where
     fn well_formed_timeout(&self) -> Result<(), Error> {
         if self.obj.tminfo.round == self.obj.high_extend.qc().get_round() + Round(1) {
             // Consecutive QC
-            if self.obj.last_round_tc.is_some() {
-                return Err(Error::NotWellFormed);
-            }
+
+            // last_round_tc is unnecessary if the QC is consecutive
+            // regardless, we allow for it to exist
             return Ok(());
         }
-        // TC must exist from last round
-        let Some(tc) = &self.obj.last_round_tc else {
+        // last_round_tc must exist
+        let Some(_tc) = &self.obj.last_round_tc else {
             return Err(Error::NotWellFormed);
         };
-        if self.obj.tminfo.round != tc.round + Round(1) {
-            return Err(Error::NotWellFormed);
-        }
         Ok(())
     }
 
