@@ -36,7 +36,8 @@ where
         S: serde::Serializer,
     {
         let bytes = alloy_rlp::encode(self);
-        serializer.serialize_bytes(&bytes)
+        let bytes_hex = hex::encode(&bytes);
+        serializer.serialize_str(&bytes_hex)
     }
 }
 
@@ -50,7 +51,10 @@ where
     where
         D: serde::Deserializer<'de>,
     {
-        let bytes = Vec::<u8>::deserialize(deserializer)?;
+        let bytes_hex = String::deserialize(deserializer)?;
+        let bytes = hex::decode(&bytes_hex).map_err(|err| {
+            serde::de::Error::custom(format!("tip hex decoding error: {:?}", err))
+        })?;
         let tip = alloy_rlp::decode_exact(&bytes).map_err(|err| {
             serde::de::Error::custom(format!("tip rlp decoding error: {:?}", err))
         })?;
