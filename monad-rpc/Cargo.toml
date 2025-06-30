@@ -80,6 +80,7 @@ optional = true
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
+awc = "3"
 
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
 alloy-rpc-client = { workspace = true }
