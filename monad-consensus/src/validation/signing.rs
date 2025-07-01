@@ -1561,7 +1561,6 @@ mod test {
             id: BlockId(Hash([0x0a_u8; 32])),
             epoch: Epoch(2), // wrong epoch: should be 1
             round: Round(10),
-            block_round: Round(10),
         };
 
         let vote_message = VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
@@ -1627,7 +1626,6 @@ mod test {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(2), // wrong epoch
             round: Round(10),
-            block_round: Round(10),
         };
 
         let msg = alloy_rlp::encode(vote);
@@ -1675,7 +1673,6 @@ mod test {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(1), // correct epoch
             round: Round(10),
-            block_round: Round(10),
         };
 
         let msg = alloy_rlp::encode(vote);

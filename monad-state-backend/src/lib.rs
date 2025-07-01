@@ -56,7 +56,7 @@ pub trait StateBackendTest {
         block_id: BlockId,
         seq_num: SeqNum,
         round: Round,
-        parent_round: Round,
+        parent_id: BlockId,
         new_account_nonces: BTreeMap<Address, Nonce>,
     );
 
@@ -113,10 +113,10 @@ impl<T: StateBackendTest> StateBackendTest for Arc<Mutex<T>> {
         block_id: BlockId,
         seq_num: SeqNum,
         round: Round,
-        parent_round: Round,
+        parent_id: BlockId,
         new_account_nonces: BTreeMap<Address, Nonce>,
     ) {
         let mut state = self.lock().unwrap();
-        state.ledger_propose(block_id, seq_num, round, parent_round, new_account_nonces);
+        state.ledger_propose(block_id, seq_num, round, parent_id, new_account_nonces);
     }
 }

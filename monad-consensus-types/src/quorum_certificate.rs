@@ -69,7 +69,6 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
         let vote = Vote {
             id: GENESIS_BLOCK_ID,
             epoch: Epoch(1),
-            block_round: GENESIS_ROUND,
             round: GENESIS_ROUND,
         };
 
@@ -100,10 +99,6 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
         } else {
             None
         }
-    }
-
-    pub fn get_block_round(&self) -> Round {
-        self.info.block_round
     }
 
     pub fn get_round(&self) -> Round {

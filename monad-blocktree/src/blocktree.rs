@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::VecDeque,
     fmt::{self, Debug},
 };
 
@@ -38,9 +38,6 @@ where
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
     tree: Tree<ST, SCT, EPT, BPT, SBT>,
-
-    // TODO delete this once tree is keyed by blocktree round
-    inserted_rounds: BTreeSet<Round>,
 }
 
 impl<ST, SCT, EPT, BPT, SBT> Debug for BlockTree<ST, SCT, EPT, BPT, SBT>
@@ -97,7 +94,6 @@ where
                 children_blocks: Vec::new(),
             },
             tree: Default::default(),
-            inserted_rounds: Default::default(),
         }
     }
 
@@ -179,11 +175,6 @@ where
         for block_to_delete in blocks_to_delete {
             self.tree.remove(&block_to_delete);
         }
-        while self.inserted_rounds.first().is_some_and(|inserted_round| {
-            inserted_round <= &new_root_entry.validated_block.get_block_round()
-        }) {
-            self.inserted_rounds.pop_first();
-        }
         self.root = Root {
             info: RootInfo {
                 round: new_root_entry.validated_block.get_block_round(),
@@ -209,7 +200,6 @@ where
         let new_block_id = block.get_id();
         let parent_id = block.get_parent_id();
 
-        self.inserted_rounds.insert(block.get_block_round());
         self.tree.insert(block);
 
         if parent_id == self.root.info.block_id {
@@ -352,7 +342,7 @@ where
 
     /// returns a BlockRange that should be requested to fill the path from `qc` to the tree root.
     pub fn maybe_fill_path_to_root(&self, qc: &QuorumCertificate<SCT>) -> Option<BlockRange> {
-        if self.root.info.round >= qc.get_block_round() {
+        if self.root.info.round >= qc.get_round() || self.root.info.block_id == qc.get_block_id() {
             // root cannot be an ancestor of qc
             return None;
         }
@@ -361,11 +351,7 @@ where
         let mut num_blocks = SeqNum(1);
         while let Some(known_block_entry) = self.tree.get(&maybe_unknown_bid) {
             // If the parent round == self.root, we have path to root
-            if known_block_entry.validated_block.get_parent_block_round() == self.root.info.round {
-                assert_eq!(
-                    known_block_entry.validated_block.get_parent_id(),
-                    self.root.info.block_id
-                );
+            if known_block_entry.validated_block.get_parent_id() == self.root.info.block_id {
                 return None;
             }
             maybe_unknown_bid = known_block_entry.validated_block.get_parent_id();
@@ -440,6 +426,17 @@ where
         Some(certified_block.validated_block.get_timestamp())
     }
 
+    // Take a QC and look for the block it certifies in the blocktree. If it exists, return its
+    // round
+    pub fn get_block_round_of_qc(&self, qc: &QuorumCertificate<SCT>) -> Option<Round> {
+        let block_id = qc.get_block_id();
+        if self.root.info.block_id == block_id {
+            return Some(self.root.info.round);
+        }
+        let certified_block = self.tree.get(&block_id)?;
+        Some(certified_block.validated_block.get_block_round())
+    }
+
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
     pub fn is_valid_to_insert(&self, b: &ConsensusBlockHeader<ST, SCT, EPT>) -> bool {
@@ -492,10 +489,6 @@ where
         chain.reverse();
 
         chain
-    }
-
-    pub fn round_exists(&self, round: &Round) -> bool {
-        self.inserted_rounds.contains(round)
     }
 }
 
@@ -559,7 +552,6 @@ mod test {
             id: block.get_id(),
             epoch: block.epoch,
             round: block.block_round,
-            block_round: block.block_round,
         }
     }
 
@@ -571,7 +563,6 @@ mod test {
         let vote = Vote {
             id: block.get_id(),
             epoch: block.epoch,
-            block_round: block.block_round,
             round: block.block_round,
         };
         QC::new(vote, MockSignatures::with_pubkeys(&[]))

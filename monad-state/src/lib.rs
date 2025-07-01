@@ -1349,7 +1349,6 @@ mod test {
             id: BlockId(Hash([0x06_u8; 32])),
             epoch: Epoch(3),
             round: Round(4030),
-            block_round: Round(4030),
         };
         let qc_seq_num = SeqNum(2998); // one block before boundary block
 

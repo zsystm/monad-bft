@@ -341,9 +341,6 @@ where
     pub fn get_block_round(&self) -> Round {
         self.header.block_round
     }
-    pub fn get_parent_block_round(&self) -> Round {
-        self.header.qc.get_block_round()
-    }
     pub fn get_parent_round(&self) -> Round {
         self.header.qc.get_round()
     }

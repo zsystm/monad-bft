@@ -105,6 +105,10 @@ where
             .block_cache_index
             .insert(block_round, (block_id, payload_id));
         if let Some((block_id, payload_id)) = maybe_removed {
+            // in the case of equivocated tips, replacing the old tip here may not be optimal
+            // however, this does not matter because the cache is just there for a fast-path
+            //
+            // all reads are backed by disk
             self.block_cache.remove(&block_id);
             self.block_payload_cache.remove(&payload_id);
         }
@@ -211,16 +215,6 @@ where
 
                     self.update_cache(block);
 
-                    if self
-                        .last_commit
-                        .is_some_and(|(_last_commit_seq_num, last_commit_round)| {
-                            block_round <= last_commit_round
-                        })
-                    {
-                        // we can't repropose stuff that's already finalized
-                        continue;
-                    }
-
                     self.bft_block_persist
                         .update_proposed_head(&block_id)
                         .unwrap();
@@ -235,16 +229,6 @@ where
                     info!(num_tx, block_num, "committed block");
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] += num_tx;
                     self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = block_num;
-
-                    if self
-                        .last_commit
-                        .is_some_and(|(_last_commit_seq_num, last_commit_round)| {
-                            block_round <= last_commit_round
-                        })
-                    {
-                        // we can't recommit stuff that's already finalized
-                        continue;
-                    }
 
                     self.last_commit = Some((block.get_seq_num(), block.get_block_round()));
 

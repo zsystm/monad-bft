@@ -117,7 +117,6 @@ async fn main() {
 
             info!(
                 round =? block.get_block_round().0,
-                parent_round =? block.get_parent_block_round().0,
                 epoch =? block.header().epoch.0,
                 seq_num =? block.header().seq_num.0,
                 num_tx =? block.body().execution_body.transactions.len(),
