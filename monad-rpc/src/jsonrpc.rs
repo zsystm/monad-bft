@@ -242,6 +242,14 @@ impl JsonRpcError {
         }
     }
 
+    pub fn eth_simulate_error(message: String, data: Option<String>) -> Self {
+        Self {
+            code: 3,
+            message,
+            data: data.map(Value::String),
+        }
+    }
+
     pub fn eth_call_error(message: String, data: Option<String>) -> Self {
         Self {
             code: -32603,
