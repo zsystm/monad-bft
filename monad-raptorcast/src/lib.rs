@@ -18,7 +18,8 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{
-    udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, TcpMsg, UnicastMsg,
+    udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, RecvMsg, TcpMsg,
+    UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -172,6 +173,79 @@ where
                 );
             }
         };
+    }
+
+    fn handle_udp_message(&mut self, message: RecvMsg) {
+        // FIXME: pass dataplane as arg to handle_message
+        let dataplane = RefCell::new(&mut self.dataplane);
+        let full_node_addrs = self
+            .full_nodes
+            .list
+            .iter()
+            .filter_map(|node_id| self.peer_discovery_driver.get_addr(node_id))
+            .collect::<Vec<_>>();
+
+
+        let reboradcast = |targets: Vec<_>, payload, bcast_stride| {
+            // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
+            let target_addrs: Vec<SocketAddr> = targets
+                .into_iter()
+                .filter_map(|target| self.peer_discovery_driver.get_addr(&target))
+                .collect();
+
+            dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
+                targets: target_addrs,
+                payload,
+                stride: bcast_stride,
+            });
+        };
+
+        let forward = |payload, bcast_stride| {
+            // callback for forwarding chunks to full nodes
+            dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
+                targets: full_node_addrs.clone(),
+                payload,
+                stride: bcast_stride,
+            });
+        };
+
+        // Enter the received raptorcast chunk into the udp_state for reassembly.
+        // If the field "first-hop recipient" in the chunk has our node Id, then
+        // we are responsible for broadcasting this chunk to other validators.
+        // Once we have enough (redundant) raptorcast chunks, recreate the
+        // decoded (AKA parsed, original) message.
+        // Stream the chunks to our dedicated full-nodes as we receive them.
+        let decoded_app_messages = {
+            self.udp_state
+                .handle_message(&self.rebroadcast_map, reboradcast, forward, message)
+        };
+        let mut new_events = vec![];
+        for (from, decoded) in decoded_app_messages {
+            match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
+                Ok(InboundRouterMessage::AppMessage(app_message)) => {
+                    let event = RaptorCastEvent::Message(app_message.event(from));
+                    new_events.push(event);
+                }
+                Ok(InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message)) => {
+                    // handle peer discovery message in driver
+                    self.peer_discovery_driver
+                        .update(peer_disc_message.event(from));
+                }
+                Ok(InboundRouterMessage::FullNodesGroup(_full_nodes_group_message)) => {
+                    warn!("Handling of FullNodesGroup implemented in upcoming PR");
+                }
+                Err(err) => {
+                    warn!(
+                        ?from,
+                        ?err,
+                        decoded = hex::encode(&decoded),
+                        "failed to deserialize message"
+                    );
+                }
+            }
+        }
+
+        self.pending_events.extend(new_events);
     }
 }
 
@@ -448,87 +522,14 @@ where
             return Poll::Ready(Some(event.into()));
         }
 
-        let full_node_addrs = this
-            .full_nodes
-            .list
-            .iter()
-            .filter_map(|node_id| this.peer_discovery_driver.get_addr(node_id))
-            .collect::<Vec<_>>();
-
         loop {
             // while let doesn't compile
             let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
                 break;
             };
 
-            // Enter the received raptorcast chunk into the udp_state for reassembly.
-            // If the field "first-hop recipient" in the chunk has our node Id, then
-            // we are responsible for broadcasting this chunk to other validators.
-            // Once we have enough (redundant) raptorcast chunks, recreate the
-            // decoded (AKA parsed, original) message.
-            // Stream the chunks to our dedicated full-nodes as we receive them.
-            let decoded_app_messages = {
-                // FIXME: pass dataplane as arg to handle_message
-                let dataplane = RefCell::new(&mut this.dataplane);
-                this.udp_state.handle_message(
-                    &this.rebroadcast_map,
-                    |targets, payload, bcast_stride| {
-                        // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
-                        let target_addrs: Vec<SocketAddr> = targets
-                            .into_iter()
-                            .filter_map(|target| this.peer_discovery_driver.get_addr(&target))
-                            .collect();
+            this.handle_udp_message(message);
 
-                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
-                            targets: target_addrs,
-                            payload,
-                            stride: bcast_stride,
-                        });
-                    },
-                    |payload, bcast_stride| {
-                        // callback for forwarding chunks to full nodes
-                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
-                            payload,
-                            stride: bcast_stride,
-                        });
-                    },
-                    message,
-                )
-            };
-            let deserialized_app_messages =
-                decoded_app_messages
-                    .into_iter()
-                    .filter_map(|(from, decoded)| {
-                        match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
-                            Ok(inbound) => match inbound {
-                                InboundRouterMessage::AppMessage(app_message) => {
-                                    Some(app_message.event(from))
-                                }
-                                InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
-                                    // handle peer discovery message in driver
-                                    this.peer_discovery_driver
-                                        .update(peer_disc_message.event(from));
-                                    None
-                                }
-                                InboundRouterMessage::FullNodesGroup(_full_nodes_group_message) => {
-                                    warn!("Handling of FullNodesGroup implemented in upcoming PR");
-                                    None
-                                }
-                            },
-                            Err(err) => {
-                                warn!(
-                                    ?from,
-                                    ?err,
-                                    decoded = hex::encode(&decoded),
-                                    "failed to deserialize message"
-                                );
-                                None
-                            }
-                        }
-                    });
-            this.pending_events
-                .extend(deserialized_app_messages.map(RaptorCastEvent::Message));
             if let Some(event) = this.pending_events.pop_front() {
                 return Poll::Ready(Some(event.into()));
             }
