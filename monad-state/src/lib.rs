@@ -1134,8 +1134,8 @@ where
                 .iter()
                 .find(|block| block.get_seq_num() == delay_child_seq_num);
 
-            let (delay_block_id, delay_block_round) = delay_child_block
-                .map(|block| (block.get_parent_id(), block.get_parent_round()))
+            let delay_block_id = delay_child_block
+                .map(|block| block.get_parent_id())
                 .unwrap_or_else(|| {
                     assert_eq!(
                         root_seq_num,
@@ -1143,13 +1143,13 @@ where
                         "Root parent chain always contains `delay` blocks when `root_seq_num >= delay`"
                     );
 
-                    (GENESIS_BLOCK_ID, GENESIS_ROUND)
+                    GENESIS_BLOCK_ID
                 });
 
             // We use get_execution_result as a proxy to determine if the delay_block has been executed.
             let delay_executed = self
                 .state_backend
-                .get_execution_result(&delay_block_id, &delay_seq_num, &delay_block_round, true)
+                .get_execution_result(&delay_block_id, &delay_seq_num, true)
                 .is_ok();
 
             if delay_executed {

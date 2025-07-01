@@ -172,7 +172,6 @@ impl StateBackend for InMemoryStateInner {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
@@ -195,13 +194,7 @@ impl StateBackend for InMemoryStateInner {
             state
         } else {
             let Some(proposal) = self.proposals.get(block_id) else {
-                trace!(
-                    ?round,
-                    ?seq_num,
-                    ?block_id,
-                    ?is_finalized,
-                    "NotAvailableYet"
-                );
+                trace!(?seq_num, ?block_id, ?is_finalized, "NotAvailableYet");
                 return Err(StateBackendError::NotAvailableYet);
             };
             proposal
@@ -223,7 +216,6 @@ impl StateBackend for InMemoryStateInner {
         &self,
         _block_id: &BlockId,
         seq_num: &SeqNum,
-        _round: &Round,
         _is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
         // TODO make this mock less trivial

@@ -29,7 +29,6 @@ pub trait StateBackend {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError>;
@@ -38,7 +37,6 @@ pub trait StateBackend {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError>;
 
@@ -68,23 +66,21 @@ impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         let state = self.lock().unwrap();
-        state.get_account_statuses(block_id, seq_num, round, is_finalized, addresses)
+        state.get_account_statuses(block_id, seq_num, is_finalized, addresses)
     }
 
     fn get_execution_result(
         &self,
         block_id: &BlockId,
         seq_num: &SeqNum,
-        round: &Round,
         is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
         let state = self.lock().unwrap();
-        state.get_execution_result(block_id, seq_num, round, is_finalized)
+        state.get_execution_result(block_id, seq_num, is_finalized)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

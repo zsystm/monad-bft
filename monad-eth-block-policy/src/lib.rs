@@ -17,7 +17,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_txpool_types::TransactionError;
 use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
 use tracing::{trace, warn};
 
@@ -127,7 +127,6 @@ pub fn static_validate_transaction(
 struct BlockLookupIndex {
     block_id: BlockId,
     seq_num: SeqNum,
-    round: Round,
     is_finalized: bool,
 }
 
@@ -466,7 +465,6 @@ where
                 Ok(BlockLookupIndex {
                     block_id: GENESIS_BLOCK_ID,
                     seq_num: GENESIS_SEQ_NUM,
-                    round: GENESIS_ROUND,
                     is_finalized: true,
                 })
             } else {
@@ -478,7 +476,6 @@ where
                 Ok(BlockLookupIndex {
                     block_id: committed_block.block_id,
                     seq_num: *base_seq_num,
-                    round: committed_block.round,
                     is_finalized: true,
                 })
             }
@@ -490,7 +487,6 @@ where
             Ok(BlockLookupIndex {
                 block_id: proposed_block.get_id(),
                 seq_num: *base_seq_num,
-                round: proposed_block.get_block_round(),
                 is_finalized: false,
             })
         } else {
@@ -509,7 +505,6 @@ where
         state_backend.get_account_statuses(
             &block_index.block_id,
             base_seq_num,
-            &block_index.round,
             block_index.is_finalized,
             addresses,
         )
@@ -793,7 +788,6 @@ where
         let expected_execution_result = state_backend.get_execution_result(
             &block_index.block_id,
             &block_index.seq_num,
-            &block_index.round,
             block_index.is_finalized,
         )?;
 
