@@ -248,7 +248,6 @@ where
             id: block.get_id(),
             epoch: block.epoch,
             round: block.block_round,
-            block_round: block.block_round,
         };
 
         let msg = alloy_rlp::encode(vote);

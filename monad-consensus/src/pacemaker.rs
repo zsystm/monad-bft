@@ -410,7 +410,6 @@ mod test {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: qc_epoch,
             round: qc_round,
-            block_round: qc_round,
         };
 
         let vote_hash = alloy_rlp::encode(vote);

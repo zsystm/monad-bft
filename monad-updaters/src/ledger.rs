@@ -161,7 +161,7 @@ where
                         block.get_id(),
                         block.get_seq_num(),
                         block.get_block_round(),
-                        block.get_parent_block_round(),
+                        block.get_parent_id(),
                         BTreeMap::default(), // TODO parse out txs
                     );
                     match self.blocks.entry(block.get_block_round()) {

@@ -305,7 +305,7 @@ where
                 range,
                 // the round of last_block_id would be more precise, but it doesn't matter
                 // because this is just used for garbage collection.
-                cancel_round: high_qc.get_block_round(),
+                cancel_round: high_qc.get_round(),
             },
         );
 
@@ -411,6 +411,15 @@ where
 
         let mut cmds = Vec::new();
 
+        if p.proposal_round <= self.consensus.pending_block_tree.root().round {
+            debug!(
+                proposal_round = ?p.proposal_round,
+                block_round =? p.tip.block_header.block_round,
+                "old proposal, dropping"
+            );
+            return cmds;
+        }
+
         let epoch = self
             .epoch_manager
             .get_epoch(p.proposal_round)
@@ -467,25 +476,20 @@ where
             return cmds;
         }
 
-        let block_round = p.tip.block_header.block_round;
-        if self.consensus.pending_block_tree.round_exists(&block_round)
-            && self
-                .consensus
-                .pending_block_tree
-                .get_block(&p.tip.block_header.get_id())
-                .is_none()
-        // // only accept duplicate proposals for a block_round if it's the tip
-        // // this is to handle reproposals
-        // && p.tip.block_header.block_round
-        //     <= self.consensus.pacemaker.high_certificate().qc().get_round()
+        // TODO emit evidence if this is a *different* block for the same round
+        if !self
+            .consensus
+            .safety
+            .is_safe_to_handle_proposal(proposal_round)
         {
             // TODO emit evidence if this is a *different* block for the same round
             warn!(
-                ?block_round,
+                ?proposal_round,
                 "dropping proposal, already received for this round"
             );
             return cmds;
         }
+        self.consensus.safety.handle_proposal(proposal_round);
 
         let Some(block) = self.validate_block(p.tip.block_header.clone(), p.block_body) else {
             return cmds;
@@ -510,6 +514,21 @@ where
         header: ConsensusBlockHeader<ST, SCT, EPT>,
         body: ConsensusBlockBody<EPT>,
     ) -> Option<BPT::ValidatedBlock> {
+        if let Some(validated) = self
+            .consensus
+            .pending_block_tree
+            .get_block(&header.get_id())
+        {
+            // fast-path if we've already validated this block
+            // this can hit in the case of a reproposal
+            if validated.get_body_id() != body.get_id() {
+                // TODO: this is malicious behaviour?
+                warn!("dropping proposal, header payload mismatch");
+                return None;
+            }
+            return Some(validated.clone());
+        }
+
         let block_round = header.block_round;
         let block_author = header.author;
         let seq_num = header.seq_num;
@@ -738,7 +757,6 @@ where
                 author,
                 VoteMessage {
                     vote: Vote {
-                        block_round: tip.block_header.block_round,
                         id: tip.block_header.get_id(),
 
                         epoch: timeout.tminfo.epoch,
@@ -1322,12 +1340,15 @@ where
         let mut cmds = Vec::new();
         let proposal_round = self.consensus.pacemaker.get_current_round();
 
-        let Some(parent_timestamp) = self
-            .consensus
-            .blocktree()
-            .get_timestamp_of_qc(&tip.block_header.qc)
-        else {
-            warn!("dropping proposal, no parent timestamp");
+        let (Some(parent_timestamp), Some(parent_block_round)) = (
+            self.consensus
+                .blocktree()
+                .get_timestamp_of_qc(&tip.block_header.qc),
+            self.consensus
+                .blocktree()
+                .get_block_round_of_qc(&tip.block_header.qc),
+        ) else {
+            warn!("dropping proposal, no parent timestamp/block_round");
             return cmds;
         };
 
@@ -1384,7 +1405,6 @@ where
             id: tip.block_header.get_id(),
             round: proposal_round,
             epoch: self.consensus.pacemaker.get_current_epoch(),
-            block_round: tip.block_header.block_round,
         };
 
         debug!(?v, "vote successful");
@@ -1412,8 +1432,7 @@ where
 
                 // if this is the next round after a timeout, we should vote immediately
                 // otherwise, schedule the vote for later
-                if tip.block_header.block_round != tip.block_header.qc.get_block_round() + Round(1)
-                {
+                if parent_block_round + Round(1) != proposal_round {
                     let vote_cmd = self.send_vote_and_reset_timer(proposal_round, v);
                     cmds.extend(vote_cmd);
                 } else {
@@ -1892,7 +1911,7 @@ mod test {
                 block.get_id(),
                 block.seq_num,
                 block.block_round,
-                block.qc.get_round(),
+                block.get_parent_id(),
                 BTreeMap::default(),
             );
         }
@@ -2400,7 +2419,6 @@ mod test {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: Epoch(1),
             round: expected_qc_high_round,
-            block_round: expected_qc_high_round,
         };
 
         let vm1 = VoteMessage::<SignatureCollectionType>::new(v, &env.cert_keys[1]);

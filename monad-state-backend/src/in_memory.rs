@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
@@ -17,7 +17,7 @@ pub type InMemoryState = Arc<Mutex<InMemoryStateInner>>;
 #[derive(Debug, Clone)]
 pub struct InMemoryStateInner {
     commits: BTreeMap<SeqNum, InMemoryBlockState>,
-    proposals: BTreeMap<Round, InMemoryBlockState>,
+    proposals: HashMap<BlockId, InMemoryBlockState>,
     /// InMemoryState doesn't have access to an execution engine. It returns
     /// `max_account_balance` as the balance every time so txn fee balance check
     /// will pass if the sum doesn't exceed the max account balance
@@ -33,7 +33,7 @@ pub struct InMemoryBlockState {
     block_id: BlockId,
     seq_num: SeqNum,
     round: Round,
-    parent_round: Round,
+    parent_id: BlockId,
     nonces: BTreeMap<Address, Nonce>,
 }
 
@@ -43,7 +43,7 @@ impl InMemoryBlockState {
             block_id: GENESIS_BLOCK_ID,
             seq_num: GENESIS_SEQ_NUM,
             round: GENESIS_ROUND,
-            parent_round: GENESIS_ROUND,
+            parent_id: GENESIS_BLOCK_ID,
             nonces,
         }
     }
@@ -96,7 +96,7 @@ impl StateBackendTest for InMemoryStateInner {
         block_id: BlockId,
         seq_num: SeqNum,
         round: Round,
-        parent_round: Round,
+        parent_id: BlockId,
         new_account_nonces: BTreeMap<Address, Nonce>,
     ) {
         assert!(
@@ -108,7 +108,7 @@ impl StateBackendTest for InMemoryStateInner {
         );
 
         trace!(?block_id, ?seq_num, ?round, "ledger_propose");
-        let mut last_state_nonces = if let Some(parent_state) = self.proposals.get(&parent_round) {
+        let mut last_state_nonces = if let Some(parent_state) = self.proposals.get(&parent_id) {
             parent_state.nonces.clone()
         } else {
             let last_committed_entry = self
@@ -116,7 +116,7 @@ impl StateBackendTest for InMemoryStateInner {
                 .last_entry()
                 .expect("last_commit doesn't exist");
             let last_committed_state = last_committed_entry.get();
-            assert_eq!(last_committed_state.round, parent_round);
+            assert_eq!(last_committed_state.block_id, parent_id);
             last_committed_state.nonces.clone()
         };
 
@@ -125,53 +125,40 @@ impl StateBackendTest for InMemoryStateInner {
         }
 
         self.proposals.insert(
-            round,
+            block_id,
             InMemoryBlockState {
                 block_id,
                 seq_num,
                 round,
-                parent_round,
+                parent_id,
                 nonces: last_state_nonces,
             },
         );
     }
 
     fn ledger_commit(&mut self, block_id: &BlockId) {
-        let proposal_round = self
-            .proposals
-            .values()
-            .find(|proposal| &proposal.block_id == block_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "committed proposal that doesn't exist, block_id={:?}",
-                    block_id
-                )
-            })
-            .round;
-        let proposal = self
-            .proposals
-            .remove(&proposal_round)
-            .expect("proposal_round exists");
-        while self
-            .proposals
-            .first_entry()
-            .is_some_and(|proposal| proposal.key() < &proposal_round)
-        {
-            self.proposals.pop_first();
-        }
+        let committed_proposal = self.proposals.remove(block_id).unwrap_or_else(|| {
+            panic!(
+                "committed proposal that doesn't exist, block_id={:?}",
+                block_id
+            )
+        });
+        self.proposals
+            .retain(|_, proposal| proposal.round >= committed_proposal.round);
         let (_, last_commit) = self
             .commits
             .last_key_value()
             .expect("last_commit doesn't exist");
-        assert_eq!(last_commit.seq_num + SeqNum(1), proposal.seq_num);
-        assert_eq!(last_commit.round, proposal.parent_round);
+        assert_eq!(last_commit.seq_num + SeqNum(1), committed_proposal.seq_num);
+        assert_eq!(last_commit.block_id, committed_proposal.parent_id);
         trace!(
             "ledger_commit insert block_id: {:?}, proposal_seq_num: {:?}, proposal: {:?}",
             block_id,
-            proposal.seq_num,
-            proposal
+            committed_proposal.seq_num,
+            committed_proposal
         );
-        self.commits.insert(proposal.seq_num, proposal);
+        self.commits
+            .insert(committed_proposal.seq_num, committed_proposal);
         if self.commits.len() > (self.execution_delay.0 as usize).saturating_mul(1000)
         // this is big just for statesync/blocksync. TODO don't hardcode
         {
@@ -207,7 +194,7 @@ impl StateBackend for InMemoryStateInner {
             assert_eq!(&state.block_id, block_id);
             state
         } else {
-            let Some(proposal) = self.proposals.get(round) else {
+            let Some(proposal) = self.proposals.get(block_id) else {
                 trace!(
                     ?round,
                     ?seq_num,
@@ -217,10 +204,6 @@ impl StateBackend for InMemoryStateInner {
                 );
                 return Err(StateBackendError::NotAvailableYet);
             };
-            if &proposal.block_id != block_id {
-                trace!(?block_id, proposal_block_id=?proposal.block_id, "does not matcn proposal block_id");
-                return Err(StateBackendError::NotAvailableYet);
-            }
             proposal
         };
 

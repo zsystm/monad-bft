@@ -74,7 +74,6 @@ where
                     round: timeout.round,
                     epoch: timeout.epoch,
                     id: tip.block_header.get_id(),
-                    block_round: tip.block_header.block_round,
                 });
                 let vote_signature =
                     <SCT::SignatureType as CertificateSignature>::sign(&vote_digest, cert_keypair);

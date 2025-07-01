@@ -36,9 +36,6 @@ pub struct Vote {
     pub round: Round,
     /// the epoch of the round that this vote is for
     pub epoch: Epoch,
-    /// round the block was first proposed in
-    /// if proposal_round != block_round, the proposal is a reproposal
-    pub block_round: Round,
 }
 
 impl std::fmt::Debug for Vote {
@@ -47,7 +44,6 @@ impl std::fmt::Debug for Vote {
             .field("id", &self.id)
             .field("epoch", &self.epoch)
             .field("round", &self.round)
-            .field("block_round", &self.block_round)
             .finish()
     }
 }
@@ -58,7 +54,6 @@ impl DontCare for Vote {
             id: BlockId(Hash([0x0_u8; 32])),
             epoch: Epoch(1),
             round: Round(0),
-            block_round: Round(0),
         }
     }
 }
