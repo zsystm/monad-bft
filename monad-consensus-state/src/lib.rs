@@ -402,14 +402,8 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<ST, SCT, EPT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        // let _handle_proposal_span =
-        //     tracing::info_span!("handle_proposal_span", "{}", author).entered();
-        info!(
-            proposal_round = ?p.proposal_round,
-            block_round =? p.tip.block_header.block_round,
-            "received proposal"
-        );
-        debug!(?author, proposal = ?p, "proposal message");
+        let block_id = p.tip.block_header.get_id();
+        debug!(?author, proposal = ?p, ?block_id, "proposal message");
         self.metrics.consensus_events.handle_proposal += 1;
 
         let mut cmds = Vec::new();
