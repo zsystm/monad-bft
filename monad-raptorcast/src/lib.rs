@@ -29,6 +29,7 @@ use monad_peer_discovery::{
     PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryEvent,
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget};
+use tokio::select;
 use tracing::{debug, error, warn};
 
 pub mod config;
@@ -330,6 +331,25 @@ where
             }
         }
     }
+
+    // returns false if there is no more pending messages
+    async fn process_next_message(&mut self) -> bool
+    where
+        PeerDiscoveryDriver<PD>: Unpin,
+    {
+        select! {
+            msg = self.dataplane.recv_msg().fuse() => {
+                self.handle_dataplane_message(msg);
+                true
+            },
+            emit = self.peer_discovery_driver.next().fuse() => {
+                let Some(emit) = emit else { return false; };
+                self.handle_peer_discovery_emit(emit);
+                true
+            },
+            else => false,
+        }
+    }
 }
 
 impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
@@ -603,23 +623,7 @@ where
             return Poll::Ready(Some(event.into()));
         }
 
-        loop {
-            // A straightforward while-let doesn't compile because
-            // Rust borrow checker not failed to drop the mutably
-            // borrowed future earlier.
-            let Poll::Ready(message) = pin!(self.dataplane.recv_msg()).poll(cx) else {
-                break;
-            };
-            self.handle_dataplane_message(message);
-        }
-
-        loop {
-            let Poll::Ready(Some(peer_disc_emit)) = self.peer_discovery_driver.poll_next_unpin(cx)
-            else {
-                break;
-            };
-            self.handle_peer_discovery_emit(peer_disc_emit);
-        }
+        while let Poll::Ready(true) = pin!(self.process_next_message()).poll(cx) {}
 
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(Some(event.into()));
