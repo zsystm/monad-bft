@@ -185,7 +185,6 @@ where
             .filter_map(|node_id| self.peer_discovery_driver.get_addr(node_id))
             .collect::<Vec<_>>();
 
-
         let reboradcast = |targets: Vec<_>, payload, bcast_stride| {
             // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
             let target_addrs: Vec<SocketAddr> = targets
@@ -246,6 +245,61 @@ where
         }
 
         self.pending_events.extend(new_events);
+    }
+
+    fn handle_tcp_message(&mut self, from_addr: SocketAddr, message: Bytes) {
+        // check message length to prevent panic during message slicing
+        if message.len() < SIGNATURE_SIZE {
+            warn!(
+                ?from_addr,
+                "invalid message, message length less than signature size"
+            );
+            return;
+        }
+
+        let signature_bytes = &message[..SIGNATURE_SIZE];
+        let signature = match ST::deserialize(signature_bytes) {
+            Ok(signature) => signature,
+            Err(err) => {
+                warn!(?err, ?from_addr, "invalid signature");
+                return;
+            }
+        };
+        let app_message_bytes = message.slice(SIGNATURE_SIZE..);
+        let deserialized_message =
+            match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
+                Ok(message) => message,
+                Err(err) => {
+                    warn!(?err, ?from_addr, "failed to deserialize message");
+                    return;
+                }
+            };
+        let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
+            Ok(from) => from,
+            Err(err) => {
+                warn!(?err, ?from_addr, "failed to recover pubkey");
+                return;
+            }
+        };
+
+        // Dispatch messages received via TCP
+        match deserialized_message {
+            InboundRouterMessage::AppMessage(message) => {
+                let event = RaptorCastEvent::Message(message.event(NodeId::new(from))).into();
+                self.pending_events.push_back(event);
+            }
+            InboundRouterMessage::PeerDiscoveryMessage(message) => {
+                // peer discovery message should come through udp
+                debug!(
+                    ?message,
+                    "dropping peer discovery message, should come through udp channel"
+                );
+            }
+            InboundRouterMessage::FullNodesGroup(_group_message) => {
+                // pass TCP message to MultiRouter
+                warn!("FullNodesGroup protocol via TCP not implemented");
+            }
+        }
     }
 }
 
@@ -535,8 +589,10 @@ where
             }
         }
 
-        while let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
-        {
+        loop {
+            let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx) else {
+                break;
+            };
             // check message length to prevent panic during message slicing
             if message.len() < SIGNATURE_SIZE {
                 warn!(
@@ -545,51 +601,10 @@ where
                 );
                 continue;
             }
-            let signature_bytes = &message[..SIGNATURE_SIZE];
-            let signature = match ST::deserialize(signature_bytes) {
-                Ok(signature) => signature,
-                Err(err) => {
-                    warn!(?err, ?from_addr, "invalid signature");
-                    continue;
-                }
-            };
-            let app_message_bytes = message.slice(SIGNATURE_SIZE..);
-            let deserialized_message =
-                match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
-                    Ok(message) => message,
-                    Err(err) => {
-                        warn!(?err, ?from_addr, "failed to deserialize message");
-                        continue;
-                    }
-                };
-            let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
-                Ok(from) => from,
-                Err(err) => {
-                    warn!(?err, ?from_addr, "failed to recover pubkey");
-                    continue;
-                }
-            };
 
-            // Dispatch messages received via TCP
-            match deserialized_message {
-                InboundRouterMessage::AppMessage(message) => {
-                    return Poll::Ready(Some(
-                        RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
-                    ));
-                }
-                InboundRouterMessage::PeerDiscoveryMessage(message) => {
-                    // peer discovery message should come through udp
-                    debug!(
-                        ?message,
-                        "dropping peer discovery message, should come through udp channel"
-                    );
-                    continue;
-                }
-                InboundRouterMessage::FullNodesGroup(_group_message) => {
-                    // pass TCP message to MultiRouter
-                    warn!("FullNodesGroup protocol via TCP not implemented");
-                    continue;
-                }
+            this.handle_tcp_message(from_addr, message);
+            if let Some(event) = this.pending_events.pop_front() {
+                return Poll::Ready(Some(event.into()));
             }
         }
 
