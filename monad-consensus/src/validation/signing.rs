@@ -374,6 +374,10 @@ where
     /// 1. carries a QC/TC from r-1, proving that the block is proposed on a
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
+        if self.obj.tip.block_header.block_body_id != self.obj.block_body.get_id() {
+            return Err(Error::NotWellFormed);
+        }
+
         if self.obj.proposal_round == self.obj.tip.block_header.qc.get_round() + Round(1) {
             // Consecutive QC
 
@@ -807,7 +811,7 @@ where
     let (_, _, leader) = epoch_to_validators(tip.block_header.epoch, tip.block_header.block_round)?;
 
     let tip_author = get_pubkey(&alloy_rlp::encode(&tip.block_header), &tip.signature)?;
-    if tip_author != leader.pubkey() {
+    if tip_author != leader.pubkey() || tip_author != tip.block_header.author.pubkey() {
         return Err(Error::InvalidAuthor);
     }
 
