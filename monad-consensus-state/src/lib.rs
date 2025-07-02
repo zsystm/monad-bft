@@ -1645,7 +1645,7 @@ where
                         "no eth_header found, can't propose"
                     );
                     self.metrics.consensus_events.rx_execution_lagging += 1;
-                    return Vec::new();
+                    return cmds;
                 };
                 let _create_proposal_span =
                     tracing::info_span!("create_proposal_span", ?round).entered();
