@@ -301,6 +301,28 @@ where
             }
         }
     }
+
+    fn handle_peer_discovery_emit(&mut self, peer_disc_emit: PeerDiscoveryEmit<ST>) {
+        match peer_disc_emit {
+            PeerDiscoveryEmit::RouterCommand { target, message } => {
+                let router_message =
+                    OutboundRouterMessage::serialize(
+                        OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message),
+                    );
+                let current_epoch = self.current_epoch;
+                let unicast_msg = udp_build(
+                    &current_epoch,
+                    BuildTarget::<ST>::PointToPoint(&target),
+                    router_message,
+                    self.mtu,
+                    &self.key,
+                    self.redundancy,
+                    &self.peer_discovery_driver.get_known_addresses(),
+                );
+                self.dataplane.udp_write_unicast(unicast_msg);
+            }
+        }
+    }
 }
 
 impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
@@ -577,20 +599,15 @@ where
         }
 
         loop {
-            // while let doesn't compile
             let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
                 break;
             };
-
             this.handle_udp_message(message);
-
-            if let Some(event) = this.pending_events.pop_front() {
-                return Poll::Ready(Some(event.into()));
-            }
         }
 
         loop {
-            let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx) else {
+            let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
+            else {
                 break;
             };
             // check message length to prevent panic during message slicing
@@ -603,32 +620,19 @@ where
             }
 
             this.handle_tcp_message(from_addr, message);
-            if let Some(event) = this.pending_events.pop_front() {
-                return Poll::Ready(Some(event.into()));
-            }
         }
 
-        while let Poll::Ready(Some(peer_disc_emit)) = this.peer_discovery_driver.poll_next_unpin(cx)
-        {
-            match peer_disc_emit {
-                PeerDiscoveryEmit::RouterCommand { target, message } => {
-                    let router_message =
-                        OutboundRouterMessage::serialize(
-                            OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message),
-                        );
-                    let current_epoch = this.current_epoch;
-                    let unicast_msg = udp_build(
-                        &current_epoch,
-                        BuildTarget::<ST>::PointToPoint(&target),
-                        router_message,
-                        this.mtu,
-                        &this.key,
-                        this.redundancy,
-                        &this.peer_discovery_driver.get_known_addresses(),
-                    );
-                    this.dataplane.udp_write_unicast(unicast_msg);
-                }
-            }
+        loop {
+            let Poll::Ready(Some(peer_disc_emit)) = this.peer_discovery_driver.poll_next_unpin(cx)
+            else {
+                break;
+            };
+
+            this.handle_peer_discovery_emit(peer_disc_emit);
+        }
+
+        if let Some(event) = this.pending_events.pop_front() {
+            return Poll::Ready(Some(event.into()));
         }
 
         Poll::Pending
