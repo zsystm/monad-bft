@@ -19,7 +19,7 @@ use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, EthHeader, Nonc
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -462,11 +462,6 @@ where
         base_seq_num: &SeqNum,
     ) -> Result<BlockLookupIndex, StateBackendError> {
         if base_seq_num <= &self.last_commit {
-            debug!(
-                ?base_seq_num,
-                last_commit = self.last_commit.0,
-                "base seq num committed"
-            );
             if base_seq_num == &GENESIS_SEQ_NUM {
                 Ok(BlockLookupIndex {
                     block_id: GENESIS_BLOCK_ID,
@@ -488,7 +483,6 @@ where
                 })
             }
         } else if let Some(extending_blocks) = extending_blocks {
-            debug!(?base_seq_num, "base seq num proposed");
             let proposed_block = extending_blocks
                 .iter()
                 .find(|block| &block.get_seq_num() == base_seq_num)
