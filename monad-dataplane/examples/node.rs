@@ -106,7 +106,7 @@ impl Node {
 }
 
 impl Stream for Node {
-    type Item = RecvMsg;
+    type Item = RecvMsgUdp;
 
     fn poll_next(
         mut self: Pin<&mut Self>,

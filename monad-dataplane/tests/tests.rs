@@ -4,7 +4,7 @@ use futures::{channel::oneshot, executor};
 use monad_dataplane::{
     tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
-    BroadcastMsg, DataplaneBuilder, RecvMsg, TcpMsg, UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UnicastMsg,
 };
 use ntest::timeout;
 use rand::Rng;
@@ -50,7 +50,7 @@ fn udp_broadcast() {
     });
 
     for _ in 0..num_msgs {
-        let msg: RecvMsg = executor::block_on(rx.udp_read());
+        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
 
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
@@ -82,7 +82,7 @@ fn udp_unicast() {
     });
 
     for _ in 0..num_msgs {
-        let msg: RecvMsg = executor::block_on(rx.udp_read());
+        let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
 
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
@@ -348,7 +348,7 @@ fn broadcast_all_strides() {
         let num_msgs = total_length.div_ceil(stride);
 
         for i in 0..num_msgs {
-            let msg: RecvMsg = executor::block_on(rx.udp_read());
+            let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
 
             assert_eq!(msg.src_addr, tx_addr);
             assert_eq!(
@@ -392,7 +392,7 @@ fn unicast_all_strides() {
         let num_msgs = total_length.div_ceil(stride);
 
         for i in 0..num_msgs {
-            let msg: RecvMsg = executor::block_on(rx.udp_read());
+            let msg: RecvUdpMsg = executor::block_on(rx.udp_read());
 
             assert_eq!(msg.src_addr, tx_addr);
             assert_eq!(

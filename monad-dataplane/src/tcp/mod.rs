@@ -8,7 +8,7 @@ use zerocopy::{
     AsBytes, FromBytes,
 };
 
-use super::TcpMsg;
+use super::{RecvTcpMsg, TcpMsg};
 
 pub mod rx;
 pub mod tx;
@@ -38,7 +38,7 @@ impl TcpMsgHdr {
 
 pub fn spawn_tasks(
     local_addr: SocketAddr,
-    tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
+    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
 ) {
     spawn(rx::task(local_addr, tcp_ingress_tx));

@@ -15,7 +15,7 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
-use monad_dataplane::RecvMsg;
+use monad_dataplane::RecvUdpMsg;
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
@@ -113,13 +113,13 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         }
     }
 
-    /// Given a RecvMsg, emits all decoded messages while rebroadcasting as necessary
+    /// Given a RecvUdpMsg, emits all decoded messages while rebroadcasting as necessary
     pub fn handle_message(
         &mut self,
         group_map: &ReBroadcastGroupMap<ST>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
         forward: impl FnMut(Bytes, u16),
-        message: RecvMsg,
+        message: RecvUdpMsg,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
@@ -1368,7 +1368,7 @@ mod tests {
         certificate_signature::CertificateSignaturePubKey,
         hasher::{Hasher, HasherType},
     };
-    use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, RecvMsg};
+    use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, RecvUdpMsg};
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Stake};
 
@@ -1607,7 +1607,7 @@ mod tests {
 
         // payload will fail to parse but shouldn't panic on index error
         let payload: Bytes = vec![1_u8; 1024 * 8 + 1].into();
-        let recv_msg = RecvMsg {
+        let recv_msg = RecvUdpMsg {
             src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000),
             payload,
             stride: 1024,

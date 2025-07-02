@@ -3,7 +3,6 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     marker::PhantomData,
     net::SocketAddr,
-    ops::DerefMut,
     pin::{pin, Pin},
     task::{Context, Poll, Waker},
     time::Duration,
@@ -11,15 +10,15 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
+use futures::{channel::oneshot, Future, FutureExt, Stream, StreamExt};
 use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{
-    udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, RecvMsg, TcpMsg,
-    UnicastMsg,
+    udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, RecvMsg, RecvTcpMsg,
+    RecvUdpMsg, TcpMsg, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -175,7 +174,14 @@ where
         };
     }
 
-    fn handle_udp_message(&mut self, message: RecvMsg) {
+    fn handle_dataplane_message(&mut self, message: RecvMsg) {
+        match message {
+            RecvMsg::Tcp(msg) => self.handle_tcp_message(msg),
+            RecvMsg::Udp(msg) => self.handle_udp_message(msg),
+        }
+    }
+
+    fn handle_udp_message(&mut self, message: RecvUdpMsg) {
         // FIXME: pass dataplane as arg to handle_message
         let dataplane = RefCell::new(&mut self.dataplane);
         let full_node_addrs = self
@@ -247,37 +253,38 @@ where
         self.pending_events.extend(new_events);
     }
 
-    fn handle_tcp_message(&mut self, from_addr: SocketAddr, message: Bytes) {
+    fn handle_tcp_message(&mut self, message: RecvTcpMsg) {
+        let RecvTcpMsg { src_addr, payload } = message;
         // check message length to prevent panic during message slicing
-        if message.len() < SIGNATURE_SIZE {
+        if payload.len() < SIGNATURE_SIZE {
             warn!(
-                ?from_addr,
+                ?src_addr,
                 "invalid message, message length less than signature size"
             );
             return;
         }
 
-        let signature_bytes = &message[..SIGNATURE_SIZE];
+        let signature_bytes = &payload[..SIGNATURE_SIZE];
         let signature = match ST::deserialize(signature_bytes) {
             Ok(signature) => signature,
             Err(err) => {
-                warn!(?err, ?from_addr, "invalid signature");
+                warn!(?err, ?src_addr, "invalid signature");
                 return;
             }
         };
-        let app_message_bytes = message.slice(SIGNATURE_SIZE..);
+        let app_message_bytes = payload.slice(SIGNATURE_SIZE..);
         let deserialized_message =
             match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
                 Ok(message) => message,
                 Err(err) => {
-                    warn!(?err, ?from_addr, "failed to deserialize message");
+                    warn!(?err, ?src_addr, "failed to deserialize message");
                     return;
                 }
             };
         let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
             Ok(from) => from,
             Err(err) => {
-                warn!(?err, ?from_addr, "failed to recover pubkey");
+                warn!(?err, ?src_addr, "failed to recover pubkey");
                 return;
             }
         };
@@ -588,50 +595,33 @@ where
     type Item = E;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.deref_mut();
-
-        if this.waker.is_none() {
-            this.waker = Some(cx.waker().clone());
+        if self.waker.is_none() {
+            self.waker = Some(cx.waker().clone());
         }
 
-        if let Some(event) = this.pending_events.pop_front() {
+        if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(Some(event.into()));
         }
 
         loop {
-            let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
+            // A straightforward while-let doesn't compile because
+            // Rust borrow checker not failed to drop the mutably
+            // borrowed future earlier.
+            let Poll::Ready(message) = pin!(self.dataplane.recv_msg()).poll(cx) else {
                 break;
             };
-            this.handle_udp_message(message);
+            self.handle_dataplane_message(message);
         }
 
         loop {
-            let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
+            let Poll::Ready(Some(peer_disc_emit)) = self.peer_discovery_driver.poll_next_unpin(cx)
             else {
                 break;
             };
-            // check message length to prevent panic during message slicing
-            if message.len() < SIGNATURE_SIZE {
-                warn!(
-                    ?from_addr,
-                    "invalid message, message length less than signature size"
-                );
-                continue;
-            }
-
-            this.handle_tcp_message(from_addr, message);
+            self.handle_peer_discovery_emit(peer_disc_emit);
         }
 
-        loop {
-            let Poll::Ready(Some(peer_disc_emit)) = this.peer_discovery_driver.poll_next_unpin(cx)
-            else {
-                break;
-            };
-
-            this.handle_peer_discovery_emit(peer_disc_emit);
-        }
-
-        if let Some(event) = this.pending_events.pop_front() {
+        if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(Some(event.into()));
         }
 

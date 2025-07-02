@@ -81,9 +81,9 @@ impl DataplaneBuilder {
 }
 
 pub struct Dataplane {
-    tcp_ingress_rx: mpsc::Receiver<(SocketAddr, Bytes)>,
+    tcp_ingress_rx: mpsc::Receiver<RecvTcpMsg>,
     tcp_egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
-    udp_ingress_rx: mpsc::Receiver<RecvMsg>,
+    udp_ingress_rx: mpsc::Receiver<RecvUdpMsg>,
     udp_egress_tx: mpsc::Sender<(SocketAddr, Bytes, u16)>,
 
     tcp_msgs_dropped: usize,
@@ -104,10 +104,22 @@ pub struct UnicastMsg {
 }
 
 #[derive(Clone)]
-pub struct RecvMsg {
+pub enum RecvMsg {
+    Tcp(RecvTcpMsg),
+    Udp(RecvUdpMsg),
+}
+
+#[derive(Clone)]
+pub struct RecvUdpMsg {
     pub src_addr: SocketAddr,
     pub payload: Bytes,
     pub stride: u16,
+}
+
+#[derive(Clone)]
+pub struct RecvTcpMsg {
+    pub src_addr: SocketAddr,
+    pub payload: Bytes,
 }
 
 pub struct TcpMsg {
@@ -121,8 +133,17 @@ const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
 impl Dataplane {
-    pub async fn tcp_read(&mut self) -> (SocketAddr, Bytes) {
-        self.tcp_ingress_rx
+    pub async fn recv_msg(&mut self) -> RecvMsg {
+        tokio::select! {
+            Some(msg) = self.tcp_ingress_rx.recv() => RecvMsg::Tcp(msg),
+            Some(msg) = self.udp_ingress_rx.recv() => RecvMsg::Udp(msg),
+            else => panic!("ingress_rx channels should never be closed")
+        }
+    }
+
+    pub async fn tcp_read(&mut self) -> RecvTcpMsg {
+        self
+            .tcp_ingress_rx
             .recv()
             .await
             .expect("tcp_ingress_rx channel should never be closed")
@@ -148,7 +169,7 @@ impl Dataplane {
         }
     }
 
-    pub async fn udp_read(&mut self) -> RecvMsg {
+    pub async fn udp_read(&mut self) -> RecvUdpMsg {
         self.udp_ingress_rx
             .recv()
             .await
