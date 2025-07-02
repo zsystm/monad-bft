@@ -180,8 +180,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         <_ as Updater<_>>::boxed(raptor_router)
     };
 
-    let val_set_update_interval = SeqNum(50_000); // TODO configurable
-
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
     _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
@@ -250,7 +248,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         state_root_hash: StateRootHashTriedbPoll::new(
             &node_state.triedb_path,
             &node_state.validators_path,
-            val_set_update_interval,
+            SeqNum(node_state.node_config.consensus.epoch_length),
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
@@ -332,7 +330,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         state_backend,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
-        val_set_update_interval,
+        val_set_update_interval: SeqNum(node_state.node_config.consensus.epoch_length),
         epoch_start_delay: Round(5000),
         beneficiary: node_state.node_config.beneficiary.into(),
         locked_epoch_validators,
