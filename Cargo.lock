@@ -4638,7 +4638,6 @@ name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
- "alloy-rlp",
  "itertools 0.10.5",
  "monad-blocktree",
  "monad-chain-config",

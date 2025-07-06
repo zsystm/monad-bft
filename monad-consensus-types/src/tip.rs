@@ -20,9 +20,35 @@ where
 {
     pub block_header: ConsensusBlockHeader<ST, SCT, EPT>,
     /// block_header.block_round leader signature over block_header
-    pub signature: ST,
+    signature: ST,
 
     pub fresh_certificate: Option<FreshProposalCertificate<SCT>>,
+}
+
+impl<ST, SCT, EPT> ConsensusTip<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn new(
+        keypair: &ST::KeyPairType,
+        block_header: ConsensusBlockHeader<ST, SCT, EPT>,
+        fresh_certificate: Option<FreshProposalCertificate<SCT>>,
+    ) -> Self {
+        let rlp_block_header = alloy_rlp::encode(&block_header);
+        let signature = ST::sign(&rlp_block_header, keypair);
+        Self {
+            block_header,
+            signature,
+            fresh_certificate,
+        }
+    }
+
+    pub fn signature_author(&self) -> Result<CertificateSignaturePubKey<ST>, ST::Error> {
+        let rlp_block_header = alloy_rlp::encode(&self.block_header);
+        self.signature.recover_pubkey(&rlp_block_header)
+    }
 }
 
 impl<ST, SCT, EPT> Serialize for ConsensusTip<ST, SCT, EPT>

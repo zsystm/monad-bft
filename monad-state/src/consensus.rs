@@ -328,16 +328,14 @@ where
                     round_signature,
                 );
 
-                let block_header_signature =
-                    ST::sign(&alloy_rlp::encode(&block_header), consensus.keypair);
                 let p = ProposalMessage {
                     proposal_epoch: epoch,
                     proposal_round: round,
-                    tip: ConsensusTip {
+                    tip: ConsensusTip::new(
+                        consensus.keypair,
                         block_header,
-                        signature: block_header_signature,
-                        fresh_certificate: fresh_proposal_certificate,
-                    },
+                        fresh_proposal_certificate,
+                    ),
                     block_body,
                     last_round_tc,
                 };

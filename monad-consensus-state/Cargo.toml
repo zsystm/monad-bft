@@ -19,7 +19,6 @@ monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
-alloy-rlp = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

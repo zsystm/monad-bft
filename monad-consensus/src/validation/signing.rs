@@ -810,7 +810,9 @@ where
 {
     let (_, _, leader) = epoch_to_validators(tip.block_header.epoch, tip.block_header.block_round)?;
 
-    let tip_author = get_pubkey(&alloy_rlp::encode(&tip.block_header), &tip.signature)?;
+    let tip_author = tip
+        .signature_author()
+        .map_err(|_| Error::InvalidSignature)?;
     if tip_author != leader.pubkey() || tip_author != tip.block_header.author.pubkey() {
         return Err(Error::InvalidAuthor);
     }
@@ -1475,8 +1477,6 @@ mod test {
             1,
             RoundSignature::new(Round(1), author_cert_key),
         );
-        let block_signature =
-            <SignatureType as CertificateSignature>::sign(&alloy_rlp::encode(&block), &keys[0]);
         let proposal: ProposalMessage<
             SignatureType,
             SignatureCollectionType,
@@ -1486,11 +1486,7 @@ mod test {
             proposal_round: block.block_round,
             block_body: payload,
             last_round_tc: None,
-            tip: ConsensusTip {
-                signature: block_signature,
-                block_header: block,
-                fresh_certificate: None,
-            },
+            tip: ConsensusTip::new(&keys[0], block, None),
         };
 
         let unvalidated_proposal = Unvalidated::new(proposal);
