@@ -97,15 +97,10 @@ pub mod test_tool {
         round: Round,
     ) -> VerifiedMonadMessage<ST, SC, EP> {
         let (block_header, block_body) = fake_block(round);
-        let block_header_signature = ST::sign(&alloy_rlp::encode(&block_header), kp);
         let internal_msg = ProposalMessage {
             proposal_epoch: block_header.epoch,
             proposal_round: block_header.block_round,
-            tip: ConsensusTip {
-                block_header,
-                signature: block_header_signature,
-                fresh_certificate: None,
-            },
+            tip: ConsensusTip::new(kp, block_header, None),
             block_body,
             last_round_tc: None,
         };

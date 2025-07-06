@@ -1733,8 +1733,7 @@ mod test {
     };
     use monad_crypto::{
         certificate_signature::{
-            CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-            CertificateSignatureRecoverable,
+            CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
         },
         hasher::Hash,
         NopSignature,
@@ -3651,11 +3650,7 @@ mod test {
             proposal_round: invalid_bh2.block_round,
             block_body: invalid_b2,
             last_round_tc: None,
-            tip: ConsensusTip {
-                fresh_certificate: None,
-                signature: SignatureType::sign(&alloy_rlp::encode(&invalid_bh2), invalid_keypair),
-                block_header: invalid_bh2,
-            },
+            tip: ConsensusTip::new(invalid_keypair, invalid_bh2, None),
         };
 
         let _ = node.handle_proposal_message(invalid_p2.tip.block_header.author, invalid_p2);

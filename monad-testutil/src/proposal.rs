@@ -139,7 +139,6 @@ where
             self.timestamp,
             round_signature,
         );
-        let block_header_signature = ST::sign(&alloy_rlp::encode(&block_header), leader_key);
 
         let validator_cert_pubkeys = val_epoch_map
             .get_cert_pubkeys(&epoch_manager.get_epoch(self.round).expect("epoch exists"))
@@ -152,11 +151,11 @@ where
         let proposal = ProposalMessage {
             proposal_epoch: self.epoch,
             proposal_round: self.round,
-            tip: ConsensusTip {
+            tip: ConsensusTip::new(
+                leader_key,
                 block_header,
-                signature: block_header_signature,
-                fresh_certificate: None, // FIXME
-            },
+                None, // FIXME
+            ),
             block_body,
             last_round_tc: self.last_tc.clone(),
         };

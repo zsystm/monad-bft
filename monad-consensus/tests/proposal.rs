@@ -244,16 +244,16 @@ fn define_proposal_with_tc(
     );
 
     let proposal = ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keys[0]),
-            fresh_certificate: Some(FreshProposalCertificate::NoTip(NoTipCertificate {
+        tip: ConsensusTip::new(
+            &keys[0],
+            block,
+            Some(FreshProposalCertificate::NoTip(NoTipCertificate {
                 epoch: tc.epoch,
                 round: tc.round,
                 tip_rounds: tc.tip_rounds.clone(),
                 high_qc: qc,
             })),
-            block_header: block,
-        },
+        ),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
 
@@ -317,11 +317,7 @@ fn test_verify_incorrect_block_epoch(known_round: Round, block_round: Round) {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -378,11 +374,7 @@ fn test_verify_invalid_signature() {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), author_keypair),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(author_keypair, block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -406,11 +398,7 @@ fn test_verify_invalid_signature() {
     );
 
     let other_proposal = ProtocolMessage::Proposal(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&other_block), author_keypair),
-            fresh_certificate: None,
-            block_header: other_block,
-        },
+        tip: ConsensusTip::new(author_keypair, other_block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: other_payload,
@@ -470,11 +458,7 @@ fn test_verify_proposal_happy() {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -544,11 +528,7 @@ fn test_validate_missing_tc(qc_round: Round) {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -598,11 +578,7 @@ fn test_validate_incorrect_block_epoch(known_epoch: Epoch, block_epoch: Epoch) {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -651,11 +627,7 @@ fn test_validate_qc_epoch() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -704,11 +676,7 @@ fn test_validate_mismatch_qc_epoch() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -757,11 +725,7 @@ fn test_proposal_invalid_qc_validator_set() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -806,11 +770,7 @@ fn test_validate_insufficient_qc_stake() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            block_header: block,
-            fresh_certificate: None,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -860,11 +820,7 @@ fn test_validate_qc_happy() {
     );
 
     let proposal = Unvalidated::new(ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keypairs[0]),
-            fresh_certificate: None,
-            block_header: block,
-        },
+        tip: ConsensusTip::new(&keypairs[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
@@ -1206,11 +1162,7 @@ fn test_validate_tc_invalid_tc_signature() {
         );
 
     let proposal = ProposalMessage {
-        tip: ConsensusTip {
-            signature: NopSignature::sign(&alloy_rlp::encode(&block), &keys[0]),
-            block_header: block,
-            fresh_certificate: None,
-        },
+        tip: ConsensusTip::new(&keys[0], block, None),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,
