@@ -17,8 +17,8 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{
-    udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, RecvMsg, RecvTcpMsg,
-    RecvUdpMsg, TcpMsg, UnicastMsg,
+    udp::segment_size_for_mtu, BroadcastMsg, DataplaneBuilder, DataplaneWriter, RecvTcpMsg,
+    RecvUdpMsg, TcpMsg, TcpReader, UdpReader, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -84,7 +84,10 @@ where
     udp_state: udp::UdpState<ST>,
     mtu: u16,
 
-    dataplane: Dataplane,
+    dataplane_writer: DataplaneWriter,
+    dataplane_tcp_reader: TcpReader,
+    dataplane_udp_reader: UdpReader,
+
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     waker: Option<Waker>,
@@ -119,7 +122,8 @@ where
         if let Some(buffer_size) = config.buffer_size {
             builder = builder.with_udp_buffer_size(buffer_size);
         }
-        let dataplane = builder.build();
+        let (dataplane_writer, dataplane_reader) = builder.build().split();
+        let (dataplane_tcp_reader, dataplane_udp_reader) = dataplane_reader.split();
         let is_fullnode = false; // This will come from the config in upcoming PR
 
         Self {
@@ -136,7 +140,10 @@ where
             udp_state: udp::UdpState::new(self_id),
             mtu: config.mtu,
 
-            dataplane,
+            dataplane_writer,
+            dataplane_tcp_reader,
+            dataplane_udp_reader,
+
             pending_events: Default::default(),
 
             waker: None,
@@ -164,7 +171,7 @@ where
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.dataplane.tcp_write(
+                self.dataplane_writer.tcp_write(
                     address,
                     TcpMsg {
                         msg: signed_message.freeze(),
@@ -175,16 +182,9 @@ where
         };
     }
 
-    fn handle_dataplane_message(&mut self, message: RecvMsg) {
-        match message {
-            RecvMsg::Tcp(msg) => self.handle_tcp_message(msg),
-            RecvMsg::Udp(msg) => self.handle_udp_message(msg),
-        }
-    }
-
     fn handle_udp_message(&mut self, message: RecvUdpMsg) {
         // FIXME: pass dataplane as arg to handle_message
-        let dataplane = RefCell::new(&mut self.dataplane);
+        let dataplane = RefCell::new(&mut self.dataplane_writer);
         let full_node_addrs = self
             .full_nodes
             .list
@@ -327,7 +327,7 @@ where
                     self.redundancy,
                     &self.peer_discovery_driver.get_known_addresses(),
                 );
-                self.dataplane.udp_write_unicast(unicast_msg);
+                self.dataplane_writer.udp_write_unicast(unicast_msg);
             }
         }
     }
@@ -338,8 +338,12 @@ where
         PeerDiscoveryDriver<PD>: Unpin,
     {
         select! {
-            msg = self.dataplane.recv_msg() => {
-                self.handle_dataplane_message(msg);
+            msg = self.dataplane_tcp_reader.read() => {
+                self.handle_tcp_message(msg);
+                true
+            },
+            msg = self.dataplane_udp_reader.read() => {
+                self.handle_udp_message(msg);
                 true
             },
             Some(emit) = self.peer_discovery_driver.next() => {
@@ -482,7 +486,7 @@ where
                                 self.redundancy,
                                 &known_addresses,
                             );
-                            self.dataplane.udp_write_unicast(unicast_msg);
+                            self.dataplane_writer.udp_write_unicast(unicast_msg);
                         }
                         RouterTarget::PointToPoint(to) => {
                             if to == self_id {
@@ -505,7 +509,7 @@ where
                                     self.redundancy,
                                     &known_addresses,
                                 );
-                                self.dataplane.udp_write_unicast(unicast_msg);
+                                self.dataplane_writer.udp_write_unicast(unicast_msg);
                             }
                         }
                         RouterTarget::TcpPointToPoint { to, completion } => {
