@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::SocketAddrV4,
     time::Duration,
 };
@@ -16,13 +16,13 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
-    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
-    PeerLookupResponse, Ping, Pong, TimerKind,
+    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryMetricsCommand,
+    PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
 };
 
 /// Maximum number of peers to be included in a PeerLookupResponse
 const MAX_PEER_IN_RESPONSE: usize = 16;
-/// Number of peers to send lookup request to if fall below min active connections
+/// Number of peers to send lookup request to
 const NUM_LOOKUP_PEERS: usize = 3;
 
 /// Metrics constant
@@ -34,6 +34,10 @@ pub const GAUGE_PEER_DISC_RECV_PONG: &str = "monad.peer_disc.recv_pong";
 pub const GAUGE_PEER_DISC_DROP_PONG: &str = "monad.peer_disc.drop_pong";
 pub const GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST: &str = "monad.peer_disc.send_lookup_request";
 pub const GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST: &str = "monad.peer_disc.recv_lookup_request";
+pub const GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST: &str =
+    "monad.peer_disc.recv_open_lookup_request";
+pub const GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST: &str =
+    "monad.peer_disc.recv_targeted_lookup_request";
 pub const GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST: &str = "monad.peer_disc.retry_lookup_request";
 pub const GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE: &str = "monad.peer_disc.send_lookup_response";
 pub const GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE: &str = "monad.peer_disc.recv_lookup_response";
@@ -229,11 +233,14 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         } else {
             // peer is not present, insert peer
             debug!(?node_id, ?name_record, "name record inserted");
-            self.peer_info.insert(node_id, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record,
-            });
+            self.peer_info.insert(
+                node_id,
+                PeerInfo {
+                    last_ping: None,
+                    unresponsive_pings: 0,
+                    name_record,
+                },
+            );
         }
 
         self.metrics[GAUGE_PEER_DISC_NUM_CONNECTED_PEERS] = self.peer_info.len() as u64;
@@ -426,12 +433,14 @@ where
         }
         debug!(?to, ?target, ?lookup_id, "sending peer lookup request");
 
-        self.outstanding_lookup_requests
-            .insert(lookup_id, LookupInfo {
+        self.outstanding_lookup_requests.insert(
+            lookup_id,
+            LookupInfo {
                 num_retries: 0,
                 receiver: to,
                 open_discovery,
-            });
+            },
+        );
         let peer_lookup_request = PeerLookupRequest {
             lookup_id,
             target,
@@ -472,6 +481,7 @@ where
 
         // if open discovery, return more nodes other than requested nodes
         if request.open_discovery {
+            self.metrics[GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST] += 1;
             // return random subset of validators (current and next epoch) up to MAX_PEER_IN_RESPONSE
             let current_epoch_validators = self.epoch_validators.get(&self.current_epoch);
             let next_epoch_validators = self.epoch_validators.get(&(self.current_epoch + Epoch(1)));
@@ -491,6 +501,8 @@ where
                     .into_iter()
                     .map(|(_, peer)| peer.name_record),
             );
+        } else {
+            self.metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST] += 1;
         }
 
         let peer_lookup_response = PeerLookupResponse {
@@ -609,12 +621,14 @@ where
         {
             new_lookup_id = self.rng.next_u32();
         }
-        self.outstanding_lookup_requests
-            .insert(new_lookup_id, LookupInfo {
+        self.outstanding_lookup_requests.insert(
+            new_lookup_id,
+            LookupInfo {
                 num_retries,
                 receiver: to,
                 open_discovery,
-            });
+            },
+        );
 
         let peer_lookup_request = PeerLookupRequest {
             lookup_id: new_lookup_id,
@@ -690,17 +704,39 @@ where
         }
         trace!("Current peer info: {:?}", self.peer_info);
 
-        // if fall below the min active peers, choose a few peers and lookup for new peers
+        let missing_validators = current_epoch_validators
+            .into_iter()
+            .flatten()
+            .chain(next_epoch_validators.into_iter().flatten())
+            .filter(|validator| {
+                !self.peer_info.contains_key(validator) && *validator != &self.self_id
+            })
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+
+        let chosen_peers = self
+            .peer_info
+            .keys()
+            .cloned()
+            .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+
         if self.peer_info.len() < self.min_active_connections {
-            let chosen_peers = self
-                .peer_info
-                .keys()
-                .cloned()
-                .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+            // if below the min active peers, choose a few peers and do open discovery
             debug!(?chosen_peers, "discover more peers");
 
-            for peer in chosen_peers {
-                cmds.extend(self.send_peer_lookup_request(peer, self.self_id, true));
+            for (validator_id, peer) in missing_validators.iter().zip(chosen_peers.iter()) {
+                cmds.extend(self.send_peer_lookup_request(*peer, *validator_id, true));
+            }
+        } else if !missing_validators.is_empty() {
+            // if already above the min active peers, send targeted peer lookup request for missing validators
+            for (validator_id, peer) in missing_validators.iter().zip(chosen_peers.iter()) {
+                debug!(
+                    ?validator_id,
+                    "sending targeted peer lookup for missing validator"
+                );
+                cmds.extend(self.send_peer_lookup_request(*peer, *validator_id, false));
             }
         }
 
@@ -708,6 +744,11 @@ where
 
         // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
+
+        // export metrics
+        cmds.push(PeerDiscoveryCommand::MetricsCommand(
+            PeerDiscoveryMetricsCommand(self.metrics.clone()),
+        ));
 
         cmds
     }
@@ -834,6 +875,45 @@ mod tests {
         }
     }
 
+    fn generate_test_state(
+        self_key: &KeyPairType,
+        peer_keys: Vec<&KeyPairType>,
+    ) -> PeerDiscovery<SignatureType> {
+        let peer_info = peer_keys
+            .into_iter()
+            .map(|key| {
+                let node_id = NodeId::new(key.pubkey());
+                let name_record = generate_name_record(key, 0);
+                (
+                    node_id,
+                    PeerInfo {
+                        last_ping: None,
+                        unresponsive_pings: 0,
+                        name_record,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        PeerDiscovery {
+            self_id: NodeId::new(self_key.pubkey()),
+            self_record: generate_name_record(self_key, 0),
+            current_epoch: Epoch(1),
+            epoch_validators: BTreeMap::new(),
+            dedicated_full_nodes: BTreeSet::new(),
+            peer_info,
+            outstanding_lookup_requests: HashMap::new(),
+            metrics: ExecutorMetrics::default(),
+            ping_period: Duration::from_secs(60),
+            refresh_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 10,
+            min_active_connections: 5,
+            max_active_connections: 50,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        }
+    }
+
     fn extract_lookup_requests(
         cmds: Vec<PeerDiscoveryCommand<SignatureType>>,
     ) -> Vec<PeerLookupRequest<SignatureType>> {
@@ -890,35 +970,13 @@ mod tests {
     fn test_check_peer_connection() {
         let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
         let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
         // peer1 name record is present but peer2 name record is not present
-        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
-            last_ping: None,
-            unresponsive_pings: 0,
-            name_record: generate_name_record(peer1, 0),
-        })]);
-        let mut state = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info,
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 10,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![peer1]);
 
         // should be able to send ping to peer where its name record already exists locally
         let cmds = state.send_ping(peer1_pubkey);
@@ -937,10 +995,13 @@ mod tests {
         assert_eq!(cmds.len(), 0);
 
         // when corresponding pong is received from peer1, last_ping and last_seen is updated
-        state.handle_pong(peer1_pubkey, Pong {
-            ping_id: ping_msg.id,
-            local_record_seq: 0,
-        });
+        state.handle_pong(
+            peer1_pubkey,
+            Pong {
+                ping_id: ping_msg.id,
+                local_record_seq: 0,
+            },
+        );
         let peer_info = state.peer_info.get(&peer1_pubkey);
         assert!(peer_info.is_some());
         assert!(peer_info.unwrap().last_ping.is_none());
@@ -951,38 +1012,19 @@ mod tests {
     fn test_drop_pong_with_incorrect_ping_id() {
         let keys = create_keys::<SignatureType>(2);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
-            last_ping: None,
-            unresponsive_pings: 0,
-            name_record: generate_name_record(peer1, 0),
-        })]);
-        let mut state = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info,
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 10,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![peer1]);
 
         // should not record pong when ping_id doesn't match
-        state.handle_pong(peer1_pubkey, Pong {
-            ping_id: 1,
-            local_record_seq: 0,
-        });
+        state.handle_pong(
+            peer1_pubkey,
+            Pong {
+                ping_id: 1,
+                local_record_seq: 0,
+            },
+        );
         let peer_info = state.peer_info.get(&peer1_pubkey);
         assert!(peer_info.is_some());
         assert!(peer_info.unwrap().last_ping.is_none());
@@ -993,29 +1035,12 @@ mod tests {
     fn test_peer_lookup() {
         let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
         let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info: BTreeMap::new(),
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 10,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![peer1]);
 
         let cmds = state.send_peer_lookup_request(peer1_pubkey, peer2_pubkey, false);
         assert_eq!(cmds.len(), 2);
@@ -1051,11 +1076,14 @@ mod tests {
         );
 
         let record = generate_name_record(peer2, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: requests[0].lookup_id,
-            target: peer2_pubkey,
-            name_records: vec![record],
-        });
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id: requests[0].lookup_id,
+                target: peer2_pubkey,
+                name_records: vec![record],
+            },
+        );
 
         // peer2 should be added to peer info and outstanding requests should be cleared
         assert!(state.peer_info.contains_key(&peer2_pubkey));
@@ -1066,7 +1094,6 @@ mod tests {
     fn test_peer_lookup_target_not_found() {
         let keys = create_keys::<SignatureType>(4);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
         let peer2 = &keys[2];
@@ -1075,44 +1102,20 @@ mod tests {
         let peer3_pubkey = NodeId::new(peer3.pubkey());
 
         // peer_info contains peer1 and peer2
-        let peer_info = BTreeMap::from([
-            (peer1_pubkey, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: generate_name_record(peer1, 0),
-            }),
-            (peer2_pubkey, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: generate_name_record(peer2, 0),
-            }),
-        ]);
-        let mut epoch_validators = BTreeMap::new();
-        epoch_validators.insert(Epoch(1), BTreeSet::from([peer1_pubkey, peer2_pubkey]));
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators,
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info,
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 10,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![peer1, peer2]);
+        state
+            .epoch_validators
+            .insert(Epoch(1), BTreeSet::from([peer1_pubkey, peer2_pubkey]));
 
         // receive a peer lookup request for peer3, which is not in peer_info
-        let cmds = state.handle_peer_lookup_request(peer1_pubkey, PeerLookupRequest {
-            lookup_id: 1,
-            target: peer3_pubkey,
-            open_discovery: true,
-        });
+        let cmds = state.handle_peer_lookup_request(
+            peer1_pubkey,
+            PeerLookupRequest {
+                lookup_id: 1,
+                target: peer3_pubkey,
+                open_discovery: true,
+            },
+        );
         assert_eq!(cmds.len(), 1);
 
         // should return peer1 and peer2 instead
@@ -1134,51 +1137,37 @@ mod tests {
     fn test_update_name_record_sequence_number() {
         let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
-            last_ping: None,
-            unresponsive_pings: 0,
-            name_record: generate_name_record(peer1, 1),
-        })]);
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info,
-            outstanding_lookup_requests: HashMap::from([
-                (1, LookupInfo {
-                    num_retries: 0,
-                    receiver: peer1_pubkey,
-                    open_discovery: false,
-                }),
-                (2, LookupInfo {
-                    num_retries: 0,
-                    receiver: peer1_pubkey,
-                    open_discovery: false,
-                }),
-            ]),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 10,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![peer1]);
+        state.outstanding_lookup_requests.insert(
+            1,
+            LookupInfo {
+                num_retries: 0,
+                receiver: peer1_pubkey,
+                open_discovery: false,
+            },
+        );
+        state.outstanding_lookup_requests.insert(
+            2,
+            LookupInfo {
+                num_retries: 0,
+                receiver: peer1_pubkey,
+                open_discovery: false,
+            },
+        );
 
-        // should not update name record if record has lower sequence number
-        let record = generate_name_record(peer1, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: 1,
-            target: peer1_pubkey,
-            name_records: vec![record],
-        });
+        // should update name record if record has higher sequence number (seq num incremented to 2)
+        let record = generate_name_record(peer1, 2);
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id: 1,
+                target: peer1_pubkey,
+                name_records: vec![record],
+            },
+        );
         assert_eq!(
             state
                 .peer_info
@@ -1186,16 +1175,19 @@ mod tests {
                 .unwrap()
                 .name_record
                 .seq(),
-            1
+            2
         );
 
-        // should update name record if record has higher sequence number
-        let record = generate_name_record(peer1, 2);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: 2,
-            target: peer1_pubkey,
-            name_records: vec![record],
-        });
+        // should not update name record if record has lower sequence number (seq num decremented to 1)
+        let record = generate_name_record(peer1, 1);
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id: 2,
+                target: peer1_pubkey,
+                name_records: vec![record],
+            },
+        );
         assert_eq!(
             state
                 .peer_info
@@ -1211,35 +1203,21 @@ mod tests {
     fn test_drop_invalid_lookup_response() {
         let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info: BTreeMap::new(),
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 10,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![]);
 
         // should not record peer lookup response if not in outstanding requests
         let record = generate_name_record(peer1, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: 1,
-            target: peer1_pubkey,
-            name_records: vec![record],
-        });
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id: 1,
+                target: peer1_pubkey,
+                name_records: vec![record],
+            },
+        );
         assert!(!state.peer_info.contains_key(&peer1_pubkey));
     }
 
@@ -1247,40 +1225,30 @@ mod tests {
     fn test_drop_lookup_response_that_exceeds_max_peers() {
         let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
-        let lookup_id = 1;
 
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info: BTreeMap::new(),
-            outstanding_lookup_requests: HashMap::from([(lookup_id, LookupInfo {
+        let lookup_id = 1;
+        let mut state = generate_test_state(peer0, vec![]);
+        state.outstanding_lookup_requests.insert(
+            lookup_id,
+            LookupInfo {
                 num_retries: 0,
                 receiver: peer1_pubkey,
                 open_discovery: false,
-            })]),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 10,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+            },
+        );
 
         // should not record peer lookup response if number of records exceed max
         let record = generate_name_record(peer1, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id,
-            target: peer1_pubkey,
-            name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
-        });
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id,
+                target: peer1_pubkey,
+                name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
+            },
+        );
         assert!(!state.peer_info.contains_key(&peer1_pubkey));
     }
 
@@ -1288,37 +1256,32 @@ mod tests {
     fn test_prune() {
         let keys = create_keys::<SignatureType>(2);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
+        let mut state = generate_test_state(peer0, vec![]);
+
+        // add peer1 to peer info with unresponsive pings
+        // and outstanding lookup request with num_retries above prune threshold
         let lookup_id = 1;
-        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
-            last_ping: None,
-            unresponsive_pings: 5,
-            name_record: generate_name_record(peer1, 0),
-        })]);
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info,
-            outstanding_lookup_requests: HashMap::from([(lookup_id, LookupInfo {
+        let peer_info = BTreeMap::from([(
+            peer1_pubkey,
+            PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 5,
+                name_record: generate_name_record(peer1, 0),
+            },
+        )]);
+        state.prune_threshold = 3;
+        state.peer_info = peer_info;
+        state.outstanding_lookup_requests.insert(
+            lookup_id,
+            LookupInfo {
                 num_retries: 5,
                 receiver: peer1_pubkey,
                 open_discovery: false,
-            })]),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 3,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+            },
+        );
 
         state.refresh();
         assert!(state.peer_info.is_empty());
@@ -1329,34 +1292,19 @@ mod tests {
 
     #[test]
     fn test_below_min_active_connections() {
-        let keys = create_keys::<SignatureType>(2);
+        let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
         let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2 = &keys[2];
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
-            last_ping: None,
-            unresponsive_pings: 0,
-            name_record: generate_name_record(peer1, 0),
-        })]);
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info,
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 3,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![peer1]);
+        state.epoch_validators.insert(
+            Epoch(1),
+            BTreeSet::from([peer0_pubkey, peer1_pubkey, peer2_pubkey]),
+        );
 
         // should send peer lookup request to peer1
         let cmds = state.refresh();
@@ -1374,7 +1322,6 @@ mod tests {
     fn test_above_max_active_connections() {
         let keys = create_keys::<SignatureType>(4);
         let peer0 = &keys[0];
-        let peer0_pubkey = NodeId::new(peer0.pubkey());
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
         let peer2 = &keys[2];
@@ -1382,45 +1329,14 @@ mod tests {
         let peer3 = &keys[3];
         let peer3_pubkey = NodeId::new(peer3.pubkey());
 
-        let peer_info = BTreeMap::from([
-            (peer1_pubkey, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: generate_name_record(peer1, 0),
-            }),
-            (peer2_pubkey, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: generate_name_record(peer2, 0),
-            }),
-            (peer3_pubkey, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: generate_name_record(peer3, 0),
-            }),
-        ]);
         // Peer1 in validator set, Peer2 is dedicated full node
-        let mut epoch_validators = BTreeMap::new();
-        epoch_validators.insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
-        let dedicated_full_nodes = BTreeSet::from([peer2_pubkey]);
-
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: peer0_pubkey,
-            self_record: generate_name_record(peer0, 0),
-            current_epoch: Epoch(1),
-            epoch_validators,
-            dedicated_full_nodes,
-            peer_info,
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 3,
-            min_active_connections: 0,
-            max_active_connections: 1,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![peer1, peer2, peer3]);
+        state.min_active_connections = 0;
+        state.max_active_connections = 1;
+        state
+            .epoch_validators
+            .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
+        state.dedicated_full_nodes.insert(peer2_pubkey);
 
         // prune nodes, but validators and dedicated full nodes are not pruned even if above max active connections
         state.refresh();
@@ -1432,34 +1348,13 @@ mod tests {
     #[test]
     fn test_ping_unseen_peer() {
         let keys = create_keys::<SignatureType>(2);
-        let node0_key = &keys[0];
-        let node0 = NodeId::new(node0_key.pubkey());
-        let node1_key = &keys[1];
-        let node1 = NodeId::new(node1_key.pubkey());
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: node0,
-            self_record: generate_name_record(node0_key, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info: BTreeMap::from([(node1, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: generate_name_record(node1_key, 1),
-            })]),
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 3,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![peer1]);
 
-        let cmds = state.send_ping(node1);
+        let cmds = state.send_ping(peer1_pubkey);
         assert_eq!(cmds.len(), 5);
 
         assert!(matches!(
@@ -1517,42 +1412,32 @@ mod tests {
         expected_ping_to_sender: bool,
     ) {
         let keys = create_keys::<SignatureType>(2);
-        let node0_key = &keys[0];
-        let node0 = NodeId::new(node0_key.pubkey());
-        let node1_key = &keys[1];
-        let node1 = NodeId::new(node1_key.pubkey());
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
 
         let peer_info = match known_record {
-            Some(record) => BTreeMap::from([(node1, PeerInfo {
-                last_ping: None,
-                unresponsive_pings: 0,
-                name_record: MonadNameRecord::new(record, node1_key),
-            })]),
+            Some(record) => BTreeMap::from([(
+                peer1_pubkey,
+                PeerInfo {
+                    last_ping: None,
+                    unresponsive_pings: 0,
+                    name_record: MonadNameRecord::new(record, peer1),
+                },
+            )]),
             None => BTreeMap::new(),
         };
 
-        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_id: node0,
-            self_record: generate_name_record(node0_key, 0),
-            current_epoch: Epoch(1),
-            epoch_validators: BTreeMap::new(),
-            dedicated_full_nodes: BTreeSet::new(),
-            peer_info,
-            outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
-            ping_period: Duration::from_secs(60),
-            refresh_period: Duration::from_secs(120),
-            request_timeout: Duration::from_secs(5),
-            prune_threshold: 3,
-            min_active_connections: 5,
-            max_active_connections: 50,
-            rng: ChaCha8Rng::seed_from_u64(123456),
-        };
+        let mut state = generate_test_state(peer0, vec![]);
+        state.peer_info = peer_info;
 
-        let cmds = state.handle_ping(node1, Ping {
-            id: 7,
-            local_name_record: Some(MonadNameRecord::new(incoming_record, node1_key)),
-        });
+        let cmds = state.handle_ping(
+            peer1_pubkey,
+            Ping {
+                id: 7,
+                local_name_record: Some(MonadNameRecord::new(incoming_record, peer1)),
+            },
+        );
 
         if expected_pong {
             if expected_ping_to_sender {
@@ -1563,12 +1448,20 @@ mod tests {
                 assert_eq!(cmds.len(), 1);
             }
             let pong = extract_pong(cmds)[0];
-            assert_eq!(pong, Pong {
-                ping_id: 7,
-                local_record_seq: 0
-            });
+            assert_eq!(
+                pong,
+                Pong {
+                    ping_id: 7,
+                    local_record_seq: 0
+                }
+            );
 
-            let node1_record = state.peer_info.get(&node1).unwrap().name_record.name_record;
+            let node1_record = state
+                .peer_info
+                .get(&peer1_pubkey)
+                .unwrap()
+                .name_record
+                .name_record;
             assert_eq!(expected_record, node1_record);
         } else {
             assert!(cmds.is_empty());
