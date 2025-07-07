@@ -338,12 +338,11 @@ where
         PeerDiscoveryDriver<PD>: Unpin,
     {
         select! {
-            msg = self.dataplane.recv_msg().fuse() => {
+            msg = self.dataplane.recv_msg() => {
                 self.handle_dataplane_message(msg);
                 true
             },
-            emit = self.peer_discovery_driver.next().fuse() => {
-                let Some(emit) = emit else { return false; };
+            Some(emit) = self.peer_discovery_driver.next() => {
                 self.handle_peer_discovery_emit(emit);
                 true
             },
