@@ -21,6 +21,9 @@ where
     EPT: ExecutionProtocol,
 {
     maybe_high_tip: Option<ConsensusTip<ST, SCT, EPT>>,
+    // maybe_high_tip only exists if contains QC >= high_certificate_qc_round
+    // this ensures that timeout.high_tip_round > timeout.high_qc_round
+    high_certificate_qc_round: Round,
 
     highest_vote: Round,
     highest_no_endorse: Round,
@@ -37,6 +40,7 @@ where
     fn default() -> Self {
         Self {
             maybe_high_tip: None,
+            high_certificate_qc_round: GENESIS_ROUND,
             highest_vote: GENESIS_ROUND,
             highest_no_endorse: GENESIS_ROUND,
             highest_propose: GENESIS_ROUND,
@@ -58,6 +62,7 @@ where
         let current_round = high_certificate.round() + Round(1);
         Self {
             maybe_high_tip,
+            high_certificate_qc_round: high_certificate.qc().get_round(),
 
             highest_vote: current_round,
             highest_no_endorse: current_round,
@@ -71,10 +76,15 @@ where
     }
 
     pub(crate) fn process_certificate(&mut self, certificate: &RoundCertificate<ST, SCT, EPT>) {
-        if let Some(tip) = &self.maybe_high_tip {
-            if certificate.qc().get_round() >= tip.block_header.block_round {
-                self.maybe_high_tip = None;
-            }
+        if certificate.qc().get_round() > self.high_certificate_qc_round {
+            self.high_certificate_qc_round = certificate.qc().get_round();
+        }
+        if self
+            .maybe_high_tip
+            .as_ref()
+            .is_some_and(|tip| tip.block_header.block_round <= self.high_certificate_qc_round)
+        {
+            self.maybe_high_tip = None;
         }
     }
 
@@ -85,7 +95,15 @@ where
     pub fn vote(&mut self, round: Round, tip: ConsensusTip<ST, SCT, EPT>) {
         assert!(self.is_safe_to_vote(round));
         self.highest_vote = round;
-        self.maybe_high_tip = Some(tip);
+        if tip.block_header.block_round > self.high_certificate_qc_round {
+            // we should only update high_tip if the tip we're voting on
+            // is higher than our high_certificate.qc()
+
+            // this ensures that any timeouts we send have timeout.high_tip_round > timeout.high_qc_round
+            self.maybe_high_tip = Some(tip);
+        } else {
+            self.maybe_high_tip = None;
+        }
     }
 
     pub fn is_safe_to_no_endorse(&self, round: Round) -> bool {

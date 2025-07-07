@@ -5,7 +5,7 @@ use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate, NoEndorsementMessage},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighExtend, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     validation::Error,
     voting::ValidatorMapping,
@@ -474,6 +474,24 @@ where
             },
             &self.obj.high_extend.clone().into(),
         )?;
+        match &self.obj.high_extend {
+            HighExtendVote::Qc(qc) => {
+                if self.obj.tminfo.high_tip_round != GENESIS_ROUND {
+                    return Err(Error::NotWellFormed);
+                }
+                if self.obj.tminfo.high_qc_round != qc.get_round() {
+                    return Err(Error::NotWellFormed);
+                }
+            }
+            HighExtendVote::Tip(tip, _) => {
+                if self.obj.tminfo.high_tip_round != tip.block_header.block_round {
+                    return Err(Error::NotWellFormed);
+                }
+                if self.obj.tminfo.high_qc_round >= tip.block_header.block_round {
+                    return Err(Error::NotWellFormed);
+                }
+            }
+        }
 
         self.well_formed_timeout()?;
         self.verify_epoch(epoch_manager)?;
