@@ -10,7 +10,7 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use futures::{channel::oneshot, Future, FutureExt, Stream, StreamExt};
+use futures::{channel::oneshot, Future, Stream, StreamExt};
 use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
@@ -293,7 +293,7 @@ where
         // Dispatch messages received via TCP
         match deserialized_message {
             InboundRouterMessage::AppMessage(message) => {
-                let event = RaptorCastEvent::Message(message.event(NodeId::new(from))).into();
+                let event = RaptorCastEvent::Message(message.event(NodeId::new(from)));
                 self.pending_events.push_back(event);
             }
             InboundRouterMessage::PeerDiscoveryMessage(message) => {
