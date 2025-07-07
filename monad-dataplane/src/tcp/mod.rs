@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, time::Duration};
 
-use bytes::Bytes;
 use monoio::spawn;
 use tokio::sync::mpsc;
 use zerocopy::{
