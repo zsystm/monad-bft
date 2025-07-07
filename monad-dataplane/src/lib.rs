@@ -1,6 +1,9 @@
 use std::{
     net::SocketAddr,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     thread,
 };
 
@@ -89,7 +92,12 @@ pub struct DataplaneReader {
     udp_ingress_rx: mpsc::Receiver<RecvUdpMsg>,
 }
 
+#[derive(Clone)]
 pub struct DataplaneWriter {
+    inner: Arc<DataplaneWriterInner>,
+}
+
+struct DataplaneWriterInner {
     tcp_egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
     udp_egress_tx: mpsc::Sender<(SocketAddr, Bytes, u16)>,
 
@@ -134,8 +142,8 @@ const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
 impl Dataplane {
-    pub fn split(self) -> (DataplaneWriter, DataplaneReader) {
-        (self.writer, self.reader)
+    pub fn split(self) -> (DataplaneReader, DataplaneWriter) {
+        (self.reader, self.writer)
     }
 
     pub async fn tcp_read(&mut self) -> RecvTcpMsg {
@@ -218,21 +226,24 @@ impl DataplaneWriter {
         tcp_egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
         udp_egress_tx: mpsc::Sender<(SocketAddr, Bytes, u16)>,
     ) -> Self {
-        Self {
+        let inner = DataplaneWriterInner {
             tcp_egress_tx,
             udp_egress_tx,
             tcp_msgs_dropped: AtomicU64::new(0),
             udp_msgs_dropped: AtomicU64::new(0),
+        };
+        Self {
+            inner: Arc::new(inner),
         }
     }
 
     pub fn tcp_write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
 
-        match self.tcp_egress_tx.try_send((addr, msg)) {
+        match self.inner.tcp_egress_tx.try_send((addr, msg)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                let tcp_msgs_dropped = self.tcp_msgs_dropped.fetch_add(1, Ordering::Relaxed);
+                let tcp_msgs_dropped = self.inner.tcp_msgs_dropped.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
                     num_msgs_dropped = 1,
@@ -251,6 +262,7 @@ impl DataplaneWriter {
 
         for (i, target) in msg.targets.into_iter().enumerate() {
             match self
+                .inner
                 .udp_egress_tx
                 .try_send((target, msg.payload.clone(), msg.stride))
             {
@@ -258,6 +270,7 @@ impl DataplaneWriter {
                 Err(TrySendError::Full(_)) => {
                     let num_msgs_dropped = num_targets - i as u64;
                     let udp_msgs_dropped = self
+                        .inner
                         .udp_msgs_dropped
                         .fetch_add(num_msgs_dropped, Ordering::Relaxed);
 
@@ -279,11 +292,16 @@ impl DataplaneWriter {
         let num_msgs = msg.msgs.len() as u64;
 
         for (i, (addr, payload)) in msg.msgs.into_iter().enumerate() {
-            match self.udp_egress_tx.try_send((addr, payload, msg.stride)) {
+            match self
+                .inner
+                .udp_egress_tx
+                .try_send((addr, payload, msg.stride))
+            {
                 Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
                     let num_msgs_dropped = num_msgs - i as u64;
                     let udp_msgs_dropped = self
+                        .inner
                         .udp_msgs_dropped
                         .fetch_add(num_msgs_dropped, Ordering::Relaxed);
 

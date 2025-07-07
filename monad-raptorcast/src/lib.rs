@@ -22,8 +22,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    BroadcastMsg, Dataplane, DataplaneBuilder, DataplaneWriter, RecvTcpMsg, RecvUdpMsg, TcpMsg,
-    TcpReader, UdpReader, UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, DataplaneReader, DataplaneWriter, RecvTcpMsg, RecvUdpMsg,
+    TcpMsg, TcpReader, UdpReader, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -106,7 +106,8 @@ where
 {
     pub fn new(
         config: config::RaptorCastConfig<ST>,
-        dataplane: Dataplane,
+        dataplane_reader: DataplaneReader,
+        dataplane_writer: DataplaneWriter,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     ) -> Self {
         if config.primary_instance.raptor10_redundancy < 1 {
@@ -117,7 +118,6 @@ where
             );
         }
 
-        let (dataplane_writer, dataplane_reader) = dataplane.split();
         let (dataplane_tcp_reader, dataplane_udp_reader) = dataplane_reader.split();
 
         let self_id = NodeId::new(config.shared_key.pubkey());
@@ -227,11 +227,12 @@ where
     }
 
     fn handle_udp_message(&mut self, message: RecvUdpMsg) {
+        let pd_driver = self.peer_discovery_driver.lock().unwrap();
         let full_node_addrs = self
             .dedicated_full_nodes
             .list
             .iter()
-            .filter_map(|node_id| self.peer_discovery_driver.get_addr(node_id))
+            .filter_map(|node_id| pd_driver.get_addr(node_id))
             .collect::<Vec<_>>();
 
         tracing::trace!(
@@ -254,9 +255,7 @@ where
                     // Callback for re-broadcasting raptorcast chunks to other RaptorCast participants (validator peers)
                     let target_addrs: Vec<SocketAddr> = targets
                         .into_iter()
-                        .filter_map(|target| {
-                            self.peer_discovery_driver.lock().unwrap().get_addr(&target)
-                        })
+                        .filter_map(|target| pd_driver.get_addr(&target))
                         .collect();
 
                     self.dataplane_writer.udp_write_broadcast(BroadcastMsg {
@@ -438,6 +437,8 @@ where
     where
         PeerDiscoveryDriver<PD>: Unpin,
     {
+        // TODO: deadlock
+        let mut pd = self.peer_discovery_driver.lock().unwrap();
         select! {
             msg = self.dataplane_tcp_reader.read() => {
                 self.handle_tcp_message(msg);
@@ -447,7 +448,7 @@ where
                 self.handle_udp_message(msg);
                 true
             },
-            Some(emit) = self.peer_discovery_driver.lock().unwrap().next() => {
+            Some(emit) = pd.next() => {
                 self.handle_peer_discovery_emit(emit);
                 true
             },
@@ -509,7 +510,8 @@ where
     };
     let up_bandwidth_mbps = 1_000;
     let dp_builder = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps);
-    let shared_dataplane = Arc::new(Mutex::new(dp_builder.build()));
+    let dataplane = dp_builder.build();
+    let (dataplane_reader, dataplane_writer) = dataplane.split();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
@@ -518,7 +520,12 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
-    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(config, shared_dataplane, shared_pd)
+    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>>::new(
+        config,
+        dataplane_reader,
+        dataplane_writer,
+        shared_pd,
+    )
 }
 
 impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
