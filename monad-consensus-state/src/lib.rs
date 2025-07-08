@@ -987,56 +987,23 @@ where
 
         for full_block in full_blocks {
             let (header, body) = full_block.split();
-            if self
+            if !self
                 .consensus
                 .pending_block_tree
                 .is_valid_to_insert(&header)
             {
-                let author_pubkey = self
-                    .val_epoch_map
-                    .get_cert_pubkeys(&header.epoch)
-                    .expect("epoch should be available for blocksync'd block")
-                    .map
-                    .get(&header.author)
-                    .expect("blocksync'd block author should be in validator set");
-
-                let ChainParams {
-                    tx_limit,
-                    proposal_gas_limit,
-                    proposal_byte_limit,
-                    vote_pace: _,
-                } = self
-                    .config
-                    .chain_config
-                    .get_chain_revision(header.block_round)
-                    .chain_params();
-
-                let ExecutionChainParams { max_code_size } = {
-                    // u64::MAX seconds is ~500 Billion years
-                    let timestamp_s: u64 = (header.timestamp_ns / 1_000_000_000)
-                        .try_into()
-                        .expect("blocksync'd block timestamp > ~500B years");
-                    self.config
-                        .chain_config
-                        .get_execution_chain_revision(timestamp_s)
-                        .execution_chain_params()
-                };
-
-                let block = self
-                    .block_validator
-                    .validate(
-                        header,
-                        body,
-                        Some(author_pubkey),
-                        *tx_limit,
-                        *proposal_gas_limit,
-                        *proposal_byte_limit,
-                        *max_code_size,
-                    )
-                    .expect("majority extended invalid block");
-                let res_cmds = self.try_add_and_commit_blocktree(block, None);
-                cmds.extend(res_cmds);
+                continue;
             }
+            let Some(block) = self.validate_block(header, body) else {
+                tracing::warn!(
+                    ?block_range,
+                    "blocksynced block failed to validate. is this an invalid tip?"
+                );
+                break;
+            };
+
+            let res_cmds = self.try_add_and_commit_blocktree(block, None);
+            cmds.extend(res_cmds);
         }
 
         self.consensus
