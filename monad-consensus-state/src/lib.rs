@@ -118,6 +118,9 @@ where
     }
 }
 
+// The bound on future rounds/NEs that we'll buffer
+const FUTURE_VOTE_BOUND: Round = Round(10);
+
 struct BlockSyncRequestStatus {
     range: BlockRange,
     // once a block with round >= cancel_round is committed, this request will be canceled.
@@ -660,6 +663,10 @@ where
             self.metrics.consensus_events.old_vote_received += 1;
             return Default::default();
         }
+        if vote_msg.vote.round > self.consensus.pacemaker.get_current_round() + FUTURE_VOTE_BOUND {
+            self.metrics.consensus_events.future_vote_received += 1;
+            return Default::default();
+        }
         self.metrics.consensus_events.vote_received += 1;
 
         let mut cmds = Vec::new();
@@ -911,6 +918,12 @@ where
         debug!(?author, ?no_endorsement_msg, "no endorsement message");
         if no_endorsement_msg.msg.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.old_no_endorsement_received += 1;
+            return Default::default();
+        }
+        if no_endorsement_msg.msg.round
+            > self.consensus.pacemaker.get_current_round() + FUTURE_VOTE_BOUND
+        {
+            self.metrics.consensus_events.future_no_endorsement_received += 1;
             return Default::default();
         }
         self.metrics.consensus_events.handle_no_endorsement += 1;
