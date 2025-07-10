@@ -26,9 +26,9 @@ use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyT
 use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
-    state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor,
     txpool::MockTxPoolExecutor,
+    val_set::MockValSetUpdaterNop,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rayon::prelude::*;
@@ -76,7 +76,7 @@ impl SwarmRelation for ForkpointSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
+    type ValSetUpdater = MockValSetUpdaterNop<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
@@ -320,7 +320,7 @@ fn forkpoint_restart_f(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -415,7 +415,7 @@ fn forkpoint_restart_f(
             ID::new(restart_node_id),
             restart_builder,
             NoSerRouterConfig::new(all_peers.clone()).build(),
-            MockStateRootHashNop::new(validators.clone(), epoch_length),
+            MockValSetUpdaterNop::new(validators.clone(), epoch_length),
             MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_backend.clone()),
             MockLedger::new(restart_builder_state_backend.clone()),
             MockStateSyncExecutor::new(
@@ -640,7 +640,7 @@ fn forkpoint_restart_below_all(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.clone(), epoch_length),
+                        MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
@@ -751,7 +751,7 @@ fn forkpoint_restart_below_all(
                 ID::new(node_id),
                 builder,
                 NoSerRouterConfig::new(all_peers.clone()).build(),
-                MockStateRootHashNop::new(validators.clone(), epoch_length),
+                MockValSetUpdaterNop::new(validators.clone(), epoch_length),
                 MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                 MockLedger::new(state_backend.clone()),
                 MockStateSyncExecutor::new(

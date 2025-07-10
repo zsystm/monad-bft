@@ -36,9 +36,9 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
-    ValidatorEvent, WriteCommand,
+    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand, StateSyncCommand,
+    StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand, ValSetCommand, ValidatorEvent,
+    WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -161,16 +161,10 @@ where
             root: GENESIS_BLOCK_ID,
             high_certificate: RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
             high_qc: QuorumCertificate::genesis_qc(),
-            validator_sets: vec![
-                LockedEpoch {
-                    epoch: Epoch(1),
-                    round: Some(GENESIS_ROUND),
-                },
-                LockedEpoch {
-                    epoch: Epoch(2),
-                    round: None,
-                },
-            ],
+            validator_sets: vec![LockedEpoch {
+                epoch: Epoch(1),
+                round: Some(GENESIS_ROUND),
+            }],
         }
         .into()
     }
@@ -187,7 +181,7 @@ where
 
     /// locked_validator_sets must correspond 1:1 with the epochs in Checkpoint::validator_sets
     // Concrete verification steps:
-    // 1. 2 <= validator_sets.len() <= 3
+    // 1. 1 <= validator_sets.len() <= 2
     // 2. validator_sets have consecutive epochs
     // 3. assert!(validator_sets[0].round.is_some())
     // 4. high_qc is valid against matching epoch validator_set
@@ -197,10 +191,10 @@ where
         locked_validator_sets: &[ValidatorSetDataWithEpoch<SCT>],
     ) -> Result<(), ForkpointValidationError> {
         // 1.
-        if self.validator_sets.len() < 2 {
+        if self.validator_sets.is_empty() {
             return Err(ForkpointValidationError::TooFewValidatorSets);
         }
-        if self.validator_sets.len() > 3 {
+        if self.validator_sets.len() > 2 {
             return Err(ForkpointValidationError::TooManyValidatorSets);
         }
 
@@ -1248,9 +1242,9 @@ where
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Finalized(block.deref().to_owned()),
             )));
-            commands.push(Command::StateRootHashCommand(
-                StateRootHashCommand::NotifyFinalized(block.get_seq_num()),
-            ));
+            commands.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
+                block.get_seq_num(),
+            )));
         }
 
         let cached_proposals = block_buffer.proposals().cloned().collect_vec();
@@ -1309,6 +1303,7 @@ where
 
 #[cfg(test)]
 mod test {
+    use alloy_primitives::U256;
     use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{
         quorum_certificate::QuorumCertificate,
@@ -1387,7 +1382,7 @@ mod test {
 
         let mut validators = Vec::new();
         for (key, cert_key) in keys.iter().zip(cert_keys.iter()) {
-            validators.push((key.pubkey(), Stake(7), cert_key.pubkey()));
+            validators.push((key.pubkey(), Stake(U256::from(7)), cert_key.pubkey()));
         }
         let validator_data = ValidatorSetData::<SignatureCollectionType>::new(validators);
         let validator_sets = forkpoint
@@ -1497,28 +1492,28 @@ mod test {
 
         let validators_config: ValidatorsConfig<SignatureCollectionType> = ValidatorsConfig {
             validators: vec![
-                (Epoch(1), make_val_set_data(Stake(1))),
-                (Epoch(2), make_val_set_data(Stake(2))),
-                (Epoch(4), make_val_set_data(Stake(3))),
-                (Epoch(10), make_val_set_data(Stake(4))),
+                (Epoch(1), make_val_set_data(Stake(U256::ONE))),
+                (Epoch(2), make_val_set_data(Stake(U256::from(2)))),
+                (Epoch(4), make_val_set_data(Stake(U256::from(3)))),
+                (Epoch(10), make_val_set_data(Stake(U256::from(4)))),
             ]
             .into_iter()
             .collect(),
         };
 
         let expected = vec![
-            (Epoch(1), make_val_set_data(Stake(1))),
-            (Epoch(2), make_val_set_data(Stake(2))),
-            (Epoch(3), make_val_set_data(Stake(2))),
-            (Epoch(4), make_val_set_data(Stake(3))),
-            (Epoch(5), make_val_set_data(Stake(3))),
-            (Epoch(6), make_val_set_data(Stake(3))),
-            (Epoch(7), make_val_set_data(Stake(3))),
-            (Epoch(8), make_val_set_data(Stake(3))),
-            (Epoch(9), make_val_set_data(Stake(3))),
-            (Epoch(10), make_val_set_data(Stake(4))),
-            (Epoch(11), make_val_set_data(Stake(4))),
-            (Epoch(12), make_val_set_data(Stake(4))),
+            (Epoch(1), make_val_set_data(Stake(U256::ONE))),
+            (Epoch(2), make_val_set_data(Stake(U256::from(2)))),
+            (Epoch(3), make_val_set_data(Stake(U256::from(2)))),
+            (Epoch(4), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(5), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(6), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(7), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(8), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(9), make_val_set_data(Stake(U256::from(3)))),
+            (Epoch(10), make_val_set_data(Stake(U256::from(4)))),
+            (Epoch(11), make_val_set_data(Stake(U256::from(4)))),
+            (Epoch(12), make_val_set_data(Stake(U256::from(4)))),
         ];
 
         for (epoch, val_set) in &expected {

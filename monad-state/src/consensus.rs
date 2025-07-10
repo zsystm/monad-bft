@@ -20,8 +20,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand, TxPoolCommand,
+    MempoolEvent, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
+    TimestampCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
@@ -648,9 +648,9 @@ where
                         parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::BlockCommit(vec![
                             block,
                         ])));
-                        parent_cmds.push(Command::StateRootHashCommand(
-                            StateRootHashCommand::NotifyFinalized(finalized_seq_num),
-                        ));
+                        parent_cmds.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
+                            finalized_seq_num,
+                        )));
                     }
                 }
             }

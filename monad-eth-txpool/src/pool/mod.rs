@@ -45,6 +45,7 @@ where
     // <= proposal_gas_limit to reject anything that can't possibly fit in a
     // block. Create proposal doesn't rely on this value
     proposal_gas_limit: u64,
+    val_set_update_interval: SeqNum,
 
     max_code_size: usize,
 }
@@ -60,6 +61,7 @@ where
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         proposal_gas_limit: u64,
+        val_set_update_interval: SeqNum,
         max_code_size: usize,
     ) -> Self {
         Self {
@@ -67,18 +69,21 @@ where
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
             proposal_gas_limit,
+            val_set_update_interval,
             max_code_size,
         }
     }
 
     pub fn default_testing() -> Self {
         const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
+        const VAL_SET_UPDATE_INTERVAL: SeqNum = SeqNum(100);
         const MAX_CODE_SIZE: usize = 0x6000;
         Self::new(
             true,
             Duration::from_secs(60),
             Duration::from_secs(60),
             PROPOSAL_GAS_LIMIT,
+            VAL_SET_UPDATE_INTERVAL,
             MAX_CODE_SIZE,
         )
     }
@@ -262,6 +267,12 @@ where
             ommers: Vec::new(),
             withdrawals: Vec::new(),
         };
+        let extra_data = if proposed_seq_num.is_epoch_end(self.val_set_update_interval) {
+            [u8::MAX; 32]
+        } else {
+            [0_u8; 32]
+        };
+
         let header = ProposedEthHeader {
             transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
                 &body.transactions,
@@ -282,7 +293,7 @@ where
             timestamp: timestamp_seconds as u64,
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
-            extra_data: [0_u8; 32],
+            extra_data,
             base_fee_per_gas: BASE_FEE_PER_GAS,
             blob_gas_used: 0,
             excess_blob_gas: 0,

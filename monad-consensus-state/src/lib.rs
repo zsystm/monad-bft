@@ -944,16 +944,12 @@ where
             root: self.consensus.pending_block_tree.root().block_id,
             high_certificate: self.consensus.pacemaker.high_certificate().clone(),
             high_qc: self.consensus.get_high_qc().clone(),
-            validator_sets: vec![
-                val_set_data(base_epoch)
-                    .expect("checkpoint: no validator set populated for base_epoch"),
-                val_set_data(base_epoch + Epoch(1))
-                    .expect("checkpoint: no validator set populated for base_epoch + 1"),
-            ]
+            validator_sets: vec![val_set_data(base_epoch)
+                .expect("checkpoint: no validator set populated for base_epoch")]
             .into_iter()
             .chain(
-                // third val_set might not be ready
-                val_set_data(base_epoch + Epoch(2)),
+                // next val_set might not be ready
+                val_set_data(base_epoch + Epoch(1)),
             )
             .collect(),
         }
@@ -1344,6 +1340,7 @@ mod test {
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
         Header, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
     };
+    use alloy_primitives::U256;
     use itertools::Itertools;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
@@ -4093,13 +4090,13 @@ mod test {
         let epoch_2_leader = NodeId::new(get_key::<SignatureType>(100).pubkey());
         env.val_epoch_map.insert(
             Epoch(2),
-            vec![(epoch_2_leader, Stake(1))],
+            vec![(epoch_2_leader, Stake(U256::ONE))],
             ValidatorMapping::new(vec![(epoch_2_leader, epoch_2_leader.pubkey())]),
         );
         for node in ctx.iter_mut() {
             node.val_epoch_map.insert(
                 Epoch(2),
-                vec![(epoch_2_leader, Stake(1))],
+                vec![(epoch_2_leader, Stake(U256::ONE))],
                 ValidatorMapping::new(vec![(epoch_2_leader, epoch_2_leader.pubkey())]),
             );
         }
