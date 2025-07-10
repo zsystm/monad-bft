@@ -24,6 +24,7 @@ monad-validator = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 itertools = { workspace = true }
+rand = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

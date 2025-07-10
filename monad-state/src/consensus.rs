@@ -33,6 +33,7 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use rand::seq::SliceRandom;
 use tracing::info;
 
 use crate::{
@@ -353,10 +354,23 @@ where
                 }
                 .sign(self.keypair);
 
-                vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::Raptorcast(epoch),
-                    message: VerifiedMonadMessage::Consensus(msg),
-                })]
+                let valset = consensus.val_epoch_map.get_val_set(&epoch).unwrap();
+                let mut vals: Vec<_> = valset.get_members().keys().collect();
+                vals.shuffle(&mut rand::thread_rng());
+                vals.iter()
+                    .take(rand::random::<usize>() % vals.len() + 1)
+                    .map(|&&val| {
+                        Command::RouterCommand(RouterCommand::Publish {
+                            target: RouterTarget::PointToPoint(val),
+                            message: VerifiedMonadMessage::Consensus(msg.clone()),
+                        })
+                    })
+                    .collect()
+
+                // vec![Command::RouterCommand(RouterCommand::Publish {
+                //     target: RouterTarget::Raptorcast(epoch),
+                //     message: VerifiedMonadMessage::Consensus(msg),
+                // })]
             }
             MempoolEvent::ForwardedTxs { sender, txs } => {
                 vec![Command::TxPoolCommand(TxPoolCommand::InsertForwardedTxs {
