@@ -427,7 +427,6 @@ where
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
-            debug!(?last_round_tc, "Handled proposal with TC");
             self.metrics.consensus_events.proposal_with_tc += 1;
             let advance_round_cmds = self
                 .consensus
@@ -752,7 +751,6 @@ where
         }
 
         if let Some(last_round_tc) = timeout.last_round_tc.as_ref() {
-            info!(?last_round_tc, "advance round from remote TC");
             self.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
             let advance_round_cmds = self
                 .consensus
