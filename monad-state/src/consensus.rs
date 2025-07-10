@@ -350,7 +350,7 @@ where
 
                 let msg = ConsensusMessage {
                     version: consensus.version.to_owned(),
-                    message: ProtocolMessage::Proposal(p),
+                    message: ProtocolMessage::Proposal(p.clone()),
                 }
                 .sign(self.keypair);
 
@@ -360,9 +360,26 @@ where
                 vals.iter()
                     .take(rand::random::<usize>() % vals.len() + 1)
                     .map(|&&val| {
+                        let msg = if rand::random::<bool>() {
+                            // self
+                            let mut p = p.clone();
+                            p.tip.block_header.timestamp_ns -= 1;
+                            p.tip = ConsensusTip::new(
+                                self.keypair,
+                                p.tip.block_header,
+                                p.tip.fresh_certificate,
+                            );
+                            ConsensusMessage {
+                                version: consensus.version.to_owned(),
+                                message: ProtocolMessage::Proposal(p.clone()),
+                            }
+                            .sign(self.keypair)
+                        } else {
+                            msg.clone()
+                        };
                         Command::RouterCommand(RouterCommand::Publish {
                             target: RouterTarget::PointToPoint(val),
-                            message: VerifiedMonadMessage::Consensus(msg.clone()),
+                            message: VerifiedMonadMessage::Consensus(msg),
                         })
                     })
                     .collect()
