@@ -9,6 +9,7 @@ ExecStart=/usr/local/bin/monad-node \
     --bls-identity /home/monad/monad-bft/config/id-bls \
     --node-config /home/monad/monad-bft/config/node.toml \
     --forkpoint-config /home/monad/monad-bft/config/forkpoint/forkpoint.toml \
+    --genesis-path /home/monad/monad-bft/config/genesis.json \
     --wal-path /home/monad/monad-bft/wal \
     --mempool-ipc-path /home/monad/monad-bft/mempool.sock \
     --control-panel-ipc-path /home/monad/monad-bft/controlpanel.sock \
