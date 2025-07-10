@@ -178,6 +178,7 @@ where
         if certificate.round() <= self.high_certificate.round() {
             return Default::default();
         }
+        debug!(?certificate, "advancing round");
         match &certificate {
             RoundCertificate::Qc(_) => {
                 metrics.consensus_events.enter_new_round_qc += 1;
