@@ -390,13 +390,18 @@ where
             return Err(Error::NotWellFormed);
         };
 
-        // check that nec.tip corresponds to last_round_tc.high_tip
-        if let Some(FreshProposalCertificate::Nec(nec)) = &self.obj.tip.fresh_certificate {
-            let HighExtend::Tip(tip) = &tc.high_extend else {
-                return Err(Error::NotWellFormed);
-            };
-            if tip.block_header.get_id() != nec.msg.tip {
-                return Err(Error::NotWellFormed);
+        if self.obj.proposal_round == self.obj.tip.block_header.block_round {
+            // if it's a fresh proposal, check that nec.tip corresponds to last_round_tc.high_tip
+            //
+            // this ensures that all QCs formed in round r must have been over proposals with
+            // the same TC as the recovery_request.TC for that round r.
+            if let Some(FreshProposalCertificate::Nec(nec)) = &self.obj.tip.fresh_certificate {
+                let HighExtend::Tip(tip) = &tc.high_extend else {
+                    return Err(Error::NotWellFormed);
+                };
+                if tip.block_header.get_id() != nec.msg.tip {
+                    return Err(Error::NotWellFormed);
+                }
             }
         }
 
