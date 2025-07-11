@@ -402,6 +402,10 @@ where
                     // matches high_tip, so we don't need to check anything else
                     // this implies that the qc of p.tc.high_extend and p.tip match
                 } else {
+                    if self.obj.proposal_round != self.obj.tip.block_header.block_round {
+                        // must be a fresh proposal if doesn't match high_tip
+                        return Err(Error::NotWellFormed);
+                    }
                     if tc_tip.block_header.qc.get_round()
                         != self.obj.tip.block_header.qc.get_round()
                     {
