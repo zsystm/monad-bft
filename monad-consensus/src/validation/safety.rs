@@ -34,7 +34,7 @@ where
     high_certificate_qc_round: Round,
 
     highest_vote: Round,
-    highest_no_endorse: Round,
+    highest_no_endorse: HighNoEndorse,
     highest_propose: Round,
     highest_recovery_request: Round,
 
@@ -56,7 +56,10 @@ where
             maybe_high_tip: None,
             high_certificate_qc_round: GENESIS_ROUND,
             highest_vote: GENESIS_ROUND,
-            highest_no_endorse: GENESIS_ROUND,
+            highest_no_endorse: HighNoEndorse {
+                round: GENESIS_ROUND,
+                tip: GENESIS_BLOCK_ID,
+            },
             highest_propose: GENESIS_ROUND,
             highest_recovery_request: GENESIS_ROUND,
 
@@ -80,8 +83,12 @@ where
             maybe_high_tip,
             high_certificate_qc_round: high_certificate.qc().get_round(),
 
+            // we never vote/ne/propose the current round
             highest_vote: current_round,
-            highest_no_endorse: current_round,
+            highest_no_endorse: HighNoEndorse {
+                round: current_round,
+                tip: GENESIS_BLOCK_ID,
+            },
             highest_propose: current_round,
             highest_recovery_request: current_round,
 
@@ -107,12 +114,24 @@ where
         }
     }
 
-    pub fn is_safe_to_vote(&self, round: Round) -> bool {
+    pub fn is_safe_to_vote(&self, round: Round, tip: &ConsensusTip<ST, SCT, EPT>) -> bool {
+        let is_reproposal = round != tip.block_header.block_round;
+        if is_reproposal
+            && round == self.highest_no_endorse.round
+            && tip.block_header.get_id() != self.highest_no_endorse.tip
+        {
+            // once a round is  NE'd, we must only vote on reproposals that match
+            // the tip we NE'd
+            //
+            // otherwise, a QC and NEC can be formed in the same round between
+            // conflicting tips
+            return false;
+        }
         round > self.highest_vote
     }
 
     pub fn vote(&mut self, round: Round, tip: ConsensusTip<ST, SCT, EPT>) {
-        assert!(self.is_safe_to_vote(round));
+        assert!(self.is_safe_to_vote(round, &tip));
         self.highest_vote = round;
         if tip.block_header.block_round > self.high_certificate_qc_round {
             // we should only update high_tip if the tip we're voting on
@@ -126,12 +145,12 @@ where
     }
 
     pub fn is_safe_to_no_endorse(&self, round: Round) -> bool {
-        round > self.highest_no_endorse.max(self.highest_vote)
+        round > self.highest_no_endorse.round.max(self.highest_vote)
     }
 
-    pub fn no_endorse(&mut self, round: Round) {
+    pub fn no_endorse(&mut self, round: Round, tip: BlockId) {
         assert!(self.is_safe_to_no_endorse(round));
-        self.highest_no_endorse = round;
+        self.highest_no_endorse = HighNoEndorse { round, tip }
     }
 
     pub fn timeout(&mut self, round: Round) {
@@ -168,4 +187,10 @@ where
             self.handled_proposals.pop_first();
         }
     }
+}
+
+#[derive(PartialEq, Eq, Debug)]
+struct HighNoEndorse {
+    round: Round,
+    tip: BlockId,
 }

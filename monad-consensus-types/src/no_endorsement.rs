@@ -1,6 +1,6 @@
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_crypto::certificate_signature::CertificateSignature;
-use monad_types::{BlockId, Epoch, Round};
+use monad_types::{Epoch, Round};
 
 use crate::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -15,7 +15,6 @@ pub struct NoEndorsement {
     /// The round this message was generated
     pub round: Round,
 
-    pub tip: BlockId,
     pub tip_qc_round: Round,
 }
 
