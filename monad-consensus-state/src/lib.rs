@@ -27,7 +27,7 @@ use monad_consensus_types::{
     payload::{ConsensusBlockBody, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighExtend, HighExtendVote, NoTipCertificate},
+    timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate},
     tip::ConsensusTip,
     voting::Vote,
     RoundCertificate,
@@ -496,7 +496,8 @@ where
         };
 
         // at this point, block is valid and can be added to the blocktree
-        let res_cmds = self.try_add_and_commit_blocktree(block, Some((p.proposal_round, p.tip)));
+        let res_cmds = self
+            .try_add_and_commit_blocktree(block, Some((p.proposal_round, p.last_round_tc, p.tip)));
         cmds.extend(res_cmds);
 
         // out-of-order proposals are possible if some round R+1 proposal arrives
@@ -1264,7 +1265,11 @@ where
     fn try_add_and_commit_blocktree(
         &mut self,
         block: BPT::ValidatedBlock,
-        try_vote: Option<(Round, ConsensusTip<ST, SCT, EPT>)>,
+        try_vote: Option<(
+            Round,
+            Option<TimeoutCertificate<ST, SCT, EPT>>,
+            ConsensusTip<ST, SCT, EPT>,
+        )>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         trace!(?block, "adding block to blocktree");
         let mut cmds = Vec::new();
@@ -1272,12 +1277,12 @@ where
 
         cmds.extend(self.try_update_coherency(block.get_id()));
 
-        if try_vote.as_ref().is_some_and(|(proposal_round, _)| {
+        if try_vote.as_ref().is_some_and(|(proposal_round, _, _)| {
             *proposal_round == self.consensus.pacemaker.get_current_round()
         }) {
-            let (_proposal_round, tip) = try_vote.expect("try_vote exists");
+            let (_proposal_round, last_round_tc, tip) = try_vote.expect("try_vote exists");
             assert_eq!(tip.block_header.get_id(), block.get_id());
-            cmds.extend(self.try_vote(tip));
+            cmds.extend(self.try_vote(last_round_tc, tip));
         }
         cmds.extend(self.try_propose());
 
@@ -1340,6 +1345,7 @@ where
     #[must_use]
     fn try_vote(
         &mut self,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
         tip: ConsensusTip<ST, SCT, EPT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
@@ -1400,12 +1406,23 @@ where
 
         debug!(?proposal_round, block_id = ?tip.block_header.get_id(), "try vote");
 
-        if !self.consensus.safety.is_safe_to_vote(proposal_round, &tip) {
+        let last_round_tc_tip = last_round_tc.and_then(|tc| match tc.high_extend {
+            HighExtend::Qc(_) => None,
+            HighExtend::Tip(tc_tip) => Some(tc_tip.block_header.get_id()),
+        });
+
+        if !self
+            .consensus
+            .safety
+            .is_safe_to_vote(proposal_round, last_round_tc_tip)
+        {
             // we've already voted or timed out this round
-            // or, we've already NE'd a conflicting reprooposal
+            // or, we've already NE'd a different TC
             return cmds;
         }
-        self.consensus.safety.vote(proposal_round, tip.clone());
+        self.consensus
+            .safety
+            .vote(proposal_round, last_round_tc_tip, tip.clone());
 
         let v = Vote {
             id: tip.block_header.get_id(),
