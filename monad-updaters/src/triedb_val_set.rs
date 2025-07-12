@@ -1,14 +1,15 @@
 use std::{
     marker::PhantomData,
     ops::DerefMut,
-    path::{Path, PathBuf},
     pin::Pin,
-    task::{Context, Poll, Waker},
+    sync::mpsc::Sender,
+    task::{Context, Poll},
+    time::Duration,
 };
 
 use futures::Stream;
 use monad_bls::BlsSignatureCollection;
-use monad_consensus_types::validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig};
+use monad_consensus_types::validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -17,50 +18,60 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, ValSetCommand};
 use monad_secp::{PubKey, SecpSignature};
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, SeqNum};
-use monad_validator::signature_collection::SignatureCollection;
-use tracing::error;
+use monad_types::{SeqNum, Stake};
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
+use tokio::sync::mpsc::UnboundedReceiver;
+use tracing::info;
 
 /// Updater that gets validator set updates from triedb
 pub struct ValSetUpdater<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    SBT: StateBackend<ST, SCT> + Send + 'static,
 {
-    validators_path: PathBuf,
-
-    next_val_data: Option<ValidatorSetDataWithEpoch<SCT>>,
+    seq_num_send: Sender<SeqNum>,
+    next_valset_recv: UnboundedReceiver<(
+        Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)>,
+        SeqNum,
+    )>,
     last_emitted_val_data: Option<SeqNum>,
     val_set_update_interval: SeqNum,
 
-    state_backend: SBT,
-
-    waker: Option<Waker>,
-
     metrics: ExecutorMetrics,
-    phantom: PhantomData<(ST, SCT)>,
+    phantom: PhantomData<(ST, SBT)>,
 }
 
 impl<SBT> ValSetUpdater<SecpSignature, BlsSignatureCollection<PubKey>, SBT>
 where
-    SBT: StateBackend<SecpSignature, BlsSignatureCollection<PubKey>>,
+    SBT: StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> + Send + 'static,
 {
-    pub fn new(
-        val_set_update_interval: SeqNum,
-        state_backend: SBT,
-        validators_path: &Path,
-    ) -> Self {
-        Self {
-            validators_path: validators_path.to_owned(),
+    pub fn new(val_set_update_interval: SeqNum, state_backend: SBT) -> Self {
+        let (next_valset_send, next_valset_recv) = tokio::sync::mpsc::unbounded_channel();
 
-            next_val_data: None,
+        let (seq_num_send, seq_num_recv) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || loop {
+            let seq_num_to_read = seq_num_recv.recv().expect("channel never closed");
+            while state_backend
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_verified| latest_verified < seq_num_to_read)
+            {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+
+            let next_valset = state_backend.read_next_valset(seq_num_to_read);
+
+            next_valset_send
+                .send((next_valset, seq_num_to_read))
+                .expect("channel never closed");
+        });
+        Self {
+            seq_num_send,
+            next_valset_recv,
             last_emitted_val_data: None,
             val_set_update_interval,
 
-            state_backend,
-
-            waker: None,
             metrics: Default::default(),
             phantom: PhantomData,
         }
@@ -72,24 +83,41 @@ where
     Self: Unpin,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    SBT: StateBackend<ST, SCT> + Send + 'static,
 {
     type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        if this.waker.is_none() {
-            this.waker = Some(cx.waker().clone());
-        }
+        match this.next_valset_recv.poll_recv(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(maybe_next_valset) => {
+                let (validator_set, boundary_block) =
+                    maybe_next_valset.expect("channel never closed");
 
-        if let Some(next_val_data) = this.next_val_data.take() {
-            return Poll::Ready(Some(MonadEvent::ValidatorEvent(
-                monad_executor_glue::ValidatorEvent::UpdateValidators(next_val_data),
-            )));
-        }
+                // validator set data expects (SecpKey, Stake, BlsKey) instead of (SecpKey, BlsKey, Stake)
+                let validators = validator_set
+                    .into_iter()
+                    .map(|(secp_key, bls_key, stake)| (secp_key, stake, bls_key))
+                    .collect();
+                let validator_set_data: ValidatorSetData<SCT> = ValidatorSetData::new(validators);
+                let validator_set_data_with_epoch = ValidatorSetDataWithEpoch {
+                    epoch: boundary_block.to_epoch(this.val_set_update_interval),
+                    validators: validator_set_data,
+                };
+                info!(
+                    ?validator_set_data_with_epoch,
+                    "read validator set from triedb"
+                );
 
-        Poll::Pending
+                Poll::Ready(Some(MonadEvent::ValidatorEvent(
+                    monad_executor_glue::ValidatorEvent::UpdateValidators(
+                        validator_set_data_with_epoch,
+                    ),
+                )))
+            }
+        }
     }
 }
 
@@ -97,78 +125,22 @@ impl<ST, SCT, SBT> Executor for ValSetUpdater<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    SBT: StateBackend<ST, SCT> + Send + 'static,
 {
     type Command = ValSetCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        let mut wake = false;
-
         for command in commands {
             match command {
                 ValSetCommand::NotifyFinalized(seq_num) => {
                     if seq_num.is_epoch_end(self.val_set_update_interval)
                         && self.last_emitted_val_data != Some(seq_num)
                     {
-                        if self.next_val_data.is_some() {
-                            error!("Validator set data is not consumed");
-                        }
-                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                        assert_eq!(
-                            locked_epoch,
-                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
-                        );
-                        self.next_val_data = Some(ValidatorSetDataWithEpoch {
-                            epoch: locked_epoch,
-                            validators: ValidatorsConfig::read_from_path(&self.validators_path)
-                                // I'm hesitant to provide any fallback for this, because
-                                // having the wrong validator set can be catastrophic.
-                                //
-                                // This file should never be manually edited anyways.
-                                .expect("failed to read validators_path")
-                                .get_validator_set(&locked_epoch)
-                                .clone(),
-                        });
-                        self.last_emitted_val_data = Some(seq_num);
-
-                        wake = true;
+                        self.seq_num_send
+                            .send(seq_num)
+                            .expect("channel never closed");
                     }
-
-                    // if seq_num > SeqNum(0)
-                    //     && (seq_num - SeqNum(1)).is_epoch_end(val_set_update_interval)
-                    //     && self.last_emitted_val_data != Some(seq_num)
-                    // {
-                    //     if self.next_val_data.is_some() {
-                    //         error!("Validator set data is not consumed");
-                    //     }
-                    //     let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                    //     assert_eq!(
-                    //         locked_epoch,
-                    //         seq_num.to_epoch(self.val_set_update_interval) + Epoch(1)
-                    //     );
-                    //     let validators = self
-                    //         .state_backend
-                    //         .read_next_valset(seq_num)
-                    //         .into_iter()
-                    //         .map(|(secp_key, bls_key, stake)| (secp_key, stake, bls_key))
-                    //         .collect();
-                    //     let validator_set_data: ValidatorSetData<SCT> = ValidatorSetData::new(validators);
-                    //     info!(?validator_set_data, "read validator set from triedb");
-                    //     self.next_val_data = Some(ValidatorSetDataWithEpoch {
-                    //         epoch: locked_epoch,
-                    //         validators: validator_set_data,
-                    //     });
-                    //     self.last_emitted_val_data = Some(seq_num);
-
-                    //     wake = true
-                    // }
                 }
-            }
-        }
-
-        if wake {
-            if let Some(waker) = self.waker.take() {
-                waker.wake()
             }
         }
     }

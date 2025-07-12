@@ -257,11 +257,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(node_state.ledger_path),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
-        val_set: ValSetUpdater::new(
-            val_set_update_interval,
-            state_backend.clone(),
-            &node_state.validators_path,
-        ),
+        val_set: ValSetUpdater::new(val_set_update_interval, state_backend.clone()),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
             create_block_policy(),

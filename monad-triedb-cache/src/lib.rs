@@ -213,6 +213,10 @@ where
         self.state_backend.raw_read_latest_finalized_block()
     }
 
+    fn raw_read_latest_verified_block(&self) -> Option<SeqNum> {
+        self.state_backend.raw_read_latest_verified_block()
+    }
+
     fn read_next_valset(
         &self,
         block_num: SeqNum,
