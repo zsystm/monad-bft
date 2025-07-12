@@ -900,8 +900,14 @@ where
             return cmds;
         }
 
-        if self.consensus.safety.is_safe_to_no_endorse(round) {
-            self.consensus.safety.no_endorse(round);
+        if self
+            .consensus
+            .safety
+            .is_safe_to_no_endorse(round_recovery.round)
+        {
+            self.consensus
+                .safety
+                .no_endorse(round_recovery.round, tip.block_header.get_id());
 
             debug!(?author, ?round_recovery, "no endorsing");
             cmds.push(ConsensusCommand::Publish {
@@ -911,7 +917,6 @@ where
                         NoEndorsement {
                             epoch,
                             round,
-                            tip: tip.block_header.get_id(),
                             tip_qc_round: tip.block_header.qc.get_round(),
                         },
                         self.cert_keypair,
@@ -1395,8 +1400,9 @@ where
 
         debug!(?proposal_round, block_id = ?tip.block_header.get_id(), "try vote");
 
-        if !self.consensus.safety.is_safe_to_vote(proposal_round) {
+        if !self.consensus.safety.is_safe_to_vote(proposal_round, &tip) {
             // we've already voted or timed out this round
+            // or, we've already NE'd a conflicting reprooposal
             return cmds;
         }
         self.consensus.safety.vote(proposal_round, tip.clone());

@@ -412,20 +412,6 @@ where
                         // qc of p.tc.high_extend and p.tip must match
                         return Err(Error::NotWellFormed);
                     }
-                    if let Some(FreshProposalCertificate::Nec(nec)) =
-                        &self.obj.tip.fresh_certificate
-                    {
-                        // the fresh proposal's NEC (if exists) must have been formed over
-                        // tc.high_tip
-                        //
-                        // this ensures that all QCs formed in round r must have been over proposals
-                        // with the same TC as the recovery_request.TC for that round r
-                        //
-                        // this is necessary for safety
-                        if tc_tip.block_header.get_id() != nec.msg.tip {
-                            return Err(Error::NotWellFormed);
-                        }
-                    };
                 }
             }
         }

@@ -7,7 +7,7 @@ use monad_consensus_types::{
     },
     voting::ValidatorMapping,
 };
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, error, info, warn};
 
@@ -21,8 +21,8 @@ pub struct NoEndorsementState<SCT: SignatureCollection> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct RoundNoEndorsementState<SCT: SignatureCollection> {
-    pending_no_endorsements:
-        HashMap<BlockId, BTreeMap<NodeId<SCT::NodeIdPubKey>, SCT::SignatureType>>,
+    qc_round_no_endorsements:
+        HashMap<Round, BTreeMap<NodeId<SCT::NodeIdPubKey>, SCT::SignatureType>>,
     node_no_endorsements: HashMap<NodeId<SCT::NodeIdPubKey>, HashSet<SCT::SignatureType>>,
     certificate: Option<NoEndorsementCertificate<SCT>>,
 }
@@ -30,7 +30,7 @@ struct RoundNoEndorsementState<SCT: SignatureCollection> {
 impl<SCT: SignatureCollection> Default for RoundNoEndorsementState<SCT> {
     fn default() -> Self {
         Self {
-            pending_no_endorsements: HashMap::new(),
+            qc_round_no_endorsements: HashMap::new(),
             node_no_endorsements: HashMap::new(),
             certificate: None,
         }
@@ -94,8 +94,8 @@ where
 
         // pending no-endorsements for a given round + tip
         let round_pending_no_endorsements = round_state
-            .pending_no_endorsements
-            .entry(no_endorsement.tip)
+            .qc_round_no_endorsements
+            .entry(no_endorsement.tip_qc_round)
             .or_default();
         round_pending_no_endorsements.insert(*author, no_endorsement_msg.signature);
 
