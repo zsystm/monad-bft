@@ -1474,17 +1474,21 @@ where
             return cmds;
         }
 
-        let (high_extend, fresh_proposal_certificate) =
+        let (high_extend, fresh_proposal_certificate, last_round_tc) =
             match self.consensus.pacemaker.high_certificate() {
                 RoundCertificate::Tc(tc) => {
+                    let last_round_tc = Some(tc.clone());
                     if let Some(nec) = self.consensus.no_endorsement_state.get_nec(&round) {
                         (
                             HighExtend::Qc(tc.high_extend.qc().clone()),
                             Some(FreshProposalCertificate::Nec(nec.clone())),
+                            last_round_tc,
                         )
                     } else {
                         match &tc.high_extend {
-                            HighExtend::Tip(tip) => (HighExtend::Tip(tip.clone()), None),
+                            HighExtend::Tip(tip) => {
+                                (HighExtend::Tip(tip.clone()), None, last_round_tc)
+                            }
                             HighExtend::Qc(qc) => (
                                 HighExtend::Qc(qc.clone()),
                                 Some(FreshProposalCertificate::NoTip(NoTipCertificate {
@@ -1493,11 +1497,12 @@ where
                                     tip_rounds: tc.tip_rounds.clone(),
                                     high_qc: qc.clone(),
                                 })),
+                                last_round_tc,
                             ),
                         }
                     }
                 }
-                RoundCertificate::Qc(qc) => (HighExtend::Qc(qc.clone()), None),
+                RoundCertificate::Qc(qc) => (HighExtend::Qc(qc.clone()), None, None),
             };
 
         match high_extend {
@@ -1522,11 +1527,7 @@ where
                         root =? self.consensus.pending_block_tree.root(),
                         "tip.block_id not coherent, not reproposing"
                     );
-                    let tc = self
-                        .consensus
-                        .pacemaker
-                        .last_round_tc()
-                        .expect("high_extend is tip, tc must exist");
+                    let tc = last_round_tc.expect("high_extend is tip, tc must exist");
                     cmds.push(ConsensusCommand::Publish {
                         target: RouterTarget::Broadcast(
                             self.consensus.pacemaker.get_current_epoch(),
@@ -1536,7 +1537,7 @@ where
                             message: ProtocolMessage::RoundRecovery(RoundRecoveryMessage {
                                 round: self.consensus.pacemaker.get_current_round(),
                                 epoch: self.consensus.pacemaker.get_current_epoch(),
-                                tc: tc.clone(),
+                                tc,
                             }),
                         }
                         .sign(self.keypair),
@@ -1570,7 +1571,7 @@ where
                             proposal_epoch: self.consensus.pacemaker.get_current_epoch(),
                             tip,
                             block_body: block.body().clone(),
-                            last_round_tc: self.consensus.pacemaker.last_round_tc().cloned(),
+                            last_round_tc,
                         }),
                     }
                     .sign(self.keypair),
@@ -1657,7 +1658,7 @@ where
                     seq_num: try_propose_seq_num,
                     high_qc: qc,
                     round_signature,
-                    last_round_tc: self.consensus.pacemaker.last_round_tc().cloned(),
+                    last_round_tc,
                     fresh_proposal_certificate,
 
                     tx_limit: self

@@ -140,13 +140,6 @@ where
         self.current_epoch
     }
 
-    pub fn last_round_tc(&self) -> Option<&TimeoutCertificate<ST, SCT, EPT>> {
-        match &self.high_certificate {
-            RoundCertificate::Qc(_) => None,
-            RoundCertificate::Tc(tc) => Some(tc),
-        }
-    }
-
     pub fn high_certificate(&self) -> &RoundCertificate<ST, SCT, EPT> {
         &self.high_certificate
     }
@@ -216,25 +209,41 @@ where
         let current_round = self.get_current_round();
         safety.timeout(current_round);
 
-        let high_qc = self.high_certificate.qc();
-        let timeout = TimeoutInfo {
-            epoch: self.get_current_epoch(),
-            round: current_round,
-            high_tip_round: safety
-                .maybe_high_tip()
-                .map_or(GENESIS_ROUND, |tip| tip.block_header.block_round),
-            high_qc_round: high_qc.get_round(),
-        };
-
         let high_extend = safety
             .maybe_high_tip()
-            .map_or(HighExtend::Qc(high_qc.clone()), |tip| {
+            .map_or(HighExtend::Qc(self.high_certificate.qc().clone()), |tip| {
                 HighExtend::Tip(tip.clone())
             });
 
+        let (high_tip_round, high_qc_round) = match &high_extend {
+            HighExtend::Tip(tip) => (
+                tip.block_header.block_round,
+                tip.block_header.qc.get_round(),
+            ),
+            HighExtend::Qc(qc) => (GENESIS_ROUND, qc.get_round()),
+        };
+
+        let timeout = TimeoutInfo {
+            epoch: self.get_current_epoch(),
+            round: current_round,
+            high_tip_round,
+            high_qc_round,
+        };
+
+        let last_round_tc = if high_qc_round + Round(1) == current_round {
+            None
+        } else {
+            match &self.high_certificate {
+                RoundCertificate::Qc(_) => {
+                    unreachable!("if high_qc was not from last round, tc must exist")
+                }
+                RoundCertificate::Tc(tc) => Some(tc),
+            }
+        };
+
         vec![
             PacemakerCommand::ScheduleReset,
-            PacemakerCommand::PrepareTimeout(timeout, high_extend, self.last_round_tc().cloned()),
+            PacemakerCommand::PrepareTimeout(timeout, high_extend, last_round_tc.cloned()),
             PacemakerCommand::Schedule {
                 duration: self.get_round_timer(current_round),
             },
@@ -806,7 +815,9 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
         let timeout_hash = alloy_rlp::encode(td);
-        let tc = pacemaker.last_round_tc().unwrap();
+        let RoundCertificate::Tc(tc) = &pacemaker.high_certificate else {
+            panic!("high_certificate should be a TC")
+        };
         assert_eq!(tc.tip_rounds.len(), 1);
         let sc = tc.tip_rounds.first().unwrap().sigs.clone();
         assert_eq!(

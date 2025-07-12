@@ -380,9 +380,9 @@ where
 
         if self.obj.proposal_round == self.obj.tip.block_header.qc.get_round() + Round(1) {
             // Consecutive QC
-
-            // last_round_tc is unnecessary if the QC is consecutive
-            // regardless, we allow for it to exist
+            if self.obj.last_round_tc.is_some() {
+                return Err(Error::NotWellFormed);
+            }
             return Ok(());
         }
         // last_round_tc must exist
@@ -534,9 +534,9 @@ where
     fn well_formed_timeout(&self) -> Result<(), Error> {
         if self.obj.tminfo.round == self.obj.high_extend.qc().get_round() + Round(1) {
             // Consecutive QC
-
-            // last_round_tc is unnecessary if the QC is consecutive
-            // regardless, we allow for it to exist
+            if self.obj.last_round_tc.is_some() {
+                return Err(Error::NotWellFormed);
+            }
             return Ok(());
         }
         // last_round_tc must exist
