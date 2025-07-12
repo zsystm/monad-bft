@@ -114,14 +114,11 @@ where
         }
     }
 
-    pub fn is_safe_to_vote(&self, round: Round, tip: &ConsensusTip<ST, SCT, EPT>) -> bool {
-        let is_reproposal = round != tip.block_header.block_round;
-        if is_reproposal
-            && round == self.highest_no_endorse.round
-            && tip.block_header.get_id() != self.highest_no_endorse.tip
+    pub fn is_safe_to_vote(&self, round: Round, last_round_tc_tip: Option<BlockId>) -> bool {
+        if round == self.highest_no_endorse.round
+            && last_round_tc_tip != Some(self.highest_no_endorse.tip)
         {
-            // once a round is  NE'd, we must only vote on reproposals that match
-            // the tip we NE'd
+            // once a TC is NE'd, we must only vote on proposals including that TC
             //
             // otherwise, a QC and NEC can be formed in the same round between
             // conflicting tips
@@ -130,8 +127,13 @@ where
         round > self.highest_vote
     }
 
-    pub fn vote(&mut self, round: Round, tip: ConsensusTip<ST, SCT, EPT>) {
-        assert!(self.is_safe_to_vote(round, &tip));
+    pub fn vote(
+        &mut self,
+        round: Round,
+        last_round_tc_tip: Option<BlockId>,
+        tip: ConsensusTip<ST, SCT, EPT>,
+    ) {
+        assert!(self.is_safe_to_vote(round, last_round_tc_tip));
         self.highest_vote = round;
         if tip.block_header.block_round > self.high_certificate_qc_round {
             // we should only update high_tip if the tip we're voting on
