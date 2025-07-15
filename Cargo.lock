@@ -5000,8 +5000,10 @@ name = "monad-exec-events"
 version = "0.1.0"
 dependencies = [
  "bindgen 0.71.1",
+ "cc",
  "criterion",
  "monad-event-ring",
+ "strum",
 ]
 
 [[package]]

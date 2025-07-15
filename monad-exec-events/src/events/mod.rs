@@ -8,9 +8,9 @@ use crate::ffi::{
     self, g_monad_exec_event_metadata_hash, monad_exec_account_access,
     monad_exec_account_access_list_header, monad_exec_block_end, monad_exec_block_finalized,
     monad_exec_block_qc, monad_exec_block_reject, monad_exec_block_start,
-    monad_exec_block_verified, monad_exec_evm_error, monad_exec_storage_access,
-    monad_exec_txn_call_frame, monad_exec_txn_evm_output, monad_exec_txn_log,
-    monad_exec_txn_reject, monad_exec_txn_start,
+    monad_exec_block_verified, monad_exec_event_type, monad_exec_evm_error,
+    monad_exec_storage_access, monad_exec_txn_call_frame, monad_exec_txn_evm_output,
+    monad_exec_txn_log, monad_exec_txn_reject, monad_exec_txn_start,
 };
 
 mod bytes;
@@ -25,8 +25,9 @@ pub struct ExecEventDecoder;
 /// event ring payloads.
 ///
 /// See [`ExecEventsRef`] for the zero-copy ref version.
+#[derive(Clone, Debug, strum::EnumDiscriminants)]
 #[allow(missing_docs)]
-#[derive(Clone, Debug)]
+#[strum_discriminants(name(ExecEventType), allow(missing_docs))]
 pub enum ExecEvent {
     BlockStart(monad_exec_block_start),
     BlockReject(monad_exec_block_reject),
@@ -119,6 +120,43 @@ pub enum ExecEventRef<'ring> {
     AccountAccess(&'ring monad_exec_account_access),
     StorageAccess(&'ring monad_exec_storage_access),
     EvmError(&'ring monad_exec_evm_error),
+}
+
+impl ExecEventType {
+    pub(crate) fn as_event_type(self) -> monad_exec_event_type {
+        match self {
+            ExecEventType::BlockStart => ffi::monad_exec_event_type_MONAD_EXEC_BLOCK_START,
+            ExecEventType::BlockReject => ffi::monad_exec_event_type_MONAD_EXEC_BLOCK_REJECT,
+            ExecEventType::BlockPerfEvmEnter => {
+                ffi::monad_exec_event_type_MONAD_EXEC_BLOCK_PERF_EVM_ENTER
+            }
+            ExecEventType::BlockPerfEvmExit => {
+                ffi::monad_exec_event_type_MONAD_EXEC_BLOCK_PERF_EVM_EXIT
+            }
+            ExecEventType::BlockEnd => ffi::monad_exec_event_type_MONAD_EXEC_BLOCK_END,
+            ExecEventType::BlockQC => ffi::monad_exec_event_type_MONAD_EXEC_BLOCK_QC,
+            ExecEventType::BlockFinalized => ffi::monad_exec_event_type_MONAD_EXEC_BLOCK_FINALIZED,
+            ExecEventType::BlockVerified => ffi::monad_exec_event_type_MONAD_EXEC_BLOCK_VERIFIED,
+            ExecEventType::TxnStart => ffi::monad_exec_event_type_MONAD_EXEC_TXN_START,
+            ExecEventType::TxnReject => ffi::monad_exec_event_type_MONAD_EXEC_TXN_REJECT,
+            ExecEventType::TxnPerfEvmEnter => {
+                ffi::monad_exec_event_type_MONAD_EXEC_TXN_PERF_EVM_ENTER
+            }
+            ExecEventType::TxnPerfEvmExit => {
+                ffi::monad_exec_event_type_MONAD_EXEC_TXN_PERF_EVM_EXIT
+            }
+            ExecEventType::TxnEvmOutput => ffi::monad_exec_event_type_MONAD_EXEC_TXN_EVM_OUTPUT,
+            ExecEventType::TxnLog => ffi::monad_exec_event_type_MONAD_EXEC_TXN_LOG,
+            ExecEventType::TxnCallFrame => ffi::monad_exec_event_type_MONAD_EXEC_TXN_CALL_FRAME,
+            ExecEventType::TxnEnd => ffi::monad_exec_event_type_MONAD_EXEC_TXN_END,
+            ExecEventType::AccountAccessListHeader => {
+                ffi::monad_exec_event_type_MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER
+            }
+            ExecEventType::AccountAccess => ffi::monad_exec_event_type_MONAD_EXEC_ACCOUNT_ACCESS,
+            ExecEventType::StorageAccess => ffi::monad_exec_event_type_MONAD_EXEC_STORAGE_ACCESS,
+            ExecEventType::EvmError => ffi::monad_exec_event_type_MONAD_EXEC_EVM_ERROR,
+        }
+    }
 }
 
 impl<'ring> ExecEventRef<'ring> {

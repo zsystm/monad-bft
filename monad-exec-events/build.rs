@@ -11,6 +11,7 @@ const INCLUDES: &[(&str, &[&str])] = &[
             "monad/core/base_ctypes.h",
             "monad/core/eth_ctypes.h",
             "monad/core/event/exec_event_ctypes.h",
+            "monad/core/event/exec_iter_help.h",
         ],
     ),
     (
@@ -18,6 +19,8 @@ const INCLUDES: &[(&str, &[&str])] = &[
         &["intx/intx.hpp"],
     ),
 ];
+
+const STATIC_FNS_PATH: &str = "monad_exec_events__wrap_static_fns";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -29,6 +32,8 @@ fn main() {
         .header("wrapper.h")
         .clang_args(["-x", "c", "-std=c23"])
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .wrap_static_fns(true)
+        .wrap_static_fns_path(out_dir.join(STATIC_FNS_PATH))
         .derive_copy(true)
         .derive_debug(true)
         .derive_hash(true)
@@ -55,4 +60,16 @@ fn main() {
         .replace(r#"#[doc = " "#, r#"#[doc = ""#);
 
     std::fs::write(out_dir.join("bindings.rs"), &bindings_str).expect("Couldn't write bindings!");
+
+    cc::Build::new()
+        .std("c2x")
+        .file(out_dir.join(format!("{STATIC_FNS_PATH}.c")))
+        .includes(
+            std::iter::once(PathBuf::from(env!("CARGO_MANIFEST_DIR"))).chain(
+                INCLUDES
+                    .iter()
+                    .map(|(include_path, _)| PathBuf::from(include_path)),
+            ),
+        )
+        .compile(STATIC_FNS_PATH);
 }
