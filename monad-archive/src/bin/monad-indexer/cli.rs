@@ -49,6 +49,10 @@ pub struct Cli {
 
     #[arg(long, default_value_t = false)]
     pub skip_connectivity_check: bool,
+
+    /// Enable eth_getLogs indexing (disabled by default)
+    #[arg(long, default_value_t = false)]
+    pub enable_logs_indexing: bool,
 }
 
 #[derive(Debug, Subcommand)]
