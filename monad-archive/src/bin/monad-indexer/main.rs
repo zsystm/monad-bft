@@ -1,5 +1,4 @@
 use clap::Parser;
-use eyre::OptionExt;
 use monad_archive::{
     cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,
     workers::index_worker::index_worker,
@@ -42,16 +41,20 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
 
     let log_index_archiver = match &tx_index_archiver.index_store {
         KVStoreErased::MongoDbStorage(_storage) => {
-            info!("Building log index archiver...");
-            Some(
-                LogsIndexArchiver::from_tx_index_archiver(&tx_index_archiver, 50, false)
-                    .await
-                    .wrap_err("Failed to create log index reader")?,
-            )
+            if args.enable_logs_indexing {
+                info!("Building log index archiver...");
+                Some(
+                    LogsIndexArchiver::from_tx_index_archiver(&tx_index_archiver, 50, false)
+                        .await
+                        .wrap_err("Failed to create log index reader")?,
+                )
+            } else {
+                info!("eth_getLogs indexing is disabled");
+                None
+            }
         }
         _ => None,
     };
-    info!("Log index archiver: {:?}", log_index_archiver.is_some());
 
     // for testing
     if args.reset_index {
