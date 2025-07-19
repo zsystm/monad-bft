@@ -1,9 +1,19 @@
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeSet, HashMap},
+    hash::{Hash, Hasher},
+};
 
+use alloy_primitives::{map::DefaultHasher, Address, Bytes, U8};
+use alloy_rlp::{Decodable, Encodable};
 use eyre::Result;
+use futures::future::ready;
 use monad_archive::prelude::*;
 
-use crate::{checker::fetch_block_data, model::CheckerModel, CHUNK_SIZE};
+use crate::{
+    checker::fetch_block_data,
+    model::{CheckerModel, Fault},
+    CHUNK_SIZE,
+};
 
 /// Displays status summary of the checker model
 pub async fn status(model: &CheckerModel) -> Result<()> {
@@ -75,20 +85,72 @@ pub async fn status(model: &CheckerModel) -> Result<()> {
 }
 
 /// Lists all fault ranges across replicas, collapsed to start-end ranges
-pub async fn list_fault_ranges(model: &CheckerModel) -> Result<()> {
+pub async fn list_fault_ranges(
+    model: &CheckerModel,
+    summary: bool,
+    start: Option<u64>,
+    end: Option<u64>,
+    target_replica: Option<String>,
+) -> Result<()> {
     println!("Fault Summary by Replica:");
     println!("========================");
 
-    for replica in model.block_data_readers.keys() {
-        let latest_checked = model.get_latest_checked_for_replica(replica).await?;
-        let mut all_faults = Vec::new();
+    let chunk_starts = if let Some(target_replica) = &target_replica {
+        model
+            .find_chunk_starts_with_faults_by_replica(target_replica, start, end)
+            .await?
+    } else {
+        model.find_chunk_starts_with_faults().await?
+    };
 
-        // Collect all faults for this replica
-        for idx in 0..=(latest_checked / CHUNK_SIZE) {
-            let chunk_start = idx * CHUNK_SIZE;
-            let faults = model.get_faults_chunk(replica, chunk_start).await?;
-            all_faults.extend(faults);
-        }
+    let mut all_faults_by_replica =
+        futures::stream::iter(chunk_starts.into_iter().filter(|chunk_start| {
+            if let Some(start) = start {
+                if chunk_start < &start {
+                    return false;
+                }
+            }
+            if let Some(end) = end {
+                if chunk_start > &end {
+                    return false;
+                }
+            }
+            true
+        }))
+        .map(|chunk_start| async move { model.get_faults_chunks_all_replicas(chunk_start).await })
+        .buffer_unordered(10)
+        .try_fold(
+            HashMap::new(),
+            |mut acc: HashMap<String, Vec<Fault>>, faults| {
+                for (replica, faults) in faults {
+                    if let Some(target_replica) = &target_replica {
+                        if &replica != target_replica {
+                            continue;
+                        }
+                    }
+                    let vec = acc.entry(replica).or_default();
+                    for fault in faults {
+                        if let Some(start) = start {
+                            if fault.block_num < start {
+                                continue;
+                            }
+                        }
+                        if let Some(end) = end {
+                            if fault.block_num > end {
+                                continue;
+                            }
+                        }
+                        vec.push(fault);
+                    }
+                }
+                futures::future::ready(Ok(acc))
+            },
+        )
+        .await
+        .wrap_err("Failed to collect faults for chunk starts")?;
+
+    for replica in model.block_data_readers.keys() {
+        let mut all_faults = all_faults_by_replica.remove(replica).unwrap_or_default();
 
         if all_faults.is_empty() {
             println!("\n{}: No faults found", replica);
@@ -106,13 +168,51 @@ pub async fn list_fault_ranges(model: &CheckerModel) -> Result<()> {
                 .or_default()
                 .push(fault.block_num);
         }
+        let mut v = faults_by_type
+            .iter()
+            .map(|(k, v)| (v.len(), k))
+            .collect::<Vec<_>>();
+        v.sort();
+        v.reverse();
+        let iter = v
+            .iter()
+            .map(|(_, typ)| (typ, faults_by_type.get(*typ).unwrap()));
 
         println!("\n{}: {} total faults", replica, all_faults.len());
 
         // Print collapsed ranges by fault type
-        for (fault_type, block_nums) in faults_by_type {
+        for (fault_type, block_nums) in iter {
             let ranges = collapse_to_ranges(&block_nums);
-            println!("  {}: {}", fault_type, format_ranges(&ranges));
+
+            let total_blocks = ranges
+                .iter()
+                .map(|(start, end)| end - start + 1)
+                .sum::<u64>();
+            if summary && ranges.len() > 10 {
+                // In summary mode, show only first 10 ranges
+
+                let chunk_starts = block_nums
+                    .iter()
+                    .map(|x| x / CHUNK_SIZE)
+                    .collect::<BTreeSet<_>>();
+
+                let chunk_idx_ranges =
+                    collapse_to_ranges(&chunk_starts.into_iter().collect::<Vec<_>>());
+
+                println!(
+                    "  {}: ({} total blocks, showing chunks idxs with faults: {})",
+                    fault_type,
+                    total_blocks,
+                    format_ranges(&chunk_idx_ranges)
+                );
+            } else {
+                println!(
+                    "  {}: ({} total blocks): {}",
+                    fault_type,
+                    total_blocks,
+                    format_ranges(&ranges)
+                );
+            }
         }
     }
 
@@ -165,7 +265,7 @@ pub async fn inspect_block(
     model: &CheckerModel,
     block_num: u64,
     format: OutputFormat,
-    print_data: bool,
+    raw: bool,
 ) -> Result<()> {
     println!("Block {} Inspection Report", block_num);
     println!("=========================");
@@ -254,33 +354,79 @@ pub async fn inspect_block(
 
         println!("{}: {}", replica, status);
 
-        if should_print && print_data {
+        if should_print {
             if let Some((block, receipts, traces)) = data_opt {
-                println!("\n  Block Header:");
-                println!("    Number: {}", block.header.number);
-                println!("    Hash: {:?}", block.header.hash_slow());
-                println!("    Parent: {:?}", block.header.parent_hash);
-                println!("    State Root: {:?}", block.header.state_root);
-                println!("    Transactions: {}", block.body.transactions.len());
-                println!("    Gas Used: {}", block.header.gas_used);
-                println!("    Timestamp: {}", block.header.timestamp);
+                if raw {
+                    println!("\n  Raw data:");
+                    println!("    Block: {:?}", &block);
+                    println!("    Receipts: {:?}", &receipts);
+                    let call_frames = decode_traces(&traces);
+                    println!("    Call Frames: {:?}", call_frames);
+                } else {
+                    println!("\n  Block Header:");
+                    println!("    Number: {}", block.header.number);
+                    println!("    Hash: {:?}", block.header.hash_slow());
+                    println!("    Parent: {:?}", block.header.parent_hash);
+                    println!("    State Root: {:?}", block.header.state_root);
+                    println!("    Transactions: {}", block.body.transactions.len());
+                    println!("    Gas Used: {}", block.header.gas_used);
+                    println!("    Timestamp: {}", block.header.timestamp);
 
-                println!("\n  Receipts: {} total", receipts.len());
-                if !receipts.is_empty() {
-                    println!(
-                        "    First receipt status: {:?}",
-                        receipts[0].receipt.status()
-                    );
-                    println!(
-                        "    Last receipt status: {:?}",
-                        receipts.last().unwrap().receipt.status()
-                    );
+                    println!("\n  Receipts: {} total", receipts.len());
+                    if !receipts.is_empty() {
+                        println!(
+                            "    First receipt status: {:?}",
+                            receipts[0].receipt.status()
+                        );
+                        println!(
+                            "    Last receipt status: {:?}",
+                            receipts.last().unwrap().receipt.status()
+                        );
+                    }
+
+                    println!("\n  Traces: {} total", traces.len());
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    traces.hash(&mut hasher);
+                    let traces_hash = hasher.finish();
+                    println!("    Traces Hash: {:?}", traces_hash);
                 }
-
-                println!("\n  Traces: {} total", traces.len());
             }
         }
     }
+
+    // if let Some(good_replica) = good_replica {
+    //     if let Some(Some((_, _, good_traces))) = block_data.get(good_replica) {
+    //         if let Ok(good_traces) = decode_traces(good_traces) {
+    //             for (replica, data_opt) in block_data {
+    //                 if replica == good_replica {
+    //                     continue;
+    //                 }
+    //                 if let Some((_, _, replica_traces)) = data_opt {
+    //                     let Ok(replica_traces) = decode_traces(replica_traces) else {
+    //                         continue;
+    //                     };
+    //                     print_diff(&good_traces, &replica_traces);
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
+    // let good_replica = good_replica.unwrap();
+    // let good_traces = &block_data.get(good_replica).unwrap().as_ref().unwrap().2;
+    // let good_traces = decode_traces(good_traces).unwrap();
+
+    // for (replica, data_opt) in block_data {
+    //     if replica == good_replica {
+    //         continue;
+    //     }
+    //     if let Some((_, _, replica_traces)) = data_opt {
+    //         let Ok(replica_traces) = decode_traces(replica_traces) else {
+    //             continue;
+    //         };
+    //         print_diff(&good_traces, &replica_traces);
+    //     }
+    // }
 
     if matches!(format, OutputFormat::Summary) {
         // Print summary statistics
@@ -291,54 +437,83 @@ pub async fn inspect_block(
 
         println!("\nSummary:");
         println!("  Total replicas: {}", total);
-        println!("  Missing: {}", missing);
         println!("  Valid: {}", valid);
         println!("  Faulty: {}", faulty);
+        println!("  Faulty (Missing): {}", missing);
     }
 
     Ok(())
 }
 
-/// Lists blocks with faults in a given range
-pub async fn list_faulty_blocks(
-    model: &CheckerModel,
-    start_block: Option<u64>,
-    end_block: Option<u64>,
-) -> Result<()> {
-    let mut all_faulty_blocks = std::collections::HashSet::new();
+#[allow(dead_code)]
+fn print_diff(replica_1: &Vec<Vec<Vec<CallFrame>>>, replica_2: &Vec<Vec<Vec<CallFrame>>>) {
+    println!("\n\n=======");
+    dbg!(&replica_1 == &replica_2);
+    println!(
+        "level 0: replica_1.len() = {}, replica_2.len() = {}",
+        replica_1.len(),
+        replica_2.len()
+    );
 
-    for replica in model.block_data_readers.keys() {
-        let latest_checked = model.get_latest_checked_for_replica(replica).await?;
-
-        for idx in 0..=(latest_checked / CHUNK_SIZE) {
-            let chunk_start = idx * CHUNK_SIZE;
-            let faults = model.get_faults_chunk(replica, chunk_start).await?;
-
-            for fault in faults {
-                if let Some(start) = start_block {
-                    if fault.block_num < start {
-                        continue;
-                    }
+    for (i_1, (replica_1, replica_2)) in replica_1.iter().zip(replica_2.iter()).enumerate() {
+        dbg!(&replica_1 == &replica_2);
+        println!(
+            "level 1, i_1 = {}: replica_1.len() = {}, replica_2.len() = {}",
+            i_1,
+            replica_1.len(),
+            replica_2.len()
+        );
+        for (i_2, (replica_1, replica_2)) in replica_1.iter().zip(replica_2.iter()).enumerate() {
+            // dbg!(&replica_1 == &replica_2);
+            for (i_3, (frame_1, frame_2)) in replica_1.iter().zip(replica_2.iter()).enumerate() {
+                if frame_1.output != frame_2.output {
+                    println!(
+                        "Output mismatch at idx {},{},{}: {:?} != {:?}",
+                        i_1, i_2, i_3, frame_1.output, frame_2.output
+                    );
+                } else if frame_1 != frame_2 {
+                    println!(
+                        "Frame mismatch at idx {},{},{}: {:?} != {:?}",
+                        i_1, i_2, i_3, frame_1, frame_2
+                    );
+                } else {
+                    println!("Frame match at idx {},{},{}", i_1, i_2, i_3);
                 }
-                if let Some(end) = end_block {
-                    if fault.block_num > end {
-                        continue;
-                    }
-                }
-                all_faulty_blocks.insert(fault.block_num);
+            }
+        }
+    }
+}
+
+/// Return the zero-based byte positions where at least one buffer differs
+/// from the others. Works with any number (≥ 2) of buffers, of arbitrary
+/// length; extra trailing bytes in longer buffers are always reported.
+pub fn diff_byte_positions(buffers: &[Vec<u8>]) -> Vec<u64> {
+    if buffers.len() < 2 {
+        return Vec::new();
+    }
+
+    // Short-circuit for the common equal-length case.
+    let min_len = buffers.iter().map(|b| b.len()).min().unwrap_or(0);
+    let mut out = Vec::new();
+
+    // Compare shared prefix.
+    'outer: for i in 0..min_len {
+        let first = buffers[0][i];
+        for buf in &buffers[1..] {
+            if buf[i] != first {
+                out.push(i as u64);
+                continue 'outer;
             }
         }
     }
 
-    let mut blocks: Vec<u64> = all_faulty_blocks.into_iter().collect();
-    blocks.sort();
+    // Any remaining bytes in the longer buffers are, by definition, different.
+    let max_len = buffers.iter().map(|b| b.len()).max().unwrap();
+    if max_len > min_len {
+        out.extend((min_len as u64)..(max_len as u64));
+    }
 
-    println!("Faulty blocks in range:");
-    let ranges = collapse_to_ranges(&blocks);
-    println!("{}", format_ranges(&ranges));
-    println!("Total: {} blocks", blocks.len());
-
-    Ok(())
+    out
 }
 
 #[cfg(test)]
