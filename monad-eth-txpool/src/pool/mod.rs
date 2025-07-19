@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, transaction::Recovered, Transaction, TxEnvelope,
+    EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_primitives::Address;
 use itertools::Itertools;
@@ -12,12 +13,12 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{AccountBalanceState, EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
@@ -167,9 +168,19 @@ where
             let account_balance = account_balances
                 .get(tx.signer_ref())
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or(AccountBalanceState::new());
 
-            let Some(_new_account_balance) = tx.apply_max_value(account_balance) else {
+            // allow charging into reserve
+            let Some(_new_account_balance) =
+                ValidEthTransaction::apply_max_value(&tx, account_balance.balance)
+            else {
+                event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
+                continue;
+            };
+
+            let Some(_new_reserve_balance) =
+                ValidEthTransaction::apply_carriage_cost(&tx, account_balance.reserve_balance)
+            else {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
             };
