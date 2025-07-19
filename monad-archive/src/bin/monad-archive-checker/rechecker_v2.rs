@@ -33,6 +33,7 @@ pub async fn rechecker_v2_worker(
 }
 
 /// Worker function for standalone rechecker v2 with optional parameters
+#[allow(clippy::too_many_arguments)]
 pub async fn rechecker_v2_standalone(
     recheck_freq: Duration,
     model: CheckerModel,
@@ -995,10 +996,8 @@ mod tests {
         }
 
         // Now fix the issues in replica1 by adding ALL blocks in the chunk
-        let blocks = create_test_block_data_range(
-            chunk_start,
-            std::iter::repeat(1).take(CHUNK_SIZE as usize),
-        );
+        let blocks =
+            create_test_block_data_range(chunk_start, std::iter::repeat_n(1, CHUNK_SIZE as usize));
         if let Some(archiver) = model.block_data_readers.get("replica1") {
             for block_num in chunk_start..(chunk_start + CHUNK_SIZE) {
                 let (block, receipts, traces) = blocks.get(&block_num).unwrap().clone();
@@ -1130,7 +1129,7 @@ mod tests {
         for chunk_start in [0, 1000, 2000] {
             let blocks = create_test_block_data_range(
                 chunk_start,
-                std::iter::repeat(1).take(CHUNK_SIZE as usize),
+                std::iter::repeat_n(1, CHUNK_SIZE as usize),
             );
             for i in 0..CHUNK_SIZE {
                 let block_num = chunk_start + i;
