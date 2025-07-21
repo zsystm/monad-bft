@@ -1734,6 +1734,7 @@ mod test {
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
         Header, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
     };
+    use alloy_primitives::U256;
     use itertools::Itertools;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
@@ -4516,13 +4517,13 @@ mod test {
         let epoch_2_leader = NodeId::new(get_key::<SignatureType>(100).pubkey());
         env.val_epoch_map.insert(
             Epoch(2),
-            vec![(epoch_2_leader, Stake(1))],
+            vec![(epoch_2_leader, Stake(U256::ONE))],
             ValidatorMapping::new(vec![(epoch_2_leader, epoch_2_leader.pubkey())]),
         );
         for node in ctx.iter_mut() {
             node.val_epoch_map.insert(
                 Epoch(2),
-                vec![(epoch_2_leader, Stake(1))],
+                vec![(epoch_2_leader, Stake(U256::ONE))],
                 ValidatorMapping::new(vec![(epoch_2_leader, epoch_2_leader.pubkey())]),
             );
         }

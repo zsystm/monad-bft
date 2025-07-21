@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::U256;
 use clap::Parser;
 use executor::{LedgerConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
@@ -268,7 +269,7 @@ where
             .iter()
             .map(|(keypair, _, cert_keypair)| ValidatorData {
                 node_id: NodeId::new(keypair.pubkey()),
-                stake: Stake(1),
+                stake: Stake(U256::ONE),
                 cert_pubkey: cert_keypair.pubkey(),
             })
             .collect::<Vec<_>>(),

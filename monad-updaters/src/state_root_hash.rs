@@ -5,6 +5,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use alloy_primitives::U256;
 use futures::Stream;
 use monad_consensus_types::{
     signature_collection::SignatureCollection,
@@ -236,14 +237,14 @@ where
         let mut val_data_2 = val_data_1.clone();
 
         for validator in val_data_1.iter_mut().take(num_validators / 2) {
-            validator.stake = Stake(0);
+            validator.stake = Stake(U256::ZERO);
         }
         for validator in val_data_2
             .iter_mut()
             .take(num_validators)
             .skip(num_validators / 2)
         {
-            validator.stake = Stake(0);
+            validator.stake = Stake(U256::ZERO);
         }
 
         Self {

@@ -1,5 +1,6 @@
 use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
 
+use alloy_primitives::U256;
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::BufMut;
 use itertools::Itertools;
@@ -14,13 +15,13 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum};
+use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use rand::{seq::SliceRandom, SeedableRng};
+use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use tracing::debug;
 
@@ -390,6 +391,30 @@ where
         cmds
     }
 
+    // FIXME: This is O(n). Should implement SampleUniform on Stake/U256
+    fn choose_weighted(
+        stakes: Vec<(&NodeId<CertificateSignaturePubKey<ST>>, &Stake)>,
+    ) -> NodeId<CertificateSignaturePubKey<ST>> {
+        let total_stake: U256 = stakes.iter().map(|(_, stake)| stake.0).sum();
+
+        let max = U256::MAX - (U256::MAX - total_stake + U256::from(1)) % total_stake;
+        let mut weighted_stake = U256::MAX;
+        while weighted_stake > max {
+            weighted_stake = rand::thread_rng().gen();
+        }
+        weighted_stake %= total_stake;
+
+        let mut running_stake = U256::ZERO;
+        for &(node_id, stake) in &stakes {
+            running_stake += stake.0;
+            if running_stake > weighted_stake {
+                return *node_id;
+            }
+        }
+
+        *stakes.last().expect("no nodes to blocksync from").0
+    }
+
     fn pick_peer(
         self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
         current_epoch: Epoch,
@@ -418,10 +443,7 @@ where
                 .filter(|(peer, _)| peer != &self_node_id)
                 .collect_vec();
             assert!(!members.is_empty(), "no nodes to blocksync from");
-            *members
-                .choose_weighted(rng, |(_peer, weight)| weight.0)
-                .expect("nonempty")
-                .0
+            Self::choose_weighted(members)
         }
     }
 

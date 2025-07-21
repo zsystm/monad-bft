@@ -1,3 +1,4 @@
+use alloy_primitives::U256;
 use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::ValidatorMapping,
@@ -47,7 +48,7 @@ where
     let staking_list = keys
         .iter()
         .map(|k| NodeId::new(k.pubkey()))
-        .zip(std::iter::repeat(Stake(1)))
+        .zip(std::iter::repeat(Stake(U256::ONE)))
         .collect::<Vec<_>>();
 
     let voting_identity = keys

@@ -1023,6 +1023,7 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 
 #[cfg(test)]
 mod test {
+    use alloy_primitives::U256;
     use monad_bls::{BlsSignature, BlsSignatureCollection};
     use monad_consensus_types::{
         block::{
@@ -1162,7 +1163,7 @@ mod test {
 
         let keypair = get_key::<SignatureType>(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
-        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(1))];
+        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(U256::ONE))];
         let voting_identity = vec![(NodeId::new(keypair.pubkey()), cert_keypair.pubkey())];
 
         let vset = ValidatorSetFactory::default().create(stake_list).unwrap();
@@ -1198,8 +1199,8 @@ mod test {
 
         let keypairs = create_keys::<SignatureType>(2);
         let vlist = vec![
-            (NodeId::new(keypairs[0].pubkey()), Stake(1)),
-            (NodeId::new(keypairs[1].pubkey()), Stake(2)),
+            (NodeId::new(keypairs[0].pubkey()), Stake(U256::ONE)),
+            (NodeId::new(keypairs[1].pubkey()), Stake(U256::from(2))),
         ];
 
         let vset = ValidatorSetFactory::default().create(vlist).unwrap();
@@ -1326,7 +1327,7 @@ mod test {
 
         let keypair = get_key::<SignatureType>(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
-        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(1))];
+        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(U256::ONE))];
         let voting_identity = vec![(NodeId::new(keypair.pubkey()), cert_keypair.pubkey())];
 
         let vset = ValidatorSetFactory::default().create(stake_list).unwrap();

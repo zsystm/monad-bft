@@ -4593,6 +4593,7 @@ dependencies = [
 name = "monad-blocksync"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "itertools 0.10.5",
@@ -4668,6 +4669,7 @@ dependencies = [
 name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "monad-bls",
  "monad-chain-config",
@@ -4687,6 +4689,7 @@ name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-primitives",
  "itertools 0.10.5",
  "monad-blocktree",
  "monad-chain-config",
@@ -5362,6 +5365,7 @@ dependencies = [
 name = "monad-raptorcast"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bitvec",
  "bytes",
@@ -5543,6 +5547,7 @@ dependencies = [
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "itertools 0.10.5",
@@ -5603,6 +5608,7 @@ dependencies = [
 name = "monad-testground"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "clap 4.5.40",
  "futures-util",
  "monad-bls",
@@ -5639,6 +5645,7 @@ dependencies = [
 name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "monad-consensus",
  "monad-consensus-state",
@@ -5760,6 +5767,7 @@ dependencies = [
 name = "monad-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "futures",
  "hex",
@@ -5774,6 +5782,7 @@ name = "monad-updaters"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "futures",

@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::U256;
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
@@ -466,7 +467,7 @@ impl Debug for BlockId {
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
-pub struct Stake(pub u64);
+pub struct Stake(pub U256);
 
 impl Add for Stake {
     type Output = Self;
@@ -506,7 +507,7 @@ impl SubAssign for Stake {
 
 impl std::iter::Sum for Stake {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Stake(0), |a, b| a + b)
+        iter.fold(Stake(U256::ZERO), |a, b| a + b)
     }
 }
 
