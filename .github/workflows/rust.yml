@@ -1,7 +1,13 @@
 name: Rust
 
 on:
+  merge_group:
+    branches: ["master"]
   push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+    types: [ opened, synchronize, reopened, edited ]
 
 concurrency:
   group: >
