@@ -74,7 +74,7 @@ USER builder
 WORKDIR /app
 # Install Rust (which includes Cargo)
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
-ENV PATH "~/.rustup/bin:~/.cargo/bin:$PATH"
+ENV PATH="~/.rustup/bin:~/.cargo/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 
 CMD ["bash"]
