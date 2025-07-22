@@ -167,7 +167,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &SBT,
-    ) -> Result<(), BlockPolicyError>;
+    ) -> Result<Self::ValidatedBlock, BlockPolicyError>;
 
     fn get_expected_execution_results(
         &self,
@@ -233,7 +233,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &InMemoryState,
-    ) -> Result<(), BlockPolicyError> {
+    ) -> Result<Self::ValidatedBlock, BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
         let (extending_seq_num, extending_timestamp) =
@@ -261,7 +261,7 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
-        Ok(())
+        Ok(block.clone())
     }
 
     fn get_expected_execution_results(
