@@ -60,9 +60,15 @@ RUN apt update && apt install -y \
 
 RUN rm -rf /var/lib/apt/lists/*
 
+WORKDIR /app
+
 # Install Rust (which includes Cargo)
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 
-WORKDIR /app
+# Set entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command (can be overridden)
+CMD ["bash"]
