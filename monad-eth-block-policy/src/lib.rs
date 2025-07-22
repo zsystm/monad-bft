@@ -31,6 +31,13 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
+#[derive(Debug, Clone)]
+pub struct TxnFee {
+    pub max_cost: Balance,
+    pub carriage_cost: Balance,
+}
+pub type TxnFees = BTreeMap<Address, TxnFee>;
+
 fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
     // base stipend
     let mut intrinsic_gas = 21000;
@@ -71,6 +78,10 @@ pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
     let gas_cost = U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas());
 
     txn_value.saturating_add(gas_cost)
+}
+
+pub fn compute_txn_carriage_cost(txn: &TxEnvelope) -> U256 {
+    U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas())
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -131,6 +142,28 @@ struct BlockLookupIndex {
     is_finalized: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct AccountBalanceState {
+    pub balance: Balance,
+    pub reserve_balance: Balance,
+    pub max_reserve_balance: Balance,
+    pub last_txn_seqnum: SeqNum,
+}
+
+impl AccountBalanceState {
+    pub fn new(max_reserve_balance: Balance) -> Self {
+        AccountBalanceState {
+            balance: Balance::ZERO,
+            reserve_balance: Balance::ZERO,
+            max_reserve_balance,
+            last_txn_seqnum: GENESIS_SEQ_NUM,
+        }
+    }
+}
+
+// address to not delegated and elegated accounts
+pub type AccountBalanceStates = BTreeMap<Address, AccountBalanceState>;
+
 /// A consensus block that has gone through the EthereumValidator and makes the decoded and
 /// verified transactions available to access
 #[derive(Debug, Clone)]
@@ -142,7 +175,7 @@ where
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
     pub nonces: BTreeMap<Address, Nonce>,
-    pub txn_fees: BTreeMap<Address, Balance>,
+    pub txn_fees: TxnFees,
 }
 
 impl<ST, SCT> Deref for EthValidatedBlock<ST, SCT>
@@ -240,12 +273,12 @@ impl BlockAccountNonce {
 }
 
 #[derive(Debug)]
-struct BlockTxnFees {
-    txn_fees: BTreeMap<Address, Balance>,
+struct BlockTxnFeeStates {
+    txn_fees: TxnFees,
 }
 
-impl BlockTxnFees {
-    fn get(&self, eth_address: &Address) -> Option<Balance> {
+impl BlockTxnFeeStates {
+    fn get(&self, eth_address: &Address) -> Option<TxnFee> {
         self.txn_fees.get(eth_address).cloned()
     }
 }
@@ -256,7 +289,7 @@ struct CommittedBlock {
     round: Round,
 
     nonces: BlockAccountNonce,
-    fees: BlockTxnFees,
+    fees: BlockTxnFeeStates,
 }
 
 #[derive(Debug)]
@@ -268,7 +301,9 @@ struct CommittedBlkBuffer<ST, SCT> {
 }
 
 struct CommittedTxnFeeResult {
-    txn_fee: Balance,
+    carriage_cost: Balance,
+    max_cost: Balance,
+    last_txn_seq_num: SeqNum,
     next_validate: SeqNum, // next block number to validate; included for assertions only
 }
 
@@ -304,21 +339,36 @@ where
         &self,
         base_seq_num: SeqNum,
         eth_address: &Address,
+        execution_delay: SeqNum,
     ) -> CommittedTxnFeeResult {
-        let mut txn_fee: Balance = Balance::ZERO;
+        let mut carriage_cost = Balance::ZERO;
+        let mut max_cost = Balance::ZERO;
         let mut next_validate = base_seq_num + SeqNum(1);
+        let mut last_txn_seq_num = GENESIS_SEQ_NUM;
+
+        // Compute balance from blocks before the base
+        let start_seq_num = next_validate.max(execution_delay) - execution_delay;
+        for (&cache_seq_num, block) in self.blocks.range(start_seq_num..next_validate) {
+            if block.fees.get(eth_address).is_some() {
+                last_txn_seq_num = cache_seq_num;
+            }
+        }
 
         // start iteration from base_seq_num (non inclusive)
         for (&cache_seq_num, block) in self.blocks.range(next_validate..) {
             assert_eq!(next_validate, cache_seq_num);
-            if let Some(account_txn_fee) = block.fees.get(eth_address) {
-                txn_fee = txn_fee.saturating_add(account_txn_fee);
+            if let Some(txn_fee) = block.fees.get(eth_address) {
+                carriage_cost = carriage_cost.saturating_add(txn_fee.carriage_cost);
+                max_cost = max_cost.saturating_add(txn_fee.max_cost);
             }
+            last_txn_seq_num = next_validate;
             next_validate += SeqNum(1);
         }
 
         CommittedTxnFeeResult {
-            txn_fee,
+            max_cost,
+            carriage_cost,
+            last_txn_seq_num,
             next_validate,
         }
     }
@@ -352,7 +402,7 @@ where
                     nonces: BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
-                    fees: BlockTxnFees {
+                    fees: BlockTxnFeeStates {
                         txn_fees: block.txn_fees.clone()
                     }
                 },
@@ -379,6 +429,10 @@ where
 
     /// Chain ID
     chain_id: u64,
+
+    max_reserve_balance: Balance,
+
+    min_blocks_since_last_txn: SeqNum,
 }
 
 impl<ST, SCT> EthBlockPolicy<ST, SCT>
@@ -390,12 +444,15 @@ where
         last_commit: SeqNum, // TODO deprecate
         execution_delay: u64,
         chain_id: u64,
+        max_reserve_balance: u128,
     ) -> Self {
         Self {
             committed_cache: CommittedBlkBuffer::new(execution_delay as usize),
             last_commit,
             execution_delay: SeqNum(execution_delay),
             chain_id,
+            max_reserve_balance: Balance::from(max_reserve_balance),
+            min_blocks_since_last_txn: SeqNum(execution_delay),
         }
     }
 
@@ -528,11 +585,11 @@ where
         state_backend: &impl StateBackend,
         extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
-    ) -> Result<BTreeMap<&'a Address, Balance>, StateBackendError>
+    ) -> Result<BTreeMap<&'a Address, AccountBalanceState>, StateBackendError>
     where
         SCT: SignatureCollection,
     {
-        trace!(block = consensus_block_seq_num.0, "compute_base_balance");
+        debug!(?self.min_blocks_since_last_txn, ?consensus_block_seq_num, "compute_account_base_balances");
 
         // calculation correct only if GENESIS_SEQ_NUM == 0
         assert_eq!(GENESIS_SEQ_NUM, SeqNum(0));
@@ -547,45 +604,85 @@ where
                 &base_seq_num,
             )?
             .into_iter()
-            .map(|maybe_status| maybe_status.map_or(Balance::ZERO, |status| status.balance))
+            .map(|maybe_status| {
+                maybe_status.map_or(
+                    AccountBalanceState::new(self.max_reserve_balance),
+                    |status| {
+                        AccountBalanceState {
+                            balance: status.balance,
+                            reserve_balance: status.balance.min(self.max_reserve_balance),
+                            max_reserve_balance: self.max_reserve_balance,
+                            last_txn_seqnum: base_seq_num, // most pessimistic assumption
+                        }
+                    },
+                )
+            })
             .collect_vec();
 
         let account_balances = addresses
             .into_iter()
             .zip_eq(account_balances)
-            .map(|(address, mut account_balance)| {
+            .map(|(address, mut balance_state)| {
                 // Apply Txn Fees for the txns from committed blocks
                 let CommittedTxnFeeResult {
-                    txn_fee: txn_fee_committed,
+                    mut max_cost,
+                    mut carriage_cost,
+                    mut last_txn_seq_num,
                     mut next_validate,
-                } = self.committed_cache.compute_txn_fee(base_seq_num, address);
+                } = self.committed_cache.compute_txn_fee(
+                    base_seq_num,
+                    address,
+                    self.execution_delay,
+                );
 
-                if account_balance < txn_fee_committed {
+                let mut can_charge_into_reserve = next_validate
+                    >= (balance_state.last_txn_seqnum + self.min_blocks_since_last_txn);
+
+                if balance_state.reserve_balance < carriage_cost {
                     panic!(
-                        "Committed block with incoherent transaction fee 
-                            Not sufficient balance: {:?} \
-                            Transaction Fee Committed: {:?} \
-                            consensus block:seq num {:?} \
+                        "Committed block with insufficient reserve balance: {:?} \
+                            Transaction Carriage Cost Committed: {:?} \
+                            consensus_block_seq_num: {:?} \
                             for address: {:?}",
-                        account_balance, txn_fee_committed, consensus_block_seq_num, address
-                    );
-                } else {
-                    account_balance -= txn_fee_committed;
-                    trace!(
-                        "AccountBalance compute 4: \
-                            updated balance to: {:?} \
-                            Transaction Fee Committed: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                        account_balance,
-                        txn_fee_committed,
-                        consensus_block_seq_num,
-                        address
+                        balance_state, carriage_cost, consensus_block_seq_num, address
                     );
                 }
 
+                if !can_charge_into_reserve
+                    && (balance_state
+                        .balance
+                        .saturating_sub(balance_state.reserve_balance)
+                        < max_cost)
+                    || can_charge_into_reserve && (balance_state.balance < max_cost)
+                {
+                    warn!(
+                        ?balance_state,
+                        ?can_charge_into_reserve,
+                        ?max_cost,
+                        ?carriage_cost,
+                        ?consensus_block_seq_num,
+                        ?address,
+                        "Committed block with insufficient balance",
+                    );
+                }
+                balance_state.balance = balance_state.balance.saturating_sub(max_cost);
+
+                balance_state.reserve_balance -= carriage_cost;
+
+                trace!(
+                    ?balance_state,
+                    ?can_charge_into_reserve,
+                    ?max_cost,
+                    ?carriage_cost,
+                    ?consensus_block_seq_num,
+                    ?next_validate,
+                    ?address,
+                    "AccountBalanceState compute committed block: updated balance",
+                );
+
                 // Apply Txn Fees for txns in extending blocks
-                let mut txn_fee_pending: Balance = Balance::ZERO;
+                let mut max_cost_pending: Balance = Balance::ZERO;
+                let mut carriage_cost_pending: Balance = Balance::ZERO;
                 if let Some(blocks) = extending_blocks {
                     // handle the case where base_seq_num is a pending block
                     let next_blocks = blocks
@@ -594,37 +691,61 @@ where
                     for extending_block in next_blocks {
                         assert_eq!(next_validate, extending_block.get_seq_num());
                         if let Some(txn_fee) = extending_block.txn_fees.get(address) {
-                            txn_fee_pending = txn_fee_pending.saturating_add(*txn_fee);
+                            max_cost_pending = max_cost_pending.saturating_add(txn_fee.max_cost);
+                            carriage_cost_pending =
+                                carriage_cost_pending.saturating_add(txn_fee.carriage_cost);
+                            balance_state.last_txn_seqnum = next_validate;
                         }
                         next_validate += SeqNum(1);
                     }
                 }
 
-                if account_balance < txn_fee_pending {
+                if balance_state.reserve_balance < carriage_cost_pending {
                     panic!(
-                        "Majority extended a block with an incoherent balance \
-                            Not sufficient balance: {:?} \
-                            Txn Fees Pending: {:?} \
+                        "Pending block with insufficient reserve balance: {:?} \
+                            Transaction Carriage Cost Pending {:?} \
                             consensus block:seq num {:?} \
                             for address: {:?}",
-                        account_balance, txn_fee_pending, consensus_block_seq_num, address
-                    );
-                } else {
-                    account_balance -= txn_fee_pending;
-                    trace!(
-                        "AccountBalance compute 6: \
-                            updated balance to: {:?} \
-                            Txn Fees Pending: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                        account_balance,
-                        txn_fee_pending,
-                        consensus_block_seq_num,
-                        address
+                        balance_state, carriage_cost_pending, consensus_block_seq_num, address
                     );
                 }
 
-                (address, account_balance)
+                can_charge_into_reserve = next_validate
+                    >= (balance_state.last_txn_seqnum + self.min_blocks_since_last_txn);
+
+                if !can_charge_into_reserve
+                    && (balance_state
+                        .balance
+                        .saturating_sub(balance_state.reserve_balance)
+                        < max_cost_pending)
+                    || can_charge_into_reserve && (balance_state.balance < max_cost_pending)
+                {
+                    warn!(
+                        ?balance_state,
+                        ?carriage_cost_pending,
+                        ?consensus_block_seq_num,
+                        ?can_charge_into_reserve,
+                        ?address,
+                        "Pending block with insufficient balance"
+                    );
+                }
+
+                balance_state.balance = balance_state.balance.saturating_sub(max_cost_pending);
+
+                balance_state.reserve_balance -= carriage_cost_pending;
+
+                trace!(
+                    ?balance_state,
+                    ?can_charge_into_reserve,
+                    ?max_cost,
+                    ?carriage_cost,
+                    ?consensus_block_seq_num,
+                    ?next_validate,
+                    ?address,
+                    "AccountBalanceState compute pending block: updated balance",
+                );
+
+                (address, balance_state)
             })
             .collect();
         Ok(account_balances)
@@ -632,6 +753,13 @@ where
 
     pub fn get_chain_id(&self) -> u64 {
         self.chain_id
+    }
+    pub fn min_blocks_since_last_txn(&self) -> SeqNum {
+        self.min_blocks_since_last_txn
+    }
+
+    pub fn max_reserve_balance(&self) -> Balance {
+        self.max_reserve_balance
     }
 }
 
@@ -649,8 +777,11 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &SBT,
-    ) -> Result<(), BlockPolicyError> {
+    ) -> Result<Self::ValidatedBlock, BlockPolicyError> {
         trace!(?block, "check_coherency");
+        let mut txn_fees = BTreeMap::default();
+
+        let block_seq_num = block.get_seq_num();
         let first_block = extending_blocks
             .iter()
             .chain(std::iter::once(&block))
@@ -709,6 +840,7 @@ where
             .iter()
             .map(|txn| txn.signer())
             .collect_vec();
+
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
             block.get_seq_num(),
@@ -745,43 +877,71 @@ where
                 .get_mut(&eth_address)
                 .expect("account_balances should have been populated");
 
-            let txn_fee = compute_txn_max_value(txn);
+            // if an account is not delegated and had no transactions in the last execution_delay blocks, then can charge into reserve.
+            let blocks_since_last_txn = block_seq_num.max(account_balance.last_txn_seqnum)
+                - account_balance.last_txn_seqnum;
 
-            if *account_balance >= txn_fee {
-                *account_balance -= txn_fee;
+            let can_charge_into_reserve = blocks_since_last_txn >= self.min_blocks_since_last_txn;
+            let max_cost = compute_txn_max_value(txn);
+            let carriage_cost = compute_txn_carriage_cost(txn);
+
+            if account_balance.reserve_balance >= carriage_cost
+                && (!can_charge_into_reserve
+                    && (account_balance
+                        .balance
+                        .saturating_sub(account_balance.reserve_balance)
+                        >= max_cost)
+                    || can_charge_into_reserve && (account_balance.balance >= max_cost))
+            {
+                account_balance.balance -= max_cost;
+                account_balance.reserve_balance -= carriage_cost;
                 *expected_nonce += 1;
                 trace!(
-                    "AccountBalance - check_coherency 2: \
-                            updated balance: {:?} \
-                            txn Fee: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                    account_balance,
-                    txn_fee,
-                    block.get_seq_num(),
-                    eth_address
+                    ?eth_address,
+                    seq_num =? block.header().seq_num,
+                    round =? block.header().round,
+                    ?account_balance,
+                    ?max_cost,
+                    ?carriage_cost,
+                    ?can_charge_into_reserve,
+                    ?blocks_since_last_txn,
+                    "AccountBalance - check_coherency 2"
                 );
             } else {
                 trace!(
-                    "AccountBalance - check_coherency 3: \
-                            Not sufficient balance: {:?} \
-                            Txn Fee: {:?} \
-                            consensus block:seq num {:?} \
-                            for address: {:?}",
-                    account_balance,
-                    txn_fee,
-                    block.get_seq_num(),
-                    eth_address
+                    ?eth_address,
+                    seq_num =? block.header().seq_num,
+                    round =? block.header().round,
+                    ?account_balance,
+                    ?max_cost,
+                    ?carriage_cost,
+                    ?can_charge_into_reserve,
+                    ?blocks_since_last_txn,
+                    "AccountBalance - check_coherency 3"
                 );
                 warn!(
                     seq_num =? block.header().seq_num,
                     round =? block.header().round,
+                    ?account_balance,
+                    ?max_cost,
+                    ?carriage_cost,
+                    ?can_charge_into_reserve,
                     "block not coherent, invalid balance"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);
             }
+
+            let txn_fee_entry = txn_fees.entry(eth_address).or_insert(TxnFee {
+                max_cost: Balance::ZERO,
+                carriage_cost: Balance::ZERO,
+            });
+
+            txn_fee_entry.max_cost = txn_fee_entry.max_cost.saturating_add(max_cost);
+            txn_fee_entry.carriage_cost = txn_fee_entry.carriage_cost.saturating_add(carriage_cost);
         }
-        Ok(())
+        let mut res_block = block.clone();
+        res_block.txn_fees = txn_fees;
+        Ok(res_block)
     }
 
     fn get_expected_execution_results(
@@ -844,6 +1004,8 @@ mod test {
         signer.sign_hash_sync(signature_hash).unwrap()
     }
 
+    const EXEC_DELAY: u64 = 3;
+
     #[test]
     fn test_compute_txn_fee() {
         // setup test addresses
@@ -860,10 +1022,22 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address1, Balance::from(100)),
-                    (address2, Balance::from(200)),
+                    (
+                        address1,
+                        TxnFee {
+                            max_cost: Balance::from(100),
+                            carriage_cost: Balance::from(100),
+                        },
+                    ),
+                    (
+                        address2,
+                        TxnFee {
+                            max_cost: Balance::from(200),
+                            carriage_cost: Balance::from(200),
+                        },
+                    ),
                 ]),
             },
         };
@@ -874,10 +1048,22 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address1, Balance::from(150)),
-                    (address3, Balance::from(300)),
+                    (
+                        address1,
+                        TxnFee {
+                            max_cost: Balance::from(150),
+                            carriage_cost: Balance::from(150),
+                        },
+                    ),
+                    (
+                        address3,
+                        TxnFee {
+                            max_cost: Balance::from(300),
+                            carriage_cost: Balance::from(300),
+                        },
+                    ),
                 ]),
             },
         };
@@ -888,10 +1074,22 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address2, Balance::from(250)),
-                    (address3, Balance::from(350)),
+                    (
+                        address2,
+                        TxnFee {
+                            max_cost: Balance::from(250),
+                            carriage_cost: Balance::from(250),
+                        },
+                    ),
+                    (
+                        address3,
+                        TxnFee {
+                            max_cost: Balance::from(350),
+                            carriage_cost: Balance::from(350),
+                        },
+                    ),
                 ]),
             },
         };
@@ -902,30 +1100,42 @@ mod test {
 
         // test compute_txn_fee for different addresses and base sequence numbers
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address1).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(0), &address1, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::from(250)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(1), &address1).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(1), &address1, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::from(150)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(2), &address1).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(2), &address1, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::from(0)
         );
 
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address2).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(0), &address2, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::from(450)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(0), &address3, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::from(650)
         );
 
         // address that is not present in all blocks
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address4).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(0), &address4, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::from(0)
         );
     }
@@ -945,10 +1155,22 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address1, U256::MAX - U256::from(1)),
-                    (address2, U256::MAX),
+                    (
+                        address1,
+                        TxnFee {
+                            max_cost: U256::MAX - U256::from(1),
+                            carriage_cost: U256::MAX - U256::from(1),
+                        },
+                    ),
+                    (
+                        address2,
+                        TxnFee {
+                            max_cost: Balance::MAX,
+                            carriage_cost: Balance::MAX,
+                        },
+                    ),
                 ]),
             },
         };
@@ -959,10 +1181,22 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address1, U256::from(1)),
-                    (address3, U256::MAX.div_ceil(U256::from(2))),
+                    (
+                        address1,
+                        TxnFee {
+                            max_cost: Balance::from(1),
+                            carriage_cost: Balance::from(1),
+                        },
+                    ),
+                    (
+                        address3,
+                        TxnFee {
+                            max_cost: U256::MAX.div_ceil(U256::from(2)),
+                            carriage_cost: U256::MAX.div_ceil(U256::from(2)),
+                        },
+                    ),
                 ]),
             },
         };
@@ -973,10 +1207,22 @@ mod test {
             nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
-            fees: BlockTxnFees {
+            fees: BlockTxnFeeStates {
                 txn_fees: BTreeMap::from([
-                    (address2, U256::MAX),
-                    (address3, U256::MAX.div_ceil(U256::from(2)) + U256::from(1)),
+                    (
+                        address2,
+                        TxnFee {
+                            max_cost: Balance::MAX,
+                            carriage_cost: Balance::MAX,
+                        },
+                    ),
+                    (
+                        address3,
+                        TxnFee {
+                            max_cost: U256::MAX.div_ceil(U256::from(2)) + U256::from(1),
+                            carriage_cost: U256::MAX.div_ceil(U256::from(2)) + U256::from(1),
+                        },
+                    ),
                 ]),
             },
         };
@@ -987,24 +1233,34 @@ mod test {
 
         // test compute_txn_fee for different addresses and base sequence numbers
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address1).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(0), &address1, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::MAX
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(1), &address1).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(1), &address1, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::from(1)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(2), &address1).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(2), &address1, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::from(0)
         );
 
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address2).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(0), &address2, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::MAX
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
+            buffer
+                .compute_txn_fee(SeqNum(0), &address3, SeqNum(EXEC_DELAY))
+                .carriage_cost,
             U256::MAX
         );
     }

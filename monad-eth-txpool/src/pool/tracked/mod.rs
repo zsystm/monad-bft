@@ -10,9 +10,9 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{AccountBalanceState, EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
-use monad_eth_types::{Balance, EthExecutionProtocol};
+use monad_eth_types::EthExecutionProtocol;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace, warn};
@@ -214,6 +214,8 @@ where
             proposal_gas_limit,
             proposal_byte_limit,
             tx_heap,
+            proposed_seq_num,
+            block_policy.min_blocks_since_last_txn(),
             account_balances,
         );
 
@@ -351,7 +353,9 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
-        mut account_balances: BTreeMap<&Address, Balance>,
+        proposed_seq_num: SeqNum,
+        min_blocks_since_last_txn: SeqNum,
+        mut account_balances: BTreeMap<&Address, AccountBalanceState>,
     ) -> (u64, Vec<Recovered<TxEnvelope>>) {
         assert!(tx_limit > 0);
 
@@ -383,15 +387,32 @@ where
                 return TrackedTxHeapDrainAction::Skip;
             };
 
-            let Some(new_account_balance) = tx.apply_max_value(*account_balance) else {
+            let Some(new_reserve_balance) =
+                ValidEthTransaction::apply_carriage_cost(tx, account_balance.reserve_balance)
+            else {
+                return TrackedTxHeapDrainAction::Skip;
+            };
+            account_balance.reserve_balance = new_reserve_balance;
+
+
+            let Some(new_account_balance) =
+                ValidEthTransaction::apply_max_value(tx, account_balance.balance)
+            else {
                 return TrackedTxHeapDrainAction::Skip;
             };
 
-            *account_balance = new_account_balance;
+            let can_charge_into_reserve = proposed_seq_num >= (account_balance.last_txn_seqnum + min_blocks_since_last_txn);
+            let charges_into_resserve = new_account_balance <  account_balance.balance.min(account_balance.max_reserve_balance);
+            if !can_charge_into_reserve && charges_into_resserve {
+                debug!(txn_hash = ?tx.hash(), "skip. txn charges into reserve balance");
+                return TrackedTxHeapDrainAction::Skip;
+            }
+
+            trace!{txn_hash = ?tx.hash(), reserve = ?account_balance.reserve_balance, balance = ?account_balance.balance, ?new_account_balance, ?can_charge_into_reserve, "txn included in proposal"};
+            account_balance.balance = new_account_balance;
 
             total_gas += tx.gas_limit();
             total_size += tx_size;
-            trace!(txn_hash = ?tx.hash(), "txn included in proposal");
             txs.push(tx.raw().to_owned());
 
             if txs.len() < tx_limit {
