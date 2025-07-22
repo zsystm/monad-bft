@@ -13,7 +13,7 @@ use monad_types::{Epoch, NodeId, Round};
 use tracing::debug;
 
 use crate::{
-    MonadNameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
+    MonadNameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerLookup,
     PeerLookupRequest, PeerLookupResponse, Ping, Pong,
 };
 
@@ -44,9 +44,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for NopDiscov
         self,
     ) -> (
         Self::PeerDiscoveryAlgoType,
-        Vec<
-            PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
-        >,
+        Vec<PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerLookup>::SignatureType>>,
     ) {
         let state = NopDiscovery {
             known_addresses: self.known_addresses,
@@ -59,12 +57,31 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for NopDiscov
     }
 }
 
+impl<ST: CertificateSignatureRecoverable> PeerLookup for NopDiscovery<ST> {
+    type SignatureType = ST;
+
+    fn lookup_addr_v4(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
+        self.known_addresses.get(id).copied()
+    }
+
+    fn known_addrs_v4(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        self.known_addresses.clone()
+    }
+
+    fn name_records(
+        &self,
+    ) -> HashMap<
+        NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        MonadNameRecord<Self::SignatureType>,
+    > {
+        HashMap::new()
+    }
+}
+
 impl<ST> PeerDiscoveryAlgo for NopDiscovery<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    type SignatureType = ST;
-
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<ST>>,
@@ -197,17 +214,7 @@ where
         &self.metrics
     }
 
-    fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
-        self.known_addresses.get(id).copied()
-    }
-
-    fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        self.known_addresses.clone()
-    }
-
-    fn get_name_records(
-        &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
-        HashMap::new()
+    fn peer_table(&self) -> crate::PeerTable<ST> {
+        crate::PeerTable::addr_table_only(self.known_addresses.clone())
     }
 }

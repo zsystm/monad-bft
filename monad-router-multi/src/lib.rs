@@ -1,9 +1,4 @@
-use std::{
-    marker::PhantomData,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::Poll,
-};
+use std::{marker::PhantomData, pin::Pin, task::Poll};
 
 use alloy_rlp::{Decodable, Encodable};
 use futures::{Stream, StreamExt};
@@ -33,8 +28,9 @@ where
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
-    rc_primary: RaptorCast<ST, M, OM, SE, PD>,
-    rc_secondary: Option<RaptorCastSecondary<ST, M, OM, SE, PD>>,
+    rc_primary: RaptorCast<ST, M, OM, SE>,
+    rc_secondary: Option<RaptorCastSecondary<ST, M, OM, SE>>,
+    pd_driver: PeerDiscoveryDriver<PD>,
     phantom: PhantomData<(OM, SE)>,
 }
 
@@ -54,8 +50,9 @@ where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
     {
         // Peer discovery needs to be shared among primary and secondary
-        let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
-        let shared_pdd = Arc::new(Mutex::new(pdd));
+        let mut pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
+        let pd_emit_rx = pdd.take_emit_rx();
+        let pd_handle = pdd.handle();
 
         let (dp_reader, dp_writer) = dataplane_builder.build().split();
 
@@ -71,18 +68,19 @@ where
             _ => Some(RaptorCastSecondary::new(
                 cfg.clone(),
                 dp_writer.clone(),
-                shared_pdd.clone(),
+                pd_handle.clone(),
                 recv_net_messages,
                 send_group_infos,
             )),
         };
 
-        let rc_primary = RaptorCast::new(cfg, dp_reader, dp_writer, shared_pdd)
+        let rc_primary = RaptorCast::new(cfg, dp_reader, dp_writer, pd_handle, pd_emit_rx)
             .bind_channel_to_secondary_raptorcast(send_net_messages, recv_group_infos);
 
         Self {
             rc_primary,
             rc_secondary,
+            pd_driver: pdd,
             phantom: PhantomData,
         }
     }
@@ -95,7 +93,7 @@ where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
-    RaptorCast<ST, M, OM, SE, PD>: Unpin,
+    RaptorCast<ST, M, OM, SE>: Unpin,
 {
     type Command = RouterCommand<ST, OM>;
 
@@ -146,8 +144,8 @@ where
     OM: Encodable + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, ST>>,
     Self: Unpin,
-    RaptorCast<ST, M, OM, E, PD>: Unpin,
-    RaptorCastSecondary<ST, M, OM, E, PD>: Unpin,
+    RaptorCast<ST, M, OM, E>: Unpin,
+    RaptorCastSecondary<ST, M, OM, E>: Unpin,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     PeerDiscoveryDriver<PD>: Unpin,
 {
@@ -159,7 +157,7 @@ where
     ) -> std::task::Poll<Option<Self::Item>> {
         let pinned_this = self.as_mut().get_mut();
 
-        // Primary RC instance polls for inbound TCP, UDP raptorcast
+        // Primary RC instance polls for inbound TCP, UDP raptorcast, peer_disc cast emits
         // and FullNodesGroupMessage intended for the secondary RC instance.
         match pinned_this.rc_primary.poll_next_unpin(cx) {
             Poll::Ready(Some(event)) => return Poll::Ready(Some(event)),
@@ -181,6 +179,10 @@ where
                 Poll::Pending => {}
             }
         }
+
+        // Peer discovery driver polls for its internal timer event
+        // and commands from its command channel. It is always pending.
+        self.pd_driver.poll(cx);
 
         Poll::Pending
     }
