@@ -15,11 +15,11 @@ if ! id -u ${HOST_UID} >/dev/null 2>&1; then
     useradd -u ${HOST_UID} -g ${HOST_GID} -m builder
 fi
 
-export CARGE_HOME=/home/builder/.cargo
-export RUSTUP_HOME=/home/builder/.rustup
+export CARGO_HOME="${CARGO_HOME:-/home/builder/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-/home/builder/.rustup}"
 
 # Set ownership of the workdir
 chown -R ${HOST_UID}:${HOST_GID} /app
 
 # Switch to new user and execute the CMD
-exec su builder -c "$@"
+exec env CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" su builder -c "$@"
