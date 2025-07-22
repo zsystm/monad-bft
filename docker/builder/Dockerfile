@@ -60,18 +60,21 @@ RUN apt update && apt install -y \
 
 RUN rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
 
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+
+# Create group and user with host UID/GID
+RUN groupadd --gid $HOST_GID builder && \
+    useradd --uid $HOST_UID --gid $HOST_GID --create-home builder && \
+    usermod -aG sudo builder
+
+USER builder
+
+WORKDIR /app
 # Install Rust (which includes Cargo)
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Set entrypoint
-ENTRYPOINT ["/entrypoint.sh"]
-
-# Default command (can be overridden)
 CMD ["bash"]
