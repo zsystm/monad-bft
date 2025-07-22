@@ -60,4 +60,8 @@ RUN apt update && apt install -y \
 
 RUN rm -rf /var/lib/apt/lists/*
 
+# Install Rust (which includes Cargo)
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 WORKDIR /app
