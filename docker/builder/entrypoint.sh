@@ -15,6 +15,9 @@ if ! id -u ${HOST_UID} >/dev/null 2>&1; then
     useradd -u ${HOST_UID} -g ${HOST_GID} -m builder
 fi
 
+export CARGE_HOME=/home/builder/.cargo
+export RUSTUP_HOME=/home/builder/.rustup
+
 # Set ownership of the workdir
 chown -R ${HOST_UID}:${HOST_GID} /app
 
