@@ -67,6 +67,9 @@ RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Set entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
 
