@@ -61,8 +61,8 @@ RUN apt update && apt install -y \
 RUN rm -rf /var/lib/apt/lists/*
 
 
-ARG HOST_UID=1000
-ARG HOST_GID=1000
+ARG HOST_UID=2002
+ARG HOST_GID=2002
 
 # Create group and user with host UID/GID
 RUN groupadd --gid $HOST_GID builder && \
@@ -72,9 +72,10 @@ RUN groupadd --gid $HOST_GID builder && \
 USER builder
 
 WORKDIR /app
-# Install Rust (which includes Cargo)
+
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
-ENV PATH="~/.rustup/bin:~/.cargo/bin:$PATH"
+ENV HOME="/home/builder"
+ENV PATH="$HOME/.cargo/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 
 CMD ["bash"]
