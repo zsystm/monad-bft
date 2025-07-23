@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, ops::Deref};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
-    quorum_certificate::QuorumCertificate,
+    quorum_certificate::{QuorumCertificate, HALT_TIP},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
@@ -17,7 +17,9 @@ use monad_crypto::{
     },
     signing_domain,
 };
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND};
+use monad_types::{
+    Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND,
+};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -886,6 +888,9 @@ where
     EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    if tip.block_header.get_id() == *HALT_TIP.lock().unwrap() {
+        return Ok(());
+    }
     let (_, _, leader) = epoch_to_validators(tip.block_header.epoch, tip.block_header.block_round)?;
 
     let tip_author = tip
@@ -1589,6 +1594,8 @@ mod test {
             id: BlockId(Hash([0x0a_u8; 32])),
             epoch: Epoch(2), // wrong epoch: should be 1
             round: Round(10),
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let unvalidated_vote_message =
@@ -1627,6 +1634,8 @@ mod test {
             id: BlockId(Hash([0x0a_u8; 32])),
             epoch: Epoch(1),
             round: Round(10),
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let mut vote_msg = VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
@@ -1742,6 +1751,8 @@ mod test {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(2), // wrong epoch
             round: Round(10),
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let msg = alloy_rlp::encode(vote);
@@ -1791,6 +1802,8 @@ mod test {
             id: BlockId(Hash([0x09_u8; 32])),
             epoch: Epoch(1), // correct epoch
             round: Round(10),
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let msg = alloy_rlp::encode(vote);
