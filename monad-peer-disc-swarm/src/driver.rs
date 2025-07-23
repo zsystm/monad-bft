@@ -128,7 +128,7 @@ where
         event: PeerDiscoveryEvent<ST>,
     ) -> Vec<RouterCommand<ST, PeerDiscoveryMessage<ST>>> {
         let cmds = match event {
-            PeerDiscoveryEvent::SendPing { to } => self.algo.send_ping(to),
+            PeerDiscoveryEvent::SendPing { to, ping } => self.algo.send_ping(to, ping),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.algo.handle_ping(from, ping),
             PeerDiscoveryEvent::PongResponse { from, pong } => self.algo.handle_pong(from, pong),
             PeerDiscoveryEvent::PingTimeout { to, ping_id } => {

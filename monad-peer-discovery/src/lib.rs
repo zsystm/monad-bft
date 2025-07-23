@@ -95,6 +95,7 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
 pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     SendPing {
         to: NodeId<CertificateSignaturePubKey<ST>>,
+        ping: Ping<ST>,
     },
     PingRequest {
         from: NodeId<CertificateSignaturePubKey<ST>>,
@@ -190,6 +191,7 @@ pub trait PeerDiscoveryAlgo {
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_ping(
