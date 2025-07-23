@@ -63,6 +63,8 @@ where
                     round: timeout.round,
                     epoch: timeout.epoch,
                     id: tip.block_header.get_id(),
+                    v0_parent_id: None,
+                    v0_parent_round: None,
                 });
                 let vote_signature = <SCT::SignatureType as CertificateSignature>::sign::<
                     signing_domain::Vote,
