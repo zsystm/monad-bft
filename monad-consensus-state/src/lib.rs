@@ -250,6 +250,7 @@ where
         config: &ConsensusConfig<CCT, CRT>,
         root: RootInfo,
         high_certificate: RoundCertificate<ST, SCT, EPT>,
+        maybe_high_tip: Option<ConsensusTip<ST, SCT, EPT>>,
     ) -> Self {
         let pacemaker = Pacemaker::new(
             config.delta,
@@ -268,7 +269,7 @@ where
                 high_certificate,
                 // it's safe to start consensus without its last high_tip
                 // at worst, tip gets reverted
-                None,
+                maybe_high_tip,
             ),
             block_sync_requests: Default::default(),
         }
@@ -552,12 +553,12 @@ where
             .val_epoch_map
             .get_val_set(&epoch)
             .expect("proposal message was verified");
-        let block_round_leader = self
-            .election
-            .get_leader(block_round, validator_set.get_members());
-        if block_author != block_round_leader {
-            return None;
-        }
+        // let block_round_leader = self
+        //     .election
+        //     .get_leader(block_round, validator_set.get_members());
+        // if block_author != block_round_leader {
+        //     return None;
+        // }
 
         let ChainParams {
             tx_limit,
@@ -773,6 +774,9 @@ where
 
                         epoch: timeout.tminfo.epoch,
                         round: timeout.tminfo.round,
+
+                        v0_parent_id: None,
+                        v0_parent_round: None,
                     },
                     sig: *vote_signature,
                 },
@@ -878,7 +882,9 @@ where
         let expected_leader = self
             .election
             .get_leader(pacemaker_round, validator_set.get_members());
-        if round != pacemaker_round || author != expected_leader {
+        if round != pacemaker_round
+        // || author != expected_leader
+        {
             debug!(
                 ?pacemaker_round,
                 ?round,
@@ -895,14 +901,22 @@ where
             return cmds;
         };
 
-        if self
+        if (self
             .consensus
             .pending_block_tree
             .is_coherent(&tip.block_header.get_id())
 
             // TODO roll this into coherency, remove from try_vote
             // this is error-prone
-            && tip.block_header.timestamp_ns < self.block_timestamp.get_current_time()
+            && tip.block_header.timestamp_ns < self.block_timestamp.get_current_time())
+            // refuse to form NE for init tip
+            || self
+                .consensus
+                .safety
+                .maybe_high_tip()
+                .is_some_and(|safety_tip| {
+                    tip.block_header.get_id() == safety_tip.block_header.get_id()
+                })
         {
             debug!(
                 ?author,
@@ -1196,6 +1210,7 @@ where
         Checkpoint {
             root: self.consensus.pending_block_tree.root().block_id,
             high_certificate: self.consensus.pacemaker.high_certificate().clone(),
+            maybe_high_tip: self.consensus.safety.maybe_high_tip().cloned(),
             validator_sets: vec![
                 val_set_data(base_epoch)
                     .expect("checkpoint: no validator set populated for base_epoch"),
@@ -1444,6 +1459,9 @@ where
             id: tip.block_header.get_id(),
             round: proposal_round,
             epoch: self.consensus.pacemaker.get_current_epoch(),
+
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         debug!(?v, "vote successful");
@@ -2167,6 +2185,7 @@ mod test {
                         timestamp_ns: GENESIS_TIMESTAMP,
                     },
                     RoundCertificate::Qc(genesis_qc),
+                    None,
                 );
                 cs.safety = Safety::default(); // allow voting on round 1
 
@@ -2458,6 +2477,8 @@ mod test {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: Epoch(1),
             round: expected_qc_high_round,
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let vm1 = VoteMessage::<SignatureCollectionType>::new(v, &env.cert_keys[1]);

@@ -421,6 +421,8 @@ mod test {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: qc_epoch,
             round: qc_round,
+            v0_parent_id: None,
+            v0_parent_round: None,
         };
 
         let vote_hash = alloy_rlp::encode(vote);
