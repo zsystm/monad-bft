@@ -504,10 +504,7 @@ impl ReceiptStorageRepr {
 }
 
 pub fn decode_traces(traces: &BlockTraces) -> Result<Vec<Vec<Vec<CallFrame>>>, alloy_rlp::Error> {
-    traces
-        .into_iter()
-        .map(|trace| decode_trace(&trace))
-        .collect()
+    traces.iter().map(Vec::as_slice).map(decode_trace).collect()
 }
 
 pub fn decode_trace(trace: &[u8]) -> Result<Vec<Vec<CallFrame>>, alloy_rlp::Error> {

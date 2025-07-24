@@ -3,10 +3,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use alloy_primitives::{map::DefaultHasher, Address, Bytes, U8};
-use alloy_rlp::{Decodable, Encodable};
 use eyre::Result;
-use futures::future::ready;
 use monad_archive::prelude::*;
 
 use crate::{
@@ -182,7 +179,7 @@ pub async fn list_fault_ranges(
 
         // Print collapsed ranges by fault type
         for (fault_type, block_nums) in iter {
-            let ranges = collapse_to_ranges(&block_nums);
+            let ranges = collapse_to_ranges(block_nums);
 
             let total_blocks = ranges
                 .iter()
@@ -360,7 +357,7 @@ pub async fn inspect_block(
                     println!("\n  Raw data:");
                     println!("    Block: {:?}", &block);
                     println!("    Receipts: {:?}", &receipts);
-                    let call_frames = decode_traces(&traces);
+                    let call_frames = decode_traces(traces);
                     println!("    Call Frames: {:?}", call_frames);
                 } else {
                     println!("\n  Block Header:");
@@ -448,7 +445,7 @@ pub async fn inspect_block(
 #[allow(dead_code)]
 fn print_diff(replica_1: &Vec<Vec<Vec<CallFrame>>>, replica_2: &Vec<Vec<Vec<CallFrame>>>) {
     println!("\n\n=======");
-    dbg!(&replica_1 == &replica_2);
+    dbg!(replica_1 == replica_2);
     println!(
         "level 0: replica_1.len() = {}, replica_2.len() = {}",
         replica_1.len(),
@@ -456,7 +453,7 @@ fn print_diff(replica_1: &Vec<Vec<Vec<CallFrame>>>, replica_2: &Vec<Vec<Vec<Call
     );
 
     for (i_1, (replica_1, replica_2)) in replica_1.iter().zip(replica_2.iter()).enumerate() {
-        dbg!(&replica_1 == &replica_2);
+        dbg!(replica_1 == replica_2);
         println!(
             "level 1, i_1 = {}: replica_1.len() = {}, replica_2.len() = {}",
             i_1,
