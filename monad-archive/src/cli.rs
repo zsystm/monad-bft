@@ -154,10 +154,10 @@ impl BlockDataReaderArgs {
     pub async fn build(&self, metrics: &Metrics) -> Result<BlockDataReaderErased> {
         use BlockDataReaderArgs::*;
         Ok(match self {
-            Aws(args) => BlockDataArchive::new(args.build_blob_store(metrics).await).into(),
             Triedb(args) => TriedbReader::new(args).into(),
+            Aws(args) => BlockDataArchive::new(args.build_blob_store(metrics).await).into(),
             MongoDb(args) => BlockDataArchive::new(
-                MongoDbStorage::new_block_store(&args.url, &args.db, None, metrics.clone()).await?,
+                MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone()).await?,
             )
             .into(),
         })
@@ -179,14 +179,11 @@ impl ArchiveArgs {
     pub async fn build_block_data_archive(&self, metrics: &Metrics) -> Result<BlockDataArchive> {
         let store = match self {
             ArchiveArgs::Aws(args) => args.build_blob_store(metrics).await,
-            ArchiveArgs::MongoDb(args) => MongoDbStorage::new_block_store(
-                &args.url,
-                &args.db,
-                args.capped_size_gb,
-                metrics.clone(),
-            )
-            .await?
-            .into(),
+            ArchiveArgs::MongoDb(args) => {
+                MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone())
+                    .await?
+                    .into()
+            }
         };
         Ok(BlockDataArchive::new(store))
     }
@@ -204,17 +201,12 @@ impl ArchiveArgs {
                 )
             }
             ArchiveArgs::MongoDb(args) => (
-                MongoDbStorage::new_block_store(&args.url, &args.db, None, metrics.clone())
+                MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone())
                     .await?
                     .into(),
-                MongoDbStorage::new_index_store(
-                    &args.url,
-                    &args.db,
-                    args.capped_size_gb,
-                    metrics.clone(),
-                )
-                .await?
-                .into(),
+                MongoDbStorage::new_index_store(&args.url, &args.db, metrics.clone())
+                    .await?
+                    .into(),
             ),
         };
         Ok(TxIndexArchiver::new(
@@ -233,17 +225,12 @@ impl ArchiveArgs {
                 )
             }
             ArchiveArgs::MongoDb(args) => (
-                MongoDbStorage::new_block_store(&args.url, &args.db, None, metrics.clone())
+                MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone())
                     .await?
                     .into(),
-                MongoDbStorage::new_index_store(
-                    &args.url,
-                    &args.db,
-                    args.capped_size_gb,
-                    metrics.clone(),
-                )
-                .await?
-                .into(),
+                MongoDbStorage::new_index_store(&args.url, &args.db, metrics.clone())
+                    .await?
+                    .into(),
             ),
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
@@ -333,15 +320,18 @@ impl TrieDbCliArgs {
 pub struct MongoDbCliArgs {
     pub url: String,
     pub db: String,
-    pub capped_size_gb: Option<u64>,
 }
 
 impl MongoDbCliArgs {
     pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
-        Ok(MongoDbCliArgs {
+        let args = Self {
             url: next("storage args missing mongo url")?,
             db: next("storage args missing mongo db name")?,
-            capped_size_gb: next("").ok().and_then(|s| u64::from_str(&s).ok()),
-        })
+        };
+        let capped_size_gb = next("").ok().and_then(|s| u64::from_str(&s).ok());
+        if capped_size_gb.is_some() {
+            warn!("Capped size is deprecated, ignoring. You can remove this argument from the connection string");
+        }
+        Ok(args)
     }
 }
