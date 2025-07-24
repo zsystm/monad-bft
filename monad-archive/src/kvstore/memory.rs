@@ -1,6 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicBool, Arc},
+};
 
-use alloy_primitives::TxHash;
 use bytes::Bytes;
 use eyre::Result;
 use tokio::sync::Mutex;
@@ -10,7 +12,7 @@ use crate::prelude::*;
 #[derive(Clone)]
 pub struct MemoryStorage {
     pub db: Arc<Mutex<HashMap<String, Bytes>>>,
-    pub index: Arc<Mutex<HashMap<TxHash, TxIndexedData>>>,
+    pub should_fail: Arc<AtomicBool>,
     pub name: String,
 }
 
@@ -18,7 +20,7 @@ impl MemoryStorage {
     pub fn new(name: impl Into<String>) -> MemoryStorage {
         MemoryStorage {
             db: Arc::new(Mutex::new(HashMap::default())),
-            index: Arc::new(Mutex::new(HashMap::default())),
+            should_fail: Arc::new(AtomicBool::new(false)),
             name: name.into(),
         }
     }
@@ -26,6 +28,13 @@ impl MemoryStorage {
 
 impl KVReader for MemoryStorage {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
+        use std::sync::atomic::Ordering;
+
+        // Check if we should simulate a failure
+        if self.should_fail.load(Ordering::SeqCst) {
+            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+        }
+
         Ok(self.db.lock().await.get(key).map(ToOwned::to_owned))
     }
 }
@@ -36,6 +45,13 @@ impl KVStore for MemoryStorage {
     }
 
     async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+        use std::sync::atomic::Ordering;
+
+        // Check if we should simulate a failure
+        if self.should_fail.load(Ordering::SeqCst) {
+            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+        }
+
         self.db
             .lock()
             .await
@@ -44,6 +60,13 @@ impl KVStore for MemoryStorage {
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        use std::sync::atomic::Ordering;
+
+        // Check if we should simulate a failure
+        if self.should_fail.load(Ordering::SeqCst) {
+            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+        }
+
         Ok(self
             .db
             .lock()
