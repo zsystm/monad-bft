@@ -834,6 +834,7 @@ async fn main() -> std::io::Result<()> {
                 url.clone(),
                 db_name.clone(),
                 monad_archive::prelude::Metrics::none(),
+                args.mongo_max_time_get_millis.map(Duration::from_millis),
             )
             .await
             {
@@ -843,7 +844,11 @@ async fn main() -> std::io::Result<()> {
                         has_aws_fallback,
                         "MongoDB archive reader initialized successfully"
                     );
-                    Some(mongo_reader.with_fallback(aws_archive_reader))
+                    Some(mongo_reader.with_fallback(
+                        aws_archive_reader,
+                        args.mongo_failure_threshold,
+                        args.mongo_failure_timeout_millis.map(Duration::from_millis),
+                    ))
                 }
                 Err(e) => {
                     warn!(error = %e, "Unable to initialize MongoDB archive reader");
