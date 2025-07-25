@@ -32,7 +32,6 @@ impl From<TxStatus> for TxPoolStatusResult {
                     EthTxPoolEvictReason::Expired => "Transaction expired".to_string(),
                 }),
             ),
-            TxStatus::Replaced => ("replaced", None),
             TxStatus::Committed => ("committed", None),
         };
 

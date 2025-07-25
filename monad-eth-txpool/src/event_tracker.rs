@@ -1,7 +1,7 @@
 use std::{sync::atomic::Ordering, time::Instant};
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
-use alloy_primitives::TxHash;
+use alloy_primitives::{Address, TxHash};
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
 };
@@ -59,7 +59,13 @@ impl<'a> EthTxPoolEventTracker<'a> {
         });
     }
 
-    pub fn replace_pending(&mut self, old_tx_hash: TxHash, new_tx_hash: TxHash, new_owned: bool) {
+    pub fn replace_pending(
+        &mut self,
+        address: &Address,
+        old_tx_hash: TxHash,
+        new_tx_hash: TxHash,
+        new_owned: bool,
+    ) {
         if new_owned {
             self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
         } else {
@@ -68,15 +74,25 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .fetch_add(1, Ordering::SeqCst);
         }
 
-        self.events.push(EthTxPoolEvent::Replace {
-            old_tx_hash,
-            new_tx_hash,
-            new_owned,
+        self.events.push(EthTxPoolEvent::Drop {
+            tx_hash: old_tx_hash,
+            reason: EthTxPoolDropReason::ReplacedByHigherPriority,
+        });
+        self.events.push(EthTxPoolEvent::Insert {
+            tx_hash: new_tx_hash,
+            address: *address,
+            owned: new_owned,
             tracked: false,
         });
     }
 
-    pub fn replace_tracked(&mut self, old_tx_hash: TxHash, new_tx_hash: TxHash, new_owned: bool) {
+    pub fn replace_tracked(
+        &mut self,
+        address: &Address,
+        old_tx_hash: TxHash,
+        new_tx_hash: TxHash,
+        new_owned: bool,
+    ) {
         if new_owned {
             self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
         } else {
@@ -85,10 +101,14 @@ impl<'a> EthTxPoolEventTracker<'a> {
                 .fetch_add(1, Ordering::SeqCst);
         }
 
-        self.events.push(EthTxPoolEvent::Replace {
-            old_tx_hash,
-            new_tx_hash,
-            new_owned,
+        self.events.push(EthTxPoolEvent::Drop {
+            tx_hash: old_tx_hash,
+            reason: EthTxPoolDropReason::ReplacedByHigherPriority,
+        });
+        self.events.push(EthTxPoolEvent::Insert {
+            tx_hash: new_tx_hash,
+            address: *address,
+            owned: new_owned,
             tracked: true,
         });
     }
@@ -121,6 +141,11 @@ impl<'a> EthTxPoolEventTracker<'a> {
             EthTxPoolDropReason::ExistingHigherPriority => {
                 self.metrics
                     .drop_existing_higher_priority
+                    .fetch_add(1, Ordering::SeqCst);
+            }
+            EthTxPoolDropReason::ReplacedByHigherPriority => {
+                self.metrics
+                    .drop_replaced_by_higher_priority
                     .fetch_add(1, Ordering::SeqCst);
             }
             EthTxPoolDropReason::PoolFull => {
