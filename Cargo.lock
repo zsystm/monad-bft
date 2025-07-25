@@ -5561,6 +5561,7 @@ name = "monad-rpc"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "actix-codec",
  "actix-http",
  "actix-rt",
  "actix-test",
@@ -5577,6 +5578,7 @@ dependencies = [
  "alloy-signer-local",
  "arbitrary",
  "bytes",
+ "bytestring",
  "clap 4.5.41",
  "criterion",
  "dashmap",

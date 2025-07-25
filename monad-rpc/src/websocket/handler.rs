@@ -1,12 +1,11 @@
 use std::{
     collections::HashMap,
-    pin::pin,
     time::{Duration, Instant},
 };
 
 use actix_http::ws;
-use actix_web::{web, HttpRequest, HttpResponse};
-use actix_ws::{AggregatedMessage, CloseCode, CloseReason};
+use actix_web::{body::MessageBody, web, HttpRequest, HttpResponse};
+use actix_ws::{CloseCode, CloseReason, Message};
 use alloy_rpc_types::eth::{pubsub::Params, Filter, FilteredParams};
 use futures::StreamExt;
 use itertools::Either;
@@ -17,6 +16,7 @@ use serde_json::{value::RawValue, Value};
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
+use super::{session::Session, stream::MessageStream};
 use crate::{
     eth_json_types::{
         serialize_result, EthSubscribeRequest, EthSubscribeResult, EthUnsubscribeRequest,
@@ -29,7 +29,6 @@ use crate::{
     timing::RequestId,
 };
 
-const RECV_MAX_CONTINUATION_SIZE: usize = 2 * 1024 * 1024;
 const RECV_MAX_FRAME_SIZE: usize = 256 * 1024;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
@@ -44,7 +43,7 @@ pub async fn ws_handler(
     app_state: web::Data<MonadRpcResources>,
     event_server_client: web::Data<EventServerClient>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let rx = event_server_client.subscribe().map_err(|err| {
+    let broadcast_rx = event_server_client.subscribe().map_err(|err| {
         match err {
             EventServerClientError::ServerCrashed => {
                 warn!("Closing websocket connection with internal server error, reason: WebSocketServer crashed!");
@@ -54,14 +53,27 @@ pub async fn ws_handler(
         actix_web::error::ErrorInternalServerError("WebSocketServer is currently unavailable, please try again later.")
     })?;
 
-    let (res, session, msg_stream) = actix_ws::handle(&req, stream)?;
+    let (res, session, msg_stream) = {
+        let mut response = actix_http::ws::handshake(req.head())?;
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+
+        (
+            response
+                .message_body(
+                    actix_web::body::BodyStream::new(super::stream::StreamingBody::new(rx)).boxed(),
+                )?
+                .into(),
+            Session::new(tx),
+            MessageStream::new(stream.into_inner()),
+        )
+    };
 
     actix_rt::spawn(handler(
         session,
         msg_stream,
         req.connection_info().host().to_string(),
         req.connection_info().peer_addr().map(ToString::to_string),
-        rx,
+        broadcast_rx,
         app_state,
     ));
 
@@ -69,11 +81,11 @@ pub async fn ws_handler(
 }
 
 async fn handler(
-    mut session: actix_ws::Session,
-    msg_stream: actix_ws::MessageStream,
+    mut session: Session,
+    msg_stream: MessageStream,
     hostname: String,
     peer_addr: Option<String>,
-    rx: broadcast::Receiver<EventServerEvent>,
+    mut broadcast_rx: broadcast::Receiver<EventServerEvent>,
     app_state: web::Data<MonadRpcResources>,
 ) {
     debug!(?hostname, ?peer_addr, "ws connection opened");
@@ -85,13 +97,9 @@ async fn handler(
     let mut last_heartbeat = Instant::now();
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 
-    let msg_stream = msg_stream
-        .max_frame_size(RECV_MAX_FRAME_SIZE)
-        .aggregate_continuations()
-        .max_continuation_size(RECV_MAX_CONTINUATION_SIZE);
-
-    let mut msg_stream = pin!(msg_stream);
-    let mut broadcast_rx = pin!(rx);
+    let mut msg_stream = msg_stream.max_frame_size(RECV_MAX_FRAME_SIZE);
+    // .aggregate_continuations()
+    // .max_continuation_size(RECV_MAX_CONTINUATION_SIZE);
 
     let mut subscriptions: HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>> =
         HashMap::new();
@@ -112,17 +120,17 @@ async fn handler(
             }
             msg = msg_stream.next() => {
                 match msg {
-                    Some(Ok(AggregatedMessage::Ping(bytes))) => {
+                    Some(Ok(Message::Ping(bytes))) => {
                         last_heartbeat = Instant::now();
 
                         if let Err(err) = session.pong(&bytes).await {
                             warn!(?hostname, ?peer_addr, ?err, "ws handler pong error");
                         }
                     }
-                    Some(Ok(AggregatedMessage::Pong(_))) => {
+                    Some(Ok(Message::Pong(_))) => {
                         last_heartbeat = Instant::now();
                     }
-                    Some(Ok(AggregatedMessage::Text(body))) => {
+                    Some(Ok(Message::Text(body))) => {
                         last_heartbeat = Instant::now();
 
                         let request = to_request::<Request>(&body);
@@ -137,13 +145,13 @@ async fn handler(
                                 if let Err(err) = session
                                     .text(to_response(&crate::jsonrpc::Response::from_error(e)))
                                     .await {
-                                    warn!(?err, "ws handler AggregatedMessage text error");
+                                    warn!(?err, "ws handler Message text error");
                                     break None;
                                 }
                             }
                         };
                     }
-                    Some(Ok(AggregatedMessage::Binary(body))) => {
+                    Some(Ok(Message::Binary(body))) => {
                         last_heartbeat = Instant::now();
 
                         let request = to_request::<Request>(&body);
@@ -158,16 +166,24 @@ async fn handler(
                                 if let Err(err) = session
                                     .binary(to_response(&crate::jsonrpc::Response::from_error(e)))
                                     .await {
-                                    warn!(?err, "ws handler AggregatedMessage binary error");
+                                    warn!(?err, "ws handler Message binary error");
                                     break None;
                                 }
                             }
                         };
                     }
-                    Some(Ok(AggregatedMessage::Close(close_reason))) => {
+                    Some(Ok(Message::Close(close_reason))) => {
                         debug!(?hostname, ?peer_addr, ?close_reason, "ws connection closed by request");
                         break None;
                     }
+                    Some(Ok(Message::Continuation(_))) => {
+                        warn!("ws connection continuation not supported");
+                        break Some(CloseReason {
+                            code: ws::CloseCode::Protocol,
+                            description: Some("ws continuation not supported".to_string())
+                        });
+                    }
+                    Some(Ok(Message::Nop)) => {}
                     Some(Err(err)) => {
                         error!(?err, "ws connection protocol error");
                         break Some(CloseReason {
@@ -211,12 +227,7 @@ async fn handler(
 
     debug!(?hostname, ?peer_addr, ?close_reason, "ws connection closed");
 
-    if let Some(reason) = close_reason {
-        session
-            .close(Some(reason))
-            .await
-            .unwrap_or_else(|err| warn!("ws handler close error: {err:?}"));
-    }
+    let _ = session.close(close_reason).await;
 
     if let Some(metrics) = &app_state.metrics {
         metrics.record_websocket_connection(-1);
@@ -228,7 +239,7 @@ async fn handler(
 }
 
 async fn handle_notification(
-    mut session: &mut actix_ws::Session,
+    session: &mut Session,
     subscriptions: &HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     msg: EventServerEvent,
 ) -> Result<(), CloseReason> {
@@ -337,7 +348,7 @@ fn apply_logs_filter<'a>(
             header.logs_bloom,
             &FilteredParams::topics_filter(&filter.topics),
         ) {
-            // The block's bloom filter doesn't match the filter, so we can skip this block.
+            // The block's bloom filter doesn't match the filter, so we can skip these logs.
             return None;
         }
 
@@ -351,7 +362,7 @@ fn apply_logs_filter<'a>(
 }
 
 async fn handle_request(
-    ctx: &mut actix_ws::Session,
+    ctx: &mut Session,
     subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     app_state: &MonadRpcResources,
     request: Request,
@@ -518,7 +529,7 @@ async fn handle_request(
 
 #[inline]
 async fn send_notification(
-    session: &mut actix_ws::Session,
+    session: &mut Session,
     id: &SubscriptionId,
     result: impl AsRef<RawValue>,
 ) -> Result<(), CloseReason> {
