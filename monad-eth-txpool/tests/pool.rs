@@ -1105,3 +1105,40 @@ fn test_exceed_byte_limit() {
         },
     ]);
 }
+
+#[test]
+fn test_compute_balances() {
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 1000);
+    let txns = vec![tx1, tx2];
+
+    let nonces: BTreeMap<Address, u64> = BTreeMap::new();
+    let state_backend = {
+        InMemoryStateInner::new(Balance::MAX, SeqNum(4), InMemoryBlockState::genesis(nonces))
+    };
+    let mut current_round = 1u64;
+    let mut current_seq_num = 1u64;
+
+    let extending_blocks = None;
+    let block_policy = make_test_block_policy();
+    let block = generate_block_with_txs(
+                    Round(current_round),
+                    SeqNum(current_seq_num),
+                    txns
+                        .into_iter()
+                        .map(|tx| {
+                            let signer = tx.recover_signer().unwrap();
+                            Recovered::new_unchecked(tx, signer)
+                        })
+                        .collect(),
+                );
+
+    let tx_signers = block
+        .validated_txns
+        .iter()
+        .map(|txn| txn.signer())
+        .collect_vec();
+
+    let balances = block_policy.compute_account_base_balances(block.get_seq_num(), &state_backend, extending_blocks, tx_signers.iter());
+
+}

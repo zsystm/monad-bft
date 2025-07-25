@@ -14,7 +14,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::{
-    compute_txn_carriage_cost, compute_txn_max_value, EthValidatedBlock, TxnFee,
+    compute_txn_max_gas_cost, compute_txn_max_value, EthValidatedBlock, TxnFee,
 };
 use monad_eth_types::{Balance, EthBlockBody};
 use monad_secp::KeyPair;
@@ -150,23 +150,23 @@ pub fn generate_block_with_txs(
             (
                 t.signer(),
                 compute_txn_max_value(t),
-                compute_txn_carriage_cost(t),
+                compute_txn_max_gas_cost(t),
             )
         })
         .fold(
             BTreeMap::new(),
-            |mut costs, (address, max_cost, carriage_cost)| {
+            |mut costs, (address, max_cost, max_gas_cost)| {
                 costs
                     .entry(address)
                     .or_insert(TxnFee {
                         max_cost: Balance::ZERO,
-                        carriage_cost: Balance::ZERO,
+                        max_gas_cost: Balance::ZERO,
                     })
                     .max_cost += max_cost;
 
                 costs
                     .entry(address)
-                    .and_modify(|e| e.carriage_cost += carriage_cost);
+                    .and_modify(|e| e.max_gas_cost += max_gas_cost);
 
                 costs
             },

@@ -215,7 +215,7 @@ where
             proposal_byte_limit,
             tx_heap,
             proposed_seq_num,
-            block_policy.min_blocks_since_last_txn(),
+            block_policy.min_blocks_since_latest_txn(),
             account_balances,
         );
 
@@ -354,7 +354,7 @@ where
         proposal_byte_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
         proposed_seq_num: SeqNum,
-        min_blocks_since_last_txn: SeqNum,
+        min_blocks_since_latest_txn: SeqNum,
         mut account_balances: BTreeMap<&Address, AccountBalanceState>,
     ) -> (u64, Vec<Recovered<TxEnvelope>>) {
         assert!(tx_limit > 0);
@@ -388,11 +388,10 @@ where
             };
 
             let Some(new_reserve_balance) =
-                ValidEthTransaction::apply_carriage_cost(tx, account_balance.reserve_balance)
+                ValidEthTransaction::apply_max_gas_cost(tx, account_balance.remaining_reserve_balance)
             else {
                 return TrackedTxHeapDrainAction::Skip;
             };
-            account_balance.reserve_balance = new_reserve_balance;
 
 
             let Some(new_account_balance) =
@@ -401,14 +400,17 @@ where
                 return TrackedTxHeapDrainAction::Skip;
             };
 
-            let can_charge_into_reserve = proposed_seq_num >= (account_balance.last_txn_seqnum + min_blocks_since_last_txn);
-            let charges_into_reserve  = new_account_balance < account_balance.balance.min(account_balance.max_reserve_balance);
-            if !can_charge_into_reserve && charges_into_reserve {
-                debug!(txn_hash = ?tx.hash(), "skip. txn charges into reserve balance");
+            let can_transfer_out_of_reserve_balance = proposed_seq_num >= (account_balance.block_seqnum_of_latest_txn + min_blocks_since_latest_txn);
+            let transfers_out_of_reserve  = new_account_balance < new_reserve_balance;
+
+            if !can_transfer_out_of_reserve_balance && transfers_out_of_reserve {
+                debug!(txn_hash = ?tx.hash(), ?new_account_balance, ?new_reserve_balance, block_seqnum_of_latest_txn = ?account_balance.block_seqnum_of_latest_txn, "skip. txn transfers out of reserve balance");
                 return TrackedTxHeapDrainAction::Skip;
             }
 
-            trace!{txn_hash = ?tx.hash(), reserve = ?account_balance.reserve_balance, balance = ?account_balance.balance, ?new_account_balance, ?can_charge_into_reserve, "txn included in proposal"};
+            trace!{txn_hash = ?tx.hash(), ?new_reserve_balance, ?new_account_balance, ?proposed_seq_num, ?can_transfer_out_of_reserve_balance, "txn included in proposal"};
+
+            account_balance.remaining_reserve_balance = new_reserve_balance;
             account_balance.balance = new_account_balance;
 
             total_gas += tx.gas_limit();

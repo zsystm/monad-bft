@@ -18,7 +18,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_carriage_cost, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
+    compute_txn_max_gas_cost, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock, TxnFee, TxnFees,
 };
 use monad_eth_types::{
@@ -132,11 +132,11 @@ where
 
             let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(TxnFee {
                 max_cost: Balance::ZERO,
-                carriage_cost: Balance::ZERO,
+                max_gas_cost: Balance::ZERO,
             });
-            txn_fee_entry.carriage_cost = txn_fee_entry
-                .carriage_cost
-                .saturating_add(compute_txn_carriage_cost(eth_txn));
+            txn_fee_entry.max_gas_cost = txn_fee_entry
+                .max_gas_cost
+                .saturating_add(compute_txn_max_gas_cost(eth_txn));
             txn_fee_entry.max_cost = txn_fee_entry
                 .max_cost
                 .saturating_add(compute_txn_max_value(eth_txn));

@@ -10,7 +10,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_carriage_cost, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
+    compute_txn_max_gas_cost, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
 };
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
@@ -26,7 +26,7 @@ pub struct ValidEthTransaction {
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
     max_value: Balance,
-    carriage_cost: Balance,
+    max_gas_cost: Balance,
     effective_tip_per_gas: u128,
 }
 
@@ -65,7 +65,7 @@ impl ValidEthTransaction {
         }
 
         let max_value = compute_txn_max_value(&tx);
-        let carriage_cost = compute_txn_carriage_cost(&tx);
+        let max_gas_cost = compute_txn_max_gas_cost(&tx);
         let effective_tip_per_gas = tx
             .effective_tip_per_gas(BASE_FEE_PER_GAS)
             .unwrap_or_default();
@@ -76,7 +76,7 @@ impl ValidEthTransaction {
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
-            carriage_cost,
+            max_gas_cost,
             effective_tip_per_gas,
         })
     }
@@ -98,17 +98,17 @@ impl ValidEthTransaction {
         None
     }
 
-    pub fn apply_carriage_cost(&self, reserve_balance: Balance) -> Option<Balance> {
-        if let Some(reserve_balance) = reserve_balance.checked_sub(self.carriage_cost) {
+    pub fn apply_max_gas_cost(&self, reserve_balance: Balance) -> Option<Balance> {
+        if let Some(reserve_balance) = reserve_balance.checked_sub(self.max_gas_cost) {
             return Some(reserve_balance);
         }
 
         trace!(
             "AccountBalance insert_tx 3 \
                             do not add txn to the pool. insufficient reserve balance after applying carriage cost: {reserve_balance:?} \
-                            carriage_cost: {carriage_cost:?} \
+                            max_gas_cost: {max_gas_cost:?} \
                             for address: {address:?}",
-            carriage_cost = self.carriage_cost,
+            max_gas_cost = self.max_gas_cost,
             address = self.tx.signer()
         );
 

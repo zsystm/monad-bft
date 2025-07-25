@@ -34,7 +34,7 @@ pub enum ReserveBalanceCheck {
 #[derive(Debug, Clone)]
 pub struct TxnFee {
     pub max_cost: Balance,
-    pub carriage_cost: Balance,
+    pub max_gas_cost: Balance,
 }
 pub type TxnFees = BTreeMap<Address, TxnFee>;
 
@@ -80,7 +80,7 @@ pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
     txn_value.saturating_add(gas_cost)
 }
 
-pub fn compute_txn_carriage_cost(txn: &TxEnvelope) -> U256 {
+pub fn compute_txn_max_gas_cost(txn: &TxEnvelope) -> U256 {
     U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas())
 }
 
@@ -144,18 +144,18 @@ struct BlockLookupIndex {
 #[derive(Debug, Clone)]
 pub struct AccountBalanceState {
     pub balance: Balance,
-    pub reserve_balance: Balance,
+    pub remaining_reserve_balance: Balance,
     pub max_reserve_balance: Balance,
-    pub last_txn_seqnum: SeqNum,
+    pub block_seqnum_of_latest_txn: SeqNum,
 }
 
 impl AccountBalanceState {
     pub fn new(max_reserve_balance: Balance) -> Self {
         AccountBalanceState {
             balance: Balance::ZERO,
-            reserve_balance: Balance::ZERO,
+            remaining_reserve_balance: Balance::ZERO,
             max_reserve_balance,
-            last_txn_seqnum: GENESIS_SEQ_NUM,
+            block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
         }
     }
 }
@@ -299,9 +299,9 @@ struct CommittedBlkBuffer<ST, SCT> {
 }
 
 struct CommittedTxnFeeResult {
-    carriage_cost: Balance,
-    max_cost: Balance,
-    last_txn_seq_num: SeqNum,
+    cumulative_max_gas_cost: Balance,
+    cumulative_max_cost: Balance,
+    block_seqnum_of_latest_txn: SeqNum,
     next_validate: SeqNum, // next block number to validate; included for assertions only
 }
 
@@ -339,16 +339,18 @@ where
         eth_address: &Address,
         execution_delay: SeqNum,
     ) -> CommittedTxnFeeResult {
-        let mut carriage_cost = Balance::ZERO;
-        let mut max_cost = Balance::ZERO;
+        let mut cumulative_max_gas_cost = Balance::ZERO;
+        let mut cumulative_max_cost = Balance::ZERO;
         let mut next_validate = base_seq_num + SeqNum(1);
-        let mut last_txn_seq_num = GENESIS_SEQ_NUM;
+        let mut block_seqnum_of_latest_txn = GENESIS_SEQ_NUM;
 
-        // Compute balance from blocks before the base
+        // Compute the block seqnum of the latest txn from the blocks before the base
         let start_seq_num = next_validate.max(execution_delay) - execution_delay;
         for (&cache_seq_num, block) in self.blocks.range(start_seq_num..next_validate) {
+            println!("compute_txn_fee look back: {:?}", cache_seq_num);
             if block.fees.get(eth_address).is_some() {
-                last_txn_seq_num = cache_seq_num;
+                block_seqnum_of_latest_txn = cache_seq_num;
+                println!("compute_txn_fee update last_seq_num: {:?}", block_seqnum_of_latest_txn);
             }
         }
 
@@ -356,17 +358,18 @@ where
         for (&cache_seq_num, block) in self.blocks.range(next_validate..) {
             assert_eq!(next_validate, cache_seq_num);
             if let Some(txn_fee) = block.fees.get(eth_address) {
-                carriage_cost = carriage_cost.saturating_add(txn_fee.carriage_cost);
-                max_cost = max_cost.saturating_add(txn_fee.max_cost);
+                cumulative_max_gas_cost =
+                    cumulative_max_gas_cost.saturating_add(txn_fee.max_gas_cost);
+                cumulative_max_cost = cumulative_max_cost.saturating_add(txn_fee.max_cost);
             }
-            last_txn_seq_num = next_validate;
+            block_seqnum_of_latest_txn = next_validate;
             next_validate += SeqNum(1);
         }
 
         CommittedTxnFeeResult {
-            max_cost,
-            carriage_cost,
-            last_txn_seq_num,
+            cumulative_max_cost,
+            cumulative_max_gas_cost,
+            block_seqnum_of_latest_txn,
             next_validate,
         }
     }
@@ -430,7 +433,8 @@ where
 
     max_reserve_balance: Balance,
 
-    min_blocks_since_last_txn: SeqNum,
+    // Smallest number of blocks after the latest txn to allow transferring out of reserve balance
+    min_blocks_since_latest_txn: SeqNum,
 }
 
 impl<ST, SCT> EthBlockPolicy<ST, SCT>
@@ -450,7 +454,7 @@ where
             execution_delay: SeqNum(execution_delay),
             chain_id,
             max_reserve_balance: Balance::from(max_reserve_balance),
-            min_blocks_since_last_txn: SeqNum(0), // This is a temporary setting until execution branch is updated. It should be execution_delay after.
+            min_blocks_since_latest_txn: SeqNum(0), // This is a temporary setting until execution branch is updated. It should be execution_delay after.
         }
     }
 
@@ -577,7 +581,7 @@ where
     where
         SCT: SignatureCollection,
     {
-        trace!(?self.min_blocks_since_last_txn, ?consensus_block_seq_num, "compute_account_base_balances");
+        trace!(?self.min_blocks_since_latest_txn, ?consensus_block_seq_num, "compute_account_base_balances");
 
         // calculation correct only if GENESIS_SEQ_NUM == 0
         assert_eq!(GENESIS_SEQ_NUM, SeqNum(0));
@@ -598,9 +602,9 @@ where
                     |status| {
                         AccountBalanceState {
                             balance: status.balance,
-                            reserve_balance: status.balance.min(self.max_reserve_balance),
+                            remaining_reserve_balance: status.balance.min(self.max_reserve_balance),
                             max_reserve_balance: self.max_reserve_balance,
-                            last_txn_seqnum: base_seq_num, // most pessimistic assumption
+                            block_seqnum_of_latest_txn: base_seq_num, // most pessimistic assumption
                         }
                     },
                 )
@@ -613,9 +617,9 @@ where
             .map(|(address, mut balance_state)| {
                 // Apply Txn Fees for the txns from committed blocks
                 let CommittedTxnFeeResult {
-                    mut max_cost,
-                    mut carriage_cost,
-                    mut last_txn_seq_num,
+                    mut cumulative_max_cost,
+                    mut cumulative_max_gas_cost,
+                    mut block_seqnum_of_latest_txn,
                     mut next_validate,
                 } = self.committed_cache.compute_txn_fee(
                     base_seq_num,
@@ -623,45 +627,49 @@ where
                     self.execution_delay,
                 );
 
-                let mut can_charge_into_reserve = next_validate
-                    >= (balance_state.last_txn_seqnum + self.min_blocks_since_last_txn);
-
-                if balance_state.reserve_balance < carriage_cost {
+                if balance_state.remaining_reserve_balance < cumulative_max_gas_cost {
                     panic!(
-                        "Committed block with insufficient reserve balance: {:?} \
+                        "Majority extended an invalid block with insufficient reserve balance: {:?}
                             Transaction Carriage Cost Committed: {:?} \
                             consensus_block_seq_num: {:?} \
                             for address: {:?}",
-                        balance_state, carriage_cost, consensus_block_seq_num, address
+                        balance_state, cumulative_max_gas_cost, consensus_block_seq_num, address
                     );
                 }
 
-                if !can_charge_into_reserve
-                    && (balance_state
-                        .balance
-                        .saturating_sub(balance_state.reserve_balance)
-                        < max_cost)
-                    || can_charge_into_reserve && (balance_state.balance < max_cost)
+                // a transaction is allowed to transfer out of the reserve balance if and only if it's an EOA that is not delegated and there were no transactions for that account in the last k blocks
+                let can_transfer_out_of_reserve_balance = next_validate
+                    >= (balance_state.block_seqnum_of_latest_txn
+                        + self.min_blocks_since_latest_txn);
+
+                let transfers_out_of_reserve_balance = balance_state
+                    .balance
+                    .saturating_sub(balance_state.remaining_reserve_balance)
+                    < cumulative_max_cost;
+
+                if !can_transfer_out_of_reserve_balance && transfers_out_of_reserve_balance
+                    || can_transfer_out_of_reserve_balance
+                        && (balance_state.balance < cumulative_max_cost)
                 {
                     warn!(
                         ?balance_state,
-                        ?can_charge_into_reserve,
-                        ?max_cost,
-                        ?carriage_cost,
+                        ?can_transfer_out_of_reserve_balance,
+                        ?cumulative_max_cost,
+                        ?cumulative_max_gas_cost,
                         ?consensus_block_seq_num,
                         ?address,
                         "Committed block with insufficient balance",
                     );
                 }
-                balance_state.balance = balance_state.balance.saturating_sub(max_cost);
+                balance_state.balance = balance_state.balance.saturating_sub(cumulative_max_cost);
 
-                balance_state.reserve_balance -= carriage_cost;
+                balance_state.remaining_reserve_balance -= cumulative_max_gas_cost;
 
                 trace!(
                     ?balance_state,
-                    ?can_charge_into_reserve,
-                    ?max_cost,
-                    ?carriage_cost,
+                    ?can_transfer_out_of_reserve_balance,
+                    ?cumulative_max_cost,
+                    ?cumulative_max_gas_cost,
                     ?consensus_block_seq_num,
                     ?next_validate,
                     ?address,
@@ -670,7 +678,7 @@ where
 
                 // Apply Txn Fees for txns in extending blocks
                 let mut max_cost_pending: Balance = Balance::ZERO;
-                let mut carriage_cost_pending: Balance = Balance::ZERO;
+                let mut max_gas_cost_pending: Balance = Balance::ZERO;
                 if let Some(blocks) = extending_blocks {
                     // handle the case where base_seq_num is a pending block
                     let next_blocks = blocks
@@ -680,39 +688,42 @@ where
                         assert_eq!(next_validate, extending_block.get_seq_num());
                         if let Some(txn_fee) = extending_block.txn_fees.get(address) {
                             max_cost_pending = max_cost_pending.saturating_add(txn_fee.max_cost);
-                            carriage_cost_pending =
-                                carriage_cost_pending.saturating_add(txn_fee.carriage_cost);
-                            balance_state.last_txn_seqnum = next_validate;
+                            max_gas_cost_pending =
+                                max_gas_cost_pending.saturating_add(txn_fee.max_gas_cost);
+                            balance_state.block_seqnum_of_latest_txn = next_validate;
                         }
                         next_validate += SeqNum(1);
                     }
                 }
 
-                if balance_state.reserve_balance < carriage_cost_pending {
+                if balance_state.remaining_reserve_balance < max_gas_cost_pending {
                     panic!(
                         "Pending block with insufficient reserve balance: {:?} \
                             Transaction Carriage Cost Pending {:?} \
                             consensus block:seq num {:?} \
                             for address: {:?}",
-                        balance_state, carriage_cost_pending, consensus_block_seq_num, address
+                        balance_state, max_gas_cost_pending, consensus_block_seq_num, address
                     );
                 }
 
-                can_charge_into_reserve = next_validate
-                    >= (balance_state.last_txn_seqnum + self.min_blocks_since_last_txn);
+                let can_transfer_out_of_reserve_balance = next_validate
+                    >= (balance_state.block_seqnum_of_latest_txn
+                        + self.min_blocks_since_latest_txn);
 
-                if !can_charge_into_reserve
-                    && (balance_state
-                        .balance
-                        .saturating_sub(balance_state.reserve_balance)
-                        < max_cost_pending)
-                    || can_charge_into_reserve && (balance_state.balance < max_cost_pending)
+                let transfers_out_of_reserve_balance = balance_state
+                    .balance
+                    .saturating_sub(balance_state.remaining_reserve_balance)
+                    < max_cost_pending;
+
+                if !can_transfer_out_of_reserve_balance && transfers_out_of_reserve_balance
+                    || can_transfer_out_of_reserve_balance
+                        && (balance_state.balance < max_cost_pending)
                 {
                     warn!(
                         ?balance_state,
-                        ?carriage_cost_pending,
+                        ?max_gas_cost_pending,
                         ?consensus_block_seq_num,
-                        ?can_charge_into_reserve,
+                        ?can_transfer_out_of_reserve_balance,
                         ?address,
                         "Pending block with insufficient balance"
                     );
@@ -720,13 +731,13 @@ where
 
                 balance_state.balance = balance_state.balance.saturating_sub(max_cost_pending);
 
-                balance_state.reserve_balance -= carriage_cost_pending;
+                balance_state.remaining_reserve_balance -= max_gas_cost_pending;
 
                 trace!(
                     ?balance_state,
-                    ?can_charge_into_reserve,
-                    ?max_cost,
-                    ?carriage_cost,
+                    ?can_transfer_out_of_reserve_balance,
+                    ?cumulative_max_cost,
+                    ?cumulative_max_gas_cost,
                     ?consensus_block_seq_num,
                     ?next_validate,
                     ?address,
@@ -743,8 +754,8 @@ where
         self.chain_id
     }
 
-    pub fn min_blocks_since_last_txn(&self) -> SeqNum {
-        self.min_blocks_since_last_txn
+    pub fn min_blocks_since_latest_txn(&self) -> SeqNum {
+        self.min_blocks_since_latest_txn
     }
 
     pub fn max_reserve_balance(&self) -> Balance {
@@ -867,66 +878,81 @@ where
                 .expect("account_balances should have been populated");
 
             // if an account is not delegated and had no transactions in the last execution_delay blocks, then can charge into reserve.
-            let blocks_since_last_txn = block_seq_num.max(account_balance.last_txn_seqnum)
-                - account_balance.last_txn_seqnum;
+            let blocks_since_latest_txn = block_seq_num
+                .max(account_balance.block_seqnum_of_latest_txn)
+                - account_balance.block_seqnum_of_latest_txn;
 
-            let can_charge_into_reserve = blocks_since_last_txn >= self.min_blocks_since_last_txn;
-            let max_cost = compute_txn_max_value(txn);
-            let carriage_cost = compute_txn_carriage_cost(txn);
+            let txn_max_cost = compute_txn_max_value(txn);
+            let txn_max_gas_cost = compute_txn_max_gas_cost(txn);
 
-            if account_balance.reserve_balance >= carriage_cost
-                && (!can_charge_into_reserve
-                    && (account_balance
-                        .balance
-                        .saturating_sub(account_balance.reserve_balance)
-                        >= max_cost)
-                    || can_charge_into_reserve && (account_balance.balance >= max_cost))
-            {
-                account_balance.balance -= max_cost;
-                account_balance.reserve_balance -= carriage_cost;
-                *expected_nonce += 1;
+            if account_balance.remaining_reserve_balance < txn_max_gas_cost {
                 trace!(
                     ?eth_address,
                     seq_num =? block.header().seq_num,
                     round =? block.header().block_round,
                     ?account_balance,
-                    ?max_cost,
-                    ?carriage_cost,
-                    ?can_charge_into_reserve,
-                    ?blocks_since_last_txn,
-                    "AccountBalance - check_coherency 2"
-                );
-            } else {
-                trace!(
-                    ?eth_address,
-                    seq_num =? block.header().seq_num,
-                    round =? block.header().block_round,
-                    ?account_balance,
-                    ?max_cost,
-                    ?carriage_cost,
-                    ?can_charge_into_reserve,
-                    ?blocks_since_last_txn,
+                    ?txn_max_cost,
+                    ?txn_max_gas_cost,
+                    ?blocks_since_latest_txn,
                     "AccountBalance - check_coherency 3"
                 );
                 warn!(
                     seq_num =? block.header().seq_num,
                     round =? block.header().block_round,
                     ?account_balance,
-                    ?max_cost,
-                    ?carriage_cost,
-                    ?can_charge_into_reserve,
-                    "block not coherent, invalid balance"
+                    ?txn_max_cost,
+                    ?txn_max_gas_cost,
+                    "Incoherent block with insufficient reserve balance"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);
             }
 
+            let can_transfer_out_of_reserve_balance =
+                blocks_since_latest_txn >= self.min_blocks_since_latest_txn;
+
+            let transfers_out_of_reserve_balance = account_balance
+                .balance
+                .saturating_sub(account_balance.remaining_reserve_balance)
+                < txn_max_cost;
+
+            if !can_transfer_out_of_reserve_balance && transfers_out_of_reserve_balance
+                || can_transfer_out_of_reserve_balance && (account_balance.balance < txn_max_cost)
+            {
+                warn!(
+                    seq_num =? block.header().seq_num,
+                    round =? block.header().block_round,
+                    ?account_balance,
+                    ?txn_max_cost,
+                    ?txn_max_gas_cost,
+                    "Incoherent block with insufficient balance"
+                );
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+
+            account_balance.balance -= txn_max_cost;
+            account_balance.remaining_reserve_balance -= txn_max_gas_cost;
+            *expected_nonce += 1;
+
+            trace!(
+                ?eth_address,
+                seq_num =? block.header().seq_num,
+                round =? block.header().block_round,
+                ?account_balance,
+                ?txn_max_cost,
+                ?txn_max_gas_cost,
+                ?can_transfer_out_of_reserve_balance,
+                ?blocks_since_latest_txn,
+                "AccountBalance - check_coherency 2"
+            );
+
             let txn_fee_entry = txn_fees.entry(eth_address).or_insert(TxnFee {
                 max_cost: Balance::ZERO,
-                carriage_cost: Balance::ZERO,
+                max_gas_cost: Balance::ZERO,
             });
 
-            txn_fee_entry.max_cost = txn_fee_entry.max_cost.saturating_add(max_cost);
-            txn_fee_entry.carriage_cost = txn_fee_entry.carriage_cost.saturating_add(carriage_cost);
+            txn_fee_entry.max_cost = txn_fee_entry.max_cost.saturating_add(txn_max_cost);
+            txn_fee_entry.max_gas_cost =
+                txn_fee_entry.max_gas_cost.saturating_add(txn_max_gas_cost);
         }
         let mut res_block = block.clone();
         res_block.txn_fees = txn_fees;
@@ -975,7 +1001,7 @@ mod test {
 
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
     use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
-    use alloy_signer::SignerSync;
+    use alloy_signer::{k256::elliptic_curve::rand_core::block, SignerSync};
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
     use monad_testutil::signing::MockSignatures;
@@ -1016,14 +1042,14 @@ mod test {
                         address1,
                         TxnFee {
                             max_cost: Balance::from(100),
-                            carriage_cost: Balance::from(100),
+                            max_gas_cost: Balance::from(100),
                         },
                     ),
                     (
                         address2,
                         TxnFee {
                             max_cost: Balance::from(200),
-                            carriage_cost: Balance::from(200),
+                            max_gas_cost: Balance::from(200),
                         },
                     ),
                 ]),
@@ -1042,14 +1068,14 @@ mod test {
                         address1,
                         TxnFee {
                             max_cost: Balance::from(150),
-                            carriage_cost: Balance::from(150),
+                            max_gas_cost: Balance::from(150),
                         },
                     ),
                     (
                         address3,
                         TxnFee {
                             max_cost: Balance::from(300),
-                            carriage_cost: Balance::from(300),
+                            max_gas_cost: Balance::from(300),
                         },
                     ),
                 ]),
@@ -1068,14 +1094,14 @@ mod test {
                         address2,
                         TxnFee {
                             max_cost: Balance::from(250),
-                            carriage_cost: Balance::from(250),
+                            max_gas_cost: Balance::from(250),
                         },
                     ),
                     (
                         address3,
                         TxnFee {
                             max_cost: Balance::from(350),
-                            carriage_cost: Balance::from(350),
+                            max_gas_cost: Balance::from(350),
                         },
                     ),
                 ]),
@@ -1090,32 +1116,32 @@ mod test {
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(0), &address1, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::from(250)
         );
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(1), &address1, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::from(150)
         );
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(2), &address1, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::from(0)
         );
 
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(0), &address2, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::from(450)
         );
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(0), &address3, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::from(650)
         );
 
@@ -1123,7 +1149,7 @@ mod test {
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(0), &address4, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::from(0)
         );
     }
@@ -1149,14 +1175,14 @@ mod test {
                         address1,
                         TxnFee {
                             max_cost: U256::MAX - U256::from(1),
-                            carriage_cost: U256::MAX - U256::from(1),
+                            max_gas_cost: U256::MAX - U256::from(1),
                         },
                     ),
                     (
                         address2,
                         TxnFee {
                             max_cost: Balance::MAX,
-                            carriage_cost: Balance::MAX,
+                            max_gas_cost: Balance::MAX,
                         },
                     ),
                 ]),
@@ -1175,14 +1201,14 @@ mod test {
                         address1,
                         TxnFee {
                             max_cost: Balance::from(1),
-                            carriage_cost: Balance::from(1),
+                            max_gas_cost: Balance::from(1),
                         },
                     ),
                     (
                         address3,
                         TxnFee {
                             max_cost: U256::MAX.div_ceil(U256::from(2)),
-                            carriage_cost: U256::MAX.div_ceil(U256::from(2)),
+                            max_gas_cost: U256::MAX.div_ceil(U256::from(2)),
                         },
                     ),
                 ]),
@@ -1201,14 +1227,14 @@ mod test {
                         address2,
                         TxnFee {
                             max_cost: Balance::MAX,
-                            carriage_cost: Balance::MAX,
+                            max_gas_cost: Balance::MAX,
                         },
                     ),
                     (
                         address3,
                         TxnFee {
                             max_cost: U256::MAX.div_ceil(U256::from(2)) + U256::from(1),
-                            carriage_cost: U256::MAX.div_ceil(U256::from(2)) + U256::from(1),
+                            max_gas_cost: U256::MAX.div_ceil(U256::from(2)) + U256::from(1),
                         },
                     ),
                 ]),
@@ -1223,32 +1249,32 @@ mod test {
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(0), &address1, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::MAX
         );
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(1), &address1, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::from(1)
         );
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(2), &address1, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::from(0)
         );
 
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(0), &address2, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::MAX
         );
         assert_eq!(
             buffer
                 .compute_txn_fee(SeqNum(0), &address3, SeqNum(EXEC_DELAY))
-                .carriage_cost,
+                .cumulative_max_gas_cost,
             U256::MAX
         );
     }

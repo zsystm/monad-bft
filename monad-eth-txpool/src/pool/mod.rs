@@ -177,9 +177,10 @@ where
                 continue;
             };
 
-            let Some(_new_reserve_balance) =
-                ValidEthTransaction::apply_carriage_cost(&tx, account_balance.reserve_balance)
-            else {
+            let Some(_new_reserve_balance) = ValidEthTransaction::apply_max_gas_cost(
+                &tx,
+                account_balance.remaining_reserve_balance,
+            ) else {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
             };

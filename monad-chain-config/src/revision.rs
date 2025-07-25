@@ -51,7 +51,7 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
-    max_reserve_balance: 0,
+    max_reserve_balance: RESERVE_BALANCE,
     vote_pace: Duration::from_millis(1000),
 };
 
