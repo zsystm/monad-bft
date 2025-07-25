@@ -278,6 +278,7 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
 
         let mut aggpk = BlsAggregatePubKey::infinity();
         let mut signers = Vec::new();
+
         for (bit, (node_id, pubkey)) in self.signers.0.iter().zip(validator_mapping.map.iter()) {
             if *bit {
                 aggpk.add_assign(pubkey).expect("pubkey aggregation");
@@ -286,13 +287,17 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
         }
 
         // return empty signers for empty signature collection
-        if signers.is_empty() && self.sig == BlsAggregateSignature::infinity() {
+        if signers.is_empty()
+            && self.signers.0.is_empty()
+            && self.sig == BlsAggregateSignature::infinity()
+        {
             return Ok(signers);
         }
 
         if self.sig.fast_verify::<SD>(msg, &aggpk).is_err() {
             return Err(SignatureCollectionError::InvalidSignaturesVerify);
         }
+
         Ok(signers)
     }
 
