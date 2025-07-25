@@ -8,7 +8,7 @@ use monad_exec_events::{
 };
 use monad_types::BlockId;
 use tokio::sync::broadcast;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::{EventServerClient, EventServerEvent, BROADCAST_CHANNEL_SIZE};
 use crate::{eth_json_types::MonadNotification, serialize::JsonSerialized};
@@ -229,6 +229,15 @@ fn broadcast_block_updates(
                 })
             })
             .collect_vec(),
+    );
+
+    info!(
+        ?block_id,
+        round =? block.start.round,
+        block_number =? block.start.block_tag.block_number,
+        txns =? block.txns.len(),
+        logs =? logs.len(),
+        "event server broadcasting block",
     );
 
     broadcast_event(
