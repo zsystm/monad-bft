@@ -294,9 +294,16 @@ async fn handle_notification(
                         continue;
                     };
 
+                    let mut num_logs = 0;
                     for log in logs {
                         send_notification(session, id, log.data.as_ref()).await?;
+                        num_logs += 1;
                     }
+
+                    debug!(
+                        num_logs =? num_logs,
+                        "sent logs after applying filter"
+                    );
                 }
             }
         }
