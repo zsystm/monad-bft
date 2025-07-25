@@ -241,9 +241,17 @@ async fn handle_notification(
         }
         EventServerEvent::Block {
             header,
-            block: _,
+            block,
             logs,
         } => {
+            debug!(
+                block_id =? header.block_id, logs =? logs.len(),
+                block_number =? block.data.header.number,
+                txns =? block.data.transactions.len(),
+                logs =? logs.len(),
+                "websocket broadcasting events"
+            );
+
             for (id, _) in subscriptions
                 .get(&SubscriptionKind::MonadNewHeads)
                 .map(|x| x.iter())
