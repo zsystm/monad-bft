@@ -214,7 +214,6 @@ impl ArchiveArgs {
                 let store = MongoDbStorage::new_block_store(
                     &args.url,
                     &args.db,
-                    args.capped_size_gb,
                     metrics.clone(),
                 )
                 .await?;
@@ -272,11 +271,10 @@ impl ArchiveArgs {
             }
             ArchiveArgs::MongoDb(args) => {
                 let (blob, index) = try_join!(
-                    MongoDbStorage::new_block_store(&args.url, &args.db, None, metrics.clone()),
+                    MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone()),
                     MongoDbStorage::new_index_store(
                         &args.url,
                         &args.db,
-                        args.capped_size_gb,
                         metrics.clone()
                     ),
                 )?;

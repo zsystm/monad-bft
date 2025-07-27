@@ -1,15 +1,15 @@
 use futures::TryStreamExt;
-use serial_test::serial;
+// use serial_test::serial;
 
 use crate::{
     kvstore::{
         memory::MemoryStorage,
-        mongo::{mongo_tests::TestMongoContainer, new_client},
+        mongo::new_client,
         object_store::ObjectStore,
     },
     model_v2::ModelV2,
     prelude::*,
-    test_utils::{mock_block, mock_rx, mock_trace, mock_tx},
+    test_utils::{mock_block, mock_rx, mock_trace, mock_tx, TestMongoContainer},
 };
 
 async fn setup_v2() -> Result<(TestMongoContainer, ModelV2)> {
@@ -35,7 +35,7 @@ async fn setup_v2() -> Result<(TestMongoContainer, ModelV2)> {
 
 #[ignore]
 #[tokio::test]
-#[serial]
+// #[serial]
 async fn test_archive_worker_with_v2() -> Result<()> {
     let (_container, model) = setup_v2().await?;
 
@@ -93,7 +93,7 @@ async fn test_archive_worker_with_v2() -> Result<()> {
 
 #[ignore]
 #[tokio::test]
-#[serial]
+// #[serial]
 async fn test_logs_automatically_indexed_in_v2() -> Result<()> {
     let (_container, model) = setup_v2().await?;
 

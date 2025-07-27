@@ -648,10 +648,10 @@ mod tests {
     use crate::{
         kvstore::{
             memory::MemoryStorage,
-            mongo::{mongo_tests::TestMongoContainer, new_client},
+            mongo::new_client,
             object_store::ObjectStore,
         },
-        test_utils::{mock_block, mock_rx, mock_trace, mock_tx},
+        test_utils::{mock_block, mock_rx, mock_trace, mock_tx, TestMongoContainer},
     };
 
     pub async fn setup() -> Result<(TestMongoContainer, ModelV2)> {

@@ -22,7 +22,7 @@ pub async fn run_migrate_logs(args: crate::cli::Cli) -> Result<()> {
         stop_block
     } else {
         block_data_reader
-            .get_latest(LatestKind::Indexed)
+            .get_latest()
             .await?
             .ok_or_eyre("Latest block not found")?
     };
@@ -61,11 +61,8 @@ async fn handle_block(
     log_index: &LogsIndexArchiver,
     block_num: u64,
 ) -> Result<()> {
-    let BlockDataWithOffsets {
-        block, receipts, ..
-    } = block_data_reader
-        .get_block_data_with_offsets(block_num)
-        .await?;
+    let block = block_data_reader.get_block_by_number(block_num).await?;
+    let receipts = block_data_reader.get_block_receipts(block_num).await?;
 
     info!(
         num_txs = block.body.transactions.len(),

@@ -4,7 +4,7 @@ use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, T
 use alloy_primitives::{Address, BlockHash, Bytes, U8};
 use alloy_rlp::{Decodable, Encodable, EMPTY_LIST_CODE};
 use bytes::BufMut;
-use eyre::{bail, OptionExt};
+use eyre::bail;
 use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
