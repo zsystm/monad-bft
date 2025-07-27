@@ -55,7 +55,7 @@ pub async fn ws_handler(
 
     let (res, session, msg_stream) = {
         let mut response = actix_http::ws::handshake(req.head())?;
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let (tx, rx) = tokio::sync::mpsc::channel(10_000);
 
         (
             response
