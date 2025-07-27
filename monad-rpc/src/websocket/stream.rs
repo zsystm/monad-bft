@@ -17,6 +17,7 @@ use actix_web::{
 use bytestring::ByteString;
 use futures::stream::Stream;
 use tokio::sync::mpsc::Receiver;
+use tracing::error;
 
 pub(super) struct StreamingBody {
     session_rx: Receiver<Message>,
@@ -56,6 +57,7 @@ impl Stream for StreamingBody {
         let mut buf = BytesMut::new();
 
         if let Err(err) = this.codec.encode(msg, &mut buf) {
+            error!("Error encoding message: {}", err);
             return Poll::Ready(Some(Err(err.into())));
         }
 
@@ -111,6 +113,7 @@ impl Stream for MessageStream {
                         this.buf.extend_from_slice(&bytes);
                     }
                     Poll::Ready(Some(Err(err))) => {
+                        error!("Error reading payload: {}", err);
                         return Poll::Ready(Some(Err(ProtocolError::Io(io::Error::other(err)))));
                     }
                     Poll::Ready(None) => {
@@ -129,6 +132,7 @@ impl Stream for MessageStream {
                     ByteString::try_from(bytes)
                         .map(Message::Text)
                         .map_err(|err| {
+                            error!("Invalid UTF-8 sequence: {}", err);
                             ProtocolError::Io(io::Error::new(io::ErrorKind::InvalidData, err))
                         })?
                 }
