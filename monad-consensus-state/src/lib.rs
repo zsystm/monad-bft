@@ -53,6 +53,13 @@ use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
 pub mod command;
 pub mod timestamp;
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Role {
+    FullNode,
+    UpcomingValidator,
+    Validator,
+}
+
 /// core consensus algorithm
 pub struct ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
@@ -62,6 +69,8 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
+    /// Current role
+    role: Role,
     /// Prospective blocks are stored here while they wait to be
     /// committed
     pending_block_tree: BlockTree<ST, SCT, EPT, BPT, SBT>,
@@ -245,12 +254,17 @@ where
     /// Arguments
     ///
     /// config - collection of configurable parameters for core consensus algorithm
-    pub fn new(
+    pub fn new<VTF>(
         epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        node_id: &NodeId<CertificateSignaturePubKey<ST>>,
         config: &ConsensusConfig<CCT, CRT>,
         root: RootInfo,
         high_certificate: RoundCertificate<ST, SCT, EPT>,
-    ) -> Self {
+    ) -> Self
+    where
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
         let pacemaker = Pacemaker::new(
             config.delta,
             config.chain_config,
@@ -258,7 +272,8 @@ where
             epoch_manager,
             high_certificate.clone(),
         );
-        ConsensusState {
+        let mut consensus_state = ConsensusState {
+            role: Role::FullNode,
             pending_block_tree: BlockTree::new(root),
             scheduled_vote: None,
             vote_state: VoteState::new(pacemaker.get_current_round()),
@@ -271,7 +286,61 @@ where
                 None,
             ),
             block_sync_requests: Default::default(),
+        };
+        consensus_state.update_role(epoch_manager, val_epoch_map, node_id);
+        debug!(role=?consensus_state.role, "Consensus role initialized");
+        consensus_state
+    }
+
+    fn update_role<VTF>(
+        &mut self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) where
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
+        // update consensus state role
+        // - Validator if a current validator
+        // - UpcomingValidator if will become a validator in the next 10 rounds
+        //   (10 is arbitrary. the exact number of rounds can be as small as 1)
+        // - FullNode otherwise
+        let consensus_round = self.pacemaker.get_current_round();
+        let consensus_epoch = self.pacemaker.get_current_epoch();
+
+        let validator_set = val_epoch_map
+            .get_val_set(&consensus_epoch)
+            .unwrap_or_else(|| {
+                panic!(
+                    "unknown validator set for current_epoch={:?}",
+                    consensus_epoch
+                )
+            });
+
+        let new_role = if validator_set.is_member(node_id) {
+            Role::Validator
+        } else {
+            let upcoming_epoch = epoch_manager
+                .get_epoch(consensus_round + Round(10))
+                .expect("Epoch is always found for future rounds");
+            let upcoming_validator_set = val_epoch_map
+                .get_val_set(&upcoming_epoch)
+                .unwrap_or_else(|| panic!("unknown validator set for epoch={:?}", upcoming_epoch));
+            if upcoming_validator_set.is_member(node_id) {
+                Role::UpcomingValidator
+            } else {
+                Role::FullNode
+            }
+        };
+
+        if self.role != new_role {
+            info!(old_role=?self.role, new_role=?new_role, "Consensus role updated");
+            self.role = new_role;
         }
+    }
+
+    pub fn get_role(&self) -> &Role {
+        &self.role
     }
 
     pub fn blocktree(&self) -> &BlockTree<ST, SCT, EPT, BPT, SBT> {
@@ -1729,6 +1798,29 @@ where
 
         cmds
     }
+
+    pub fn update_role(&mut self) {
+        self.consensus
+            .update_role(self.epoch_manager, self.val_epoch_map, self.nodeid)
+    }
+
+    pub fn filter_cmd(&self, cmd: &ConsensusCommand<ST, SCT, EPT, BPT, SBT>) -> bool {
+        match self.consensus.get_role() {
+            Role::FullNode => match cmd {
+                // disable sending votes/timeouts for full node
+                ConsensusCommand::Publish { .. } => false,
+                // consensus state logic shouldn't trigger create proposal on a
+                // full node, but filtering it out to be safe
+                ConsensusCommand::CreateProposal { .. } => {
+                    warn!("Full node emitting CreateProposal command");
+                    false
+                },
+                ConsensusCommand::PublishToFullNodes { .. } => false,
+                _ => true,
+            },
+            Role::UpcomingValidator | Role::Validator => true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2145,6 +2237,7 @@ mod test {
                         &mut [127; 32],
                     )
                     .unwrap();
+                let node_id = NodeId::new(keys[i as usize].pubkey());
                 let consensus_config = ConsensusConfig {
                     execution_delay,
                     delta: Duration::from_secs(1),
@@ -2158,6 +2251,8 @@ mod test {
                 let genesis_qc = QuorumCertificate::genesis_qc();
                 let mut cs = ConsensusState::new(
                     &epoch_manager,
+                    &val_epoch_map,
+                    &node_id,
                     &consensus_config,
                     RootInfo {
                         round: genesis_qc.get_round(),

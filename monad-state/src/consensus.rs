@@ -8,7 +8,7 @@ use monad_consensus::{
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
+use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper, Role};
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, OptimisticCommit, OptimisticPolicyCommit},
     block_validator::BlockValidator,
@@ -33,7 +33,7 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     handle_validation_error, BlockTimestamp, ConsensusMode, MonadState, MonadVersion,
@@ -253,10 +253,14 @@ where
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
-        consensus_cmds
+        let filtered_cmds = consensus_cmds
+            .into_iter()
+            .filter(|cmd| consensus.filter_cmd(cmd))
+            .collect_vec(); // FIXME remove collect_vec
+        filtered_cmds
             .into_iter()
             .map(|cmd| self.wrap(cmd))
-            .collect::<Vec<_>>()
+            .collect_vec()
     }
 
     pub(super) fn handle_mempool_event(
@@ -318,6 +322,11 @@ where
                 last_round_tc,
                 fresh_proposal_certificate,
             } => {
+                if consensus.consensus.get_role() != &Role::Validator {
+                    warn!("received proposal event when node is not a validator");
+                    return Vec::new();
+                }
+
                 consensus.metrics.consensus_events.creating_proposal += 1;
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
                     execution_body: proposed_execution_inputs.body,
