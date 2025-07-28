@@ -67,6 +67,8 @@ where
     where
         S: serde::Serializer,
     {
-        self.serialized.serialize(serializer)
+        let value: serde_json::Value =
+            serde_json::from_str(self.serialized.get()).map_err(serde::ser::Error::custom)?;
+        value.serialize(serializer)
     }
 }
