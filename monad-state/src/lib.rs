@@ -157,36 +157,26 @@ where
         Checkpoint {
             root: GENESIS_BLOCK_ID,
             high_certificate: RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
-            validator_sets: vec![
-                LockedEpoch {
-                    epoch: Epoch(1),
-                    round: Some(GENESIS_ROUND),
-                },
-                LockedEpoch {
-                    epoch: Epoch(2),
-                    round: None,
-                },
-            ],
+            validator_sets: vec![LockedEpoch {
+                epoch: Epoch(1),
+                round: GENESIS_ROUND,
+            }],
         }
         .into()
     }
 
     pub fn get_epoch_starts(&self) -> Vec<(Epoch, Round)> {
-        let mut known = Vec::new();
-        for validator_set in self.validator_sets.iter() {
-            if let Some(round) = validator_set.round {
-                known.push((validator_set.epoch, round));
-            }
-        }
-        known
+        self.validator_sets
+            .iter()
+            .map(|locked_epoch| (locked_epoch.epoch, locked_epoch.round))
+            .collect()
     }
 
     /// locked_validator_sets must correspond 1:1 with the epochs in Checkpoint::validator_sets
     // Concrete verification steps:
-    // 1. 2 <= validator_sets.len() <= 3
+    // 1. 1 <= validator_sets.len() <= 2
     // 2. validator_sets have consecutive epochs
-    // 3. assert!(validator_sets[0].round.is_some())
-    // 4. high_qc is valid against matching epoch validator_set
+    // 3. high_qc is valid against matching epoch validator_set
     pub fn validate(
         &self,
         validator_set_factory: &impl ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -194,10 +184,10 @@ where
         election: &impl LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
     ) -> Result<(), ForkpointValidationError> {
         // 1.
-        if self.validator_sets.len() < 2 {
+        if self.validator_sets.is_empty() {
             return Err(ForkpointValidationError::TooFewValidatorSets);
         }
-        if self.validator_sets.len() > 3 {
+        if self.validator_sets.len() > 2 {
             return Err(ForkpointValidationError::TooManyValidatorSets);
         }
 
@@ -219,11 +209,6 @@ where
             .all(|(locked_vset, forkpoint_vset)| locked_vset.epoch == forkpoint_vset.epoch));
 
         // 3.
-        let Some(_validator_set_0_round) = self.validator_sets[0].round else {
-            return Err(ForkpointValidationError::InvalidValidatorSetStartRound);
-        };
-
-        // 6.
         let validators = locked_validator_sets
             .iter()
             .map(|locked| {
@@ -1388,11 +1373,11 @@ mod test {
             validator_sets: vec![
                 LockedEpoch {
                     epoch: Epoch(3),
-                    round: Some(Round(3050)),
+                    round: Round(3050),
                 },
                 LockedEpoch {
                     epoch: Epoch(4),
-                    round: None,
+                    round: Round(4050),
                 },
             ],
         }
@@ -1436,8 +1421,10 @@ mod test {
     #[test]
     fn test_forkpoint_validate_1() {
         let (mut forkpoint, mut locked_validator_sets, election) = get_forkpoint();
-        let popped_1 = forkpoint.0.validator_sets.pop().unwrap();
-        let popped_2 = locked_validator_sets.pop().unwrap();
+        let locked_epoch_1 = forkpoint.0.validator_sets.pop().unwrap();
+        let locked_val_set_1 = locked_validator_sets.pop().unwrap();
+        let _ = forkpoint.0.validator_sets.pop().unwrap();
+        let _ = locked_validator_sets.pop().unwrap();
 
         assert_eq!(
             forkpoint.validate(
@@ -1448,12 +1435,12 @@ mod test {
             Err(ForkpointValidationError::TooFewValidatorSets)
         );
 
-        forkpoint.0.validator_sets.push(popped_1.clone());
-        forkpoint.0.validator_sets.push(popped_1.clone());
-        forkpoint.0.validator_sets.push(popped_1);
-        locked_validator_sets.push(popped_2.clone());
-        locked_validator_sets.push(popped_2.clone());
-        locked_validator_sets.push(popped_2);
+        forkpoint.0.validator_sets.push(locked_epoch_1.clone());
+        forkpoint.0.validator_sets.push(locked_epoch_1.clone());
+        forkpoint.0.validator_sets.push(locked_epoch_1);
+        locked_validator_sets.push(locked_val_set_1.clone());
+        locked_validator_sets.push(locked_val_set_1.clone());
+        locked_validator_sets.push(locked_val_set_1);
         assert_eq!(
             forkpoint.validate(
                 &ValidatorSetFactory::default(),
@@ -1479,28 +1466,11 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_forkpoint_validate_4() {
-        let (mut forkpoint, locked_validator_sets, election) = get_forkpoint();
-
-        forkpoint.0.validator_sets[0].round = None;
-
-        assert_eq!(
-            forkpoint.validate(
-                &ValidatorSetFactory::default(),
-                &locked_validator_sets,
-                &election
-            ),
-            Err(ForkpointValidationError::InvalidValidatorSetStartRound)
-        );
-    }
-
     // TODO test every branch of 5
     // the mock-swarm forkpoint tests sort of cover these, but we should unit-test these eventually
     // for completeness
-
     #[test]
-    fn test_forkpoint_validate_6() {
+    fn test_forkpoint_validate_3() {
         let (mut forkpoint, locked_validator_sets, election) = get_forkpoint();
 
         let RoundCertificate::Qc(qc) = &mut forkpoint.0.high_certificate else {
