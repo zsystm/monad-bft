@@ -11,7 +11,6 @@ use monad_consensus_types::{
     block_validator::MockValidator,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_eth_types::Balance;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
@@ -26,7 +25,7 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::{InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{Balance, NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
     txpool::MockTxPoolExecutor,

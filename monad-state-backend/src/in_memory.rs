@@ -5,8 +5,10 @@ use std::{
 
 use alloy_consensus::Header;
 use alloy_primitives::Address;
-use monad_eth_types::{Balance, EthAccount, EthHeader, Nonce};
-use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_eth_types::{EthAccount, EthHeader};
+use monad_types::{
+    Balance, BlockId, Nonce, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
+};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
@@ -203,20 +205,16 @@ impl StateBackend for InMemoryStateInner {
             proposal
         };
 
-        if let Some(balances) = state.balances {
-        }
-        else {
-            Ok(addresses
-                .map(|address| {
-                    let nonce = state.nonces.get(address)?;
-                    Some(EthAccount {
-                        nonce: *nonce,
-                        balance: self.max_account_balance,
-                        code_hash: None,
-                    })
+        Ok(addresses
+            .map(|address| {
+                let nonce = state.nonces.get(address)?;
+                Some(EthAccount {
+                    nonce: *nonce,
+                    balance: self.max_account_balance,
+                    code_hash: None,
                 })
-                .collect())
-        }
+            })
+            .collect())
     }
 
     fn get_execution_result(

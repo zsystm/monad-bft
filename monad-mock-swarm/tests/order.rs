@@ -13,7 +13,6 @@ use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_types::Balance;
 use monad_mock_swarm::{
     fetch_metric, mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
@@ -25,7 +24,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
     TransformerReplayOrder, ID,
 };
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{Balance, NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     state_root_hash::MockStateRootHashNop,

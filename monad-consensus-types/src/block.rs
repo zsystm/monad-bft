@@ -1,5 +1,6 @@
-use std::{fmt::Debug, ops::Deref};
+use std::{collections::BTreeMap, fmt::Debug, ops::Deref};
 
+use alloy_primitives::Address;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use auto_impl::auto_impl;
 use bytes::Bytes;
@@ -8,7 +9,10 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::{BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum};
+use monad_types::{
+    Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum,
+    GENESIS_SEQ_NUM,
+};
 
 use crate::{
     block_validator::BlockValidationError,
@@ -144,6 +148,42 @@ impl From<StateBackendError> for BlockPolicyError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AccountBalanceState {
+    pub balance: Balance,
+    pub remaining_reserve_balance: Balance,
+    pub max_reserve_balance: Balance,
+    pub block_seqnum_of_latest_txn: SeqNum,
+}
+
+impl AccountBalanceState {
+    pub fn new(max_reserve_balance: Balance) -> Self {
+        AccountBalanceState {
+            balance: Balance::ZERO,
+            remaining_reserve_balance: Balance::ZERO,
+            max_reserve_balance,
+            block_seqnum_of_latest_txn: GENESIS_SEQ_NUM,
+        }
+    }
+}
+
+pub type AccountBalanceStates = BTreeMap<Address, AccountBalanceState>;
+
+pub trait BlockPolicyBlockValidator<'a>
+where
+    Self: Sized,
+{
+    type Transaction;
+
+    fn new(
+        block_seq_num: SeqNum,
+        account_balances: &'a mut BTreeMap<&'a Address, AccountBalanceState>,
+        min_blocks_since_latest_txn: SeqNum,
+    ) -> Result<Self, BlockPolicyError>;
+
+    fn try_add_transaction(&mut self, txn: &Self::Transaction) -> Result<(), BlockPolicyError>;
+}
+
 /// Trait that represents how inner contents of a block should be validated
 #[auto_impl(Box)]
 pub trait BlockPolicy<ST, SCT, EPT, SBT>
@@ -167,7 +207,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &SBT,
-    ) -> Result<Self::ValidatedBlock, BlockPolicyError>;
+    ) -> Result<(), BlockPolicyError>;
 
     fn get_expected_execution_results(
         &self,
@@ -233,7 +273,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &InMemoryState,
-    ) -> Result<Self::ValidatedBlock, BlockPolicyError> {
+    ) -> Result<(), BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
         let (extending_seq_num, extending_timestamp) =
@@ -261,7 +301,7 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
-        Ok(block.clone())
+        Ok(())
     }
 
     fn get_expected_execution_results(

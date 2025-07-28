@@ -13,8 +13,8 @@ use monad_eth_block_policy::{
     compute_txn_max_gas_cost, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
 };
 use monad_eth_txpool_types::EthTxPoolDropReason;
-use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
-use monad_types::SeqNum;
+use monad_eth_types::{EthExecutionProtocol, BASE_FEE_PER_GAS};
+use monad_types::{Balance, Nonce, SeqNum};
 use tracing::trace;
 
 use crate::EthTxPoolEventTracker;

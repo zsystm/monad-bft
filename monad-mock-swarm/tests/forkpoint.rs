@@ -12,7 +12,7 @@ use monad_crypto::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
-use monad_eth_types::{Balance, EthExecutionProtocol};
+use monad_eth_types::EthExecutionProtocol;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::SwarmRelation, terminator::UntilTerminator,
@@ -23,7 +23,7 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::{InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
-use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Balance, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     state_root_hash::MockStateRootHashNop,

@@ -20,7 +20,7 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
-    use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS};
+    use monad_eth_types::{EthExecutionProtocol, BASE_FEE_PER_GAS};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -38,7 +38,7 @@ mod test {
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Balance, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
         ledger::MockableLedger, state_root_hash::MockStateRootHashNop,
         statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,

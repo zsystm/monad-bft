@@ -251,14 +251,10 @@ where
                 self.root.info,
                 state_backend,
             ) {
-                Ok(next_block) => {
+                Ok(()) => {
+                    let next_block = next_block.clone();
                     self.tree
                         .set_coherent(&next_block_id, true)
-                        .expect("should be in tree");
-
-                    // TODO add an indicator when block fees changed
-                    self.tree
-                        .replace_coherent_block(&next_block)
                         .expect("should be in tree");
 
                     retval.push(next_block);
@@ -515,10 +511,10 @@ mod test {
         },
         NopKeyPair, NopSignature,
     };
-    use monad_eth_types::{Balance, EMPTY_RLP_TX_LIST};
+    use monad_eth_types::EMPTY_RLP_TX_LIST;
     use monad_state_backend::{InMemoryState, InMemoryStateInner};
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
     use super::BlockTree;
     use crate::blocktree::RootInfo;

@@ -21,11 +21,10 @@ use monad_eth_block_policy::{
     compute_txn_max_gas_cost, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock, TxnFee, TxnFees,
 };
-use monad_eth_types::{
-    Balance, EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
-};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
+use monad_types::{Balance, Nonce};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::warn;
 
@@ -133,6 +132,7 @@ where
             let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(TxnFee {
                 max_cost: Balance::ZERO,
                 max_gas_cost: Balance::ZERO,
+                first_txn_nonce: None,
             });
             txn_fee_entry.max_gas_cost = txn_fee_entry
                 .max_gas_cost
@@ -140,6 +140,11 @@ where
             txn_fee_entry.max_cost = txn_fee_entry
                 .max_cost
                 .saturating_add(compute_txn_max_value(eth_txn));
+            if let Some(cur_nonce) = txn_fee_entry.first_txn_nonce {
+                txn_fee_entry.first_txn_nonce = Some(cur_nonce.min(eth_txn.nonce()));
+            } else {
+                txn_fee_entry.first_txn_nonce = Some(eth_txn.nonce());
+            }
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
@@ -296,9 +301,9 @@ mod test {
     use monad_consensus_types::payload::ConsensusBlockBodyInner;
     use monad_crypto::NopSignature;
     use monad_eth_testutil::make_legacy_tx;
-    use monad_eth_types::Balance;
     use monad_state_backend::InMemoryState;
     use monad_testutil::signing::MockSignatures;
+    use monad_types::Balance;
 
     use super::*;
 

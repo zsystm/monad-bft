@@ -18,7 +18,6 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
-    use monad_eth_types::Balance;
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
@@ -37,7 +36,7 @@ mod test {
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{Epoch, NodeId, Round, SeqNum};
+    use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
         state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap},

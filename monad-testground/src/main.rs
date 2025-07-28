@@ -23,12 +23,11 @@ use monad_crypto::certificate_signature::{
     CertificateSignatureRecoverable,
 };
 use monad_dataplane::udp::DEFAULT_MTU;
-use monad_eth_types::Balance;
 use monad_executor::Executor;
 use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigSecondary};
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
-use monad_types::{NodeId, Round, SeqNum, Stake};
+use monad_types::{Balance, NodeId, Round, SeqNum, Stake};
 use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;

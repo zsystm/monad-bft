@@ -16,10 +16,10 @@ use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSig
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost, compute_txn_max_value, EthValidatedBlock, TxnFee,
 };
-use monad_eth_types::{Balance, EthBlockBody};
+use monad_eth_types::EthBlockBody;
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 
 pub fn make_legacy_tx(
     sender: FixedBytes<32>,
@@ -161,6 +161,7 @@ pub fn generate_block_with_txs(
                     .or_insert(TxnFee {
                         max_cost: Balance::ZERO,
                         max_gas_cost: Balance::ZERO,
+                        first_txn_nonce: None,
                     })
                     .max_cost += max_cost;
 

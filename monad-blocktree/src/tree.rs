@@ -50,14 +50,6 @@ where
         Ok(())
     }
 
-    pub(crate) fn replace_coherent_block(&mut self, block: &BPT::ValidatedBlock) -> Result<(), ()> {
-        self.tree
-            .get_mut(&block.get_id())
-            .ok_or(())?
-            .validated_block = block.clone();
-        Ok(())
-    }
-
     pub(crate) fn remove(
         &mut self,
         block_id: &BlockId,
