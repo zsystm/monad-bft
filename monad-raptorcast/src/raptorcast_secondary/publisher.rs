@@ -1364,6 +1364,7 @@ mod tests {
                 bandwidth_capacity: 5,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
+                invite_round_span_max: Round(2000),
                 invite_accept_heartbeat: Duration::from_secs(10),
             },
         );
@@ -1491,6 +1492,7 @@ mod tests {
                 bandwidth_capacity: 5,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
+                invite_round_span_max: Round(2000),
                 invite_accept_heartbeat: Duration::from_secs(10),
             },
         );
@@ -1633,6 +1635,7 @@ mod tests {
                 bandwidth_capacity: 6,
                 invite_future_dist_min: Round(1),
                 invite_future_dist_max: Round(100),
+                invite_round_span_max: Round(2000),
                 invite_accept_heartbeat: Duration::from_secs(10),
             },
         );
