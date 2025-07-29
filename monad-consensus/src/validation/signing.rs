@@ -1,6 +1,12 @@
-use std::{collections::BTreeMap, ops::Deref};
+use std::{
+    collections::BTreeMap,
+    num::NonZero,
+    ops::Deref,
+    sync::{LazyLock, Mutex},
+};
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use lru::LruCache;
 use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
     quorum_certificate::QuorumCertificate,
@@ -290,6 +296,9 @@ impl<M> From<Validated<M>> for Unvalidated<M> {
         value.message
     }
 }
+
+static CERT_CACHE: LazyLock<Mutex<LruCache<Vec<u8>, ()>>> =
+    LazyLock::new(|| Mutex::new(LruCache::new(NonZero::new(10_000).unwrap())));
 
 impl<ST, SCT, EPT> Verified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
@@ -725,6 +734,11 @@ where
     EPT: ExecutionProtocol,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    let cache_key = alloy_rlp::encode(tc);
+    if let Some(()) = CERT_CACHE.lock().unwrap().get(&cache_key) {
+        return Ok(());
+    }
+
     let (validators, validator_mapping, _leader) = epoch_to_validators(tc.epoch, tc.round)?;
 
     let mut node_ids = Vec::new();
@@ -785,6 +799,8 @@ where
         }
     }
 
+    CERT_CACHE.lock().unwrap().push(cache_key, ());
+
     Ok(())
 }
 
@@ -809,6 +825,10 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    let cache_key = alloy_rlp::encode(qc);
+    if let Some(()) = CERT_CACHE.lock().unwrap().get(&cache_key) {
+        return Ok(());
+    }
     let (validators, validator_mapping, _leader) =
         epoch_to_validators(qc.get_epoch(), qc.get_round())?;
 
@@ -828,6 +848,8 @@ where
     if !validators.has_super_majority_votes(&node_ids) {
         return Err(Error::InsufficientStake);
     }
+
+    CERT_CACHE.lock().unwrap().push(cache_key, ());
 
     Ok(())
 }
@@ -972,6 +994,11 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
+    let cache_key = alloy_rlp::encode(nec);
+    if let Some(()) = CERT_CACHE.lock().unwrap().get(&cache_key) {
+        return Ok(());
+    }
+
     let (validators, validator_mapping, _leader) =
         epoch_to_validators(nec.msg.epoch, nec.msg.round)?;
 
@@ -984,6 +1011,8 @@ where
     if !validators.has_super_majority_votes(&node_ids) {
         return Err(Error::InsufficientStake);
     }
+
+    CERT_CACHE.lock().unwrap().push(cache_key, ());
 
     Ok(())
 }
