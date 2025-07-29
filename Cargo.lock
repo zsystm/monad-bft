@@ -5656,6 +5656,7 @@ dependencies = [
  "alloy-signer-local",
  "arbitrary",
  "bytes",
+ "bytestring",
  "clap 4.5.41",
  "criterion",
  "dashmap",
