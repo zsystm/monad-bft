@@ -69,7 +69,7 @@ ARG TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
+RUN RUSTFLAGS="-C debuginfo=2" ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
     CC=gcc-13 CXX=g++-13 cargo build --release \
     --bin monad-archiver \
     --bin monad-archive-checker \
@@ -86,8 +86,8 @@ FROM base AS runner-debug
 
 WORKDIR /usr/src/monad-bft
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
-ENV RUST_LOG=info
-ENV RUST_BACKTRACE=1
+ENV RUST_LOG=debug
+ENV RUST_BACKTRACE=full
 
 COPY --from=builder /usr/src/monad-bft/archiver /usr/local/bin/monad-archiver
 COPY --from=builder /usr/src/monad-bft/archive-checker /usr/local/bin/monad-archive-checker
@@ -98,9 +98,20 @@ COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 # Runner
 FROM runner-debug AS runner
 
-RUN strip \
-    /usr/local/bin/monad-archiver \
-    /usr/local/bin/monad-archive-checker \
-    /usr/local/bin/monad-indexer \
-    /usr/local/bin/monad-index-checker \
-    /usr/local/lib/*.so
+RUN apt update && apt install -y gdb gdbserver
+
+# RUN strip \
+#     /usr/local/bin/monad-archiver \
+#     /usr/local/bin/monad-archive-checker \
+#     /usr/local/bin/monad-indexer \
+#     /usr/local/bin/monad-index-checker \
+#     /usr/local/lib/*.so
+
+# always launch under gdb batch mode
+ENTRYPOINT ["bash","-c", "\
+  exec gdb -q -batch \
+    -ex 'set pagination off' \
+    -ex 'run' \
+    -ex 'bt' \
+    -ex 'info registers' \
+    --args \"$@\"", "--"]
