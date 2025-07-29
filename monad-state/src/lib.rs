@@ -163,28 +163,21 @@ where
             high_qc: QuorumCertificate::genesis_qc(),
             validator_sets: vec![LockedEpoch {
                 epoch: Epoch(1),
-                round: Some(GENESIS_ROUND),
+                round: GENESIS_ROUND,
             }],
         }
         .into()
     }
 
     pub fn get_epoch_starts(&self) -> Vec<(Epoch, Round)> {
-        let mut known = Vec::new();
-        for validator_set in self.validator_sets.iter() {
-            if let Some(round) = validator_set.round {
-                known.push((validator_set.epoch, round));
-            }
-        }
-        known
+        self.validator_sets.iter().map(|locked_epoch| (locked_epoch.epoch, locked_epoch.round)).collect()
     }
 
     /// locked_validator_sets must correspond 1:1 with the epochs in Checkpoint::validator_sets
     // Concrete verification steps:
     // 1. 1 <= validator_sets.len() <= 2
     // 2. validator_sets have consecutive epochs
-    // 3. assert!(validator_sets[0].round.is_some())
-    // 4. high_qc is valid against matching epoch validator_set
+    // 3. high_qc is valid against matching epoch validator_set
     pub fn validate(
         &self,
         validator_set_factory: &impl ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -216,11 +209,6 @@ where
             .all(|(locked_vset, forkpoint_vset)| locked_vset.epoch == forkpoint_vset.epoch));
 
         // 3.
-        let Some(_validator_set_0_round) = self.validator_sets[0].round else {
-            return Err(ForkpointValidationError::InvalidValidatorSetStartRound);
-        };
-
-        // 6.
         if self.high_certificate.round() < self.high_qc.get_round() {
             return Err(ForkpointValidationError::InvalidHighCertificate);
         }
@@ -1257,6 +1245,8 @@ where
         // (N-delay, N] roots have been requested
         let consensus = ConsensusState::new(
             &self.epoch_manager,
+            &self.val_epoch_map,
+            &self.nodeid,
             &self.consensus_config,
             root_info,
             high_certificate.clone(),
@@ -1289,7 +1279,7 @@ where
                 };
                 consensus.request_blocks_if_missing_ancestor()
             };
-            let mut consensus = ConsensusChildState::new(self);
+            let consensus = ConsensusChildState::new(self);
             commands.extend(
                 blocksync_cmds
                     .into_iter()
@@ -1370,12 +1360,8 @@ mod test {
             validator_sets: vec![
                 LockedEpoch {
                     epoch: Epoch(3),
-                    round: Some(Round(3050)),
-                },
-                LockedEpoch {
-                    epoch: Epoch(4),
-                    round: None,
-                },
+                    round: Round(3050),
+                }
             ],
         }
         .into();
@@ -1445,24 +1431,12 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_forkpoint_validate_4() {
-        let (mut forkpoint, locked_validator_sets) = get_forkpoint();
-
-        forkpoint.0.validator_sets[0].round = None;
-
-        assert_eq!(
-            forkpoint.validate(&ValidatorSetFactory::default(), &locked_validator_sets),
-            Err(ForkpointValidationError::InvalidValidatorSetStartRound)
-        );
-    }
-
     // TODO test every branch of 5
     // the mock-swarm forkpoint tests sort of cover these, but we should unit-test these eventually
     // for completeness
 
     #[test]
-    fn test_forkpoint_validate_6() {
+    fn test_forkpoint_validate_3() {
         let (mut forkpoint, locked_validator_sets) = get_forkpoint();
         // change qc content so signature collection is invalid
         forkpoint.0.high_qc.info.round = forkpoint.0.high_qc.get_round() - Round(1);

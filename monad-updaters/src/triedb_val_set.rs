@@ -55,8 +55,9 @@ where
             let seq_num_to_read = seq_num_recv.recv().expect("channel never closed");
             while state_backend
                 .raw_read_latest_finalized_block()
-                .is_some_and(|latest_verified| latest_verified < seq_num_to_read)
+                .is_none_or(|latest_finalized| latest_finalized < seq_num_to_read)
             {
+                info!(?seq_num_to_read, "next valset not ready, going to sleep");
                 std::thread::sleep(Duration::from_millis(500));
             }
 
@@ -103,7 +104,7 @@ where
                     .collect();
                 let validator_set_data: ValidatorSetData<SCT> = ValidatorSetData::new(validators);
                 let validator_set_data_with_epoch = ValidatorSetDataWithEpoch {
-                    epoch: boundary_block.to_epoch(this.val_set_update_interval),
+                    epoch: boundary_block.get_locked_epoch(this.val_set_update_interval),
                     validators: validator_set_data,
                 };
                 info!(
