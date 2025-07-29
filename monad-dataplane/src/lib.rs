@@ -262,7 +262,7 @@ impl DataplaneReader {
     pub async fn tcp_read(&mut self) -> RecvTcpMsg {
         match self.tcp_ingress_rx.recv().await {
             Some(msg) => {
-                tracing::debug!(
+                tracing::trace!(
                     "Dataplane TCP RX {} bytes from {:?}",
                     msg.payload.len(),
                     msg.src_addr
@@ -276,7 +276,7 @@ impl DataplaneReader {
     pub async fn udp_read(&mut self) -> RecvUdpMsg {
         match self.udp_ingress_rx.recv().await {
             Some(msg) => {
-                tracing::debug!(
+                tracing::trace!(
                     "Dataplane UDP RX {} bytes from {:?}",
                     msg.payload.len(),
                     msg.src_addr
@@ -302,7 +302,7 @@ impl TcpReader {
     pub async fn read(&mut self) -> RecvTcpMsg {
         match self.0.recv().await {
             Some(msg) => {
-                tracing::debug!(
+                tracing::trace!(
                     "Dataplane TCP RX {} bytes from {:?}",
                     msg.payload.len(),
                     msg.src_addr
@@ -318,7 +318,7 @@ impl UdpReader {
     pub async fn read(&mut self) -> RecvUdpMsg {
         match self.0.recv().await {
             Some(msg) => {
-                tracing::debug!(
+                tracing::trace!(
                     "Dataplane UDP RX {} bytes from {:?}",
                     msg.payload.len(),
                     msg.src_addr
@@ -349,7 +349,7 @@ impl DataplaneWriter {
     pub fn tcp_write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
 
-        tracing::debug!("Dataplane TCP TX {} bytes to {:?}", msg_length, addr);
+        tracing::trace!("Dataplane TCP TX {} bytes to {:?}", msg_length, addr);
         match self.inner.tcp_egress_tx.try_send((addr, msg)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
@@ -377,7 +377,7 @@ impl DataplaneWriter {
         let msg_len = msg.payload.len();
 
         for (dst, udp_msg) in msg.into_iter() {
-            tracing::debug!("Dataplane UDP TXb {} bytes to {:?}", msg_len, dst);
+            tracing::trace!("Dataplane UDP TX bcast {} bytes to {:?}", msg_len, dst);
             match self.inner.udp_egress_tx.try_send((dst, udp_msg)) {
                 Ok(()) => {
                     pending_count -= 1;
@@ -415,8 +415,8 @@ impl DataplaneWriter {
         let mut pending_count = msg.msg_count();
 
         for (dst, udp_msg) in msg.into_iter() {
-            tracing::debug!(
-                "Dataplane UDP TXu {} bytes to {:?}",
+            tracing::trace!(
+                "Dataplane UDP TX unicast {} bytes to {:?}",
                 udp_msg.payload.len(),
                 dst
             );
