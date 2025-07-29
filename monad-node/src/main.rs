@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     marker::PhantomData,
-    net::{SocketAddr, ToSocketAddrs},
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     process,
     sync::Arc,
     time::Duration,
@@ -563,7 +563,11 @@ where
         + 'static,
     OM: Encodable + Clone + Send + Sync + 'static,
 {
-    let Some(SocketAddr::V4(self_address)) = resolve_domain_v4(
+    let bind_address = SocketAddr::new(
+        IpAddr::V4(node_config.network.bind_address_host),
+        node_config.network.bind_address_port,
+    );
+    let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
         &peer_discovery_config.self_address,
     ) else {
@@ -574,29 +578,27 @@ where
     };
 
     tracing::debug!(
-        "Monad-node ({}) starting at address: {}, pid: {}",
+        ?bind_address,
+        ?name_record_address,
+        "Monad-node ({}) starting, pid: {}",
         if cfg!(feature = "full-node") {
             "full-node"
         } else {
             "validator"
         },
-        &self_address,
         process::id()
     );
 
     let network_config = node_config.network;
 
-    let mut dp_builder = DataplaneBuilder::new(
-        &SocketAddr::V4(self_address),
-        network_config.max_mbps.into(),
-    );
+    let mut dp_builder = DataplaneBuilder::new(&bind_address, network_config.max_mbps.into());
     if let Some(buffer_size) = network_config.buffer_size {
         dp_builder = dp_builder.with_udp_buffer_size(buffer_size);
     }
 
     let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord {
-        address: self_address,
+        address: name_record_address,
         seq: peer_discovery_config.self_record_seq_num,
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
