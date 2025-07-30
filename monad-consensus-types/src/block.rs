@@ -177,7 +177,7 @@ pub enum BlockPolicyBlockValidatorError {
     InsufficientReserveBalance,
 }
 
-pub trait BlockPolicyBlockValidator<'a>
+pub trait BlockPolicyBlockValidator
 where
     Self: Sized,
 {
@@ -185,11 +185,14 @@ where
 
     fn new(
         block_seq_num: SeqNum,
-        account_balances: &'a mut BTreeMap<&'a Address, AccountBalanceState>,
         min_blocks_since_latest_txn: SeqNum,
     ) -> Result<Self, BlockPolicyError>;
 
-    fn try_add_transaction(&mut self, txn: &Self::Transaction) -> Result<(), BlockPolicyError>;
+    fn try_add_transaction(
+        &mut self,
+        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        txn: &Self::Transaction,
+    ) -> Result<(), BlockPolicyError>;
 }
 
 /// Trait that represents how inner contents of a block should be validated

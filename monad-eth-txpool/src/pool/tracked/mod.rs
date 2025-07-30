@@ -358,7 +358,7 @@ where
         tx_heap: TrackedTxHeap<'_>,
         proposed_seq_num: SeqNum,
         min_blocks_since_latest_txn: SeqNum,
-        mut account_balances: BTreeMap<&Address, AccountBalanceState>,
+        account_balances: BTreeMap<Address, AccountBalanceState>,
     ) -> Result<(u64, Vec<Recovered<TxEnvelope>>), BlockPolicyError> {
         assert!(tx_limit > 0);
 
@@ -366,12 +366,9 @@ where
         let mut total_gas = 0u64;
         let mut total_size = 0u64;
 
-        let mut balances = account_balances.clone();
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            proposed_seq_num,
-            &mut balances,
-            min_blocks_since_latest_txn,
-        )?;
+        let mut balances = account_balances;
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(proposed_seq_num, min_blocks_since_latest_txn)?;
 
         tx_heap.drain_in_order_while(|sender, tx| {
             if total_gas
@@ -389,7 +386,10 @@ where
                 return TrackedTxHeapDrainAction::Skip;
             }
 
-            if validator.try_add_transaction(tx.raw()).is_err() {
+            if validator
+                .try_add_transaction(&mut balances, tx.raw())
+                .is_err()
+            {
                 return TrackedTxHeapDrainAction::Skip;
             }
 
