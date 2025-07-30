@@ -413,13 +413,12 @@ pub struct EthBlockPolicyBlockState {
     fees: BTreeMap<Address, TxnFees>,
 }
 
-pub struct EthBlockPolicyBlockValidator<'a> {
+pub struct EthBlockPolicyBlockValidator {
     block_seq_num: SeqNum,
-    account_balances: &'a mut BTreeMap<&'a Address, AccountBalanceState>,
     min_blocks_since_latest_txn: SeqNum,
 }
 
-impl<'a> BlockPolicyBlockValidator<'a> for EthBlockPolicyBlockValidator<'a>
+impl BlockPolicyBlockValidator for EthBlockPolicyBlockValidator
 where
     Self: Sized,
 {
@@ -427,19 +426,22 @@ where
 
     fn new(
         block_seq_num: SeqNum,
-        account_balances: &'a mut BTreeMap<&'a Address, AccountBalanceState>,
         min_blocks_since_latest_txn: SeqNum,
     ) -> Result<Self, BlockPolicyError> {
         Ok(Self {
             block_seq_num,
-            account_balances,
             min_blocks_since_latest_txn,
         })
     }
 
-    fn try_add_transaction(&mut self, txn: &Self::Transaction) -> Result<(), BlockPolicyError> {
+    fn try_add_transaction(
+        &mut self,
+        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        txn: &Self::Transaction,
+    ) -> Result<(), BlockPolicyError> {
         let eth_address = txn.signer();
-        let mayby_account_balance = self.account_balances.get_mut(&eth_address);
+
+        let mayby_account_balance = account_balances.get_mut(&eth_address);
 
         if mayby_account_balance.is_none() {
             warn!(
@@ -671,7 +673,7 @@ where
         state_backend: &impl StateBackend,
         extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
-    ) -> Result<BTreeMap<&'a Address, AccountBalanceState>, BlockPolicyError>
+    ) -> Result<BTreeMap<Address, AccountBalanceState>, BlockPolicyError>
     where
         SCT: SignatureCollection,
     {
@@ -707,6 +709,7 @@ where
 
         let account_balances = addresses
             .into_iter()
+            .cloned()
             .zip_eq(account_balances)
             .map(|(address, mut balance_state)| {
                 // Apply Txn Fees for the txns from committed blocks
@@ -717,7 +720,7 @@ where
                     mut next_seq_num,
                 } = self.committed_cache.compute_txn_fee(
                     base_seq_num,
-                    address,
+                    &address,
                     self.execution_delay,
                 );
 
@@ -778,7 +781,7 @@ where
                         .skip_while(move |block| block.get_seq_num() < next_seq_num);
                     for extending_block in next_blocks {
                         assert_eq!(next_seq_num, extending_block.get_seq_num());
-                        if let Some(txn_fee) = extending_block.txn_fees.get(address) {
+                        if let Some(txn_fee) = extending_block.txn_fees.get(&address) {
                             let has_emptying_transaction_in_pending = next_seq_num
                                 >= (balance_state.block_seqnum_of_latest_txn
                                     + self.execution_delay);
@@ -939,7 +942,6 @@ where
 
         let mut validator = EthBlockPolicyBlockValidator::new(
             block.get_seq_num(),
-            &mut account_balances,
             self.min_blocks_since_latest_txn,
         )?;
 
@@ -960,7 +962,7 @@ where
                 return Err(BlockPolicyError::BlockNotCoherent);
             }
 
-            validator.try_add_transaction(txn)?;
+            validator.try_add_transaction(&mut account_balances, txn)?;
             *expected_nonce += 1;
         }
         Ok(())
@@ -1011,10 +1013,11 @@ mod test {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
-    use monad_eth_testutil::{make_legacy_tx, recover_tx};
+    use monad_eth_testutil::{make_eip1559_tx_with_value, make_legacy_tx, recover_tx};
     use monad_eth_types::BASE_FEE_PER_GAS;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Hash, SeqNum};
+    use rstest::*;
 
     use super::*;
 
@@ -1448,9 +1451,9 @@ mod test {
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_value(&tx);
 
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &signer,
+            signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: min_balance,
@@ -1459,20 +1462,18 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator.try_add_transaction(txn).is_ok());
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
         }
 
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &signer,
+            signer,
             AccountBalanceState {
                 balance: min_balance - Balance::from(1),
                 remaining_reserve_balance: min_balance,
@@ -1481,16 +1482,12 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(txn)
+                validator.try_add_transaction(&mut account_balances, txn)
                     == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                         BlockPolicyBlockValidatorError::InsufficientBalance
                     ))
@@ -1510,9 +1507,9 @@ mod test {
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_gas_cost(&tx);
 
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &signer,
+            signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: min_balance,
@@ -1521,20 +1518,18 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator.try_add_transaction(txn).is_ok());
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
         }
 
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &signer,
+            signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: min_balance - Balance::from(1),
@@ -1543,16 +1538,12 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(txn)
+                validator.try_add_transaction(&mut account_balances, txn)
                     == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                         BlockPolicyBlockValidatorError::InsufficientReserveBalance
                     ))
@@ -1573,9 +1564,9 @@ mod test {
 
         let address = Address(FixedBytes([0x11; 20]));
 
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &address,
+            address,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: min_balance,
@@ -1584,16 +1575,12 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(txn)
+                validator.try_add_transaction(&mut account_balances, txn)
                     == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                         BlockPolicyBlockValidatorError::AccountBalanceMissing
                     ))
@@ -1614,9 +1601,9 @@ mod test {
         let min_balance = compute_txn_max_value(&tx);
 
         // Empty reserve balance
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &signer,
+            signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: Balance::ZERO,
@@ -1625,23 +1612,21 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator.try_add_transaction(txn).is_ok());
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
         }
 
         // Overdraft
         let block_seq_num = latest_seq_num;
         let min_reserve = compute_txn_max_gas_cost(&tx);
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &signer,
+            signer,
             AccountBalanceState {
                 balance: Balance::ZERO,
                 remaining_reserve_balance: min_reserve,
@@ -1650,15 +1635,13 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator.try_add_transaction(txn).is_ok());
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
         }
     }
 
@@ -1676,9 +1659,9 @@ mod test {
         let txs = vec![tx1.clone(), tx2.clone()];
         let min_balance = compute_txn_max_value(&tx1) + compute_txn_max_gas_cost(&tx2);
 
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &signer,
+            signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: Balance::ZERO,
@@ -1687,22 +1670,20 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator.try_add_transaction(txn).is_ok());
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
         }
 
         let min_reserve = compute_txn_max_gas_cost(&tx1) + compute_txn_max_gas_cost(&tx2);
 
-        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            &signer,
+            signer,
             AccountBalanceState {
                 balance: Balance::ZERO,
                 remaining_reserve_balance: min_reserve,
@@ -1711,15 +1692,167 @@ mod test {
             },
         );
 
-        let mut validator = EthBlockPolicyBlockValidator::new(
-            latest_seq_num,
-            &mut account_balances,
-            MIN_BLOCKS_SINCE_LATEST_TXN,
-        )
-        .unwrap();
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(latest_seq_num, MIN_BLOCKS_SINCE_LATEST_TXN).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator.try_add_transaction(txn).is_ok());
+            assert!(validator
+                .try_add_transaction(&mut account_balances, txn)
+                .is_ok());
         }
+    }
+
+    const RESERVE_FAIL: Result<(), BlockPolicyError> =
+        Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+            BlockPolicyBlockValidatorError::InsufficientReserveBalance,
+        ));
+    const BALANCE_FAIL: Result<(), BlockPolicyError> =
+        Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+            BlockPolicyBlockValidatorError::InsufficientBalance,
+        ));
+
+    #[rstest]
+    #[case(Balance::from(100), Balance::from(10), Balance::from(10), SeqNum(3), 1_u128, 1_u64, Ok(()))]
+    #[case(Balance::from(5), Balance::from(10), Balance::from(10), SeqNum(3), 2_u128, 2_u64, Ok(()))]
+    #[case(Balance::from(5), Balance::from(5), Balance::from(5), SeqNum(3), 0_u128, 5_u64, Ok(()))]
+    #[case(
+        Balance::from(5),
+        Balance::from(10),
+        Balance::from(10),
+        SeqNum(3),
+        7_u128,
+        2_u64,
+        BALANCE_FAIL
+    )]
+    #[case(
+        Balance::from(100),
+        Balance::from(1),
+        Balance::from(1),
+        SeqNum(2),
+        3_u128,
+        2_u64,
+        RESERVE_FAIL
+    )]
+    fn test_txn_tfm(
+        #[case] account_balance: Balance,
+        #[case] reserve_balance: Balance,
+        #[case] max_reserve_balance: Balance,
+        #[case] block_seq_num: SeqNum,
+        #[case] txn_value: u128,
+        #[case] txn_gas_limit: u64,
+        #[case] expect: Result<(), BlockPolicyError>,
+    ) {
+        let abs = AccountBalanceState {
+            balance: account_balance,
+            remaining_reserve_balance: reserve_balance,
+            block_seqnum_of_latest_txn: SeqNum(0),
+            max_reserve_balance,
+        };
+
+        let txn = make_test_eip1559_tx(txn_value, 0, txn_gas_limit, signer());
+        let signer = txn.recover_signer().unwrap();
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(signer, abs);
+
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, min_blocks_since_latest_txn())
+                .unwrap();
+
+        assert_eq!(
+            validator.try_add_transaction(&mut account_balances, &txn),
+            expect
+        );
+    }
+
+    #[rstest]
+    #[case(
+        Balance::from(100),
+        Balance::from(5),
+        Balance::from(10),
+        vec![(4_u128, 2_u64), (4_u128, 2_u64), (4_u128, 2_u64)],
+        vec![SeqNum(1), SeqNum(2), SeqNum(3)],
+        vec![Ok(()), Ok(()), RESERVE_FAIL],
+    )]
+    #[case(
+        Balance::from(100),
+        Balance::from(6),
+        Balance::from(10),
+        vec![(4_u128, 2_u64), (4_u128, 2_u64), (4_u128, 2_u64)],
+        vec![SeqNum(1), SeqNum(2), SeqNum(3)],
+        vec![Ok(()), Ok(()), Ok(())],
+    )]
+    fn test_multi_txn_tfm(
+        #[case] account_balance: Balance,
+        #[case] reserve_balance: Balance,
+        #[case] max_reserve_balance: Balance,
+        #[case] txns: Vec<(u128, u64)>, // txn (value, gas_limit)
+        #[case] txn_block_num: Vec<SeqNum>,
+        #[case] expected: Vec<Result<(), BlockPolicyError>>,
+    ) {
+        assert_eq!(txns.len(), expected.len());
+        assert_eq!(txns.len(), txn_block_num.len());
+
+        let abs = AccountBalanceState {
+            balance: account_balance,
+            remaining_reserve_balance: reserve_balance,
+            block_seqnum_of_latest_txn: SeqNum(0),
+            max_reserve_balance,
+        };
+
+        let txns = txns
+            .iter()
+            .enumerate()
+            .map(|(nonce, (value, gas_limit))| {
+                make_test_eip1559_tx(*value, nonce as u64, *gas_limit, signer())
+            })
+            .collect_vec();
+        let signer = txns[0].recover_signer().unwrap();
+
+        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(signer, abs);
+
+        for ((tx, expect), seqnum) in txns.into_iter().zip(expected).zip(txn_block_num) {
+            check_txn_helper(seqnum, &mut account_balances, &tx, expect);
+        }
+    }
+
+    fn check_txn_helper(
+        block_seq_num: SeqNum,
+        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        txn: &Recovered<TxEnvelope>,
+        expect: Result<(), BlockPolicyError>,
+    ) {
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(block_seq_num, min_blocks_since_latest_txn())
+                .unwrap();
+
+        assert_eq!(
+            validator.try_add_transaction(account_balances, txn),
+            expect,
+            "txn nonce {}",
+            txn.nonce()
+        );
+    }
+
+    fn signer() -> B256 {
+        B256::new(hex!(
+            "0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad"
+        ))
+    }
+
+    fn min_blocks_since_latest_txn() -> SeqNum {
+        SeqNum(3)
+    }
+
+    fn make_test_eip1559_tx(
+        value: u128,
+        nonce: u64,
+        gas_limit: u64,
+        signer: FixedBytes<32>,
+    ) -> Recovered<TxEnvelope> {
+        recover_tx(make_eip1559_tx_with_value(
+            signer, value, 1_u128, 0, gas_limit, nonce, 0,
+        ))
     }
 }

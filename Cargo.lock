@@ -4948,6 +4948,7 @@ dependencies = [
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
+ "rstest",
  "sorted_vector_map",
  "tracing",
 ]

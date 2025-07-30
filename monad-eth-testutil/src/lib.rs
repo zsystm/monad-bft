@@ -4,7 +4,7 @@ use alloy_consensus::{
     transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
     Transaction, TxEip1559, TxEnvelope, TxLegacy,
 };
-use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind};
+use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_consensus_types::{
@@ -53,6 +53,26 @@ pub fn make_eip1559_tx(
     nonce: u64,
     input_len: usize,
 ) -> TxEnvelope {
+    make_eip1559_tx_with_value(
+        sender,
+        0,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        gas_limit,
+        nonce,
+        input_len,
+    )
+}
+
+pub fn make_eip1559_tx_with_value(
+    sender: FixedBytes<32>,
+    value: u128,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+) -> TxEnvelope {
     let transaction = TxEip1559 {
         chain_id: 1337,
         nonce,
@@ -60,7 +80,7 @@ pub fn make_eip1559_tx(
         max_fee_per_gas,
         max_priority_fee_per_gas,
         to: TxKind::Call(Address::repeat_byte(0u8)),
-        value: Default::default(),
+        value: U256::from(value),
         access_list: Default::default(),
         input: vec![0; input_len].into(),
     };
