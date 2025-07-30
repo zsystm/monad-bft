@@ -18,8 +18,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
-    EthValidatedBlock, TxnFee, TxnFees,
+    compute_txn_max_gas_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+    TxnFee, TxnFees,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_secp::RecoverableAddress;
@@ -99,7 +99,7 @@ where
 
         // recover the account nonces and txn fee usage in this block
         let mut nonces = BTreeMap::new();
-        let mut txn_fees: TxnFees = BTreeMap::default();
+        let mut txn_fees: TxnFees = TxnFees::default();
 
         for eth_txn in &eth_txns {
             if static_validate_transaction(
@@ -130,20 +130,14 @@ where
             }
 
             let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(TxnFee {
-                max_cost: Balance::ZERO,
+                first_txn_value: Balance::ZERO,
                 max_gas_cost: Balance::ZERO,
-                first_txn_nonce: None,
             });
             txn_fee_entry.max_gas_cost = txn_fee_entry
                 .max_gas_cost
                 .saturating_add(compute_txn_max_gas_cost(eth_txn));
-            txn_fee_entry.max_cost = txn_fee_entry
-                .max_cost
-                .saturating_add(compute_txn_max_value(eth_txn));
-            if let Some(cur_nonce) = txn_fee_entry.first_txn_nonce {
-                txn_fee_entry.first_txn_nonce = Some(cur_nonce.min(eth_txn.nonce()));
-            } else {
-                txn_fee_entry.first_txn_nonce = Some(eth_txn.nonce());
+            if txn_fee_entry.first_txn_value == Balance::ZERO {
+                txn_fee_entry.first_txn_value = eth_txn.value();
             }
         }
 

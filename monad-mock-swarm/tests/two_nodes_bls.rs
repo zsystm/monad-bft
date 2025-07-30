@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, time::Duration};
 use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{
-    revision::{ChainParams, MockChainRevision, RESERVE_BALANCE},
+    revision::{ChainParams, MockChainRevision},
     MockChainConfig,
 };
 use monad_consensus_types::{
@@ -97,7 +97,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
-    max_reserve_balance: RESERVE_BALANCE,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(5),
 };
 

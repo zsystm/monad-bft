@@ -2,8 +2,6 @@ use std::{fmt::Debug, time::Duration};
 
 pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_10_0;
 
-pub const RESERVE_BALANCE: u128 = 1_000_000_000_000_000_000; // 1 MON
-
 pub trait ChainRevision: Copy + Clone {
     fn chain_params(&self) -> &'static ChainParams;
 }
@@ -51,7 +49,7 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
-    max_reserve_balance: RESERVE_BALANCE,
+    max_reserve_balance: 1_000_000_000_000_000_000, // 1 MON
     vote_pace: Duration::from_millis(1000),
 };
 
@@ -59,7 +57,7 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     tx_limit: 5_000,
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
-    max_reserve_balance: RESERVE_BALANCE,
+    max_reserve_balance: 1_000_000_000_000_000_000, // 1 MON
     vote_pace: Duration::from_millis(500),
 };
 
@@ -67,7 +65,7 @@ const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
     tx_limit: 5_000,
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
-    max_reserve_balance: RESERVE_BALANCE,
+    max_reserve_balance: 1_000_000_000_000_000_000, // 1 MON
     vote_pace: Duration::from_millis(400),
 };
 

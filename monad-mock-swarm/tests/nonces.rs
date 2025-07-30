@@ -9,7 +9,7 @@ mod test {
     use alloy_primitives::{Address, B256};
     use itertools::Itertools;
     use monad_chain_config::{
-        revision::{ChainParams, MockChainRevision, RESERVE_BALANCE},
+        revision::{ChainParams, MockChainRevision},
         MockChainConfig,
     };
     use monad_crypto::{
@@ -120,7 +120,7 @@ mod test {
         tx_limit: 10_000,
         proposal_gas_limit: 300_000_000,
         proposal_byte_limit: 4_000_000,
-        max_reserve_balance: RESERVE_BALANCE,
+        max_reserve_balance: 1_000_000_000_000_000_000,
         vote_pace: Duration::from_millis(0),
     };
 

@@ -275,6 +275,9 @@ where
                 Err(BlockPolicyError::ExecutionResultMismatch) => {
                     metrics.consensus_events.rx_bad_state_root += 1;
                 }
+                Err(BlockPolicyError::BlockPolicyBlockValidatorError(_)) => {
+                    // TODO add metrics
+                }
                 Err(
                     BlockPolicyError::BlockNotCoherent
                     | BlockPolicyError::TimestampError

@@ -159,15 +159,10 @@ pub fn generate_block_with_txs(
                 costs
                     .entry(address)
                     .or_insert(TxnFee {
-                        max_cost: Balance::ZERO,
+                        first_txn_value: Balance::ZERO,
                         max_gas_cost: Balance::ZERO,
-                        first_txn_nonce: None,
                     })
-                    .max_cost += max_cost;
-
-                costs
-                    .entry(address)
-                    .and_modify(|e| e.max_gas_cost += max_gas_cost);
+                    .max_gas_cost += max_gas_cost;
 
                 costs
             },

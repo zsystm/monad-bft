@@ -9,7 +9,6 @@ use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use itertools::Itertools;
-use monad_chain_config::revision::RESERVE_BALANCE;
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
     payload::RoundSignature,
@@ -953,7 +952,7 @@ fn test_tx_invalid_chain_id() {
     };
 
     run_custom(
-        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1, RESERVE_BALANCE),
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1, 1_000_000_000_000_000_000),
         None,
         [TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],

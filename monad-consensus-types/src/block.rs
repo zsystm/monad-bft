@@ -140,6 +140,7 @@ pub enum BlockPolicyError {
     StateBackendError(StateBackendError),
     TimestampError,
     ExecutionResultMismatch,
+    BlockPolicyBlockValidatorError(BlockPolicyBlockValidatorError),
 }
 
 impl From<StateBackendError> for BlockPolicyError {
@@ -168,6 +169,13 @@ impl AccountBalanceState {
 }
 
 pub type AccountBalanceStates = BTreeMap<Address, AccountBalanceState>;
+
+#[derive(Debug, PartialEq)]
+pub enum BlockPolicyBlockValidatorError {
+    AccountBalanceMissing,
+    InsufficientBalance,
+    InsufficientReserveBalance,
+}
 
 pub trait BlockPolicyBlockValidator<'a>
 where

@@ -170,18 +170,9 @@ where
                 .cloned()
                 .unwrap_or(AccountBalanceState::new(block_policy.max_reserve_balance()));
 
-            // allow charging into reserve
-            let Some(_new_account_balance) =
-                ValidEthTransaction::apply_max_value(&tx, account_balance.balance)
+            let Some(_new_reserve_balance) =
+                tx.apply_max_gas_cost(account_balance.remaining_reserve_balance)
             else {
-                event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
-                continue;
-            };
-
-            let Some(_new_reserve_balance) = ValidEthTransaction::apply_max_gas_cost(
-                &tx,
-                account_balance.remaining_reserve_balance,
-            ) else {
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
             };

@@ -1,10 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_chain_config::{
-    revision::{ChainParams, RESERVE_BALANCE},
-    MockChainConfig,
-};
+use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -37,7 +34,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
-    max_reserve_balance: RESERVE_BALANCE,
+    max_reserve_balance: 1_000_000_000_000_000_000,
     vote_pace: Duration::from_millis(0),
 };
 
