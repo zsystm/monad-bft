@@ -42,6 +42,9 @@ pub struct SubscriptionId(pub FixedData<16>);
 #[derive(Clone)]
 pub struct ConnectionLimit(Arc<Semaphore>);
 
+#[derive(Clone)]
+pub struct SubscriptionLimit(pub u16);
+
 impl ConnectionLimit {
     pub fn new(limit: usize) -> Self {
         Self(Arc::new(Semaphore::new(limit)))
@@ -54,6 +57,7 @@ pub async fn ws_handler(
     app_state: web::Data<MonadRpcResources>,
     event_server_client: web::Data<EventServerClient>,
     conn_limit: web::Data<ConnectionLimit>,
+    sub_limit: web::Data<SubscriptionLimit>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let permit = match conn_limit.0.clone().try_acquire_owned() {
         Ok(p) => p,
@@ -84,7 +88,8 @@ pub async fn ws_handler(
             req.connection_info().host().to_string(),
             req.connection_info().peer_addr().map(ToString::to_string),
             rx,
-            app_state
+            app_state,
+            sub_limit.0,
         )
         .await;
         drop(permit);
@@ -100,6 +105,7 @@ async fn handler(
     peer_addr: Option<String>,
     rx: broadcast::Receiver<EventServerEvent>,
     app_state: web::Data<MonadRpcResources>,
+    subscription_limit: u16,
 ) {
     debug!(?hostname, ?peer_addr, "ws connection opened");
 
@@ -154,7 +160,7 @@ async fn handler(
 
                         match request {
                             Ok(req) => {
-                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, &app_state, req).await {
+                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, subscription_limit, &app_state, req).await {
                                     break Some(close_reason);
                                 }
                             }
@@ -175,7 +181,7 @@ async fn handler(
 
                         match request {
                             Ok(req) => {
-                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, &app_state, req).await {
+                                if let Err(close_reason) = handle_request(&mut session, &mut subscriptions, subscription_limit, &app_state, req).await {
                                     break Some(close_reason);
                                 }
                             }
@@ -370,6 +376,7 @@ fn apply_logs_filter<'a>(
 async fn handle_request(
     ctx: &mut actix_ws::Session,
     subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    subscription_limit: u16,
     app_state: &MonadRpcResources,
     request: Request,
 ) -> Result<(), CloseReason> {
@@ -423,11 +430,40 @@ async fn handle_request(
                 }
             };
 
+            debug!(subscription_kind = ?req.kind, "ws handle_request eth_subscribe received subscribe request");
+
+            let subscription_count = subscriptions
+                .values()
+                .map(|vec| vec.len() as u16)
+                .sum::<u16>();
+
+            if subscription_count >= subscription_limit {
+                if let Err(err) = ctx
+                    .text(to_response(&crate::jsonrpc::Response::new(
+                        None,
+                        Some(JsonRpcError::custom(
+                            "WebSocket subscription limit reached".to_string(),
+                        )),
+                        request.id,
+                    )))
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        "ws handle_request eth_subscribe failed to send subscription limit reached error"
+                    );
+                    return Err(CloseReason {
+                        code: ws::CloseCode::Error,
+                        description: None,
+                    });
+                }
+
+                return Ok(());
+            }
+
             let mut rng = rand::thread_rng();
             let random_bytes: [u8; 16] = rng.gen();
             let id = SubscriptionId(FixedData(random_bytes));
-
-            debug!(subscription_kind = ?req.kind, "ws handle_request eth_subscribe received subscribe request");
 
             if let Err(err) = ctx
                 .text(to_response(&crate::jsonrpc::Response::from_result(
@@ -605,7 +641,7 @@ mod tests {
         handlers::{eth::call::EthCallStatsTracker, resources::MonadRpcResources},
         hex,
         txpool::EthTxPoolBridgeClient,
-        websocket::handler::ConnectionLimit,
+        websocket::handler::{ConnectionLimit, SubscriptionLimit},
     };
 
     fn create_test_server() -> actix_test::TestServer {
@@ -646,6 +682,7 @@ mod tests {
             rpc_comparator: None,
         };
         let conn_limit = ConnectionLimit::new(100);
+        let sub_limit = SubscriptionLimit(100);
 
         actix_test::start(move || {
             App::new()
@@ -653,6 +690,7 @@ mod tests {
                 .app_data(web::Data::new(ws_server_handle.clone()))
                 .app_data(web::Data::new(app_state.clone()))
                 .app_data(web::Data::new(conn_limit.clone()))
+                .app_data(web::Data::new(sub_limit.clone()))
                 .service(web::resource("/ws/").route(web::get().to(ws_handler)))
         })
     }
@@ -853,6 +891,51 @@ mod tests {
                 (101, Ok((_resp, framed))) => live.push(framed),
                 (i, Ok(_)) => panic!("conn {} unexpectedly succeeded", i),
                 (i, Err(e)) => panic!("conn {} failed: {:?}", i, e),
+            }
+        }
+    }
+
+    #[actix_rt::test]
+    async fn websocket_subscription_limit() {
+        let server = create_test_server();
+
+        let url = format!("{}ws/", server.url(""));
+        let (res, mut conn) = actix_test::Client::new().ws(url).connect().await.unwrap();
+
+        // Create 100 subscriptions
+        for n in 0..=101 {
+            conn.send(ws::Message::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "eth_subscribe",
+                    "params": ["newHeads"],
+                    "id": n
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+            let frame = conn.next().await.unwrap().unwrap();
+
+            match frame {
+                ws::Frame::Text(text) => {
+                    let msg: serde_json::Value = serde_json::from_slice(&text).unwrap();
+                    if n == 101 {
+                        assert_eq!(
+                            msg["error"]["message"],
+                            "WebSocket subscription limit reached"
+                        );
+                        break;
+                    }
+                }
+                ws::Frame::Ping(_) => {
+                    conn.send(ws::Message::Pong(Bytes::from_static(b"")))
+                        .await
+                        .unwrap();
+                }
+                _ => panic!("Unexpected frame type"),
             }
         }
     }
