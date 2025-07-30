@@ -210,31 +210,15 @@ where
     pub fn try_update_coherency(
         &mut self,
         metrics: &mut Metrics,
-        block_id: BlockId,
         block_policy: &mut BPT,
         state_backend: &SBT,
     ) -> Vec<BPT::ValidatedBlock> {
-        let Some(path_from_root) = self.get_blocks_on_path_from_root(&block_id) else {
-            return Vec::new();
-        };
-        let Some(incoherent_parent_or_self) = path_from_root.iter().find(|block| {
-            !self
-                .tree
-                .get(&block.get_id())
-                .expect("block doesn't exist")
-                .is_coherent
-        }) else {
-            // no incoherent_parent_or_self, already is coherent
-            return Vec::new();
-        };
-
-        let mut block_ids_to_update: VecDeque<BlockId> =
-            vec![incoherent_parent_or_self.get_id()].into();
+        let mut iter: VecDeque<BlockId> = self.root.children_blocks.clone().into();
 
         let mut retval = vec![];
-        while !block_ids_to_update.is_empty() {
+        while !iter.is_empty() {
             // Next block to check coherency
-            let next_block_id = block_ids_to_update.pop_front().unwrap();
+            let next_block_id = iter.pop_front().unwrap();
             let mut extending_blocks = self
                 .get_blocks_on_path_from_root(&next_block_id)
                 .expect("path to root must exist");
@@ -242,9 +226,15 @@ where
             let next_block = extending_blocks
                 .pop()
                 .expect("next_block is included in path_from_root");
+            let tree_next_block = self.tree.get(&next_block_id).expect("next_block exists");
+            if tree_next_block.is_coherent {
+                // Block is coherent, recurse on children
+                iter.extend(tree_next_block.children_blocks.iter().cloned());
+                continue;
+            }
 
-            // extending blocks are always coherent, because we only call
-            // update_coherency on the first incoherent block in the chain
+            // extending blocks are always coherent, because we only recurse
+            // if parent is coherent
             match block_policy.check_coherency(
                 next_block,
                 extending_blocks,
@@ -260,7 +250,7 @@ where
                     retval.push(next_block);
 
                     // Can check coherency of children blocks now
-                    block_ids_to_update.extend(
+                    iter.extend(
                         self.tree
                             .get(&next_block_id)
                             .expect("should be in tree")
@@ -660,47 +650,12 @@ mod test {
         blocktree.add(b6.clone().into());
         println!("{:?}", blocktree);
 
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b3.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b3.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b4.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b4.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b5.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b5.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b6.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b6.get_id()));
 
         // pruning on the old root should return no committable blocks
@@ -772,19 +727,8 @@ mod test {
 
         blocktree.add(b1.clone().into());
         assert_eq!(blocktree.tree.len(), 3);
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
         assert_eq!(
             blocktree.get_block(&b2.get_id()).unwrap().get_parent_id(),
@@ -832,14 +776,8 @@ mod test {
         // |
         // b3
         // and the commit blocks should only contain b1 (not b2)
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b1.get_id()));
         let commit = blocktree.prune(&b1.get_id());
         assert_eq!(commit.len(), 2);
@@ -893,47 +831,27 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b1.get_id()));
 
         blocktree.add(b2.clone().into());
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
         blocktree.add(b3.clone().into());
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
         blocktree.add(b4.clone().into());
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(!blocktree.is_coherent(&b4.get_id()));
 
         blocktree.add(b1.clone().into());
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b3.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b3.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b4.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b4.get_id()));
 
         blocktree.prune(&b3.get_id());
@@ -970,16 +888,11 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
 
         blocktree.add(b2.clone().into());
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(
             blocktree
                 .maybe_fill_path_to_root(&b2.header().qc)
@@ -989,12 +902,7 @@ mod test {
         );
 
         blocktree.add(b3.clone().into());
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b3.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(
             blocktree
                 .maybe_fill_path_to_root(&b3.header().qc)
@@ -1004,12 +912,7 @@ mod test {
         );
 
         blocktree.add(b4.clone().into());
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b4.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(
             blocktree
                 .maybe_fill_path_to_root(&b4.header().qc)
@@ -1019,12 +922,7 @@ mod test {
         );
 
         blocktree.add(b1.clone().into());
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
 
         assert!(blocktree.maybe_fill_path_to_root(&b1.header().qc).is_none());
         assert!(blocktree.maybe_fill_path_to_root(&b2.header().qc).is_none());
@@ -1070,12 +968,7 @@ mod test {
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.add(b1.clone().into());
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
 
         let b1_entry = blocktree.tree.get(&b1.get_id()).unwrap();
         assert!(b1_entry.is_coherent);
@@ -1087,21 +980,9 @@ mod test {
         blocktree.add(b2.clone().into());
 
         // all blocks must be coherent
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
     }
 
@@ -1144,7 +1025,7 @@ mod test {
         );
 
         // root must be coherent but b2 isn't
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
@@ -1152,21 +1033,9 @@ mod test {
         assert!(blocktree.maybe_fill_path_to_root(&b2.header().qc).is_none());
 
         // all blocks must be coherent
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
     }
 
@@ -1210,7 +1079,7 @@ mod test {
         );
 
         // root must be coherent but b3 should not
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
@@ -1232,7 +1101,7 @@ mod test {
         );
 
         // root must be coherent but b3 and b2 should not
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b3.get_id()));
         assert!(!blocktree.is_coherent(&b2.get_id()));
@@ -1243,28 +1112,10 @@ mod test {
         assert!(blocktree.maybe_fill_path_to_root(&b2.header().qc).is_none());
 
         // all blocks must be coherent
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b3.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b3.get_id()));
     }
 
@@ -1308,7 +1159,7 @@ mod test {
         );
 
         // root must be coherent but b3 should not
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
@@ -1323,14 +1174,8 @@ mod test {
         );
 
         // root and block 1 must be coherent but b3 should not
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b1.get_id()));
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
@@ -1340,28 +1185,10 @@ mod test {
         assert!(blocktree.maybe_fill_path_to_root(&b2.header().qc).is_none());
 
         // all blocks must be coherent
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b3.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b3.get_id()));
     }
 
@@ -1414,7 +1241,7 @@ mod test {
         );
 
         // root must be coherent but b2 and b3 should not
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b2.get_id()));
         assert!(!blocktree.is_coherent(&b3.get_id()));
@@ -1424,28 +1251,10 @@ mod test {
         assert!(blocktree.maybe_fill_path_to_root(&b3.header().qc).is_none());
 
         // all blocks must be coherent
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b3.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b3.get_id()));
     }
 
@@ -1530,7 +1339,7 @@ mod test {
         );
 
         // root must be coherent but rest of the blocks should not
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b2.get_id()));
         assert!(!blocktree.is_coherent(&b3.get_id()));
@@ -1546,49 +1355,13 @@ mod test {
         assert!(blocktree.maybe_fill_path_to_root(&b6.header().qc).is_none());
 
         // all blocks must be coherent
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         assert!(blocktree.is_coherent(&g.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b1.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b1.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b2.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b2.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b3.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b3.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b4.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b4.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b5.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b5.get_id()));
-        blocktree.try_update_coherency(
-            &mut metrics,
-            b6.get_id(),
-            &mut block_policy,
-            &state_backend,
-        );
         assert!(blocktree.is_coherent(&b6.get_id()));
     }
 
@@ -1679,7 +1452,7 @@ mod test {
 
         blocktree.add(b3.into());
 
-        blocktree.try_update_coherency(&mut metrics, g.get_id(), &mut block_policy, &state_backend);
+        blocktree.try_update_coherency(&mut metrics, &mut block_policy, &state_backend);
         let high_commit_qc = blocktree.get_high_committable_qc();
         assert_eq!(high_commit_qc, Some(b11.get_qc().clone()));
     }
