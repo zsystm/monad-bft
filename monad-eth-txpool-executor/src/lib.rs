@@ -124,6 +124,7 @@ where
                         hard_tx_expiry,
                         proposal_gas_limit,
                         val_set_update_interval,
+                        chain_config.chain_id(),
                         // it's safe to default max_code_size to zero because it gets set on commit + reset
                         0,
                     );
@@ -260,6 +261,7 @@ where
                         proposal_byte_limit,
                         beneficiary,
                         timestamp_ns,
+                        epoch,
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,

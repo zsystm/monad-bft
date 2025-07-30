@@ -170,7 +170,10 @@ where
     }
 
     pub fn get_epoch_starts(&self) -> Vec<(Epoch, Round)> {
-        self.validator_sets.iter().map(|locked_epoch| (locked_epoch.epoch, locked_epoch.round)).collect()
+        self.validator_sets
+            .iter()
+            .map(|locked_epoch| (locked_epoch.epoch, locked_epoch.round))
+            .collect()
     }
 
     /// locked_validator_sets must correspond 1:1 with the epochs in Checkpoint::validator_sets
@@ -1357,12 +1360,10 @@ mod test {
             root: qc.get_block_id(),
             high_certificate: RoundCertificate::Qc(qc.clone()),
             high_qc: qc,
-            validator_sets: vec![
-                LockedEpoch {
-                    epoch: Epoch(3),
-                    round: Round(3050),
-                }
-            ],
+            validator_sets: vec![LockedEpoch {
+                epoch: Epoch(3),
+                round: Round(3050),
+            }],
         }
         .into();
 
