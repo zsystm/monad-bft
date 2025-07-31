@@ -48,7 +48,7 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use tracing::info;
+use tracing::{debug_span, info};
 
 use crate::{
     handle_validation_error, BlockTimestamp, ConsensusMode, MonadState, MonadVersion,
@@ -333,6 +333,7 @@ where
                 last_round_tc,
                 fresh_proposal_certificate,
             } => {
+                let _span = debug_span!("mempool proposal").entered();
                 consensus.metrics.consensus_events.creating_proposal += 1;
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
                     execution_body: proposed_execution_inputs.body,
@@ -470,6 +471,7 @@ where
         })
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn verify_and_validate_consensus_message(
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
