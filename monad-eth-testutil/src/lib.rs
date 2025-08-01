@@ -8,14 +8,12 @@ use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKi
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_consensus_types::{
-    block::{ConsensusBlockHeader, ConsensusFullBlock},
+    block::{ConsensusBlockHeader, ConsensusFullBlock, TxnFee},
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-use monad_eth_block_policy::{
-    compute_txn_max_gas_cost, compute_txn_max_value, EthValidatedBlock, TxnFee,
-};
+use monad_eth_block_policy::{compute_txn_max_gas_cost, compute_txn_max_value, EthValidatedBlock};
 use monad_eth_types::EthBlockBody;
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;

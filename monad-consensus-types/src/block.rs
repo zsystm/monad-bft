@@ -177,6 +177,23 @@ pub enum BlockPolicyBlockValidatorError {
     InsufficientReserveBalance,
 }
 
+#[derive(Debug, Clone)]
+pub struct TxnFee {
+    pub first_txn_value: Balance,
+    pub max_gas_cost: Balance,
+}
+
+impl Default for TxnFee {
+    fn default() -> Self {
+        TxnFee {
+            first_txn_value: Balance::ZERO,
+            max_gas_cost: Balance::ZERO,
+        }
+    }
+}
+
+pub type TxnFees = BTreeMap<Address, TxnFee>;
+
 pub trait BlockPolicyBlockValidator
 where
     Self: Sized,
@@ -187,6 +204,14 @@ where
         block_seq_num: SeqNum,
         min_blocks_since_latest_txn: SeqNum,
     ) -> Result<Self, BlockPolicyError>;
+
+    fn try_apply_block_fees(
+        &mut self,
+        account_balance: &mut AccountBalanceState,
+        fees: &TxnFee,
+        eth_address: &Address,
+        only_seqnum: bool,
+    ) -> Result<(), BlockPolicyError>;
 
     fn try_add_transaction(
         &mut self,

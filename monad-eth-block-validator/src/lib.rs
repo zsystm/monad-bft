@@ -9,7 +9,7 @@ use alloy_consensus::{
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
-    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
+    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
     block_validator::{BlockValidationError, BlockValidator},
     payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
@@ -19,7 +19,6 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
-    TxnFee, TxnFees,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_secp::RecoverableAddress;
