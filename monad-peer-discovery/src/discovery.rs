@@ -60,7 +60,7 @@ enum Role {
     FullNode,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectionInfo<ST: CertificateSignatureRecoverable> {
     pub last_ping: Ping<ST>,
     pub unresponsive_pings: u32,
@@ -200,14 +200,14 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         peer: NodeId<CertificateSignaturePubKey<ST>>,
         ping_id: u32,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        vec![
-            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+        vec![PeerDiscoveryCommand::TimerCommand(
+            PeerDiscoveryTimerCommand::Schedule {
                 node_id: peer,
                 timer_kind: TimerKind::PingTimeout,
                 duration: self.request_timeout,
                 on_timeout: PeerDiscoveryEvent::PingTimeout { to: peer, ping_id },
-            }),
-        ]
+            },
+        )]
     }
 
     // clear ping timeout timer
@@ -215,12 +215,12 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         &self,
         peer: NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        vec![
-            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+        vec![PeerDiscoveryCommand::TimerCommand(
+            PeerDiscoveryTimerCommand::ScheduleReset {
                 node_id: peer,
                 timer_kind: TimerKind::PingTimeout,
-            }),
-        ]
+            },
+        )]
     }
 
     // schedule for next refresh
@@ -274,7 +274,19 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         if let Some(current_name_record) = self.routing_info.get(&peer_id) {
             if name_record.seq() <= current_name_record.seq() {
                 // no updates are required, exit
-                debug!(?peer_id, ?name_record, ?current_name_record, "name record already exists with same or lower seq");
+                debug!(
+                    ?peer_id,
+                    ?name_record,
+                    ?current_name_record,
+                    "name record already exists with same or lower seq in routing info"
+                );
+                return vec![];
+            }
+        }
+        if let Some(info) = self.pending_queue.get(&peer_id) {
+            if name_record.seq() <= info.name_record.seq() {
+                // no updates are required, exit
+                debug!(?peer_id, ?name_record, ?info.name_record, "name record already exists with same or lower seq in pending queue");
                 return vec![];
             }
         }
@@ -285,18 +297,15 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
             id: self.rng.next_u32(),
             local_name_record: Some(self.self_record),
         };
-        self.pending_queue.insert(
-            peer_id,
-            ConnectionInfo {
-                last_ping: ping_msg,
-                unresponsive_pings: 0,
-                name_record,
-            },
-        );
+        self.pending_queue.insert(peer_id, ConnectionInfo {
+            last_ping: ping_msg,
+            unresponsive_pings: 0,
+            name_record,
+        });
         self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
 
         // send ping to the peer, which will also insert the peer into pending queue
-        self.send_ping(peer_id, ping_msg)
+        self.send_ping(peer_id, name_record.address(), ping_msg)
     }
 
     fn remove_peer_from_pending(
@@ -337,25 +346,12 @@ where
     fn send_ping(
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
+        socket_address: SocketAddrV4,
         ping: Ping<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?to, "sending ping request");
 
         let mut cmds = Vec::new();
-
-        // must have a MonadNameRecord to send a ping
-        let socket_address = match self.routing_info.get(&to) {
-            Some(info) => info.address(),
-            None => {
-                warn!(
-                    ?to,
-                    "name record not present locally but trying to send ping"
-                );
-                return cmds;
-            }
-        };
-        // TODO: do we need to check if there exist a name record in routing_info / pending_queue
-        // and return early if not?
 
         cmds.extend(self.schedule_ping_timeout(to, ping.id));
 
@@ -394,7 +390,6 @@ where
             return cmds;
         }
 
-        // TODO: need to check if there is an existing entry in pending queue
         if let Some(peer_name_record) = ping_msg.local_name_record {
             if self
                 .routing_info
@@ -433,7 +428,12 @@ where
         }
 
         // respond to ping
-        if let Some(socket_address) = self.routing_info.get(&from).map(|info| info.address()) {
+        if let Some(socket_address) = ping_msg
+            .local_name_record
+            .as_ref()
+            .map(|record| record.address())
+            .or_else(|| self.routing_info.get(&from).map(|info| info.address()))
+        {
             let pong_msg = Pong {
                 ping_id: ping_msg.id,
                 local_record_seq: self.self_record.name_record.seq,
@@ -444,7 +444,7 @@ where
                 message: PeerDiscoveryMessage::Pong(pong_msg),
             });
             self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
-        };
+        }
 
         cmds
     }
@@ -462,10 +462,7 @@ where
         if let Some(info) = self.pending_queue.get_mut(&from) {
             if info.last_ping.id == pong_msg.ping_id {
                 // if ping id matches, promote peer to routing_info
-                self.routing_info.insert(
-                    from,
-                    info.name_record,
-                );
+                self.routing_info.insert(from, info.name_record);
                 self.remove_peer_from_pending(from);
                 self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
             } else {
@@ -514,12 +511,13 @@ where
                 cmds.extend(self.remove_peer_from_pending(to));
             } else {
                 // retry ping
+                let socket_address = info.name_record.address();
                 let ping = Ping {
                     id: self.rng.next_u32(),
                     local_name_record: Some(self.self_record),
                 };
                 info.last_ping = ping;
-                cmds.extend(self.send_ping(to, ping));
+                cmds.extend(self.send_ping(to, socket_address, ping));
             }
         }
 
@@ -904,7 +902,8 @@ where
                 }
             }
 
-            if self.self_role == Role::Validator && !self.check_validator_membership(&self.self_id) {
+            if self.self_role == Role::Validator && !self.check_validator_membership(&self.self_id)
+            {
                 self.self_role = Role::FullNode;
             }
         }
@@ -1149,42 +1148,35 @@ mod tests {
     }
 
     #[test]
-    fn test_check_peer_connection() {
-        let keys = create_keys::<SignatureType>(3);
+    fn test_send_ping() {
+        let keys = create_keys::<SignatureType>(2);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
-        let peer2 = &keys[2];
-        let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        // peer1 name record is present but peer2 name record is not present
         let mut state = generate_test_state(peer0, vec![peer1]);
 
-        // should be able to send ping to peer where its name record already exists locally
-        let cmds = state.send_ping(peer1_pubkey);
-        // four reset timer cmds, one ping cmd
-        assert_eq!(cmds.len(), 5);
+        // send ping to peer1
+        let ping = Ping {
+            id: 12345,
+            local_name_record: Some(state.self_record),
+        };
+        let cmds = state.send_ping(peer1_pubkey, DUMMY_ADDR, ping);
 
-        // last_ping is recorded correctly
-        let connection_info = state.connection_info.get(&peer1_pubkey);
-        assert!(connection_info.is_some());
-        assert!(connection_info.unwrap().last_ping.is_some());
-        assert_eq!(connection_info.unwrap().unresponsive_pings, 0);
-        let ping_msg = connection_info.unwrap().last_ping.unwrap();
-
-        // should not be able to send ping to peer where its name record does not exist locally
-        let cmds = state.send_ping(peer2_pubkey);
-        assert_eq!(cmds.len(), 0);
-
-        // when corresponding pong is received from peer1, last_ping and last_seen is updated
-        state.handle_pong(peer1_pubkey, Pong {
-            ping_id: ping_msg.id,
-            local_record_seq: 0,
-        });
-        let connection_info = state.connection_info.get(&peer1_pubkey);
-        assert!(connection_info.is_some());
-        assert!(connection_info.unwrap().last_ping.is_none());
-        assert_eq!(connection_info.unwrap().unresponsive_pings, 0);
+        // should send a ping command and schedule a ping timeout
+        assert_eq!(cmds.len(), 2);
+        assert!(matches!(
+            cmds[0],
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+                timer_kind: TimerKind::PingTimeout { .. },
+                ..
+            })
+        ));
+        assert!(matches!(cmds[1], PeerDiscoveryCommand::PingPongCommand {
+            target: _,
+            socket_address: _,
+            message: PeerDiscoveryMessage::Ping(_)
+        }));
     }
 
     #[test]
@@ -1197,12 +1189,12 @@ mod tests {
         let mut state = generate_test_state(peer0, vec![peer1]);
         let last_ping = Ping {
             id: 12345,
-            local_name_record: Some(generate_name_record(peer1, 0)),
+            local_name_record: Some(generate_name_record(peer0, 0)),
         };
-        state.connection_info.insert(peer1_pubkey, ConnectionInfo {
-            last_ping: Some(last_ping),
+        state.pending_queue.insert(peer1_pubkey, ConnectionInfo {
+            last_ping,
             unresponsive_pings: 3,
-            last_participation: Round(1),
+            name_record: generate_name_record(peer1, 0),
         });
 
         // should not record pong when ping_id doesn't match
@@ -1210,9 +1202,54 @@ mod tests {
             ping_id: 54321, // incorrect ping id,
             local_record_seq: 0,
         });
-        let connection_info = state.connection_info.get(&peer1_pubkey);
+        let connection_info = state.pending_queue.get(&peer1_pubkey);
         assert!(connection_info.is_some());
-        assert_eq!(connection_info.unwrap().last_ping, Some(last_ping));
+        assert_eq!(connection_info.unwrap().last_ping, last_ping);
+    }
+
+    #[test]
+    fn test_incoming_record() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let mut state = generate_test_state(peer0, vec![]);
+
+        let name_record = generate_name_record(peer1, 0);
+        let ping = Ping {
+            id: 12345,
+            local_name_record: Some(name_record),
+        };
+        let cmds = state.handle_ping(peer1_pubkey, ping);
+
+        // should insert peer1 to pending queue and send ping, also respond with pong
+        // 3 commands: one ping command, one pong command, and one timer command for ping timeout
+        assert_eq!(cmds.len(), 3);
+        let ping = extract_ping(cmds.clone());
+        assert_eq!(ping.len(), 1);
+        assert_eq!(ping[0].0, peer1_pubkey);
+        assert_eq!(ping[0].1.local_name_record, Some(state.self_record));
+
+        let pong = extract_pong(cmds);
+        assert_eq!(pong.len(), 1);
+        assert_eq!(pong[0].ping_id, 12345);
+        assert_eq!(pong[0].local_record_seq, state.self_record.name_record.seq);
+
+        // added to pending queue but not yet to routing_info
+        assert!(state.pending_queue.contains_key(&peer1_pubkey));
+        assert!(!state.routing_info.contains_key(&peer1_pubkey));
+        let connection_info = state.pending_queue.get(&peer1_pubkey).unwrap();
+        assert_eq!(connection_info.last_ping, ping[0].1);
+
+        // added to routing_info after receiving corresponding pong
+        state.handle_pong(peer1_pubkey, Pong {
+            ping_id: ping[0].1.id,
+            local_record_seq: 0,
+        });
+        assert!(state.routing_info.contains_key(&peer1_pubkey));
+        assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap(), &name_record);
+        assert!(!state.pending_queue.contains_key(&peer1_pubkey));
     }
 
     #[test]
@@ -1227,7 +1264,22 @@ mod tests {
         let mut state = generate_test_state(peer0, vec![peer1]);
 
         let cmds = state.send_peer_lookup_request(peer1_pubkey, peer2_pubkey, false);
+
+        // 2 commands: one timer command for peer lookup timeout, and one router command for peer lookup request
         assert_eq!(cmds.len(), 2);
+        assert!(matches!(
+            cmds[0],
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+                timer_kind: TimerKind::RetryPeerLookup { .. },
+                ..
+            })
+        ));
+        assert!(matches!(cmds[1], PeerDiscoveryCommand::RouterCommand {
+            target: _,
+            message: PeerDiscoveryMessage::PeerLookupRequest(_)
+        }));
+
+        // outstanding lookup requests created but not yet added to routing_info
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 1);
         assert!(!state.routing_info.contains_key(&peer2_pubkey));
         let requests = extract_lookup_requests(cmds);
@@ -1260,15 +1312,31 @@ mod tests {
         );
 
         let record = generate_name_record(peer2, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
+        let cmds = state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
             lookup_id: requests[0].lookup_id,
             target: peer2_pubkey,
             name_records: vec![record],
         });
 
-        // peer2 should be added to routing info and outstanding requests should be cleared
-        assert!(state.routing_info.contains_key(&peer2_pubkey));
+        // peer2 should be added to pending queue and outstanding requests should be cleared
+        assert!(state.pending_queue.contains_key(&peer2_pubkey));
+        assert!(!state.routing_info.contains_key(&peer2_pubkey));
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 0);
+
+        // should send a ping to peer2 to establish a ping pong round trip before adding to routing_info
+        let ping = extract_ping(cmds);
+        assert_eq!(ping.len(), 1);
+        assert_eq!(ping[0].0, peer2_pubkey);
+        assert_eq!(ping[0].1.local_name_record, Some(state.self_record));
+
+        // peer2 should be added to routing_info after receiving corresponding pong
+        state.handle_pong(peer2_pubkey, Pong {
+            ping_id: ping[0].1.id,
+            local_record_seq: 0,
+        });
+        assert!(state.routing_info.contains_key(&peer2_pubkey));
+        assert_eq!(state.routing_info.get(&peer2_pubkey).unwrap(), &record);
+        assert!(!state.pending_queue.contains_key(&peer2_pubkey));
     }
 
     #[test]
@@ -1331,23 +1399,40 @@ mod tests {
             open_discovery: false,
         });
 
-        // should update name record if record has higher sequence number (seq num incremented to 2)
+        // should add to pending queue and send ping if record has higher sequence number (seq num incremented to 2)
         let record = generate_name_record(peer1, 2);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: 1,
-            target: peer1_pubkey,
-            name_records: vec![record],
+        let cmds = state.insert_peer_to_pending(peer1_pubkey, record);
+        let pings = extract_ping(cmds);
+        assert_eq!(pings.len(), 1);
+        assert_eq!(pings[0].0, peer1_pubkey);
+        assert_eq!(pings[0].1.local_name_record, Some(state.self_record));
+        assert_eq!(
+            state.pending_queue.get(&peer1_pubkey).unwrap(),
+            &ConnectionInfo {
+                last_ping: pings[0].1,
+                unresponsive_pings: 0,
+                name_record: record,
+            }
+        );
+        assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap().seq(), 0);
+
+        // should not replace existing entry in pending queue if record has lower sequence number (seq num decremented to 1)
+        let invalid_record = generate_name_record(peer1, 1);
+        let cmds = state.insert_peer_to_pending(peer1_pubkey, invalid_record);
+        assert!(cmds.is_empty());
+
+        // insert into routing info after ping pong round trip
+        state.handle_pong(peer1_pubkey, Pong {
+            ping_id: pings[0].1.id,
+            local_record_seq: 0,
         });
-        assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap().seq(), 2);
+        assert!(state.routing_info.contains_key(&peer1_pubkey));
+        assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap(), &record);
+        assert!(!state.pending_queue.contains_key(&peer1_pubkey));
 
         // should not update name record if record has lower sequence number (seq num decremented to 1)
-        let record = generate_name_record(peer1, 1);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: 2,
-            target: peer1_pubkey,
-            name_records: vec![record],
-        });
-        assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap().seq(), 2);
+        let cmds = state.insert_peer_to_pending(peer1_pubkey, invalid_record);
+        assert!(cmds.is_empty());
     }
 
     #[test]
@@ -1361,11 +1446,13 @@ mod tests {
 
         // should not record peer lookup response if not in outstanding requests
         let record = generate_name_record(peer1, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
+        let cmds = state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
             lookup_id: 1,
             target: peer1_pubkey,
             name_records: vec![record],
         });
+        assert!(cmds.is_empty());
+        assert!(!state.pending_queue.contains_key(&peer1_pubkey));
         assert!(!state.routing_info.contains_key(&peer1_pubkey));
     }
 
@@ -1388,11 +1475,13 @@ mod tests {
 
         // should not record peer lookup response if number of records exceed max
         let record = generate_name_record(peer1, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
+        let cmds = state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
             lookup_id,
             target: peer1_pubkey,
             name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
         });
+        assert!(cmds.is_empty());
+        assert!(!state.pending_queue.contains_key(&peer1_pubkey));
         assert!(!state.routing_info.contains_key(&peer1_pubkey));
     }
 
@@ -1405,16 +1494,25 @@ mod tests {
 
         let mut state = generate_test_state(peer0, vec![]);
 
-        // add peer1 to routing info with unresponsive pings
-        // and outstanding lookup request with num_retries above prune threshold
-        let lookup_id = 1;
-        let connection_info = BTreeMap::from([(peer1_pubkey, ConnectionInfo {
-            last_ping: None,
+        // add peer1 to pending queue with unresponsive pings
+        let ping_id = 12345;
+        let pending_queue = BTreeMap::from([(peer1_pubkey, ConnectionInfo {
+            last_ping: Ping {
+                id: ping_id,
+                local_name_record: Some(state.self_record),
+            },
             unresponsive_pings: 5,
-            last_participation: Round(1),
+            name_record: generate_name_record(peer1, 0),
         })]);
         state.unresponsive_prune_threshold = 3;
-        state.connection_info = connection_info;
+        state.pending_queue = pending_queue;
+
+        // ping timeout should remove peer1 from pending queue
+        state.handle_ping_timeout(peer1_pubkey, ping_id);
+        assert!(!state.pending_queue.contains_key(&peer1_pubkey));
+
+        // add peer1 to outstanding lookup requests with num_retries above prune threshold
+        let lookup_id = 1;
         state
             .outstanding_lookup_requests
             .insert(lookup_id, LookupInfo {
@@ -1423,9 +1521,7 @@ mod tests {
                 open_discovery: false,
             });
 
-        state.refresh();
-        assert!(state.routing_info.is_empty());
-
+        // lookup request timeout should remove peer1 from outstanding requests
         state.handle_peer_lookup_timeout(peer1_pubkey, peer1_pubkey, lookup_id);
         assert!(state.outstanding_lookup_requests.is_empty());
     }
@@ -1445,15 +1541,11 @@ mod tests {
                 .epoch_validators
                 .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
         }
-        state.connection_info.insert(peer1_pubkey, ConnectionInfo {
-            last_ping: None,
-            unresponsive_pings: 0,
-            last_participation: Round(1),
-        });
+        state.participation_info.insert(peer1_pubkey, Round(1));
 
         state.refresh();
         assert!(state.routing_info.contains_key(&peer1_pubkey));
-        assert!(state.connection_info.contains_key(&peer1_pubkey));
+        assert!(state.participation_info.contains_key(&peer1_pubkey));
 
         // round advances beyond last participation prune threshold
         state.update_current_round(Round(15), Epoch(1));
@@ -1462,12 +1554,12 @@ mod tests {
             Role::FullNode => {
                 // full node should be pruned
                 assert!(!state.routing_info.contains_key(&peer1_pubkey));
-                assert!(!state.connection_info.contains_key(&peer1_pubkey));
+                assert!(!state.participation_info.contains_key(&peer1_pubkey));
             }
             Role::Validator => {
                 // validator should not be pruned
                 assert!(state.routing_info.contains_key(&peer1_pubkey));
-                assert!(state.connection_info.contains_key(&peer1_pubkey));
+                assert!(state.participation_info.contains_key(&peer1_pubkey));
             }
         }
     }
@@ -1527,9 +1619,8 @@ mod tests {
         assert!(!state.routing_info.contains_key(&peer3_pubkey));
     }
 
-    #[test_case(Role::FullNode; "self full node")]
-    #[test_case(Role::Validator; "self validator")]
-    fn test_incoming_ping_above_max_num_peers(role: Role) {
+    #[test]
+    fn test_incoming_ping_above_max_num_peers() {
         let keys = create_keys::<SignatureType>(5);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
@@ -1544,136 +1635,39 @@ mod tests {
         let mut state = generate_test_state(peer0, vec![peer1]);
         state.min_num_peers = 0;
         state.max_num_peers = 1;
-        state.self_role = role.clone();
         state
             .epoch_validators
             .insert(Epoch(1), BTreeSet::from([peer2_pubkey]));
         state.pinned_full_nodes.insert(peer3_pubkey);
 
-        // peer2 is a validator, it is added to routing info although already exceeding max number of peers
+        // peer2 is a validator, it is added to pending queue although already exceeding max number of peers
         let cmds = state.handle_ping(peer2_pubkey, Ping {
             id: 2,
             local_name_record: Some(generate_name_record(peer2, 0)),
         });
-        assert!(state.routing_info.contains_key(&peer2_pubkey));
-        assert_eq!(state.routing_info.len(), 2);
-        // both full node and validator should add peer2 to connection info and send ping
-        assert!(state.connection_info.contains_key(&peer2_pubkey));
+        assert!(state.pending_queue.contains_key(&peer2_pubkey));
         let cmds = extract_ping(cmds);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].0, peer2_pubkey);
 
-        // peer3 is a pinned full node, it is also added to the routing info
+        // peer3 is a pinned full node, it is also added to pending queue
         let cmds = state.handle_ping(peer3_pubkey, Ping {
             id: 3,
             local_name_record: Some(generate_name_record(peer3, 0)),
         });
-        assert!(state.routing_info.contains_key(&peer3_pubkey));
-        assert_eq!(state.routing_info.len(), 3);
-        match role {
-            Role::FullNode => {
-                // full node adds peer3 to connection info but should not send ping
-                assert!(state.connection_info.contains_key(&peer3_pubkey));
-                assert!(extract_ping(cmds).is_empty());
-            }
-            Role::Validator => {
-                // validator should add peer3 to connection info and send ping
-                assert!(state.connection_info.contains_key(&peer3_pubkey));
-                let ping_cmds = extract_ping(cmds);
-                assert_eq!(ping_cmds.len(), 1);
-                assert_eq!(ping_cmds[0].0, peer3_pubkey);
-            }
-        }
+        assert!(state.pending_queue.contains_key(&peer3_pubkey));
+        let cmds = extract_ping(cmds);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].0, peer3_pubkey);
 
-        // peer4 is a full node, it is not added to the routing info
+        // peer4 is a full node, it is not added to pending queue
         let cmds = state.handle_ping(peer4_pubkey, Ping {
             id: 4,
             local_name_record: Some(generate_name_record(peer4, 0)),
         });
-        assert!(!state.routing_info.contains_key(&peer4_pubkey));
-        assert_eq!(state.routing_info.len(), 3);
-        // peer4 should not be added to connection info and should not send ping
-        assert!(!state.connection_info.contains_key(&peer4_pubkey));
-        assert!(extract_ping(cmds).is_empty());
-    }
-
-    #[test]
-    fn test_look_for_upstream_validators() {
-        let keys = create_keys::<SignatureType>(5);
-        let peer0 = &keys[0];
-        let peer1 = &keys[1];
-        let peer1_pubkey = NodeId::new(peer1.pubkey());
-        let peer2 = &keys[2];
-        let peer2_pubkey = NodeId::new(peer2.pubkey());
-        let peer3 = &keys[3];
-        let peer3_pubkey = NodeId::new(peer3.pubkey());
-
-        // connection info is empty
-        let mut state = generate_test_state(peer0, vec![peer1, peer2, peer3]);
-        state.epoch_validators.insert(
-            Epoch(1),
-            BTreeSet::from([peer1_pubkey, peer2_pubkey, peer3_pubkey]),
-        );
-
-        // a full node should send pings to look for upstream validators if insufficient
-        let cmds = state.refresh();
-        let ping_cmds = extract_ping(cmds);
-        assert_eq!(ping_cmds.len(), 3);
-        // check that pings are sent to peer1, peer2 and peer3
-        assert!(ping_cmds.iter().any(|(target, _)| *target == peer1_pubkey));
-        assert!(ping_cmds.iter().any(|(target, _)| *target == peer2_pubkey));
-        assert!(ping_cmds.iter().any(|(target, _)| *target == peer3_pubkey));
-    }
-
-    #[test]
-    fn test_ping_unseen_peer() {
-        let keys = create_keys::<SignatureType>(2);
-        let peer0 = &keys[0];
-        let peer1 = &keys[1];
-        let peer1_pubkey = NodeId::new(peer1.pubkey());
-
-        let mut state = generate_test_state(peer0, vec![peer1]);
-
-        let cmds = state.send_ping(peer1_pubkey);
-        assert_eq!(cmds.len(), 5);
-
-        assert!(matches!(
-            cmds[0],
-            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
-                timer_kind: TimerKind::PingTimeout,
-                ..
-            })
-        ));
-        assert!(matches!(
-            cmds[1],
-            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
-                timer_kind: TimerKind::SendPing,
-                ..
-            })
-        ));
-        assert!(matches!(
-            cmds[2],
-            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
-                timer_kind: TimerKind::PingTimeout,
-                ..
-            })
-        ));
-        assert!(matches!(
-            cmds[3],
-            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
-                timer_kind: TimerKind::SendPing,
-                ..
-            })
-        ));
-        assert!(matches!(
-            cmds[4],
-            PeerDiscoveryCommand::PingPongCommand { .. }
-        ));
-
-        let (_, ping) = extract_ping(cmds)[0];
-
-        // ping always carries local_name_record
-        assert!(ping.local_name_record.is_some());
+        assert!(!state.pending_queue.contains_key(&peer4_pubkey));
+        let cmds = extract_ping(cmds);
+        assert!(cmds.is_empty());
     }
 
     const OLD_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(7, 7, 7, 7), 8000);
@@ -1712,20 +1706,23 @@ mod tests {
 
         if expected_pong {
             if expected_ping_to_sender {
-                // 4 timer cmds, 1 SendPing cmd, 1 Pong cmd
-                assert_eq!(cmds.len(), 6);
+                // 1 PingTimeout timer cmd, 1 SendPing cmd, 1 Pong cmd
+                println!("cmds: {:?}", cmds);
+                assert_eq!(cmds.len(), 3);
+
+                let node1_record = state.pending_queue.get(&peer1_pubkey).unwrap().name_record;
+                assert_eq!(expected_record, node1_record.name_record);
             } else {
                 // 1 Pong cmd
                 assert_eq!(cmds.len(), 1);
+
+                assert!(!state.pending_queue.contains_key(&peer1_pubkey));
             }
             let pong = extract_pong(cmds)[0];
             assert_eq!(pong, Pong {
                 ping_id: 7,
                 local_record_seq: 0
             });
-
-            let node1_record = state.routing_info.get(&peer1_pubkey).unwrap().name_record;
-            assert_eq!(expected_record, node1_record);
         } else {
             assert!(cmds.is_empty());
         }
