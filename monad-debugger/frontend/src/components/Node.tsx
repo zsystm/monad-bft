@@ -7,11 +7,11 @@ const Node: Component<{
     idx: number,
 }> = (props) => {
     const node = () => props.node;
-    const timeoutProgress = () => Math.ceil(100 * (props.currentTick - node().roundTimerStartedAt) / (node().roundTimerEndsAt - node().roundTimerStartedAt));
-    const scaledTimeoutProgress = () => 1 - Math.exp(-1 * timeoutProgress() / 100);
+    const timeoutProgress = () => (props.currentTick - node().roundTimerStartedAt) / (node().roundTimerEndsAt - node().roundTimerStartedAt);
+    const scaledTimeoutProgress = () => 1 - Math.exp(-1 * timeoutProgress());
     return (
         <div class="p-0.5 rounded-2xl" style={{
-            '--progress': `${timeoutProgress()}%`,
+            '--progress': `${100 * timeoutProgress()}%`,
             background: `conic-gradient(from 0deg, rgba(255,0,0,${scaledTimeoutProgress()}) 0%, rgba(255,0,0,${scaledTimeoutProgress()}) var(--progress), transparent var(--progress))`
         }}>
             <div class="min-w-56 text-nowrap p-4 rounded-2xl bg-gray-100 border-2 border-black shadow-md">
@@ -26,7 +26,7 @@ const Node: Component<{
                     Latest finalized: {node().root}
                 </div>
                 <div>
-                    Timeout progress: {timeoutProgress()}%
+                    Timeout progress: {Math.round(100 * timeoutProgress())}%
                 </div>
             </div>
         </div>

@@ -6,6 +6,7 @@ import Node from "./Node";
 import { createStore, reconcile } from "solid-js/store";
 
 const Graph: Component<{
+    vizTick: number,
     simulation: Simulation,
 }> = (props) => {
     const fetchGraph = () => props.simulation.fetchUnchecked(GraphDocument);
@@ -14,7 +15,7 @@ const Graph: Component<{
         setGraph(reconcile(fetchGraph(), { merge: true }));
     });
 
-    const currentTick = () => graph.currentTick;
+    const currentTick = () => props.vizTick;
     const nodes = () => graph.nodes;
     const unitPositions = createMemo(() => {
         const positions: {
@@ -53,7 +54,7 @@ const Graph: Component<{
                     </div>
                     <For each={node.pendingMessages}>{message =>
                         <Show when={node.id != message.fromId}>
-                            <div class="transition duration-[50ms] absolute z-0" style={
+                            <div class="absolute z-0" style={
                                 positionTransform(
                                     interpolatePosition(
                                         (currentTick() - message.fromTick) / (message.rxTick - message.fromTick),

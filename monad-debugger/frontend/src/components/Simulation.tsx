@@ -1,4 +1,4 @@
-import { Component, createMemo, createSignal, onCleanup, Show } from 'solid-js';
+import { Component, createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js';
 import { createStore, reconcile } from "solid-js/store"
 import { SimulationDocument } from '../generated/graphql';
 import { Simulation } from '../wasm'
@@ -8,6 +8,8 @@ import QueryEditor from './QueryEditor';
 import { throttle } from '@solid-primitives/scheduled';
 
 const maxTick = 2000;
+const simThrottleMs = 10;
+const simTimeScale = 1/40;
 
 const Sim: Component = () => {
     const simulation = new Simulation();
@@ -17,30 +19,34 @@ const Sim: Component = () => {
     const fetchSimulationData = () => simulation.fetchUnchecked(SimulationDocument);
 
     const [simData, setSimData] = createStore(fetchSimulationData())
-    const setTick = (tick: number) => {
-        simulation.setTick(tick);
+    const [vizTick, setVizTick] = createSignal(0);
+    const throttledUpdateSimData = throttle((simTick: number) => {
+        simulation.setTick(simTick);
         setSimData(reconcile(fetchSimulationData(), { merge: true, key: 'id' }));
-    };
-
-    const step = () => {
-        simulation.step();
-        setSimData(reconcile(fetchSimulationData(), { merge: true, key: 'id' }));
-    };
-
-    const tick = () => simData.currentTick;
+    }, simThrottleMs);
+    createEffect(() => {
+        const simTick = Math.round(vizTick());
+        throttledUpdateSimData(simTick);
+    });
 
     const simulationSignal = () => {
-        const _ = tick();
+        const _ = simData.currentTick;
         return simulation;
     };
 
     const [playing, setPlaying] = createSignal(false);
-    const timer = setInterval(() => {
+    let lastTimeMs = Date.now();
+    let animationId;
+    const animate = (currentTimeMs: number) => {
         if (playing()) {
-            setTick((tick() + 1) % maxTick);
+            const scaledDiff = (currentTimeMs - lastTimeMs) * simTimeScale;
+            setVizTick((vizTick() + scaledDiff) % maxTick);
         }
-    }, 30);
-    onCleanup(() => clearInterval(timer));
+        lastTimeMs = currentTimeMs;
+        animationId = requestAnimationFrame(animate);
+    };
+    animationId = requestAnimationFrame(animate);
+    onCleanup(() => cancelAnimationFrame(animationId));
 
     const [showEventLog, setShowEventLog] = createSignal(false);
     const toggleEventLog = () => setShowEventLog(!showEventLog())
@@ -50,13 +56,12 @@ const Sim: Component = () => {
 
     return (
         <>
-            <input type="range" min="0" max={maxTick} value={tick()} onInput={throttle(e => setTick(parseInt(e.target.value)), 5)} />
+            <input type="range" min="0" max={maxTick} value={vizTick()} onInput={e => setVizTick(parseInt(e.target.value))} />
             <div class="flex justify-between">
                 <div class="min-w-40">
-                    <span class="ml-2 mr-2">Current Tick: {tick()}</span>
+                    <span class="ml-2 mr-2">Current Tick: {Math.round(vizTick())}</span>
                 </div>
                 <div>
-                    <button class="border ml-2 mr-2" onClick={() => step()}>Step</button>
                     <Show
                         when={!playing()}
                         fallback={
@@ -75,7 +80,7 @@ const Sim: Component = () => {
                 <Show when={showQueryEditor()}>
                     <QueryEditor simulation={simulationSignal()} />
                 </Show>
-                <Graph simulation={simulationSignal()} />
+                <Graph vizTick={vizTick()} simulation={simulationSignal()} />
                 <Show when={showEventLog()}>
                     <EventLog simulation={simulationSignal()} />
                 </Show>
