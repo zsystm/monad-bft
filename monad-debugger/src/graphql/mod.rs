@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{ops::Deref, time::Duration};
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    ops::Deref,
+    time::Duration,
+};
 
 use async_graphql::{Context, NewType, Object, Union};
 use bytes::Bytes;
@@ -189,6 +193,7 @@ impl<'s> GraphQLNode<'s> {
                     from_tick: &message.from_tick,
                     rx_tick,
                     message: &message.message,
+                    message_nonce: &message.nonce,
                 })
             })
             .collect()
@@ -235,10 +240,16 @@ struct GraphQLPendingMessage<'s> {
     from_tick: &'s Duration,
     rx_tick: &'s Duration,
     message: &'s TransportMessage,
+    message_nonce: &'s usize,
 }
 
 #[Object]
 impl<'s> GraphQLPendingMessage<'s> {
+    async fn id(&self) -> i64 {
+        let mut s = DefaultHasher::new();
+        (self.from, self.from_tick, self.rx_tick, self.message_nonce).hash(&mut s);
+        s.finish() as i64
+    }
     async fn from_id(&self) -> GraphQLNodeId {
         self.from.get_peer_id().into()
     }

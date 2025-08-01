@@ -137,6 +137,7 @@ where
             from,
             message,
             from_tick,
+            nonce,
         } = message;
         let dup_identifier = *to.get_identifier();
         let pid = *to.get_peer_id();
@@ -186,6 +187,7 @@ where
                                     to: ID::new(pid).as_non_unique(*id),
                                     message: message.clone(),
                                     from_tick,
+                                    nonce,
                                 },
                             )
                         })
@@ -206,6 +208,7 @@ where
                                     to: *id,
                                     message: message.clone(),
                                     from_tick,
+                                    nonce,
                                 };
                                 Some((Duration::ZERO, msg))
                             } else {

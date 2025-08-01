@@ -70,6 +70,8 @@ pub struct LinkMessage<PT: PubKey, M> {
 
     /// absolute time
     pub from_tick: Duration,
+
+    pub nonce: usize,
 }
 
 impl<PT: PubKey, M: Eq> Ord for LinkMessage<PT, M> {
@@ -565,6 +567,7 @@ impl<PT: PubKey> Transformer<Bytes> for PacerTransformer<PT> {
                 message: chunk,
 
                 from_tick: message.from_tick,
+                nonce: message.nonce,
             };
             let extra_delay =
                 idx as f64 * (self.burst_bits as f64 / (self.upload_mbps * 1_000_000) as f64);

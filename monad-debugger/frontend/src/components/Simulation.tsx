@@ -1,4 +1,5 @@
 import { Component, createMemo, createSignal, onCleanup, Show } from 'solid-js';
+import { createStore, reconcile } from "solid-js/store"
 import { SimulationDocument } from '../generated/graphql';
 import { Simulation } from '../wasm'
 import EventLog from './EventLog';
@@ -6,44 +7,39 @@ import Graph from './Graph'
 import QueryEditor from './QueryEditor';
 import { throttle } from '@solid-primitives/scheduled';
 
+const maxTick = 2000;
+
 const Sim: Component = () => {
     const simulation = new Simulation();
     onCleanup(() => {
         simulation.free();
     });
+    const fetchSimulationData = () => simulation.fetchUnchecked(SimulationDocument);
 
-    const maxTick = 2000;
-
-    let epoch = 0;
-    const [epochWatcher, setEpochWatcher] = createSignal(epoch);
-
+    const [simData, setSimData] = createStore(fetchSimulationData())
     const setTick = (tick: number) => {
         simulation.setTick(tick);
-        epoch += 1;
-        setEpochWatcher(epoch);
+        setSimData(reconcile(fetchSimulationData(), { merge: true, key: 'id' }));
     };
 
     const step = () => {
         simulation.step();
-        epoch += 1;
-        setEpochWatcher(epoch);
+        setSimData(reconcile(fetchSimulationData(), { merge: true, key: 'id' }));
     };
 
-    // force refresh of this whenever epoch changes
-    const simulationSignal = createMemo(() => {
-        epochWatcher()
-        return simulation;
-    }, simulation, { equals: false });
+    const tick = () => simData.currentTick;
 
-    const simData = createMemo(() => simulationSignal().fetchUnchecked(SimulationDocument));
-    const tick = () => simData().currentTick;
+    const simulationSignal = () => {
+        const _ = tick();
+        return simulation;
+    };
 
     const [playing, setPlaying] = createSignal(false);
     const timer = setInterval(() => {
         if (playing()) {
             setTick((tick() + 1) % maxTick);
         }
-    }, 20);
+    }, 30);
     onCleanup(() => clearInterval(timer));
 
     const [showEventLog, setShowEventLog] = createSignal(false);

@@ -12,6 +12,7 @@ fragment Node on GraphQLNode {
   roundTimerStartedAt
   roundTimerEndsAt
   pendingMessages {
+    id
     fromId
     fromTick
     rxTick

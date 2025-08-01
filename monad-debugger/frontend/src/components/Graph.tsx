@@ -1,15 +1,21 @@
-import { Component, createMemo, For, Show } from "solid-js";
+import { Component, createEffect, createMemo, For, Show } from "solid-js";
 import { GraphDocument } from "../generated/graphql";
 import { Simulation } from "../wasm";
 import Message from "./Message";
 import Node from "./Node";
+import { createStore, reconcile } from "solid-js/store";
 
 const Graph: Component<{
     simulation: Simulation,
 }> = (props) => {
-    const graph = createMemo(() => props.simulation.fetchUnchecked(GraphDocument));
-    const currentTick = () => graph().currentTick;
-    const nodes = () => graph().nodes;
+    const fetchGraph = () => props.simulation.fetchUnchecked(GraphDocument);
+    const [graph, setGraph] = createStore(fetchGraph())
+    createEffect(() => {
+        setGraph(reconcile(fetchGraph(), { merge: true }));
+    });
+
+    const currentTick = () => graph.currentTick;
+    const nodes = () => graph.nodes;
     const unitPositions = createMemo(() => {
         const positions: {
             [id: string]: [number, number]
@@ -47,7 +53,7 @@ const Graph: Component<{
                     </div>
                     <For each={node.pendingMessages}>{message =>
                         <Show when={node.id != message.fromId}>
-                            <div class="absolute z-0" style={
+                            <div class="transition duration-[50ms] absolute z-0" style={
                                 positionTransform(
                                     interpolatePosition(
                                         (currentTick() - message.fromTick) / (message.rxTick - message.fromTick),
