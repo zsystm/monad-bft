@@ -16,6 +16,7 @@
 use std::{ops::Deref, time::Duration};
 
 use async_graphql::{Context, NewType, Object, Union};
+use bytes::Bytes;
 use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
@@ -27,9 +28,9 @@ use monad_mock_swarm::{
     swarm_relation::{DebugSwarmRelation, SwarmRelation},
 };
 use monad_transformer::ID;
-use monad_types::NodeId;
+use monad_types::{NodeId, Round, SeqNum, Serializable, GENESIS_ROUND, GENESIS_SEQ_NUM};
 
-use crate::simulation::Simulation;
+use crate::{graphql::message::GraphQLMonadMessage, simulation::Simulation};
 
 type SwarmRelationType = DebugSwarmRelation;
 type SignatureType = <SwarmRelationType as SwarmRelation>::SignatureType;
@@ -37,6 +38,8 @@ type SignatureCollectionType = <SwarmRelationType as SwarmRelation>::SignatureCo
 type ExecutionProtocolType = <SwarmRelationType as SwarmRelation>::ExecutionProtocolType;
 type TransportMessage = <SwarmRelationType as SwarmRelation>::TransportMessage;
 type MonadEventType = MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+
+mod message;
 
 #[derive(NewType)]
 struct GraphQLNodeId(String);
@@ -60,6 +63,22 @@ pub struct GraphQLTimestamp(i32);
 impl GraphQLTimestamp {
     pub fn new(duration: Duration) -> Self {
         Self(duration.as_millis().try_into().unwrap())
+    }
+}
+
+#[derive(NewType)]
+pub struct GraphQLRound(i64);
+impl GraphQLRound {
+    pub fn new(round: Round) -> Self {
+        Self(round.0.try_into().unwrap())
+    }
+}
+
+#[derive(NewType)]
+pub struct GraphQLSeqNum(i64);
+impl GraphQLSeqNum {
+    pub fn new(seq_num: SeqNum) -> Self {
+        Self(seq_num.0.try_into().unwrap())
     }
 }
 
@@ -135,6 +154,31 @@ impl<'s> GraphQLNode<'s> {
     async fn metrics(&self) -> GraphQLMetrics<'s> {
         GraphQLMetrics(self.0.state.metrics())
     }
+    async fn root(&self) -> GraphQLSeqNum {
+        let Some(state) = self.0.state.consensus() else {
+            return GraphQLSeqNum::new(GENESIS_SEQ_NUM);
+        };
+        let root = state.blocktree().root().seq_num;
+        GraphQLSeqNum::new(root)
+    }
+
+    async fn current_round(&self) -> GraphQLRound {
+        let Some(state) = self.0.state.consensus() else {
+            return GraphQLRound::new(GENESIS_ROUND);
+        };
+        let round = state.get_current_round();
+        GraphQLRound::new(round)
+    }
+
+    async fn round_timer_started_at(&self) -> Option<GraphQLTimestamp> {
+        let round_timeout = self.0.executor.next_round_timeout()?;
+        Some(GraphQLTimestamp::new(round_timeout.was_scheduled_at))
+    }
+    async fn round_timer_ends_at(&self) -> Option<GraphQLTimestamp> {
+        let round_timeout = self.0.executor.next_round_timeout()?;
+        Some(GraphQLTimestamp::new(round_timeout.times_out_at))
+    }
+
     async fn pending_messages(&self) -> Vec<GraphQLPendingMessage<'s>> {
         self.0
             .pending_inbound_messages
@@ -194,7 +238,7 @@ struct GraphQLPendingMessage<'s> {
 }
 
 #[Object]
-impl GraphQLPendingMessage<'_> {
+impl<'s> GraphQLPendingMessage<'s> {
     async fn from_id(&self) -> GraphQLNodeId {
         self.from.get_peer_id().into()
     }
@@ -205,7 +249,11 @@ impl GraphQLPendingMessage<'_> {
         GraphQLTimestamp::new(*self.rx_tick)
     }
     async fn size(&self) -> i64 {
-        self.message.len().try_into().unwrap()
+        let serialized: Bytes = self.message.serialize();
+        serialized.len() as i64
+    }
+    async fn message(&self) -> GraphQLMonadMessage<'s> {
+        self.message.into()
     }
 }
 

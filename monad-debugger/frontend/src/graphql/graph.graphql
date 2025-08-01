@@ -1,12 +1,36 @@
 query Graph {
   currentTick
   nodes {
-    id
-    pendingMessages {
-      fromId
-      fromTick
-      rxTick
-      size
+    ...Node
+  }
+}
+
+fragment Node on GraphQLNode {
+  id
+  currentRound
+  root
+  roundTimerStartedAt
+  roundTimerEndsAt
+  pendingMessages {
+    fromId
+    fromTick
+    rxTick
+    size
+    message {
+      ...Message
     }
   }
+}
+
+fragment Message on GraphQLConsensusMessage {
+  __typename
+  round
+  message {
+    __typename
+    ...Proposal
+  }
+}
+
+fragment Proposal on GraphQLProposal {
+  seqNum
 }

@@ -1,7 +1,8 @@
 import { Component, createMemo, For, Show } from "solid-js";
 import { GraphDocument } from "../generated/graphql";
 import { Simulation } from "../wasm";
-import { formatNodeId } from "../utils";
+import Message from "./Message";
+import Node from "./Node";
 
 const Graph: Component<{
     simulation: Simulation,
@@ -37,21 +38,16 @@ const Graph: Component<{
 
     return (
         <div class="h-full grow" style="container-type: size">
-            <For each={nodes()}>{node =>
+            <For each={nodes()}>{(node, idx) =>
                 <div class="absolute left-1/2 top-1/2">
-                    <div class="absolute" style={positionTransform(unitPositions()[node.id])}>
-                        <div class="-translate-x-1/2 -translate-y-1/2 border">
-                            <div>
-                                Node {formatNodeId(node.id)}
-                            </div>
-                            <div>
-                                # pending: {node.pendingMessages.length}
-                            </div>
+                    <div class="absolute z-10" style={positionTransform(unitPositions()[node.id])}>
+                        <div class="-translate-x-1/2 -translate-y-1/2">
+                            <Node currentTick={currentTick()} node={node} idx={idx()} />
                         </div>
                     </div>
                     <For each={node.pendingMessages}>{message =>
                         <Show when={node.id != message.fromId}>
-                            <div class="absolute" style={
+                            <div class="absolute z-0" style={
                                 positionTransform(
                                     interpolatePosition(
                                         (currentTick() - message.fromTick) / (message.rxTick - message.fromTick),
@@ -60,10 +56,8 @@ const Graph: Component<{
                                     )
                                 )
                             }>
-                                <div class="-translate-x-1/2 -translate-y-1/2 border rounded-full" style ={
-                                    `font-size: ${Math.log(message.size) / 5}rem`
-                                }>
-                                    {message.size}
+                                <div class="-translate-x-1/2 -translate-y-1/2">
+                                    <Message message={message.message} />
                                 </div>
                             </div>
                         </Show>

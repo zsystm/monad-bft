@@ -31,6 +31,7 @@
     "@codemirror/state": "6.2.0",
     "@codemirror/view": "6.2.1",
     "@replit/codemirror-vim": "^6.1.0",
+    "@solid-primitives/scheduled": "^1.5.2",
     "cm6-graphql": "^0.0.13",
     "codemirror": "^6.0.1",
     "graphql": "^16.8.1",
