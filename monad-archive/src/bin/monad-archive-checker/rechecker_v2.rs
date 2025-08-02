@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use eyre::{Context, Result};
+use futures::future::{self, ready};
 use monad_archive::prelude::*;
 use opentelemetry::KeyValue;
 use tokio::time::interval;
@@ -113,13 +114,20 @@ async fn recheck_all_faults(
     }
 
     // Process each fault chunk
-    let mut new_faults_by_replica = HashMap::new();
-    for chunk_start in fault_chunks {
-        info!(chunk_start, dry_run, "Rechecking fault chunk");
-        let (new_faults_by_replica_chunk, _) =
-            recheck_chunk_from_scratch(model, chunk_start, dry_run).await?;
-        new_faults_by_replica.extend(new_faults_by_replica_chunk);
-    }
+    let new_faults_by_replica = futures::stream::iter(fault_chunks)
+        .map(async |chunk_start| {
+            info!(chunk_start, dry_run, "Rechecking fault chunk");
+            let (new_faults_by_replica_chunk, _) =
+                recheck_chunk_from_scratch(model, chunk_start, dry_run)
+                    .await
+                    .unwrap();
+            new_faults_by_replica_chunk
+            // futures::stream::iter(new_faults_by_replica_chunk)
+        })
+        .buffered(2)
+        .flat_map(|x| futures::stream::iter(x))
+        .collect()
+        .await;
 
     // Update metrics after all chunks are rechecked (skip in dry run)
     if !dry_run {

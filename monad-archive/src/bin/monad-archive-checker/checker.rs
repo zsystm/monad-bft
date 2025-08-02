@@ -403,13 +403,7 @@ fn choose_good_replica(
     equivalence_groups: &Vec<Vec<(String, &BlockTraces)>>,
     block_num: u64,
 ) -> Option<Vec<String>> {
-    dbg!(&equivalence_groups.len());
-    dbg!(&equivalence_groups
-        .iter()
-        .map(|group| group.len())
-        .collect::<Vec<_>>());
     let good_group = if equivalence_groups.len() > 1 {
-        dbg!("sorting");
         // Sort by number of non-empty outputs, then by group size, then by lexicographically smallest replica name
         equivalence_groups.iter().min_by_key(|group| {
             let (_replica, traces) = group.first().expect("group is empty");
@@ -417,7 +411,6 @@ fn choose_good_replica(
             let x = match decode_traces(traces) {
                 Ok(x) => x,
                 Err(e) => {
-                    dbg!("decode_traces failed", e);
                     warn!(?e, "decode_traces failed");
                     return (0, 0, None);
                 }
@@ -430,15 +423,14 @@ fn choose_good_replica(
                 .count();
 
             // Take the negative of the values to make the min_by_key function sort in ascending order
-            dbg!((
+            (
                 -(num_non_empty_outputs as isize),
                 -(group.len() as isize),
                 // Take the lexicographically smallest replica name
                 group.iter().map(|(replica, _)| replica).min(),
-            ))
+            )
         })?
     } else {
-        dbg!("no sorting");
         equivalence_groups.first()?
     };
 
