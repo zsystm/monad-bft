@@ -749,6 +749,7 @@ where
     let mut highest_qc_round = GENESIS_ROUND;
     let mut highest_tip_round = GENESIS_ROUND;
     let mut seen_tip_rounds = HashSet::new();
+    let mut seen_node_ids = HashSet::new();
     for t in tc.tip_rounds.iter() {
         if t.high_qc_round >= tc.round {
             return Err(Error::InvalidTcRound);
@@ -780,6 +781,13 @@ where
             .sigs
             .verify::<signing_domain::Timeout>(validator_mapping, msg.as_ref())
             .map_err(|_| Error::InvalidSignature)?;
+
+        for signer in &signers {
+            let is_new_node_id = seen_node_ids.insert(*signer);
+            if !is_new_node_id {
+                return Err(Error::SignaturesDuplicateNode);
+            }
+        }
 
         node_ids.extend(signers);
     }
