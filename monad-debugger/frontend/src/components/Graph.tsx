@@ -57,7 +57,7 @@ const Graph: Component<{
                             <div class="absolute z-0" style={
                                 positionTransform(
                                     interpolatePosition(
-                                        (currentTick() - message.fromTick) / (message.rxTick - message.fromTick),
+                                        Math.max(0, Math.min(1, (currentTick() - message.fromTick) / (message.rxTick - message.fromTick))),
                                         unitPositions()[message.fromId],
                                         unitPositions()[node.id]
                                     )

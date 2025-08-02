@@ -16,17 +16,19 @@
 use std::ops::Deref;
 
 use async_graphql::{Object, Union};
+use monad_blocksync::messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{
-            NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage, TimeoutMessage,
-            VoteMessage,
+            AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage,
+            TimeoutMessage, VoteMessage,
         },
     },
     validation::signing::{Validated, Verified},
 };
 use monad_state::VerifiedMonadMessage;
+use monad_types::Round;
 
 use crate::graphql::{
     ExecutionProtocolType, GraphQLRound, GraphQLSeqNum, SignatureCollectionType, SignatureType,
@@ -44,8 +46,12 @@ impl<'s> From<&'s MonadMessageType> for GraphQLMonadMessage<'s> {
             MonadMessageType::Consensus(message) => {
                 Self::Consensus(GraphQLConsensusMessage(message))
             }
-            MonadMessageType::BlockSyncRequest(_) => todo!("BlockSyncRequest"),
-            MonadMessageType::BlockSyncResponse(_) => todo!("BlockSyncResponse"),
+            MonadMessageType::BlockSyncRequest(message) => {
+                Self::BlocksyncRequest(GraphQLBlockSyncRequest(message))
+            }
+            MonadMessageType::BlockSyncResponse(message) => {
+                Self::BlocksyncResponse(GraphQLBlockSyncResponse(message))
+            }
             MonadMessageType::ForwardedTx(_) => todo!("ForwardedTx"),
             MonadMessageType::StateSyncMessage(_) => todo!("StateSyncMessage"),
         }
@@ -55,6 +61,8 @@ impl<'s> From<&'s MonadMessageType> for GraphQLMonadMessage<'s> {
 #[derive(Union)]
 pub(crate) enum GraphQLMonadMessage<'s> {
     Consensus(GraphQLConsensusMessage<'s>),
+    BlocksyncRequest(GraphQLBlockSyncRequest<'s>),
+    BlocksyncResponse(GraphQLBlockSyncResponse<'s>),
 }
 
 struct GraphQLConsensusMessage<'s>(&'s VerifiedConsensusMessageType);
@@ -81,6 +89,9 @@ impl<'s> From<&'s VerifiedConsensusMessageType> for GraphQLConsensusMessageType<
             ProtocolMessage::NoEndorsement(no_endorsement) => {
                 Self::NoEndorsement(GraphQLNoEndorsement(no_endorsement))
             }
+            ProtocolMessage::AdvanceRound(advance_round) => {
+                Self::AdvanceRound(GraphQLAdvanceRound(advance_round))
+            }
         }
     }
 }
@@ -92,6 +103,7 @@ enum GraphQLConsensusMessageType<'s> {
     Timeout(GraphQLTimeout<'s>),
     RoundRecovery(GraphQLRoundRecovery<'s>),
     NoEndorsement(GraphQLNoEndorsement<'s>),
+    AdvanceRound(GraphQLAdvanceRound<'s>),
 }
 
 struct GraphQLProposal<'s>(
@@ -137,5 +149,37 @@ struct GraphQLNoEndorsement<'s>(&'s NoEndorsementMessage<SignatureCollectionType
 impl<'s> GraphQLNoEndorsement<'s> {
     async fn round(&self) -> GraphQLRound {
         GraphQLRound::new(self.0.msg.round)
+    }
+}
+
+struct GraphQLAdvanceRound<'s>(&'s AdvanceRoundMessage<SignatureCollectionType>);
+#[Object]
+impl<'s> GraphQLAdvanceRound<'s> {
+    async fn round(&self) -> GraphQLRound {
+        GraphQLRound::new(self.0.last_round_qc.get_round() + Round(1))
+    }
+}
+
+struct GraphQLBlockSyncRequest<'s>(&'s BlockSyncRequestMessage);
+#[Object]
+impl<'s> GraphQLBlockSyncRequest<'s> {
+    async fn message(&self) -> String {
+        match &self.0 {
+            BlockSyncRequestMessage::Headers(_) => "header".to_string(),
+            BlockSyncRequestMessage::Payload(_) => "body".to_string(),
+        }
+    }
+}
+
+struct GraphQLBlockSyncResponse<'s>(
+    &'s BlockSyncResponseMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+);
+#[Object]
+impl<'s> GraphQLBlockSyncResponse<'s> {
+    async fn message(&self) -> String {
+        match &self.0 {
+            BlockSyncResponseMessage::HeadersResponse(_) => "header".to_string(),
+            BlockSyncResponseMessage::PayloadResponse(_) => "body".to_string(),
+        }
     }
 }

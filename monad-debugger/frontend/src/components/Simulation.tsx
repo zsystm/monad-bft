@@ -9,7 +9,7 @@ import { throttle } from '@solid-primitives/scheduled';
 
 const maxTick = 2000;
 const simThrottleMs = 10;
-const simTimeScale = 1/40;
+const simTimeScale = 1/20;
 
 const Sim: Component = () => {
     const simulation = new Simulation();

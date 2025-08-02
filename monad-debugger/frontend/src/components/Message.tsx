@@ -7,7 +7,11 @@ const Message: Component<{
     const message = () => props.message;
 
     if (message().__typename !== "GraphQLConsensusMessage") {
-        return <div>Unknown message</div>
+        return (
+            <div class="text-nowrap p-2 rounded-2xl bg-yellow-400/25 border border-black shadow-sm">
+                <div class="text-2xl">BlockSync</div>
+            </div>
+        );
     }
     const round = () => message().round;
 
@@ -47,6 +51,13 @@ const Message: Component<{
             return (
                 <div class="text-nowrap p-2 rounded-2xl border border-black shadow-sm">
                     <div class="text-2xl">NoEndorsement</div>
+                    <div>round={round()}</div>
+                </div>
+            );
+        case "GraphQLAdvanceRound":
+            return (
+                <div class="text-nowrap p-2 rounded-2xl bg-green-400/35 border border-black shadow-sm">
+                    <div class="text-2xl">AdvanceRound</div>
                     <div>round={round()}</div>
                 </div>
             );
